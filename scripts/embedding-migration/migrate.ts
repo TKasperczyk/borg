@@ -14,6 +14,7 @@ import {
   embeddingProfileSchema,
   EmbeddingBankError,
   readBankEmbeddingProfile,
+  requireEmbeddingClientProfile,
   type BankEmbeddingProfile,
   type EmbeddingProfile,
 } from "../../src/embeddings/bank-profile.js";
@@ -25,12 +26,16 @@ import { sleep } from "../../src/util/clock.js";
 import { LanceDbTable } from "../../src/storage/lancedb/index.js";
 import { quoteSqlString } from "../../src/storage/codecs.js";
 import { fingerprintCanonicalValue } from "../../src/cognition/deliberation/request-fingerprint.js";
-import { backupTenant, migrationHeadroom, verifyTenantBackup } from "./backup.js";
+import {
+  backupTenant,
+  migrationHeadroom,
+  verifyTenantBackup,
+  type DiskSpaceReader,
+} from "./backup.js";
 import {
   inventoryBank,
-  migrationRowIdentity,
+  migrationRecords,
   migrationRows,
-  migrationRowText,
   migrationSchema,
   migrationSchemaHash,
   VECTOR_TABLES,
@@ -78,6 +83,79 @@ const checkpointSchema = z.object({
   rows: z.array(rowIdentitySchema),
 });
 export const MIGRATION_JOURNAL = ".embedding-migration.json";
+
+function readCheckpoints(tenantDir: string, journal: Journal) {
+  const done = new Map<string, z.infer<typeof rowIdentitySchema>>();
+  for (const record of parseJsonLines(
+    join(tenantDir, `.embedding-migration-g${journal.target.generation}.jsonl`),
+  )) {
+    const batch = checkpointSchema.parse(record);
+    assertEmbeddingProfilesMatch(batch.target, journal.target);
+    if (batch.generation !== journal.target.generation)
+      throw new EmbeddingBankError("Checkpoint generation mismatch", {
+        code: "EMBEDDING_MIGRATION_CHECKPOINT_INVALID",
+      });
+    for (const row of batch.rows) done.set(`${batch.table}/${row.id}`, row);
+  }
+  return done;
+}
+
+async function remainingStagingRows(
+  tenantDir: string,
+  stagingDir: string,
+  journal: Journal,
+): Promise<{ remainingRows: number; remainingTables: string[] }> {
+  const remaining = new Map(
+    journal.inventory.tables.map((table) => [table.name, table.rows.length]),
+  );
+  const result = () => ({
+    remainingRows: [...remaining.values()].reduce((sum, count) => sum + count, 0),
+    remainingTables: [...remaining.entries()]
+      .filter(([, count]) => count > 0)
+      .map(([name]) => name),
+  });
+  if (!existsSync(stagingDir)) return result();
+  const checkpoints = readCheckpoints(tenantDir, journal);
+  const connection = await connect(stagingDir);
+  try {
+    const names = await connection.tableNames();
+    for (const expected of journal.inventory.tables) {
+      if (!names.includes(expected.name)) continue;
+      const table = await connection.openTable(expected.name);
+      try {
+        const source = new Map(expected.rows.map((row) => [row.id, row]));
+        const counted = new Set<string>();
+        for await (const rows of migrationRows(table, 128, true)) {
+          for (const row of rows) {
+            const { embedding, ...fields } = row;
+            const id = String(
+              row[expected.name === "image_perception_embeddings" ? "payload_id" : "id"],
+            );
+            const checkpoint = checkpoints.get(`${expected.name}/${id}`);
+            const original = source.get(id);
+            assertUsableEmbedding(embedding as ArrayLike<number>, journal.target.dimensions);
+            if (
+              !counted.has(id) &&
+              checkpoint &&
+              original &&
+              checkpoint.text_hash === original.text_hash &&
+              checkpoint.fields_hash === original.fields_hash &&
+              fingerprintCanonicalValue(fields).canonicalSha256 === original.fields_hash
+            ) {
+              counted.add(id);
+              remaining.set(expected.name, remaining.get(expected.name)! - 1);
+            }
+          }
+        }
+      } finally {
+        table.close();
+      }
+    }
+  } finally {
+    connection.close();
+  }
+  return result();
+}
 export type MigrationOptions = {
   tenantDir: string;
   backupDir: string;
@@ -97,6 +175,7 @@ export type MigrationDependencies = {
   afterTableWrite?: () => void | Promise<void>;
   afterRename?: (step: "previous" | "live") => void | Promise<void>;
   retryDelaysMs?: readonly number[];
+  diskSpace?: DiskSpaceReader;
 };
 
 function requireComplete(inventory: BankInventory): void {
@@ -221,21 +300,12 @@ async function embedStaging(
     throw new EmbeddingBankError("An embedding client is required to migrate", {
       code: "EMBEDDING_MIGRATION_CLIENT_REQUIRED",
     });
-  if (client.profile) assertEmbeddingProfilesMatch(journal.target, client.profile);
+  assertEmbeddingProfilesMatch(journal.target, requireEmbeddingClientProfile(client));
   const checkpointPath = join(
     options.tenantDir,
     `.embedding-migration-g${journal.target.generation}.jsonl`,
   );
-  const done = new Map<string, z.infer<typeof rowIdentitySchema>>();
-  for (const record of parseJsonLines(checkpointPath)) {
-    const batch = checkpointSchema.parse(record);
-    assertEmbeddingProfilesMatch(batch.target, journal.target);
-    if (batch.generation !== journal.target.generation)
-      throw new EmbeddingBankError("Checkpoint generation mismatch", {
-        code: "EMBEDDING_MIGRATION_CHECKPOINT_INVALID",
-      });
-    for (const row of batch.rows) done.set(`${batch.table}/${row.id}`, row);
-  }
+  const done = readCheckpoints(options.tenantDir, journal);
   const source = await connect(sourceDir);
   const staging = await connect(stagingDir);
   try {
@@ -261,9 +331,14 @@ async function embedStaging(
         // A checkpoint is only trusted if its committed staging row still exists
         // with the recorded text, fields and a valid target vector.
         const staged = new Map<string, string>();
-        for await (const rows of migrationRows(destination, 128, true))
-          for (const row of rows) {
-            const identity = migrationRowIdentity(definition.name, row);
+        for await (const records of migrationRecords(
+          destination,
+          definition.name,
+          128,
+          true,
+          original,
+        ))
+          for (const { row, identity } of records) {
             assertUsableEmbedding(row.embedding as ArrayLike<number>, journal.target.dimensions);
             const committed = done.get(`${definition.name}/${identity.id}`);
             if (
@@ -280,7 +355,9 @@ async function embedStaging(
         let completed = 0;
         const wrapper = new LanceDbTable(destination);
         const iterator = original
-          ? migrationRows(original, options.batchSize ?? 32)[Symbol.asyncIterator]()
+          ? migrationRecords(original, definition.name, options.batchSize ?? 32)[
+              Symbol.asyncIterator
+            ]()
           : undefined;
         let stopped = false;
         // Bounded worker pool; Lance commits and checkpoint appends are serialized.
@@ -289,8 +366,7 @@ async function embedStaging(
           while (!stopped && iterator) {
             const next = await iterator.next();
             if (next.done) return;
-            const pending = next.value.filter((row) => {
-              const identity = migrationRowIdentity(definition.name, row);
+            const pending = next.value.filter(({ identity }) => {
               const committed = done.get(`${definition.name}/${identity.id}`);
               if (
                 committed &&
@@ -308,9 +384,7 @@ async function embedStaging(
             let vectors: Float32Array[] | undefined;
             for (let attempt = 0; ; attempt += 1) {
               try {
-                vectors = await client!.embedBatch(
-                  pending.map((row) => migrationRowText(definition.name, row)),
-                );
+                vectors = await client!.embedBatch(pending.map((record) => record.text));
                 if (vectors.length !== pending.length)
                   throw new Error("Embedding batch response count mismatch");
                 for (const vector of vectors)
@@ -331,10 +405,10 @@ async function embedStaging(
               const nullBooleans = targetSchema.fields.filter(
                 (field) =>
                   field.type.toString() === "Bool" &&
-                  pending.every((row) => row[field.name] === null),
+                  pending.every(({ row }) => row[field.name] === null),
               );
               await wrapper.upsert(
-                pending.map((row, index) => ({
+                pending.map(({ row }, index) => ({
                   ...row,
                   ...Object.fromEntries(nullBooleans.map((field) => [field.name, false])),
                   embedding: Array.from(embeddings![index]!),
@@ -343,7 +417,7 @@ async function embedStaging(
               );
               if (nullBooleans.length)
                 await destination.update({
-                  where: `${definition.key} IN (${pending.map((row) => quoteSqlString(String(row[definition.key]))).join(", ")})`,
+                  where: `${definition.key} IN (${pending.map(({ row }) => quoteSqlString(String(row[definition.key]))).join(", ")})`,
                   valuesSql: Object.fromEntries(
                     nullBooleans.map((field) => [field.name, "CAST(NULL AS BOOLEAN)"]),
                   ),
@@ -354,7 +428,7 @@ async function embedStaging(
                 generation: journal.target.generation,
                 target: { model: journal.target.model, dimensions: journal.target.dimensions },
                 table: definition.name,
-                rows: pending.map((row) => migrationRowIdentity(definition.name, row)),
+                rows: pending.map((record) => record.identity),
               });
               completed += pending.length;
               deps.progress?.({
@@ -412,6 +486,8 @@ export async function migrateTenant(
   deps: MigrationDependencies = {},
 ): Promise<Record<string, unknown>> {
   const target = embeddingProfileSchema.parse(options.target);
+  if (!options.dryRun && !options.verifyOnly && deps.client)
+    assertEmbeddingProfilesMatch(target, requireEmbeddingClientProfile(deps.client));
   const tenantDir = options.tenantDir;
   const live = join(tenantDir, "lancedb");
   const journalPath = join(tenantDir, MIGRATION_JOURNAL);
@@ -419,7 +495,14 @@ export async function migrateTenant(
   if (options.dryRun) {
     const inventory = await inventoryBank(tenantDir, target.dimensions);
     const source = sourceProfile(tenantDir, inventory, options.sourceModel);
-    const headroom = migrationHeadroom(tenantDir, options.backupDir, inventory, target.dimensions);
+    const headroom = migrationHeadroom(
+      tenantDir,
+      options.backupDir,
+      inventory,
+      target.dimensions,
+      {},
+      deps.diskSpace,
+    );
     return {
       tenant: tenantDir,
       dry_run: true,
@@ -603,11 +686,13 @@ export async function migrateTenant(
             { code: "EMBEDDING_MIGRATION_SOURCE_CHANGED" },
           );
         if (state.phase === "inventoried") {
-          deps.progress?.({
-            phase: "headroom",
-            ...migrationHeadroom(tenantDir, options.backupDir, state.inventory, target.dimensions),
-          });
-          await backupTenant(tenantDir, state.backup, state.inventory, target.dimensions);
+          await backupTenant(
+            tenantDir,
+            state.backup,
+            state.inventory,
+            target.dimensions,
+            deps.diskSpace,
+          );
           advance("backed_up");
         } else await verifyTenantBackup(state.backup, state.inventory, target.dimensions);
         if (state.phase === "backed_up" || state.phase === "embedding") {
@@ -615,6 +700,20 @@ export async function migrateTenant(
             throw new EmbeddingBankError("Unexpected previous directory before verification", {
               code: "EMBEDDING_MIGRATION_RECOVERY_REQUIRED",
             });
+          const remaining = await remainingStagingRows(tenantDir, staging, state);
+          const headroom = migrationHeadroom(
+            tenantDir,
+            state.backup,
+            state.inventory,
+            target.dimensions,
+            { backup: false, ...remaining },
+            deps.diskSpace,
+          );
+          deps.progress?.({
+            phase: "headroom",
+            remaining_rows: remaining.remainingRows,
+            ...headroom,
+          });
           mkdirSync(staging, { recursive: true, mode: 0o700 });
           advance("embedding");
           await embedStaging(options, deps, state, live, staging);

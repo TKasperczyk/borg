@@ -1,6 +1,9 @@
 import { z } from "zod";
 import { isPlainRecord } from "../util/guards.js";
-import { buildEpisodeEmbeddingText } from "../memory/episodic/protected-lines.js";
+import {
+  buildEpisodeEmbeddingText,
+  consolidationEmbeddingInputSchema,
+} from "../memory/episodic/protected-lines.js";
 import { buildNodeEmbeddingText } from "../memory/semantic/embedding-text.js";
 import { semanticObservationMetadataSchema } from "../memory/semantic/types.js";
 import { EmbeddingBankError } from "./bank-profile.js";
@@ -88,6 +91,10 @@ export async function refreshSerializedEmbeddings(
         tags: z.array(z.string()).parse(body.tags ?? []),
         participants: z.array(z.string()).parse(body.participants ?? []),
         episode_kind: z.string().nullable().optional().parse(body.episode_kind),
+        consolidation_embedding_input: consolidationEmbeddingInputSchema
+          .nullable()
+          .optional()
+          .parse(body.consolidation_embedding_input),
       });
     }
     if (text === undefined || text.trim().length === 0) {

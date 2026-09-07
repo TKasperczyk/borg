@@ -1,5 +1,8 @@
 import {
   appendFileSync,
+  cpSync,
+  chmodSync,
+  truncateSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -11,6 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { spawnSync } from "node:child_process";
 import { connect } from "@lancedb/lancedb";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LanceDbTable } from "../src/storage/lancedb/index.js";
@@ -29,7 +33,7 @@ import {
   type MigrationDependencies,
 } from "./embedding-migration/migrate.js";
 import { parseEmbeddingMigrationArgs } from "./migrate-embeddings.js";
-import { migrationHeadroom } from "./embedding-migration/backup.js";
+import { migrationHeadroom, verifyTenantBackup } from "./embedding-migration/backup.js";
 
 const cleanup: string[] = [];
 afterEach(() => {
@@ -167,6 +171,23 @@ async function fixture(count = 2, sourceDimensions = 4, targetDimensions = 2) {
 }
 
 describe("storage-only embedding migration", () => {
+  it("validates an injected migration client before fencing or backing up", async () => {
+    const bank = await fixture(0);
+    const delegate = new FakeEmbeddingClient(2);
+    await expect(
+      migrateTenant(bank.options, {
+        client: {
+          embed: delegate.embed.bind(delegate),
+          embedBatch: delegate.embedBatch.bind(delegate),
+        },
+      }),
+    ).rejects.toMatchObject({ code: "EMBEDDING_CLIENT_PROFILE_REQUIRED" });
+    await expect(
+      migrateTenant(bank.options, { client: new FakeEmbeddingClient(2, "wrong-model") }),
+    ).rejects.toMatchObject({ code: "EMBEDDING_PROFILE_MISMATCH" });
+    expect(existsSync(join(bank.tenantDir, EMBEDDING_FENCE_FILE))).toBe(false);
+    expect(existsSync(bank.options.backupDir)).toBe(false);
+  });
   it("migrates the production 4096-to-1024 geometry across all seven tables", async () => {
     const bank = await fixture(1, 4096, 1024);
     expect(await migrateTenant(bank.options, { client: bank.client })).toMatchObject({
@@ -325,6 +346,240 @@ describe("storage-only embedding migration", () => {
     ).toThrow("Insufficient disk headroom");
     expect(existsSync(bank.options.backupDir)).toBe(false);
   });
+
+  it("keeps capacity for a large final row instead of assuming average row sizes", async () => {
+    const bank = await fixture(0);
+    const inventory = await inventoryBank(bank.tenantDir, 2);
+    const large = join(bank.tenantDir, "lancedb", "episodes.lance", "large-row-size-fixture");
+    writeFileSync(large, "");
+    truncateSync(large, 128 * 1024 * 1024);
+    expect(() =>
+      migrationHeadroom(
+        bank.tenantDir,
+        bank.options.backupDir,
+        inventory,
+        2,
+        { backup: false, remainingRows: 1, remainingTables: ["episodes"] },
+        () => ({ bsize: 1, bavail: 200 * 1024 * 1024 }),
+      ),
+    ).toThrow("Insufficient disk headroom");
+  });
+
+  it("checks backup capacity without a progress callback and uses the journal destination on resume", async () => {
+    const bank = await fixture(0);
+    const full = vi.fn(() => ({ bavail: 0, bsize: 4096 }));
+    await expect(
+      migrateTenant(bank.options, { client: bank.client, diskSpace: full }),
+    ).rejects.toMatchObject({ code: "EMBEDDING_MIGRATION_DISK_FULL" });
+    expect(existsSync(bank.options.backupDir)).toBe(false);
+    expect(bank.client.embedBatch).not.toHaveBeenCalled();
+    const state = readJsonFile<{ backup: string }>(join(bank.tenantDir, MIGRATION_JOURNAL))!;
+    mkdirSync(bank.options.backupDir, { recursive: true });
+    const changedDestination = join(bank.root, "unused-backups");
+    full.mockClear();
+    await expect(
+      migrateTenant(
+        { ...bank.options, backupDir: changedDestination, resume: true },
+        { client: bank.client, diskSpace: full },
+      ),
+    ).rejects.toMatchObject({ code: "EMBEDDING_MIGRATION_DISK_FULL" });
+    expect(full.mock.calls).toContainEqual([bank.options.backupDir]);
+    expect(existsSync(state.backup)).toBe(false);
+    expect(existsSync(changedDestination)).toBe(false);
+  });
+
+  it("rechecks remaining staging capacity after interruption and retains its verified backup", async () => {
+    const bank = await fixture(2);
+    await expect(
+      migrateTenant(bank.options, {
+        client: bank.client,
+        afterBatch: () => {
+          throw new Error("interrupt");
+        },
+      }),
+    ).rejects.toThrow("interrupt");
+    const state = readJsonFile<{ backup: string }>(join(bank.tenantDir, MIGRATION_JOURNAL))!;
+    const marker = readFileSync(join(state.backup, ".embedding-backup.json"), "utf8");
+    bank.client.embedBatch.mockClear();
+    await expect(
+      migrateTenant(
+        { ...bank.options, resume: true },
+        { client: bank.client, diskSpace: () => ({ bavail: 0, bsize: 4096 }) },
+      ),
+    ).rejects.toMatchObject({ code: "EMBEDDING_MIGRATION_DISK_FULL" });
+    expect(bank.client.embedBatch).not.toHaveBeenCalled();
+    expect(readFileSync(join(state.backup, ".embedding-backup.json"), "utf8")).toBe(marker);
+    const progress = vi.fn();
+    await migrateTenant({ ...bank.options, resume: true }, { client: bank.client, progress });
+    expect(
+      progress.mock.calls.some(
+        ([event]) =>
+          event.phase === "headroom" && event.remaining_rows === 13 && event.backup_bytes === 0,
+      ),
+    ).toBe(true);
+    expect(bank.client.embedBatch).toHaveBeenCalledTimes(13);
+  });
+
+  it("backs up a restored snapshot and completes a new migration after rollback", async () => {
+    const bank = await fixture(1);
+    const before = await inventoryBank(bank.tenantDir, 2);
+    const first = await migrateTenant(bank.options, { client: bank.client });
+    rmSync(bank.tenantDir, { recursive: true });
+    cpSync(String(first.backup), bank.tenantDir, { recursive: true });
+    expect(existsSync(join(bank.tenantDir, ".embedding-backup.json"))).toBe(true);
+    expect(existsSync(join(bank.tenantDir, MIGRATION_JOURNAL))).toBe(false);
+    const second = await migrateTenant(bank.options, { client: bank.client });
+    expect(second.complete).toBe(true);
+    await verifyTenantBackup(String(second.backup), before, 2);
+    const manifest = readJsonFile<{ files: Record<string, string> }>(
+      join(String(second.backup), ".embedding-backup.json"),
+    )!;
+    expect(manifest.files).not.toHaveProperty(".embedding-backup.json");
+    expect(manifest.files).not.toHaveProperty(EMBEDDING_FENCE_FILE);
+  });
+
+  it.skipIf(process.getuid?.() === 0)(
+    "all-tenants CLI exits nonzero before migrating when a candidate is unreadable",
+    async () => {
+      const bank = await fixture(0);
+      const blocked = join(bank.root, "unreadable");
+      mkdirSync(blocked);
+      writeFileSync(join(blocked, "borg.db"), "fixture");
+      chmodSync(blocked, 0);
+      try {
+        const child = spawnSync(
+          process.execPath,
+          [
+            "--import",
+            "tsx",
+            "scripts/migrate-embeddings.ts",
+            "--data-root",
+            bank.root,
+            "--all-tenants",
+            "--source-model",
+            "old",
+            "--target-model",
+            "new",
+            "--target-dims",
+            "2",
+            "--dry-run",
+          ],
+          { encoding: "utf8", timeout: 15_000, env: process.env },
+        );
+        expect(child.status, child.stderr).toBe(1);
+        expect(child.stderr).toContain("EMBEDDING_TENANT_DISCOVERY_FAILED");
+        expect(child.stderr).toContain("unreadable");
+        expect(child.stdout).not.toContain('"complete":true');
+        expect(existsSync(join(bank.tenantDir, MIGRATION_JOURNAL))).toBe(false);
+      } finally {
+        chmodSync(blocked, 0o700);
+      }
+    },
+  );
+
+  it("refuses resume when source text changes after a committed batch", async () => {
+    const bank = await fixture(1);
+    await expect(
+      migrateTenant(bank.options, {
+        client: bank.client,
+        afterBatch: () => {
+          throw new Error("interrupt");
+        },
+      }),
+    ).rejects.toThrow("interrupt");
+    const connection = await connect(join(bank.tenantDir, "lancedb"));
+    const table = await connection.openTable("episodes");
+    await table.update({ values: { narrative: "Source text changed after checkpoint" } });
+    table.close();
+    connection.close();
+    bank.client.embedBatch.mockClear();
+    await expect(
+      migrateTenant({ ...bank.options, resume: true }, { client: bank.client }),
+    ).rejects.toMatchObject({ code: "EMBEDDING_MIGRATION_SOURCE_CHANGED" });
+    expect(bank.client.embedBatch).not.toHaveBeenCalled();
+    expect(existsSync(join(bank.tenantDir, EMBEDDING_FENCE_FILE))).toBe(true);
+  });
+
+  it("recovers legacy consolidation input from archived raw lineage without adding schema columns", async () => {
+    const bank = await fixture(2);
+    const connection = await connect(join(bank.tenantDir, "lancedb"));
+    const table = await connection.openTable("episodes");
+    await table.dropColumns(["consolidation_embedding_input"]);
+    await table.update({
+      where: "id = 'episodes-0'",
+      values: { narrative: "Raw evidence\nOUTCOME fp=z\nOUTCOME fp=a" },
+    });
+    await table.update({
+      where: "id = 'episodes-1'",
+      values: {
+        narrative: "Synthesis\nOUTCOME fp=a\nOUTCOME fp=z",
+        lineage_derived_from: '["episodes-0"]',
+      },
+    });
+    table.close();
+    connection.close();
+    const db = new DatabaseSync(join(bank.tenantDir, "borg.db"));
+    db.exec("UPDATE episode_stats SET archived = 1 WHERE episode_id = 'episodes-0'");
+    db.close();
+    const before = await inventoryBank(bank.tenantDir, 2);
+    const result = await migrateTenant(bank.options, { client: bank.client });
+    expect(result.complete).toBe(true);
+    expect(bank.client.embedBatch.mock.calls.flatMap(([texts]) => texts)).toContain(
+      "Episode 1\nSynthesis\nOUTCOME fp=z\nOUTCOME fp=a\ntag étiquette\nparticipant",
+    );
+    const after = await inventoryBank(bank.tenantDir, 2);
+    expect(after.tables.map((item) => item.rows)).toEqual(before.tables.map((item) => item.rows));
+    expect(after.tables.map((item) => item.schema_hash)).toEqual(
+      before.tables.map((item) => item.schema_hash),
+    );
+  });
+
+  it.each(["backed_up", "previous", "live", "complete"])(
+    "recovers durable state after abrupt process exit at %s",
+    async (phase) => {
+      const bank = await fixture(1);
+      const child = spawnSync(
+        process.execPath,
+        [
+          "--import",
+          "tsx",
+          "--input-type=module",
+          "--eval",
+          `
+      import { migrateTenant } from './scripts/embedding-migration/migrate.ts';
+      import { FakeEmbeddingClient } from './src/embeddings/index.ts';
+      const options = JSON.parse(process.env.BORG_TEST_MIGRATION_OPTIONS);
+      const stop = process.env.BORG_TEST_MIGRATION_STOP;
+      await migrateTenant(options, {
+        client: new FakeEmbeddingClient(options.target.dimensions, options.target.model),
+        progress: event => { if (event.phase === stop) process.exit(99); },
+        afterRename: step => { if (step === stop) process.exit(99); },
+      });
+    `,
+        ],
+        {
+          encoding: "utf8",
+          timeout: 15_000,
+          env: {
+            ...process.env,
+            BORG_TEST_MIGRATION_OPTIONS: JSON.stringify(bank.options),
+            BORG_TEST_MIGRATION_STOP: phase,
+          },
+        },
+      );
+      expect(child.status, child.stderr).toBe(99);
+      expect(existsSync(join(bank.tenantDir, EMBEDDING_FENCE_FILE))).toBe(true);
+      const result = await migrateTenant(
+        { ...bank.options, resume: true },
+        { client: bank.client },
+      );
+      expect(result.complete).toBe(true);
+      expect(existsSync(join(bank.tenantDir, EMBEDDING_FENCE_FILE))).toBe(false);
+      expect(await migrateTenant({ ...bank.options, verifyOnly: true })).toMatchObject({
+        complete: true,
+      });
+    },
+  );
 
   it("embeds with bounded concurrent batches", async () => {
     const bank = await fixture(3);

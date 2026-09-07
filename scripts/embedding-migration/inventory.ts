@@ -10,7 +10,10 @@ import { createOpenQuestionsTableSchema } from "../../src/memory/self/open-quest
 import { createActionRecordsTableSchema } from "../../src/memory/actions/repository.js";
 import { createObservedEventsTableSchema } from "../../src/memory/observed-events/repository.js";
 import { createImagePerceptionTableSchema } from "../../src/attachments/perception.js";
-import { buildEpisodeEmbeddingText } from "../../src/memory/episodic/protected-lines.js";
+import {
+  buildEpisodeEmbeddingText,
+  consolidationEmbeddingInputSchema,
+} from "../../src/memory/episodic/protected-lines.js";
 import { buildNodeEmbeddingText } from "../../src/memory/semantic/embedding-text.js";
 import { semanticObservationMetadataSchema } from "../../src/memory/semantic/types.js";
 import {
@@ -20,7 +23,7 @@ import {
 import { serializedEmbeddingPaths } from "../../src/embeddings/serialized.js";
 import { openReadOnlyDatabase, type SqliteDatabase } from "../../src/storage/sqlite/index.js";
 import { vectorField } from "../../src/storage/lancedb/index.js";
-import { toFloat32Array } from "../../src/storage/codecs.js";
+import { quoteSqlString, toFloat32Array } from "../../src/storage/codecs.js";
 import {
   fingerprintCanonicalValue,
   sha256Bytes,
@@ -90,7 +93,11 @@ export type BankInventory = {
   problems: string[];
 };
 
-export function migrationRowText(name: VectorTableName, row: Record<string, unknown>): string {
+export function migrationRowText(
+  name: VectorTableName,
+  row: Record<string, unknown>,
+  legacyProtectedSourceTexts?: readonly string[],
+): string {
   const strings = (value: unknown): string[] =>
     z.array(z.string()).parse(typeof value === "string" ? JSON.parse(value) : (value ?? []));
   if (name === "episodes") {
@@ -100,6 +107,15 @@ export function migrationRowText(name: VectorTableName, row: Record<string, unkn
       tags: strings(row.tags),
       participants: strings(row.participants),
       episode_kind: z.string().nullable().optional().parse(row.episode_kind),
+      consolidation_embedding_input: consolidationEmbeddingInputSchema
+        .nullable()
+        .optional()
+        .parse(
+          typeof row.consolidation_embedding_input === "string"
+            ? JSON.parse(row.consolidation_embedding_input)
+            : row.consolidation_embedding_input,
+        ),
+      legacyProtectedSourceTexts,
     });
   }
   if (name === "semantic_nodes") {
@@ -129,6 +145,7 @@ export function migrationRowText(name: VectorTableName, row: Record<string, unkn
 export function migrationRowIdentity(
   name: VectorTableName,
   row: Record<string, unknown>,
+  text = migrationRowText(name, row),
 ): RowIdentity {
   const { embedding: _embedding, ...fields } = row;
   return {
@@ -136,7 +153,7 @@ export function migrationRowIdentity(
       .string()
       .min(1)
       .parse(row[name === "image_perception_embeddings" ? "payload_id" : "id"]),
-    text_hash: sha256Bytes(Buffer.from(migrationRowText(name, row))),
+    text_hash: sha256Bytes(Buffer.from(text)),
     fields_hash: fingerprintCanonicalValue(fields).canonicalSha256,
   };
 }
@@ -191,6 +208,51 @@ export async function* migrationRows(
           errorCode: "EMBEDDING_VECTOR_INVALID",
         });
     yield rows;
+  }
+}
+
+/** Resolve archived raw lineage directly, without the production list/get visibility filters. */
+export async function* migrationRecords(
+  table: Table,
+  name: VectorTableName,
+  batchSize: number,
+  includeVectors = false,
+  sourceTable = table,
+): AsyncGenerator<{ row: Record<string, unknown>; text: string; identity: RowIdentity }[]> {
+  for await (const rows of migrationRows(table, batchSize, includeVectors)) {
+    const records = [];
+    for (const row of rows) {
+      let sources: string[] | undefined;
+      if (
+        name === "episodes" &&
+        row.episode_kind === "consolidation_version" &&
+        row.consolidation_embedding_input == null
+      ) {
+        const ids = z.array(z.string()).parse(JSON.parse(String(row.lineage_derived_from ?? "[]")));
+        const rawRows =
+          ids.length === 0
+            ? []
+            : await sourceTable
+                .query()
+                .where(`id IN (${ids.map(quoteSqlString).join(", ")})`)
+                .select(["id", "narrative"])
+                .limit(ids.length)
+                .toArray();
+        const byId = new Map(
+          rawRows.map((source) => [String(source.id), z.string().parse(source.narrative)]),
+        );
+        if (byId.size !== new Set(ids).size || rawRows.length !== byId.size)
+          throw new EmbeddingBankError(`Cannot recover raw consolidation sources for ${row.id}`, {
+            code: "EMBEDDING_TEXT_UNRECOVERABLE",
+          });
+        // Production records derived_from in the same oldest-first order used
+        // for protected source lines. The persisted lineage retains that order.
+        sources = ids.map((id) => byId.get(id)!);
+      }
+      const text = migrationRowText(name, row, sources);
+      records.push({ row, text, identity: migrationRowIdentity(name, row, text) });
+    }
+    yield records;
   }
 }
 
@@ -255,9 +317,8 @@ export async function inventoryBank(
         }
         const seen = new Set<string>();
         if (table)
-          for await (const rows of migrationRows(table, batchSize))
-            for (const row of rows) {
-              const identity = migrationRowIdentity(definition.name, row);
+          for await (const records of migrationRecords(table, definition.name, batchSize))
+            for (const { row, identity } of records) {
               if (seen.has(identity.id))
                 result.problems.push(`Duplicate id ${definition.name}/${identity.id}`);
               seen.add(identity.id);

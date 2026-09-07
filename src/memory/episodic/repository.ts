@@ -82,6 +82,7 @@ type EpisodeRow = {
   episode_kind: string | null;
   consolidation_family_id: string | null;
   consolidation_coverage_hash: string | null;
+  consolidation_embedding_input: string | null;
   embedding: number[];
   created_at: number;
   updated_at: number;
@@ -445,6 +446,10 @@ function toEpisodeRow(episode: Episode): EpisodeRow {
     episode_kind: normalizedEpisodeKind(normalized),
     consolidation_family_id: normalizedConsolidationFamilyId(normalized),
     consolidation_coverage_hash: normalizedConsolidationCoverageHash(normalized),
+    consolidation_embedding_input:
+      normalized.consolidation_embedding_input == null
+        ? null
+        : serializeJsonValue(normalized.consolidation_embedding_input),
     embedding: Array.from(normalized.embedding),
     created_at: normalized.created_at,
     updated_at: normalized.updated_at,
@@ -575,6 +580,10 @@ function fromEpisodeRow(row: Record<string, unknown>): Episode {
     episode_kind: episodeKindFromRow(row),
     consolidation_family_id: consolidationFamilyIdFromRow(row),
     consolidation_coverage_hash: consolidationCoverageHashFromRow(row),
+    consolidation_embedding_input:
+      row.consolidation_embedding_input == null
+        ? null
+        : JSON.parse(String(row.consolidation_embedding_input)),
     embedding: toFloat32Array(row.embedding, EPISODE_VECTOR_CODEC),
     created_at: Number(row.created_at),
     updated_at: Number(row.updated_at),
@@ -720,6 +729,7 @@ export function createEpisodesTableSchema(dimensions: number) {
     utf8Field("episode_kind", true),
     utf8Field("consolidation_family_id", true),
     utf8Field("consolidation_coverage_hash", true),
+    utf8Field("consolidation_embedding_input", true),
     vectorField("embedding", dimensions),
     float64Field("created_at"),
     float64Field("updated_at"),

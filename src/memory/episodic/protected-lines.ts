@@ -1,3 +1,12 @@
+import { z } from "zod";
+import { EmbeddingBankError } from "../../embeddings/bank-profile.js";
+
+export const consolidationEmbeddingInputSchema = z.object({
+  synthesized_narrative: z.string(),
+  protected_source_lines: z.array(z.string()),
+});
+export type ConsolidationEmbeddingInput = z.infer<typeof consolidationEmbeddingInputSchema>;
+
 const OUTCOME_EPISODE_TOKEN_PATTERN = /OUTCOME fp=\S+/u;
 const PROTECTED_EPISODE_TOKEN_PATTERNS = [
   OUTCOME_EPISODE_TOKEN_PATTERN,
@@ -156,15 +165,67 @@ export function buildEpisodeEmbeddingText(input: {
   tags: readonly string[];
   participants?: readonly string[];
   episode_kind?: string | null;
+  consolidation_embedding_input?: ConsolidationEmbeddingInput | null;
+  legacyProtectedSourceTexts?: readonly string[];
 }): string {
   if (input.episode_kind === "consolidation_version") {
-    return buildConsolidationEpisodeEmbeddingText({
-      title: input.title,
-      synthesizedNarrative: input.narrative,
-      protectedSourceTexts: [input.narrative],
-      tags: input.tags,
-      participants: input.participants ?? [],
-    });
+    const recorded = input.consolidation_embedding_input;
+    const render = (narrative: string, sources: readonly string[]) =>
+      buildConsolidationEpisodeEmbeddingText({
+        title: input.title,
+        synthesizedNarrative: narrative,
+        protectedSourceTexts: sources,
+        tags: input.tags,
+        participants: input.participants ?? [],
+      });
+    if (recorded != null) {
+      if (
+        preserveProtectedEpisodeTokenLines(
+          recorded.synthesized_narrative,
+          recorded.protected_source_lines,
+        ) !== input.narrative.trim()
+      )
+        throw new EmbeddingBankError(
+          "Consolidation embedding input no longer matches its narrative",
+          { code: "EMBEDDING_TEXT_UNRECOVERABLE" },
+        );
+      return render(recorded.synthesized_narrative, recorded.protected_source_lines);
+    }
+    const sources = input.legacyProtectedSourceTexts;
+    if (sources === undefined) {
+      if (collectProtectedEpisodeTokenLines([input.narrative]).length === 0)
+        return render(input.narrative, []);
+      throw new EmbeddingBankError(
+        "Legacy consolidation requires its raw source narratives to recover embedding input",
+        { code: "EMBEDDING_TEXT_UNRECOVERABLE" },
+      );
+    }
+    // Invert only the mechanical append operation. Every possible original
+    // prefix must reproduce the persisted narrative. Accept only if all such
+    // prefixes produce the exact same production embedding input.
+    const persisted = input.narrative.trim();
+    let prefix = persisted;
+    let recovered: string | undefined;
+    const protectedLines = collectProtectedEpisodeTokenLines(sources);
+    for (let appended = 0; appended <= protectedLines.length; appended += 1) {
+      if (preserveProtectedEpisodeTokenLines(prefix, sources) === persisted) {
+        const text = render(prefix, sources);
+        if (recovered !== undefined && recovered !== text)
+          throw new EmbeddingBankError(
+            "Legacy consolidation embedding input is ambiguous; recover the original synthesized narrative before migration",
+            { code: "EMBEDDING_TEXT_UNRECOVERABLE" },
+          );
+        recovered = text;
+      }
+      const boundary = prefix.lastIndexOf("\n");
+      if (prefix.length === 0) break;
+      prefix = boundary < 0 ? "" : prefix.slice(0, boundary).trimEnd();
+    }
+    if (recovered === undefined)
+      throw new EmbeddingBankError("Legacy consolidation sources do not reproduce its narrative", {
+        code: "EMBEDDING_TEXT_UNRECOVERABLE",
+      });
+    return recovered;
   }
   return `${input.title}\n${input.narrative}\n${input.tags.join(" ")}`;
 }

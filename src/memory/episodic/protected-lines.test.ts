@@ -28,6 +28,7 @@ describe("protected episode token lines", () => {
         participants,
         episode_kind: "consolidation_version",
         narrative: preserveProtectedEpisodeTokenLines(prose, [source]),
+        legacyProtectedSourceTexts: [source],
       }),
     ).toBe(
       buildConsolidationEpisodeEmbeddingText({
@@ -37,6 +38,49 @@ describe("protected episode token lines", () => {
         synthesizedNarrative: prose,
         protectedSourceTexts: [source],
       }),
+    );
+  });
+
+  it("rejects ambiguous legacy inline protocol prose instead of adding it to the embedding", () => {
+    const source = "I corrected the report. OUTCOME fp=legacy-correction decision=filter-by-author";
+    const prose = "The report was corrected.";
+    const persisted = preserveProtectedEpisodeTokenLines(prose, [source]);
+    expect(persisted).toBe(preserveProtectedEpisodeTokenLines(`${prose}\n${source}`, [source]));
+    expect(() =>
+      buildEpisodeEmbeddingText({
+        title: "Correction",
+        narrative: persisted,
+        tags: [],
+        episode_kind: "consolidation_version",
+        legacyProtectedSourceTexts: [source],
+      }),
+    ).toThrow("Legacy consolidation embedding input is ambiguous");
+  });
+
+  it("uses recorded source order and refuses stale synthesized input", () => {
+    const source = ["OUTCOME fp=second", "OUTCOME fp=first"];
+    const prose = "A correction.\nOUTCOME fp=first";
+    const input = {
+      title: "Correction",
+      narrative: preserveProtectedEpisodeTokenLines(prose, source),
+      tags: [],
+      episode_kind: "consolidation_version",
+      consolidation_embedding_input: {
+        synthesized_narrative: prose,
+        protected_source_lines: source,
+      },
+    };
+    expect(buildEpisodeEmbeddingText(input)).toBe(
+      buildConsolidationEpisodeEmbeddingText({
+        title: input.title,
+        synthesizedNarrative: prose,
+        protectedSourceTexts: source,
+        tags: [],
+        participants: [],
+      }),
+    );
+    expect(() => buildEpisodeEmbeddingText({ ...input, narrative: "Changed" })).toThrow(
+      "no longer matches",
     );
   });
 

@@ -16,7 +16,11 @@ import { createReadStream } from "node:fs";
 import { z } from "zod";
 import { openReadOnlyDatabase } from "../../src/storage/sqlite/index.js";
 import { readJsonFile, syncDirectory, writeJsonFileAtomic } from "../../src/util/atomic-write.js";
-import { EmbeddingBankError } from "../../src/embeddings/bank-profile.js";
+import {
+  EMBEDDING_ACCESS_FILE,
+  EMBEDDING_FENCE_FILE,
+  EmbeddingBankError,
+} from "../../src/embeddings/bank-profile.js";
 import { fingerprintCanonicalValue } from "../../src/cognition/deliberation/request-fingerprint.js";
 import { inventoryBank, type BankInventory } from "./inventory.js";
 
@@ -26,6 +30,18 @@ const backupMarkerSchema = z.object({
   inventory_hash: z.string().length(64),
   files: z.record(z.string(), z.string().length(64)),
 });
+
+export type DiskSpaceReader = (path: string) => { bavail: number; bsize: number };
+
+// These describe a particular migration attempt, never the bank being restored.
+function isMigrationBookkeeping(name: string): boolean {
+  return (
+    name === ".embedding-backup.json" ||
+    name.startsWith(".embedding-migration") ||
+    name === EMBEDDING_ACCESS_FILE ||
+    name === EMBEDDING_FENCE_FILE
+  );
+}
 
 async function fileChecksum(path: string): Promise<string> {
   const hash = createHash("sha256");
@@ -51,33 +67,47 @@ export function migrationHeadroom(
   backupDir: string,
   inventory: BankInventory,
   dimensions: number,
+  work: { backup?: boolean; remainingRows?: number; remainingTables?: readonly string[] } = {},
+  diskSpace: DiskSpaceReader = statfsSync,
 ): { bank_bytes: number; staging_bytes: number; backup_bytes: number; available_bytes: number } {
   const files = [...bankFiles(tenantDir)];
   const bankBytes = files.reduce((sum, file) => sum + file.bytes, 0);
-  const vectorBytes = inventory.tables.reduce(
-    (sum, table) => sum + table.rows.length * dimensions * 4,
-    0,
+  const totalRows = inventory.tables.reduce((sum, table) => sum + table.rows.length, 0);
+  const remainingRows = work.remainingRows ?? totalRows;
+  const vectorBytes = remainingRows * dimensions * 4;
+  // Keep a whole-table allowance until that table is complete: the last row
+  // may be much larger than the average, and Lance can rewrite its fragment.
+  const remainingTables = new Set(
+    work.remainingTables ?? inventory.tables.map((table) => table.name),
   );
-  // Conservative room for staging fragments/checkpoints and a full backup.
-  // Previous generations are deliberately included in bankBytes.
-  const stagingBytes = 2 * bankBytes + 3 * vectorBytes + 64 * 1024 * 1024;
+  const sourceBytes = inventory.tables.reduce((sum, table) => {
+    const directory = join(tenantDir, "lancedb", `${table.name}.lance`);
+    return (
+      sum +
+      (remainingTables.has(table.name) && existsSync(directory)
+        ? [...bankFiles(directory)].reduce((bytes, file) => bytes + file.bytes, 0)
+        : 0)
+    );
+  }, 0);
+  const stagingBytes = 2 * sourceBytes + 3 * vectorBytes + 64 * 1024 * 1024;
+  const backupBytes = work.backup === false ? 0 : bankBytes;
   let existingBackupParent = backupDir;
   while (!existsSync(existingBackupParent)) existingBackupParent = dirname(existingBackupParent);
-  const local = statfsSync(tenantDir);
-  const remote = statfsSync(existingBackupParent);
+  const local = diskSpace(tenantDir);
+  const remote = diskSpace(existingBackupParent);
   const localFree = local.bavail * local.bsize;
   const remoteFree = remote.bavail * remote.bsize;
   const sameDevice = lstatSync(tenantDir).dev === lstatSync(existingBackupParent).dev;
-  if (localFree < stagingBytes + (sameDevice ? bankBytes : 0) || remoteFree < bankBytes) {
+  if (localFree < stagingBytes + (sameDevice ? backupBytes : 0) || remoteFree < backupBytes) {
     throw new EmbeddingBankError(
-      `Insufficient disk headroom: staging=${stagingBytes}, backup=${bankBytes}, local available=${localFree}, backup available=${remoteFree}`,
+      `Insufficient disk headroom: staging=${stagingBytes}, backup=${backupBytes}, local available=${localFree}, backup available=${remoteFree}`,
       { code: "EMBEDDING_MIGRATION_DISK_FULL" },
     );
   }
   return {
     bank_bytes: bankBytes,
     staging_bytes: stagingBytes,
-    backup_bytes: bankBytes,
+    backup_bytes: backupBytes,
     available_bytes: localFree,
   };
 }
@@ -87,6 +117,7 @@ export async function backupTenant(
   destination: string,
   inventory: BankInventory,
   targetDims: number,
+  diskSpace?: DiskSpaceReader,
 ): Promise<void> {
   const markerPath = join(destination, ".embedding-backup.json");
   const inventoryHash = fingerprintCanonicalValue(inventory).canonicalSha256;
@@ -104,6 +135,7 @@ export async function backupTenant(
       code: "EMBEDDING_MIGRATION_BACKUP_INVALID",
     });
   // A fresh path for each incomplete attempt; never delete a partial backup.
+  migrationHeadroom(tenantDir, destination, inventory, targetDims, {}, diskSpace);
   const partial = `${destination}.partial-${process.pid}-${Date.now()}`;
   mkdirSync(dirname(destination), { recursive: true, mode: 0o700 });
   const sqliteFiles = new Set(["borg.db", "borg.db-wal", "borg.db-shm", "borg.db-journal"]);
@@ -112,7 +144,11 @@ export async function backupTenant(
     errorOnExist: true,
     force: false,
     preserveTimestamps: true,
-    filter: (path) => !(dirname(path) === tenantDir && sqliteFiles.has(basename(path))),
+    filter: (path) =>
+      !(
+        dirname(path) === tenantDir &&
+        (sqliteFiles.has(basename(path)) || isMigrationBookkeeping(basename(path)))
+      ),
   });
   const db = openReadOnlyDatabase(join(tenantDir, "borg.db"));
   try {

@@ -1,3 +1,5 @@
+import { consolidationEmbeddingInputSchema } from "./protected-lines.js";
+
 import { z } from "zod";
 
 import { emotionalArcSchema, type EmotionalArc } from "../affective/types.js";
@@ -69,6 +71,7 @@ const episodeShape = z.object({
   episode_kind: episodeKindSchema.optional(),
   consolidation_family_id: consolidationFamilyIdSchema.nullable().optional(),
   consolidation_coverage_hash: z.string().min(1).nullable().optional(),
+  consolidation_embedding_input: consolidationEmbeddingInputSchema.nullable().optional(),
   embedding: float32ArraySchema,
   created_at: z.number().finite(),
   updated_at: z.number().finite(),

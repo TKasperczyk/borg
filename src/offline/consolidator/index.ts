@@ -1,3 +1,8 @@
+import {
+  collectProtectedEpisodeTokenLines,
+  consolidationEmbeddingInputSchema,
+} from "../../memory/episodic/protected-lines.js";
+
 import { z } from "zod";
 
 import {
@@ -88,6 +93,7 @@ const serializableEpisodeSchema = z.object({
   episode_kind: episodeKindSchema.optional(),
   consolidation_family_id: consolidationFamilyIdSchema.nullable().optional(),
   consolidation_coverage_hash: z.string().min(1).nullable().optional(),
+  consolidation_embedding_input: consolidationEmbeddingInputSchema.nullable().optional(),
   embedding: z.array(z.number().finite()),
   created_at: z.number().finite(),
   updated_at: z.number().finite(),
@@ -769,6 +775,12 @@ async function buildMergedEpisode(
       episode_kind: "consolidation_version",
       consolidation_family_id: candidate.familyId,
       consolidation_coverage_hash: candidate.coverageHash,
+      consolidation_embedding_input: {
+        synthesized_narrative: merged.narrative,
+        protected_source_lines: collectProtectedEpisodeTokenLines(
+          rawEpisodes.map((episode) => episode.narrative),
+        ),
+      },
       embedding,
       created_at: nowMs,
       updated_at: nowMs,

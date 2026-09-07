@@ -16,6 +16,7 @@ import {
   type OfflineTestHarness,
 } from "../test-support.js";
 import { ConsolidatorProcess } from "./index.js";
+import { migrationRowText } from "../../../scripts/embedding-migration/inventory.js";
 
 const CONSOLIDATION_TOOL_NAME = "EmitConsolidation";
 
@@ -68,6 +69,45 @@ describe("consolidator process", () => {
       await cleanup.pop()?.();
     }
   });
+
+  it.each([false, true])(
+    "persists byte-identical migration input from the real writer with inline legacy lines (copied=%s)",
+    async (copied) => {
+      const legacy =
+        "I corrected the report. OUTCOME fp=legacy-correction decision=filter-by-author";
+      const synthesized = `The report was corrected.${copied ? `\n${legacy}` : ""}`;
+      const client = new TestEmbeddingClient();
+      const spy = vi.spyOn(client, "embed");
+      const harness = await createOfflineTestHarness({
+        embeddingClient: client,
+        llmClient: new FakeLLMClient({
+          responses: [createConsolidationResponse("Reporting correction", synthesized)],
+        }),
+      });
+      cleanup.push(harness.cleanup);
+      for (const [index, narrative] of [legacy, "The correction was verified."].entries()) {
+        await harness.episodicRepository.createEpisode(
+          createEpisodeFixture(
+            {
+              narrative,
+              created_at: 10_000 + index,
+              updated_at: 10_000 + index,
+            },
+            [0, 1, 0, 0],
+          ),
+        );
+      }
+      const result = await createProcess(harness).run(harness.createContext(), { dryRun: false });
+      expect(result.errors).toEqual([]);
+      const family = harness.episodicRepository.listConsolidationFamilies()[0]!;
+      const stored = await harness.episodicRepository.get(family.current_version_episode_id);
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(stored?.consolidation_embedding_input?.synthesized_narrative).toBe(synthesized);
+      expect(migrationRowText("episodes", stored!)).toBe(spy.mock.calls[0]![0]);
+      const serialized = JSON.parse(JSON.stringify(stored));
+      expect(migrationRowText("episodes", serialized)).toBe(spy.mock.calls[0]![0]);
+    },
+  );
 
   it("creates a family version, hides covered raws without archiving them, and supports reversal", async () => {
     const outcomeLine = "OUTCOME fp=consolidation-receipt role=planner tenant=tenant_42";

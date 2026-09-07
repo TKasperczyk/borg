@@ -42,4 +42,34 @@ describe("serialized embedding materialization", () => {
     );
     expect(embed).toHaveBeenCalledWith("label\nreplacement\nalias");
   });
+
+  it("preserves recorded consolidation input in saved plans and rejects ambiguous legacy payloads", async () => {
+    const client = new FakeEmbeddingClient(2);
+    const embed = vi.spyOn(client, "embed");
+    const line = "I corrected the report. OUTCOME fp=legacy-correction decision=filter-by-author";
+    const episode = {
+      title: "Correction",
+      narrative: `The report was corrected.\n${line}`,
+      episode_kind: "consolidation_version",
+      tags: [],
+      embedding: [1, 0, 0, 0],
+      consolidation_embedding_input: {
+        synthesized_narrative: "The report was corrected.",
+        protected_source_lines: [line],
+      },
+    };
+    const refreshed = await refreshSerializedEmbeddings({ merged_episode: episode }, client);
+    expect(refreshed).toMatchObject({
+      merged_episode: { consolidation_embedding_input: episode.consolidation_embedding_input },
+    });
+    expect(embed).toHaveBeenCalledWith(
+      "Correction\nThe report was corrected.\nOUTCOME fp=legacy-correction\n\n",
+    );
+    embed.mockClear();
+    await expect(
+      refreshSerializedEmbeddings({ ...episode, consolidation_embedding_input: undefined }, client),
+    ).rejects.toMatchObject({ code: "EMBEDDING_TEXT_UNRECOVERABLE" });
+    expect(embed).not.toHaveBeenCalled();
+    expect(episode.embedding).toEqual([1, 0, 0, 0]);
+  });
 });

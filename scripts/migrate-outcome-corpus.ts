@@ -751,6 +751,12 @@ function buildRollupEpisode(
     episode_kind: "consolidation_version",
     consolidation_family_id: group.plannedFamilyId ?? createConsolidationFamilyId(),
     consolidation_coverage_hash: group.coverageHash,
+    consolidation_embedding_input: {
+      synthesized_narrative: group.prose,
+      protected_source_lines: collectProtectedEpisodeTokenLines(
+        rawEpisodes.map((episode) => episode.narrative),
+      ),
+    },
     embedding,
     created_at: nowMs,
     updated_at: nowMs,
@@ -1808,7 +1814,14 @@ async function reembedVersion(
     throw new Error(`OUTCOME version ${item.episode.id} has no stats row before re-embedding`);
   }
 
-  const next = { ...current, embedding };
+  const next = {
+    ...current,
+    embedding,
+    consolidation_embedding_input: {
+      synthesized_narrative: item.episode.narrative,
+      protected_source_lines: collectProtectedEpisodeTokenLines([item.episode.narrative]),
+    },
+  };
   await dependencies.episodicRepository.upsertEpisodeBodyPreservingStats(next);
 
   try {
