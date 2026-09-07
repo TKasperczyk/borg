@@ -1216,6 +1216,7 @@ describe("storage-only embedding migration", () => {
       await vi.advanceTimersByTimeAsync(FILE_LOCK_STALE_MS * 3);
       for (const path of paths) {
         expect(readJsonFile<{ heartbeat: number }>(path)?.heartbeat).toBe(Date.now());
+        expect(existsSync(`${path}${FILE_LOCK_GUARD_SUFFIX}-journal`)).toBe(true);
         await expect(acquireFileLockLease(path, { timeoutMs: 0 })).rejects.toThrow("Timed out");
         // A different process must still see the kernel lock after backup. A
         // same-process SQLite connection alone cannot detect accidental fd-close
@@ -1247,7 +1248,7 @@ describe("storage-only embedding migration", () => {
         join(String(report.backup), ".embedding-backup.json"),
       )!;
       expect(
-        Object.keys(manifest.files).some((name) => name.endsWith(FILE_LOCK_GUARD_SUFFIX)),
+        Object.keys(manifest.files).some((name) => name.includes(FILE_LOCK_GUARD_SUFFIX)),
       ).toBe(false);
       for (const path of paths) expect(existsSync(path)).toBe(false);
     } finally {

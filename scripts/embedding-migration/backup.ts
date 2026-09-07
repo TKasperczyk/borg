@@ -148,9 +148,10 @@ export async function backupTenant(
     force: false,
     preserveTimestamps: true,
     filter: (path) =>
-      // Empty advisory-lock anchors are process state, not backup data. Opening
-      // and closing one via fs in this process would release its POSIX lock.
+      // Advisory-lock anchors and their write-probe journals are process state.
+      // Opening/closing an anchor via fs here would release its POSIX lock.
       !basename(path).endsWith(FILE_LOCK_GUARD_SUFFIX) &&
+      !basename(path).endsWith(`${FILE_LOCK_GUARD_SUFFIX}-journal`) &&
       !(
         dirname(path) === tenantDir &&
         (sqliteFiles.has(basename(path)) || isMigrationBookkeeping(basename(path)))
