@@ -223,6 +223,8 @@ export function createTestConfig(
     },
     embedding: {
       ...DEFAULT_CONFIG.embedding,
+      // Storage fixtures created without Borg.open contain these fake vectors.
+      legacySourceModel: "fake-embed",
       ...overrides.embedding,
       dims: embeddingDimensions,
     },

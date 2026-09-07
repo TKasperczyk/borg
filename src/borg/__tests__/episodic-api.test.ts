@@ -109,6 +109,7 @@ describe("Borg", () => {
       clock,
       embeddingDimensions: 4,
       embeddingClient: new ScriptedEmbeddingClient(),
+      embeddingLegacySourceModel: "fake-embed",
       llmClient: new FakeLLMClient(),
     });
 
@@ -218,6 +219,7 @@ describe("Borg", () => {
       clock,
       embeddingDimensions: 4,
       embeddingClient: new ScriptedEmbeddingClient(),
+      embeddingLegacySourceModel: "fake-embed",
       llmClient: new FakeLLMClient(),
     });
 
@@ -314,6 +316,7 @@ describe("Borg", () => {
       clock,
       embeddingDimensions: 4,
       embeddingClient: new ScriptedEmbeddingClient(),
+      embeddingLegacySourceModel: "fake-embed",
       llmClient: new FakeLLMClient(),
     });
 

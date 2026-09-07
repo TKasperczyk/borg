@@ -18,6 +18,7 @@ import { createEntityId } from "../util/ids.js";
 import { CorrectionService, type CorrectionServiceOptions } from "./service.js";
 
 class TestEmbeddingClient implements EmbeddingClient {
+  readonly profile = { model: "fake-embed", dimensions: 4 };
   async embed(): Promise<Float32Array> {
     return Float32Array.from([1, 0, 0, 0]);
   }
