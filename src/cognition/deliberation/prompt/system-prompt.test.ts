@@ -4155,6 +4155,28 @@ describe("buildBaseSystemPrompt", () => {
 
     expect(bareWithSpan).toContain("none of them carrying a recorded failure");
     expect(bareWithSpan).toContain("they are one unbroken run");
+
+    // A single failure in the window cannot be a run, and the between-count
+    // that would say so is empty by construction rather than by observation.
+    const sole = buildPrompt(
+      {
+        total: 1,
+        without_detail: 0,
+        reasons: [
+          {
+            detail: "Autonomous preparation failed: Timed out after 30000ms",
+            count: 1,
+            triggers: [{ trigger: "scheduled_reflection", count: 1 }],
+          },
+        ],
+      },
+      { other_outcomes_between: 0, extends_before_window: true },
+    );
+
+    expect(sole).toContain(
+      "Where that errored wake sits: it is the only one in this window, so its first and last are the same row and nothing can fall between them -- the interleaving count is empty by construction here, and neither a run nor a scatter is readable from one row; the wake immediately before it also errored, and that wake is outside this window -- so the one inside is the tail of a run that starts earlier, and a rate taken over this window is a rate over that tail.",
+    );
+    expect(sole).not.toContain("one unbroken run");
   });
 
   it("splits the silent-wake count by recorded ending and names the classes that can appear", () => {
@@ -4335,6 +4357,46 @@ describe("buildBaseSystemPrompt", () => {
     expect(bareWithSpan).toContain(
       "no earlier wake is retained, so whether the silences start at the window edge or merely become visible there is not answerable from here",
     );
+
+    // One silence in the window is the case the interleaving read cannot serve:
+    // first and last are the same row, so the between-count is zero by
+    // construction and the plural wording would call an isolated closure an
+    // unbroken run -- the reading toward disposition this line exists against.
+    const sole = buildPrompt(
+      {
+        total: 1,
+        without_detail: 0,
+        reasons: [
+          {
+            detail: "deliberate-silence: finalizer_no_output",
+            count: 1,
+            triggers: [{ trigger: "open_question_dormant", count: 1 }],
+          },
+        ],
+      },
+      { other_outcomes_between: 0, extends_before_window: false },
+    );
+
+    expect(sole).toContain(
+      "Where that silent wake sits: it is the only one in this window, so its first and last are the same row and nothing can fall between them -- the interleaving count is empty by construction here, and neither a run nor a scatter is readable from one row; the wake immediately before it was not silent, so it is not the tail of anything the table retains.",
+    );
+    expect(sole).not.toContain("one unbroken run");
+
+    // The edge is the half that still carries evidence at one row: a lone
+    // in-window silence preceded by another is the tail of a longer stretch.
+    const soleClipped = buildPrompt(
+      {
+        total: 1,
+        without_detail: 1,
+        reasons: [],
+      },
+      { other_outcomes_between: 0, extends_before_window: true },
+    );
+
+    expect(soleClipped).toContain(
+      "the wake immediately before it was also silent, and that wake is outside this window -- so the one inside is the tail of a stretch that starts earlier, and how far back that stretch runs is not on this page",
+    );
+    expect(soleClipped).not.toContain("one unbroken run");
 
     expect(buildPrompt({ total: 0, without_detail: 0, reasons: [] })).toContain(
       "Silent wakes in that window: none, so there is no silence to attribute.",

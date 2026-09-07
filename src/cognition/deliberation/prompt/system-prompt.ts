@@ -2334,10 +2334,20 @@ function renderWakeReasonLine(reason: AutonomyWakeOutcomeDetailTally["reasons"][
  * reading about the entity: a scatter of closures and a consecutive stretch of
  * them are the same number and a different fact, and only the second has the
  * shape of a disposition.
+ *
+ * A bucket holding one row is the case the interleaving read cannot serve: its
+ * first and last are the same row, so nothing can fall between them and the
+ * count is zero by construction rather than by observation. Rendered through
+ * the plural wording that produced the strongest available reading -- one
+ * unbroken run -- on a single isolated wake, which is the exact misreading
+ * toward disposition this line exists to prevent. The singleton copy states the
+ * count instead and keeps the edge clause, which is the half that still carries
+ * evidence at one row.
  */
 const WAKE_SPAN_BUCKETS = {
   error: {
     label: "errored wakes",
+    singular: "errored wake",
     interleaved: "the failures are interleaved rather than one run",
     edgeUnknown:
       "no earlier wake is retained, so whether the failures start at the window edge or merely become visible there is not answerable from here",
@@ -2345,9 +2355,16 @@ const WAKE_SPAN_BUCKETS = {
       "the wake immediately before the first of them also errored, and that wake is outside this window -- the run started earlier, so any rate taken over this window is a slice of it and the trigger mix of that slice is whatever was firing when the edge fell",
     beginsInside:
       "the wake immediately before the first of them did not error, so the run does begin inside this window",
+    singleEdgeUnknown:
+      "no earlier wake is retained, so whether it is the visible edge of a longer run or the whole of one is not answerable from here",
+    singleExtendsBefore:
+      "the wake immediately before it also errored, and that wake is outside this window -- so the one inside is the tail of a run that starts earlier, and a rate taken over this window is a rate over that tail",
+    singleBeginsInside:
+      "the wake immediately before it did not error, so it is not the tail of anything the table retains",
   },
   silent: {
     label: "silent wakes",
+    singular: "silent wake",
     interleaved: "the silences are interleaved rather than one stretch",
     edgeUnknown:
       "no earlier wake is retained, so whether the silences start at the window edge or merely become visible there is not answerable from here",
@@ -2355,18 +2372,38 @@ const WAKE_SPAN_BUCKETS = {
       "the wake immediately before the first of them was also silent, and that wake is outside this window -- the stretch started earlier, so reading these as a run of chosen quiet reads a slice of a longer one, and the endings mixed into the part outside the window are not shown here",
     beginsInside:
       "the wake immediately before the first of them was not silent, so the stretch does begin inside this window",
+    singleEdgeUnknown:
+      "no earlier wake is retained, so whether it is the visible edge of a longer stretch or the whole of one is not answerable from here",
+    singleExtendsBefore:
+      "the wake immediately before it was also silent, and that wake is outside this window -- so the one inside is the tail of a stretch that starts earlier, and how far back that stretch runs is not on this page",
+    singleBeginsInside:
+      "the wake immediately before it was not silent, so it is not the tail of anything the table retains",
   },
 } as const;
 
 function renderWakeOutcomeSpanLine(
   span: AutonomyWakeOutcomeSpan | null,
   bucket: keyof typeof WAKE_SPAN_BUCKETS,
+  total: number,
 ): string[] {
   if (span === null) {
     return [];
   }
 
   const copy = WAKE_SPAN_BUCKETS[bucket];
+
+  if (total === 1) {
+    const soleBefore =
+      span.extends_before_window === null
+        ? copy.singleEdgeUnknown
+        : span.extends_before_window
+          ? copy.singleExtendsBefore
+          : copy.singleBeginsInside;
+
+    return [
+      `Where that ${copy.singular} sits: it is the only one in this window, so its first and last are the same row and nothing can fall between them -- the interleaving count is empty by construction here, and neither a run nor a scatter is readable from one row; ${soleBefore}.`,
+    ];
+  }
   const between =
     span.other_outcomes_between === 0
       ? "No wake that ended any other way falls between the first and last of them, so inside this window they are one unbroken run"
@@ -2429,7 +2466,7 @@ function renderWakeErrorReasonLines(
   if (tally.reasons.length === 0) {
     return [
       `Errored wakes in that window: ${tally.total}, none of them carrying a recorded failure (rows written before the scheduler kept one). The count is real; why is unavailable from here, and their absence of a reason is not evidence that they share one.`,
-      ...renderWakeOutcomeSpanLine(span, "error"),
+      ...renderWakeOutcomeSpanLine(span, "error", tally.total),
     ];
   }
 
@@ -2453,7 +2490,7 @@ function renderWakeErrorReasonLines(
     remainder.length === 0
       ? `The reasons above account for all ${tally.total}.`
       : `The reasons above account for ${tally.total - tally.without_detail - hiddenCount} of ${tally.total}; the rest is ${remainder.join(" and ")}.`,
-    ...renderWakeOutcomeSpanLine(span, "error"),
+    ...renderWakeOutcomeSpanLine(span, "error", tally.total),
   ];
 }
 
@@ -2478,7 +2515,7 @@ function renderWakeSilentReasonLines(
   if (tally.reasons.length === 0) {
     return [
       `Silent wakes in that window: ${tally.total}, none of them carrying a recorded ending (rows written before the scheduler kept one). The count is real; whether they were closures you chose, failed emissions or guard blocks is unavailable from here, and their shared absence of a reason is not evidence that they share an ending.`,
-      ...renderWakeOutcomeSpanLine(span, "silent"),
+      ...renderWakeOutcomeSpanLine(span, "silent", tally.total),
     ];
   }
 
@@ -2502,7 +2539,7 @@ function renderWakeSilentReasonLines(
     remainder.length === 0
       ? `The endings above account for all ${tally.total}.`
       : `The endings above account for ${tally.total - tally.without_detail - hiddenCount} of ${tally.total}; the rest is ${remainder.join(" and ")}.`,
-    ...renderWakeOutcomeSpanLine(span, "silent"),
+    ...renderWakeOutcomeSpanLine(span, "silent", tally.total),
   ];
 }
 
