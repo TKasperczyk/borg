@@ -106,10 +106,7 @@ describe("episodic extractor", () => {
     }
   });
 
-  async function createRelationalExtractorHarness(
-    clock = new ManualClock(1_000),
-    taskEventsEnabled = false,
-  ) {
+  async function createRelationalExtractorHarness(clock = new ManualClock(1_000)) {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     const store = new LanceDbStore({
       uri: join(tempDir, "lancedb"),
@@ -143,7 +140,6 @@ describe("episodic extractor", () => {
     const writer = new StreamWriter({
       dataDir: tempDir,
       clock,
-      taskEventsEnabled,
     });
 
     cleanup.push(async () => {
@@ -166,7 +162,7 @@ describe("episodic extractor", () => {
   it.each(["invalid_metadata", "event_id", "task_id", "task_version", "audience"])(
     "excludes task extraction context when %s does not validate against the terminal",
     async (mismatch) => {
-      const h = await createRelationalExtractorHarness(new ManualClock(1_000), true);
+      const h = await createRelationalExtractorHarness(new ManualClock(1_000));
       const event = {
         schema_version: 1,
         event_id: "event",

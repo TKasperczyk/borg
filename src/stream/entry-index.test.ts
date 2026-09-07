@@ -107,7 +107,6 @@ describe("stream entry index", () => {
       dataDir,
       clock: new ManualClock(100),
       entryIndex,
-      taskEventsEnabled: true,
     });
     try {
       const event = await writer.append({ kind: "internal_event", content: "Task completed" });

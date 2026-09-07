@@ -212,8 +212,6 @@ export type BorgOpenOptions = {
   /** Per-user-entry token accounting cap for live commitment extraction. */
   liveCommitmentExtractionBudget?: number | null;
   inbox?: {
-    /** Opt in only after the reader-compatibility deployment. Defaults to false. */
-    taskEventsEnabled?: boolean;
     taskEventRunner?: (context: {
       terminal: BacklogTerminalService;
       taskEvents: TaskEventService;

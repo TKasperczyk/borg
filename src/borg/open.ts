@@ -180,8 +180,6 @@ export async function openBorgDependencies(
       attachmentRepository,
       entryIndex,
       onStreamAppend,
-      taskEventsEnabled:
-        options.inbox?.taskEventsEnabled === true && options.inbox.taskEventRunner !== undefined,
     });
     const imagePerceptionService = new ImagePerceptionService({
       repository: repositories.imagePerceptionRepository,
@@ -492,22 +490,19 @@ export async function openBorgDependencies(
             }),
           })
         : configuredRunner;
-    const taskEventRunner =
-      options.inbox?.taskEventsEnabled === true
-        ? options.inbox.taskEventRunner?.({
-            terminal: backlogTerminalService,
-            taskEvents: taskEventService,
-            deliveries: agentDeliveries,
-            entityRepository: repositories.entityRepository,
-            sessions: repositories.sessionsRepository,
-            activity: createActivityFacade({
-              sqlite,
-              activityRepository: repositories.activityRepository,
-              sessionsRepository: repositories.sessionsRepository,
-            }),
-            tracer,
-          })
-        : undefined;
+    const taskEventRunner = options.inbox?.taskEventRunner?.({
+      terminal: backlogTerminalService,
+      taskEvents: taskEventService,
+      deliveries: agentDeliveries,
+      entityRepository: repositories.entityRepository,
+      sessions: repositories.sessionsRepository,
+      activity: createActivityFacade({
+        sqlite,
+        activityRepository: repositories.activityRepository,
+        sessionsRepository: repositories.sessionsRepository,
+      }),
+      tracer,
+    });
     catchUpWorker = new ChatResponseCatchUpWorker({
       ...(taskEventRunner === undefined
         ? {}

@@ -209,7 +209,6 @@ describe("StreamIngestionCoordinator", () => {
       dataDir,
       sessionId: DEFAULT_SESSION_ID,
       clock: new ManualClock(100),
-      taskEventsEnabled: true,
     });
     try {
       const event = await writer.append({ kind: "internal_event", content: "Task completed" });

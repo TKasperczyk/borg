@@ -139,7 +139,6 @@ export type BorgRepositorySetup = Pick<
 
 export type BuildBorgRepositoriesOptions = {
   pendingStartupTasks?: Promise<unknown>[];
-  taskEventsEnabled?: boolean;
   config: Config;
   sqlite: SqliteDatabase;
   episodesTable: LanceDbTable;
@@ -216,7 +215,6 @@ export async function buildBorgRepositories(
       entryIndex,
       repairSession: repairSessionStreamEntryIndex,
       onAppend: options.onStreamAppend,
-      taskEventsEnabled: options.taskEventsEnabled,
     });
   const createNonNotifyingStreamWriter = (sessionId: Parameters<BorgStreamWriterFactory>[0]) =>
     new StreamWriter({

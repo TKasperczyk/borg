@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -10,9 +10,7 @@ import {
   StreamWriter,
   getSessionStreamPath,
   readStreamEntryAtOffset,
-  streamBacklogResponseToSchema,
   streamEntryIndexMigrations,
-  streamEntrySchema,
 } from "./index.js";
 import type { StreamEntryInput } from "./types.js";
 
@@ -21,10 +19,10 @@ afterEach(() => {
   while (cleanups.length) cleanups.pop()!();
 });
 
-function harness(taskEventsEnabled = false) {
+function harness() {
   const dataDir = mkdtempSync(join(tmpdir(), "borg-reader-compat-"));
   const sessionId = createSessionId();
-  const writer = new StreamWriter({ dataDir, sessionId, taskEventsEnabled });
+  const writer = new StreamWriter({ dataDir, sessionId });
   cleanups.push(() => {
     writer.close();
     rmSync(dataDir, { recursive: true, force: true });
@@ -95,8 +93,8 @@ describe("response stamp reader compatibility", () => {
     }
   });
 
-  it("documents that pre-task_event readers skip new task terminals; this reader retains them", async () => {
-    const h = harness(true);
+  it("retains task terminals alongside ordinary replies across current reader entry points", async () => {
+    const h = harness();
     const oldEntry = await h.writer.append({ kind: "agent_msg", content: "Earlier reply" });
     const terminal = await h.writer.append({
       kind: "agent_msg",
@@ -109,24 +107,14 @@ describe("response stamp reader compatibility", () => {
         task_version: 1,
       },
     });
-    // This is the pre-task_event schema used by StreamReader.parseLine. Its failed
-    // validation returned undefined, skipping the whole terminal (not just its stamp).
-    const preTaskEventSchema = streamEntrySchema.extend({
-      response_to: streamBacklogResponseToSchema.optional(),
-    });
-    const oldReaderEntries = readFileSync(h.path, "utf8")
-      .trim()
-      .split("\n")
-      .flatMap((line) => {
-        const parsed = preTaskEventSchema.safeParse(JSON.parse(line));
-        return parsed.success ? [parsed.data] : [];
-      });
-    expect(oldReaderEntries).toEqual([oldEntry]);
-    expect(preTaskEventSchema.safeParse(terminal).success).toBe(false);
+    const forward = [];
+    for await (const entry of h.reader.iterate()) forward.push(entry);
+    expect(forward).toEqual([oldEntry, terminal]);
+    expect(h.reader.scanReverse().entries).toEqual([oldEntry, terminal]);
     expect(h.reader.tail(10)).toEqual([oldEntry, terminal]);
   });
 
-  it("requires explicit lane configuration before a writer can append task stamps", async () => {
+  it("appends task stamps through the default writer", async () => {
     const h = harness();
     const input: StreamEntryInput = {
       kind: "agent_msg",
@@ -139,13 +127,8 @@ describe("response stamp reader compatibility", () => {
         task_version: 1,
       },
     };
-    await expect(h.writer.append(input)).rejects.toMatchObject({
-      code: "TASK_EVENT_LANE_DISABLED",
-    });
-    expect(h.reader.tail(1)).toEqual([]);
-    const enabled = harness(true);
-    await expect(enabled.writer.append(input)).resolves.toMatchObject({
-      response_to: input.response_to,
-    });
+    const entry = await h.writer.append(input);
+    expect(entry).toMatchObject({ response_to: input.response_to });
+    expect(h.reader.tail(1)).toEqual([entry]);
   });
 });

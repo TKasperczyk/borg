@@ -34,7 +34,6 @@ async function harness(
     fetchFn?: typeof fetch;
     tenantCount?: number;
     liveExtraction?: boolean;
-    taskEventsEnabled?: boolean;
   } = {},
 ) {
   const dataDir = mkdtempSync(join(tmpdir(), "borg-task-events-"));
@@ -51,7 +50,7 @@ async function harness(
   const terminals = new Map<string, BacklogTerminalService>();
   const activityProjections: Parameters<Borg["activity"]["projectRepliedTurn"]>[0][] = [];
   const llmClient = new FakeLLMClient();
-  const open = async (tenant: string, taskEventsEnabled = options.taskEventsEnabled !== false) => {
+  const open = async (tenant: string) => {
     const borg = await Borg.open({
       dataDir: join(dataDir, tenant),
       clock,
@@ -60,7 +59,6 @@ async function harness(
       llmClient,
       liveExtraction: options.liveExtraction ?? false,
       inbox: {
-        ...(taskEventsEnabled ? { taskEventsEnabled: true } : {}),
         runner: (context) =>
           new TeamAgentTurnRunner({
             ...context,
@@ -199,49 +197,31 @@ async function harness(
     post,
     exclusives,
     enqueue: (eventId?: string) => post("/memory/agent-events", eventBody(eventId)),
-    async restart(taskEventsEnabled = options.taskEventsEnabled !== false) {
+    async restart() {
       await borgs.get("alpha")!.close();
-      return open("alpha", taskEventsEnabled);
+      return open("alpha");
     },
   };
 }
 
 describe("agent event and delivery routes", () => {
-  it("keeps task enqueue and terminal writes disabled by default despite a configured runner factory", async () => {
-    const h = await harness({ taskEventsEnabled: false });
-    expect(h.terminals.has("alpha")).toBe(false);
-    expect((await h.enqueue()).status).toBe(503);
+  it("enqueues and drains tasks with a configured runner", async () => {
+    const h = await harness();
+    expect(h.terminals.has("alpha")).toBe(true);
+    expect((await h.enqueue()).status).toBe(200);
+    expect(h.borg.inbox.listUnansweredTaskEvents(h.sessionId)).toHaveLength(1);
+    expect(await h.borg.inbox.catchUp.tick(h.sessionId)).toMatchObject({ status: "drained" });
     expect(h.borg.inbox.listUnansweredTaskEvents(h.sessionId)).toEqual([]);
-    await expect(
-      h.borg.stream.append(
-        {
-          kind: "agent_msg",
-          content: "Disabled task",
-          response_to: {
-            kind: "task_event",
-            event_id: "event",
-            event_entry_id: createStreamEntryId(),
-            task_id: "task",
-            task_version: 1,
-          },
-        },
-        { session: h.sessionId },
-      ),
-    ).rejects.toMatchObject({ code: "TASK_EVENT_LANE_DISABLED" });
-    expect(h.fetchFn).not.toHaveBeenCalled();
+    expect(h.fetchFn).toHaveBeenCalledOnce();
   });
 
-  it("leaves persisted tasks undrained on a restart with the lane disabled", async () => {
+  it("drains persisted tasks after a restart with the configured runner", async () => {
     const h = await harness();
     await h.enqueue();
-    const disabled = await h.restart(false);
-    disabled.inbox.catchUp.start();
-    expect(await disabled.inbox.catchUp.tick(h.sessionId)).toMatchObject({ status: "empty" });
-    await disabled.inbox.catchUp.stop();
-    expect(disabled.inbox.listUnansweredTaskEvents(h.sessionId)).toHaveLength(1);
-    expect(h.fetchFn).not.toHaveBeenCalled();
-    const enabled = await h.restart(true);
-    expect(await enabled.inbox.catchUp.tick(h.sessionId)).toMatchObject({ status: "drained" });
+    const reopened = await h.restart();
+    expect(await reopened.inbox.catchUp.tick(h.sessionId)).toMatchObject({ status: "drained" });
+    expect(reopened.inbox.listUnansweredTaskEvents(h.sessionId)).toEqual([]);
+    expect(h.fetchFn).toHaveBeenCalledOnce();
   });
 
   it("extracts the metadata outcome with audience and event provenance when live extraction is enabled", async () => {

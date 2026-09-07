@@ -501,25 +501,14 @@ the originating inbox session. Delivery remains pull-based: team-agent claims th
 arranges delivery through the bridge. Borg never calls the bridge. This extension is implemented
 in borg; the consumer changes and matching documentation must land separately in team-agent.
 
-The task-event lane is **disabled by default**, independently of the existing user inbox.
-Enable it with `TEAMS_INBOX_TASK_EVENTS_ENABLED=true` in the sidecar, or
-`Borg.open({ inbox: { taskEventsEnabled: true, taskEventRunner: ... } })` in a library host.
-A runner factory alone does not enable it. When disabled, event enqueue returns 503, startup
-does not drain task events, and stream writers reject `task_event` terminal stamps. Delivery
-claim/ack remain available for already-created deliveries.
+The task-event lane is always active when the Teams inbox is configured. The sidecar supplies
+its task-event runner automatically; library hosts supply `Borg.open({ inbox: { taskEventRunner: ... } })`.
+Stream writers accept validated `task_event` terminal stamps by default.
 
-**The first deploy of this version must run with the lane disabled.** Upgrade every Borg
-reader before enabling task terminal writes. From this version onward, `StreamReader`, indexed
-reads and index backfill retain entries with an unknown response stamp kind: the stamp is
-preserved as read-only `opaque_response_to`, with no interpreted `response_to`. Known malformed
-stamps remain invalid, and writers remain strict. The existing `stream_backlog` schema and
-watermark semantics are unchanged; the SQLite migrations are additive and need no index rebuild.
-
-After the lane has written terminals, rolling back to a **pre-task_event Borg makes its older
-readers skip those entire terminals**, because they reject the unfamiliar stamp kind. The
-new tolerant reader cannot change old binaries. Disabling the lane stops new writes but does
-not make existing task terminals readable by those old versions. Use a version with tolerant
-readers for rollback after enabling the lane.
+`StreamReader`, indexed reads, and index backfill preserve unknown response stamp kinds as
+read-only `opaque_response_to`, with no interpreted `response_to`. Known malformed stamps
+remain invalid, and writers remain strict. The existing `stream_backlog` schema and watermark
+semantics are unchanged; SQLite migrations are additive and need no index rebuild.
 
 All three routes require the existing `x-borg-token`, take `tenant` in the body, and use that
 tenant's exclusive chain for stream/SQLite operations. A long poll releases the chain while

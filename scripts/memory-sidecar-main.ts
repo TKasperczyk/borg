@@ -219,7 +219,6 @@ pool = new BorgPool({
     ? {
         openOptionsForTenant: (tenantId: string) => ({
           inbox: {
-            taskEventsEnabled: teamsInboxConfig.taskEventsEnabled,
             taskEventRunner: (context) =>
               new TeamAgentTaskEventRunner({
                 ...context,
