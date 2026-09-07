@@ -202,16 +202,18 @@ describe("similarity profiles", () => {
   it.each(["borg open", "borg memory sidecar"])(
     "logs one startup profile line for %s",
     (context) => {
-      const info = vi.spyOn(console, "info").mockImplementation(() => {});
+      const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+      const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
       const config = configSchema.parse({
         embedding: { model: BGE_SIMILARITY_MODEL },
         similarity: { overrides: { recallAbstain: 1.17 } },
       });
       logSimilarityProfile(config, context);
       similarityThresholds(config);
-      expect(info).toHaveBeenCalledExactlyOnceWith(
-        `${context}: similarity model="${BGE_SIMILARITY_MODEL}" profile="${BGE_SIMILARITY_MODEL}" fallback=false overrides={"recallAbstain":1.17}`,
+      expect(stderr).toHaveBeenCalledExactlyOnceWith(
+        `${context}: similarity model="${BGE_SIMILARITY_MODEL}" profile="${BGE_SIMILARITY_MODEL}" fallback=false overrides={"recallAbstain":1.17}\n`,
       );
+      expect(stdout).not.toHaveBeenCalled();
     },
   );
 

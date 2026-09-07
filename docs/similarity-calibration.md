@@ -10,6 +10,7 @@ guard**, including when an injected client differs from `config.json`. The sidec
 logs its effective profile at startup; each tenant library open logs its own model,
 profile, fallback flag, and applied overrides. Unknown models use the Qwen profile
 and log a warning naming the unknown model. Dimension alone never selects a profile.
+Startup diagnostics go to stderr so CLI JSON/results on stdout remain parseable.
 
 ## Shipped profiles
 

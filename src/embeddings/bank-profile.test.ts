@@ -111,7 +111,7 @@ describe("bank embedding profile", () => {
         similarity: { overrides: { actionThread: 0.81 } },
       }),
     );
-    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     const config = loadConfig({ dataDir: dir, env: {} });
     expect(similarityThresholds(config).consolidationSimilarity).toBe(0.82);
     const borg = await Borg.open({
@@ -132,10 +132,10 @@ describe("bank embedding profile", () => {
       });
       expect(Object.isFrozen(borg.similarityThresholds)).toBe(true);
       expect(
-        info.mock.calls.filter(([line]) => String(line).startsWith("borg open: similarity")),
+        stderr.mock.calls.filter(([line]) => String(line).startsWith("borg open: similarity")),
       ).toEqual([
         [
-          `borg open: similarity model="${BGE_SIMILARITY_MODEL}" profile="${BGE_SIMILARITY_MODEL}" fallback=false overrides={"actionThread":0.81}`,
+          `borg open: similarity model="${BGE_SIMILARITY_MODEL}" profile="${BGE_SIMILARITY_MODEL}" fallback=false overrides={"actionThread":0.81}\n`,
         ],
       ]);
     } finally {

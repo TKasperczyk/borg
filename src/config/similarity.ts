@@ -163,5 +163,8 @@ export function logSimilarityProfile(config: SimilarityConfigSource, context: st
   if (resolved.fallback) {
     warnedModels.add(resolved.model);
     console.warn(profileLine(resolved, context));
-  } else console.info(profileLine(resolved, context));
+  } else {
+    // Keep CLI JSON/results on stdout free of startup diagnostics.
+    process.stderr.write(`${profileLine(resolved, context)}\n`);
+  }
 }
