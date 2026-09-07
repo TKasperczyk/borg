@@ -116,7 +116,7 @@ EMBEDDING_MODEL=scw/bge-m3
 EMBEDDING_DIMS=1024
 ```
 
-Remove `EMBEDDING_LEGACY_SOURCE_MODEL` from the deployment environment. Keep the assertion absent after the cutover; every existing bank must now carry its persisted target profile.
+Remove `EMBEDDING_LEGACY_SOURCE_MODEL` from the deployment environment. Remove any temporary `BORG_EMBEDDING_LEGACY_SOURCE_MODEL` or tenant `embedding.legacySourceModel` fallback as well. Keep the assertion absent after the cutover; every existing bank must now carry its persisted target profile.
 
 The sidecar's default constants remain unchanged. Validate through the actual sidecar for **each** tenant: authenticated `GET /memory/episodes?tenant=<tenant>&limit=3` should open the bank successfully; `POST /memory/recall` with a representative query should return HTTP 200 without an embedding/profile degradation. For example:
 
@@ -166,3 +166,5 @@ Directory-only rollback is appropriate before new production writes. If target-m
 | `EMBEDDING_LEGACY_SOURCE_MODEL` | unset | Explicit source model assertion for adopting existing unlabelled banks; must equal the effective client model. Remove after all tenants migrate. |
 
 The gateway URL and credential for the shared sidecar client come from `KRATOS_BASE_URL` and `LLM_API_KEY`; TLS uses `NODE_EXTRA_CA_CERTS`. The three `BORG_EMBEDDING_STALL_*` controls affect transport timing, not bank identity: `BORG_EMBEDDING_STALL_TIMEOUT_MS` defaults to 1000 per single attempt, `BORG_EMBEDDING_STALL_BATCH_TIMEOUT_MS` to 20000 per batch attempt, and `BORG_EMBEDDING_STALL_RETRIES` to 1 retry. Library `BORG_EMBEDDING_MODEL`/`BORG_EMBEDDING_DIMS` settings do not override the sidecar's injected client identity.
+
+If `EMBEDDING_LEGACY_SOURCE_MODEL` is unset, the library source assertion (`BORG_EMBEDDING_LEGACY_SOURCE_MODEL` or tenant `embedding.legacySourceModel`) is the fallback. The library also parses `BORG_EMBEDDING_BASE_URL` and `BORG_EMBEDDING_API_KEY`; those do not replace the shared sidecar gateway/credential.
