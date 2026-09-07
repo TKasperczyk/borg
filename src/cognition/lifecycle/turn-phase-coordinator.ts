@@ -1225,6 +1225,7 @@ export class TurnPhaseCoordinator {
     }
 
     const generationGate = new GenerationGate({
+      similarityConfig: this.options.config,
       llmClient,
       embeddingClient: this.options.embeddingClient,
       model: this.options.config.anthropic.models.background,

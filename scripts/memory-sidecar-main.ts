@@ -1,3 +1,5 @@
+import { logSimilarityProfile } from "../src/config/similarity.js";
+import { requireEmbeddingClientProfile } from "../src/embeddings/bank-profile.js";
 import { DEFAULT_GATEWAY_BASE_URL } from "../src/sidecar/gateway-config.js";
 // borg memory sidecar: a long-lived HTTP service exposing per-tenant long-term
 // memory (one being per tenant via BorgPool) to an external consumer such as the
@@ -69,10 +71,6 @@ const root = process.env.BORG_DATA_ROOT ?? "./data/borg";
 const host = process.env.BORG_MEMORY_HOST ?? "127.0.0.1";
 const port = Number(process.env.BORG_MEMORY_PORT ?? 8088);
 const maxOpen = Number(process.env.BORG_MEMORY_MAX_OPEN ?? 32);
-const recallAbstainThresholdRaw = Number(process.env.BORG_RECALL_ABSTAIN_THRESHOLD ?? 0);
-const recallAbstainThreshold = Number.isFinite(recallAbstainThresholdRaw)
-  ? recallAbstainThresholdRaw
-  : 0;
 // Hard ceiling on a single recall, so the client's own timeout never fires
 // first and downgrades a structured degradation into an opaque transport
 // error. Sits above borg's worst-case graceful path (~4.6s) and below the
@@ -176,7 +174,17 @@ const traceRegistry = memoryTraceEnabledFromEnv(process.env)
   : undefined;
 // This root snapshot controls sidecar-wide admission/scheduling only. Do not
 // pass it to BorgPool: each being must load <root>/<tenant>/config.json itself.
-const sidecarConfig = loadConfig({ env: process.env, dataDir: root });
+const loadedSidecarConfig = loadConfig({ env: process.env, dataDir: root });
+const effectiveEmbeddingProfile = requireEmbeddingClientProfile(embeddingClient);
+const sidecarConfig = {
+  ...loadedSidecarConfig,
+  embedding: {
+    ...loadedSidecarConfig.embedding,
+    model: effectiveEmbeddingProfile.model,
+    dims: effectiveEmbeddingProfile.dimensions,
+  },
+};
+logSimilarityProfile(sidecarConfig, "borg memory sidecar");
 const selfName = memorySelfNameFromEnv(process.env);
 const teamsInboxConfig = teamsInboxConfigFromEnv(process.env);
 const sidecarClock = new SystemClock();
@@ -275,7 +283,6 @@ const server = createServer(
     pool,
     token,
     maintenanceCoordinator,
-    recallAbstainThreshold,
     recallDeadlineMs,
     recentActivityWindowMs,
     recentActivityLimit,

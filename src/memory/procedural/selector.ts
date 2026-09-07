@@ -1,3 +1,4 @@
+import { similarityThresholds, type SimilarityConfigSource } from "../../config/similarity.js";
 import { sampleBeta } from "./bayes.js";
 import { proceduralContextSchema, type ProceduralContext } from "./context.js";
 import type {
@@ -22,6 +23,7 @@ function compareCandidates(left: SkillSelectionCandidate, right: SkillSelectionC
 }
 
 export type SkillSelectorOptions = {
+  similarityConfig?: SimilarityConfigSource;
   repository: SkillRepository;
   contextStatsRepository?: Pick<ProceduralContextStatsRepository, "batchGetContextStats">;
   rng?: () => number;
@@ -64,7 +66,12 @@ export class SkillSelector {
     const limit = Math.max(1, options.k ?? 10);
     const minSimilarity = Math.max(
       0,
-      Math.min(1, options.minSimilarity ?? this.options.minSimilarity ?? 0.5),
+      Math.min(
+        1,
+        options.minSimilarity ??
+          this.options.minSimilarity ??
+          similarityThresholds(this.options.similarityConfig).skillSelection,
+      ),
     );
     const candidates = await this.options.repository.searchByContext(text, limit);
     const eligibleCandidates = candidates.filter(

@@ -38,8 +38,8 @@ import {
 } from "../src/index.js";
 import { CLASSIFICATION_DOWNGRADE_REASONS } from "../src/cognition/commitments/classification-normalizer.js";
 import type { ClassificationDowngradeReason } from "../src/cognition/commitments/classification-normalizer.js";
+import { similarityThresholds } from "../src/config/similarity.js";
 import {
-  DEFAULT_ACTION_THREAD_SIMILARITY_THRESHOLD,
   DEFAULT_ACTION_THREAD_SOURCE_RECORD_LIMIT,
   actionSalienceClass,
   buildActionThreads,
@@ -2901,7 +2901,8 @@ async function actionPromptSalienceSummary(input: {
     records: input.actions,
     repository: actionRepository,
     resolver: metricsScopeResolver(input.sessionId),
-    similarityThreshold: DEFAULT_ACTION_THREAD_SIMILARITY_THRESHOLD,
+    similarityThreshold:
+      input.borg.similarityThresholds?.actionThread ?? similarityThresholds().actionThread,
   });
   const threadsWithSalience = threads.flatMap((thread) => {
     const salienceClass = actionSalienceClass({
@@ -3350,7 +3351,8 @@ export class MetricsCapture {
       states: ACTIVE_ACTION_STATES,
       limit: DEFAULT_ACTION_THREAD_SOURCE_RECORD_LIMIT,
     });
-    const threshold = DEFAULT_ACTION_THREAD_SIMILARITY_THRESHOLD;
+    const threshold =
+      input.borg.similarityThresholds?.actionThread ?? similarityThresholds().actionThread;
     const pairs = await input.borg.actions.findSimilarDescriptionPairs(activeActions, threshold);
     const parents = new Map<string, string>();
     const find = (id: string): string => {

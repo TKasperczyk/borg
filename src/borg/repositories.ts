@@ -1,3 +1,4 @@
+import { similarityThresholds } from "../config/similarity.js";
 import { refreshSerializedEmbeddings } from "../embeddings/serialized.js";
 import { parseSemanticNodeId } from "../util/ids.js";
 // Builds Borg's repository graph and the cross-repository services that sit on top of it.
@@ -273,6 +274,7 @@ export async function buildBorgRepositories(
     clock,
   });
   const semanticReviewService = new SemanticReviewService({
+    similarityConfig: config,
     nodeRepository: semanticNodeRepository,
     enqueueReview,
     llmClient: options.llmClient,
@@ -487,6 +489,7 @@ export async function buildBorgRepositories(
     tracer: options.tracer,
     onEnqueue: (item) =>
       enqueueOpenQuestionForReview(identityService, item, {
+        minSimilarity: similarityThresholds(config).openQuestionDuplicateBackstop,
         extractor: reviewOpenQuestionExtractor,
         openQuestionsRepository,
       }),
@@ -532,15 +535,16 @@ export async function buildBorgRepositories(
     clock,
   });
   const skillSelector = new SkillSelector({
+    similarityConfig: config,
     repository: skillRepository,
     contextStatsRepository: proceduralContextStatsRepository,
-    minSimilarity: config.procedural.skillSelectionMinSimilarity,
   });
   const recallStateRepository = new RecallStateRepository({
     db: sqlite,
     clock,
   });
   const retrievalPipeline = new RetrievalPipeline({
+    similarityConfig: config,
     embeddingClient,
     llmClient: options.llmClient,
     recallExpansionModel: config.anthropic.models.recallExpansion,
@@ -592,6 +596,7 @@ export async function buildBorgRepositories(
   });
   applyCorrectionReview = (item) => correctionService.applyCorrectionReview(item);
   const workingMemoryStore = new WorkingMemoryStore({
+    similarityConfig: config,
     dataDir: config.dataDir,
     clock,
   });

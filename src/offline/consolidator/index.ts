@@ -1,3 +1,4 @@
+import { similarityThresholds } from "../../config/similarity.js";
 import {
   collectProtectedEpisodeTokenLines,
   consolidationEmbeddingInputSchema,
@@ -144,7 +145,11 @@ const TIER_ORDER: Record<EpisodeTier, number> = {
 };
 
 type MergeSelfEntity = Pick<EntityRecord, "id" | "canonical_name">;
-type ConsolidatorConfig = OfflineContext["config"]["offline"]["consolidator"];
+type ConsolidatorConfig = OfflineContext["config"]["offline"]["consolidator"] & {
+  similarityThreshold: number;
+  maxClusterDiameter: number;
+  highSimilarityTemporalBypassThreshold: number;
+};
 
 type RawEpisodeWithStats = {
   episode: Episode;
@@ -586,7 +591,13 @@ async function collectConsolidationCandidates(
   ctx: OfflineContext,
   statsById: ReadonlyMap<EpisodeId, EpisodeStats>,
 ): Promise<ConsolidationCandidate[]> {
-  const config = ctx.config.offline.consolidator;
+  const thresholds = similarityThresholds(ctx.config);
+  const config: ConsolidatorConfig = {
+    ...ctx.config.offline.consolidator,
+    similarityThreshold: thresholds.consolidationSimilarity,
+    maxClusterDiameter: thresholds.consolidationDiameter,
+    highSimilarityTemporalBypassThreshold: thresholds.consolidationTemporalBypass,
+  };
   const activeFamilies = await loadActiveFamilyAnchors(ctx);
   const visibleRawRows = (await ctx.episodicRepository.listEffectivelyVisible())
     .filter((episode) => (episode.episode_kind ?? "raw") === "raw")

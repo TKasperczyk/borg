@@ -1,3 +1,4 @@
+import { similarityThresholds } from "../../../config/similarity.js";
 import {
   appendCommitmentIfMissing,
   type CorrectivePreferenceTurnService,
@@ -1064,6 +1065,7 @@ export async function runRetrievalPhase(input: {
           repository: input.options.observedEventRepository,
           speakerEntityIds: creatorDirectiveParticipantEntityIds,
           queryVector: observedEventQueryVector,
+          topicMinSimilarity: similarityThresholds(input.options.config).observedEventTopic,
           nowMs,
           recencyWindowMs: DEFAULT_OBSERVED_EVENT_INTROSPECTION_RECENCY_WINDOW_MS,
           cap: DEFAULT_OBSERVED_EVENT_INTROSPECTION_CAP,
@@ -1331,7 +1333,7 @@ export async function buildCompactedEvidenceLedgerWithoutSharedState(input: {
     openQuestionsRepository: input.options.openQuestionsRepository,
     currentSessionTranscriptTokenBudget: config.currentSessionTranscriptTokenBudget,
     actionThreadRenderLimit: config.actionThreadRenderLimit,
-    actionThreadSimilarityThreshold: config.actionThreadSimilarityThreshold,
+    actionThreadSimilarityThreshold: similarityThresholds(input.options.config).actionThread,
     actionThreadSourceRecordLimit: config.actionThreadSourceRecordLimit,
     actionThreadSalienceClassReservedSlots: config.actionThreadSalienceClassReservedSlots,
     actionThreadAudienceReservedSlots: config.actionThreadAudienceReservedSlots,
@@ -2232,6 +2234,7 @@ async function compileSharedStateArtifactForEvidenceLedgerResultInternal(input: 
           semanticNodeRepository: input.options.semanticNodeRepository,
           episodicRepository: input.options.episodicRepository,
           embeddingClient: input.options.embeddingClient,
+          minSimilarity: similarityThresholds(input.options.config).semanticRevision,
           model: input.options.config.anthropic.models.background,
         };
 

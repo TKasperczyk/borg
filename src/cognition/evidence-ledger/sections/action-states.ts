@@ -1,8 +1,8 @@
+import { similarityThresholds } from "../../../config/similarity.js";
 import {
   DEFAULT_ACTION_THREAD_AUDIENCE_RESERVED_SLOTS,
   DEFAULT_ACTION_THREAD_RENDER_LIMIT,
   DEFAULT_ACTION_THREAD_SALIENCE_CLASS_RESERVED_SLOTS,
-  DEFAULT_ACTION_THREAD_SIMILARITY_THRESHOLD,
   DEFAULT_ACTION_THREAD_SOURCE_RECORD_LIMIT,
   STALE_PARTICIPANT_ACTION_RENDER_LIMIT,
   actionThreadAudienceBucket,
@@ -51,7 +51,7 @@ export async function addActionStatesSection(context: BuilderSectionContext): Pr
   );
   const similarityThreshold = coerceUnitIntervalOrFallback(
     context.options.actionThreadSimilarityThreshold,
-    DEFAULT_ACTION_THREAD_SIMILARITY_THRESHOLD,
+    similarityThresholds().actionThread,
   );
   const salienceClassReservedSlots = clampNonnegativeIntegerOrFallback(
     context.options.actionThreadSalienceClassReservedSlots,

@@ -1,15 +1,12 @@
+import { similarityThresholds } from "../../config/similarity.js";
 import { formatRelativeAge } from "../../util/relative-time.js";
 import type { EntityId, StreamEntryId } from "../../util/ids.js";
 import { clamp } from "../../util/math.js";
 import type { ObservedEventProjectionSourceEvent, ObservedEventRepository } from "./repository.js";
-import {
-  OBSERVED_EVENT_DISCLOSURE_CLASSES,
-  type ObservedEventDisclosureClass,
-} from "./types.js";
+import { OBSERVED_EVENT_DISCLOSURE_CLASSES, type ObservedEventDisclosureClass } from "./types.js";
 
 export const DEFAULT_OBSERVED_EVENT_INTROSPECTION_RECENCY_WINDOW_MS = 90 * 24 * 60 * 60_000;
 export const DEFAULT_OBSERVED_EVENT_INTROSPECTION_CAP = 8;
-export const DEFAULT_OBSERVED_EVENT_TOPIC_MIN_SIMILARITY = 0.45;
 
 export type ObservedEventRecallReason = "topic" | "recent" | "recurring" | "person";
 
@@ -153,7 +150,7 @@ export async function selectObservedEventIntrospection(
 
   if (input.queryVector !== undefined && input.queryVector !== null) {
     const topicHits = await input.repository.searchByVector(input.queryVector, {
-      minSimilarity: input.topicMinSimilarity ?? DEFAULT_OBSERVED_EVENT_TOPIC_MIN_SIMILARITY,
+      minSimilarity: input.topicMinSimilarity ?? similarityThresholds().observedEventTopic,
       limit: Math.max(cap * 3, 12),
     });
 

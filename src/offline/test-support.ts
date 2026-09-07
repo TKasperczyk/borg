@@ -6,6 +6,7 @@ import { autonomyMigrations } from "../autonomy/index.js";
 import { promptSurfaceHistoryMigrations } from "../cognition/prompts/prompt-surface-history-migrations.js";
 import { CorrectionService } from "../correction/index.js";
 import { DEFAULT_CONFIG, type Config } from "../config/index.js";
+import { similarityConfigSchema } from "../config/similarity.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
 import { executiveMigrations, ExecutiveStepsRepository } from "../executive/index.js";
 import { type LLMClient } from "../llm/index.js";
@@ -197,6 +198,7 @@ export function createTestConfig(
     ...DEFAULT_CONFIG,
     ...overrides,
     dataDir: overrides.dataDir ?? "/tmp/borg-test",
+    similarity: similarityConfigSchema.parse(overrides.similarity),
     perception: {
       ...DEFAULT_CONFIG.perception,
       ...overrides.perception,

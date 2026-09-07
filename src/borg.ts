@@ -1,3 +1,4 @@
+import { similarityThresholds, type SimilarityThresholds } from "./config/similarity.js";
 // Borg public facade: exposes stable APIs while setup details live in focused modules.
 
 import type {
@@ -34,6 +35,7 @@ export type { BorgEnqueueMessageInput, BorgEnqueueMessageResult } from "./cognit
  * operational state. Repository construction and storage wiring stay internal.
  */
 export class Borg {
+  readonly similarityThresholds: SimilarityThresholds;
   readonly stream: BorgFacades["stream"];
   readonly episodic: BorgFacades["episodic"];
   readonly self: BorgFacades["self"];
@@ -62,6 +64,7 @@ export class Borg {
   readonly sessions: BorgFacades["sessions"];
 
   private constructor(private readonly deps: BorgDependencies) {
+    this.similarityThresholds = similarityThresholds(deps.config);
     const facades = createBorgFacades(deps) as unknown as BorgFacades;
 
     this.stream = facades.stream;

@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { BGE_SIMILARITY_MODEL, QWEN_SIMILARITY_MODEL } from "../../config/similarity.js";
 
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import {
@@ -79,6 +80,57 @@ describe("semantic review service", () => {
       await cleanup.pop()?.();
     }
   });
+
+  it.each([
+    { model: QWEN_SIMILARITY_MODEL, override: undefined, reviews: 0 },
+    { model: BGE_SIMILARITY_MODEL, override: undefined, reviews: 1 },
+    { model: BGE_SIMILARITY_MODEL, override: 0.91, reviews: 0 },
+  ])(
+    "uses the $model profile and override $override for candidate admission",
+    async ({ model, override, reviews }) => {
+      const fixture = await createSemanticFixture();
+      cleanup.push(async () => {
+        fixture.db.close();
+        await fixture.store.close();
+        rmSync(fixture.tempDir, { recursive: true, force: true });
+      });
+      const llm = new FakeLLMClient({
+        responses: [
+          {
+            text: "",
+            input_tokens: 1,
+            output_tokens: 1,
+            stop_reason: "tool_use",
+            tool_calls: [
+              {
+                id: "review",
+                name: CONTRADICTION_TOOL_NAME,
+                input: { contradicts: true, confidence: 0.9 },
+              },
+            ],
+          },
+        ],
+      });
+      const service = new SemanticReviewService({
+        nodeRepository: fixture.nodeRepository,
+        llmClient: llm,
+        contradictionJudgeModel: "test",
+        enqueueReview: vi.fn(),
+        similarityConfig: {
+          embedding: { model },
+          similarity: { overrides: { semanticDuplicateReview: override } },
+        },
+      });
+      await fixture.nodeRepository.insert({
+        ...buildProposition(createSemanticNodeId(), "Existing claim"),
+        embedding: Float32Array.from([0.88, Math.sqrt(1 - 0.88 ** 2), 0, 0]),
+      });
+      await service.reviewDuplicateCandidate(
+        buildProposition(createSemanticNodeId(), "Candidate claim"),
+      );
+      expect(llm.requests).toHaveLength(reviews);
+    },
+  );
 
   it("keeps repository inserts inert until duplicate review is explicitly requested", async () => {
     const fixture = await createSemanticFixture();

@@ -1,3 +1,4 @@
+import { similarityThresholds } from "../../config/similarity.js";
 import { z } from "zod";
 
 import { computeWeights } from "../../cognition/attention/index.js";
@@ -1693,7 +1694,7 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
             const duplicateMerges = planDuplicateMerges(
               presentedPairs,
               judgments,
-              ctx.config.offline.ruminator.duplicateSimilarityThreshold,
+              similarityThresholds(ctx.config).ruminatorDuplicate,
             ).filter(
               (item) =>
                 item.action === "merge_duplicate" &&

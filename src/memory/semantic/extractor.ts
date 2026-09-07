@@ -1,3 +1,4 @@
+import { similarityThresholds, type SimilarityConfigSource } from "../../config/similarity.js";
 import { buildNodeEmbeddingText } from "./embedding-text.js";
 import { z } from "zod";
 
@@ -130,7 +131,6 @@ type SkippedEdgeTraceDetail = {
 };
 
 const DEFAULT_CONFIDENCE_CEILING = 0.7;
-const DEDUP_THRESHOLD = 0.88;
 const SKIPPED_EDGE_TRACE_DETAIL_LIMIT = 10;
 const EXTRACT_SEMANTIC_TOOL_NAME = "EmitSemanticCandidates";
 export const EXTRACT_SEMANTIC_TOOL = {
@@ -140,6 +140,7 @@ export const EXTRACT_SEMANTIC_TOOL = {
 } satisfies LLMToolDefinition;
 
 export type SemanticExtractorOptions = {
+  similarityConfig?: SimilarityConfigSource;
   nodeRepository: SemanticNodeRepository;
   edgeRepository: SemanticEdgeRepository;
   embeddingClient: EmbeddingClient;
@@ -605,7 +606,11 @@ export class SemanticExtractor {
 
   constructor(private readonly options: SemanticExtractorOptions) {
     this.clock = options.clock ?? new SystemClock();
-    this.dedupThreshold = options.dedupThreshold ?? DEDUP_THRESHOLD;
+    this.dedupThreshold =
+      options.dedupThreshold ??
+      similarityThresholds(
+        options.similarityConfig ?? { embedding: options.embeddingClient.profile },
+      ).semanticExtractionDuplicate;
     this.confidenceCeiling = options.confidenceCeiling ?? DEFAULT_CONFIDENCE_CEILING;
   }
 

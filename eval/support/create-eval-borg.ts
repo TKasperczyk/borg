@@ -1,5 +1,6 @@
 import type { Borg, Clock, Config, EmbeddingClient, LLMClient } from "../../src/index.js";
 import { Borg as BorgFacade, DEFAULT_CONFIG, FixedClock } from "../../src/index.js";
+import { similarityConfigSchema, type SimilarityConfig } from "../../src/config/similarity.js";
 
 import { DeterministicEmbeddingClient } from "./embedding.js";
 
@@ -13,6 +14,7 @@ type EvalConfigOverrides = {
   internalIdentifierGuard?: Partial<Config["internalIdentifierGuard"]>;
   affective?: Partial<Config["affective"]>;
   embedding?: Partial<Config["embedding"]>;
+  similarity?: Partial<SimilarityConfig>;
   anthropic?: Partial<Omit<Config["anthropic"], "models">> & {
     models?: Partial<Config["anthropic"]["models"]>;
   };
@@ -98,6 +100,7 @@ export async function createEvalBorg(options: CreateEvalBorgOptions): Promise<Bo
   const embeddingDimensions = options.embeddingDimensions ?? DEFAULT_EVAL_EMBEDDING_DIMS;
   const config: Config = {
     dataDir: options.tempDir,
+    similarity: similarityConfigSchema.parse(options.config?.similarity),
     defaultUser: options.config?.defaultUser ?? DEFAULT_CONFIG.defaultUser,
     host_capabilities: options.config?.host_capabilities ?? DEFAULT_CONFIG.host_capabilities,
     perception: {

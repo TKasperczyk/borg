@@ -1,3 +1,15 @@
+export {
+  similarityThresholds,
+  logSimilarityProfile,
+  DEFAULT_SIMILARITY_PROFILES,
+  QWEN_SIMILARITY_MODEL,
+  BGE_SIMILARITY_MODEL,
+} from "./config/similarity.js";
+export type {
+  SimilarityThresholds,
+  SimilarityConfig,
+  SimilarityConfigSource,
+} from "./config/similarity.js";
 // Borg -- public library entry point.
 // Re-exports the stable library surface; implementation modules stay
 // behind internal paths.

@@ -1,3 +1,4 @@
+import { similarityThresholds, type SimilarityConfigSource } from "../../config/similarity.js";
 import { z } from "zod";
 
 import {
@@ -24,6 +25,7 @@ const CONTRADICTION_JUDGE_TOOL = {
 } satisfies LLMToolDefinition;
 
 export type SemanticReviewServiceOptions = {
+  similarityConfig?: SimilarityConfigSource;
   nodeRepository: SemanticNodeRepository;
   enqueueReview?: (input: ReviewQueueInsertInput) => ReviewQueueInsertInput | unknown;
   llmClient?: LLMClient;
@@ -107,7 +109,7 @@ export class SemanticReviewService {
 
     const matches = await this.options.nodeRepository.searchByVector(node.embedding, {
       limit: 3,
-      minSimilarity: 0.9,
+      minSimilarity: similarityThresholds(this.options.similarityConfig).semanticDuplicateReview,
       kindFilter: ["proposition"],
       includeArchived: false,
     });

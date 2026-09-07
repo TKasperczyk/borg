@@ -23,7 +23,6 @@ import { actionScope, combineScopes, type ScopeResolver } from "./scope-resolver
 import type { EvidenceLedgerActionSalienceClass, EvidenceLedgerSessionScope } from "./types.js";
 
 export const DEFAULT_ACTION_THREAD_RENDER_LIMIT = 12;
-export const DEFAULT_ACTION_THREAD_SIMILARITY_THRESHOLD = 0.85;
 export const DEFAULT_ACTION_THREAD_SOURCE_RECORD_LIMIT = 256;
 export const DEFAULT_ACTION_THREAD_SALIENCE_CLASS_RESERVED_SLOTS = 1;
 export const DEFAULT_ACTION_THREAD_AUDIENCE_RESERVED_SLOTS = 1;

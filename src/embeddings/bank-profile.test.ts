@@ -3,12 +3,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@lancedb/lancedb";
 import { Field, FixedSizeList, Float64, Int32, List, Schema } from "apache-arrow";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { Borg } from "../borg.js";
 import { FakeEmbeddingClient } from "./index.js";
 import { FakeLLMClient } from "../llm/test-support/fake-client.js";
 import { schema, utf8Field, vectorField } from "../storage/lancedb/index.js";
 import { loadConfig } from "../config/index.js";
+import {
+  BGE_SIMILARITY_MODEL,
+  QWEN_SIMILARITY_MODEL,
+  similarityThresholds,
+} from "../config/similarity.js";
 import { createCachingEmbeddingClient } from "./cache.js";
 import {
   guardBankEmbeddingProfile,
@@ -20,6 +25,7 @@ import {
 
 const directories: string[] = [];
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const path of directories.splice(0)) rmSync(path, { recursive: true, force: true });
 });
 async function bank(dimensions = 4) {
@@ -90,6 +96,48 @@ describe("bank embedding profile", () => {
     });
     try {
       expect(readBankEmbeddingProfile(dir)).toMatchObject({ model: "injected", dimensions: 4 });
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("selects and logs thresholds using the effective bank-guard identity", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "embedding-effective-similarity-"));
+    directories.push(dir);
+    writeFileSync(
+      join(dir, "config.json"),
+      JSON.stringify({
+        embedding: { model: QWEN_SIMILARITY_MODEL, dims: 4096 },
+        similarity: { overrides: { actionThread: 0.81 } },
+      }),
+    );
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    const config = loadConfig({ dataDir: dir, env: {} });
+    expect(similarityThresholds(config).consolidationSimilarity).toBe(0.82);
+    const borg = await Borg.open({
+      dataDir: dir,
+      config,
+      embeddingClient: new FakeEmbeddingClient(1024, BGE_SIMILARITY_MODEL),
+      llmClient: new FakeLLMClient(),
+    });
+    try {
+      expect(readBankEmbeddingProfile(dir)).toMatchObject({
+        model: BGE_SIMILARITY_MODEL,
+        dimensions: 1024,
+      });
+      expect(borg.similarityThresholds).toMatchObject({
+        consolidationSimilarity: 0.76,
+        semanticExtractionDuplicate: 0.84,
+        actionThread: 0.81,
+      });
+      expect(Object.isFrozen(borg.similarityThresholds)).toBe(true);
+      expect(
+        info.mock.calls.filter(([line]) => String(line).startsWith("borg open: similarity")),
+      ).toEqual([
+        [
+          `borg open: similarity model="${BGE_SIMILARITY_MODEL}" profile="${BGE_SIMILARITY_MODEL}" fallback=false overrides={"actionThread":0.81}`,
+        ],
+      ]);
     } finally {
       await borg.close();
     }

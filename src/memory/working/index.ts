@@ -1,5 +1,4 @@
 export {
-  PENDING_ACTION_SEMANTIC_MERGE_THRESHOLD,
   WorkingMemoryStore,
   mergePendingActionsBySimilarity,
   type RelationalSlotPendingActionSanitization,

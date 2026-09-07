@@ -1,3 +1,4 @@
+import { similarityThresholds, type SimilarityConfigSource } from "../../config/similarity.js";
 import type { LLMClient } from "../../llm/index.js";
 import {
   effectiveCommitmentCriticalDomain,
@@ -26,6 +27,7 @@ import {
 } from "./index.js";
 
 export type TurnActionCoordinatorOptions = {
+  similarityConfig?: SimilarityConfigSource;
   commitmentGuardRunner: Pick<CommitmentGuardRunner, "run">;
   postGenerationGuardRunner: Pick<TurnPostGenerationGuardRunner, "run">;
   embeddingClient: EmbeddingClient;
@@ -462,6 +464,9 @@ export class TurnActionCoordinator {
         workingMemory: input.workingMemory,
         pendingActionJudge: input.pendingActionJudge,
         pendingActionEmbeddingClient: this.options.embeddingClient,
+        pendingActionSimilarityThreshold: similarityThresholds(
+          this.options.similarityConfig ?? { embedding: this.options.embeddingClient.profile },
+        ).pendingActionMerge,
         pendingActionTimestamp: this.options.clock.now(),
         onPendingActionRejected: input.onPendingActionRejected,
       }),

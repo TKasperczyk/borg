@@ -1,15 +1,15 @@
+import { similarityThresholds, type SimilarityConfigSource } from "../config/similarity.js";
 /* Open-question scoring for retrieval context assembly. */
 import type { EmbeddingClient } from "../embeddings/index.js";
 import type { OpenQuestion, OpenQuestionsRepository } from "../memory/self/index.js";
 import type { SemanticNode } from "../memory/semantic/types.js";
-
-const DEFAULT_OPEN_QUESTION_MIN_SIMILARITY = 0.01;
 
 export async function retrieveOpenQuestionsForQuery(
   openQuestionsRepository: OpenQuestionsRepository | undefined,
   embeddingClient: EmbeddingClient | undefined,
   query: string,
   options: {
+    similarityConfig?: SimilarityConfigSource;
     relatedSemanticNodeIds?: readonly SemanticNode["id"][];
     limit?: number;
     queryVector?: Float32Array;
@@ -32,7 +32,9 @@ export async function retrieveOpenQuestionsForQuery(
         {
           status: "open",
           limit: listLimit,
-          minSimilarity: DEFAULT_OPEN_QUESTION_MIN_SIMILARITY,
+          minSimilarity: similarityThresholds(
+            options.similarityConfig ?? { embedding: embeddingClient.profile },
+          ).openQuestionRecall,
         },
       );
     } catch (error) {

@@ -1,3 +1,4 @@
+import { similarityThresholds } from "../../config/similarity.js";
 import { openQuestionMemoryDisclosureLabel } from "../common/disclosure-serializers.js";
 import {
   combineMemoryDisclosureLabels,
@@ -9,7 +10,6 @@ import type { OpenQuestionsRepository } from "./open-questions.js";
 import type { OpenQuestion, OpenQuestionPatch, OpenQuestionSearchCandidate } from "./types.js";
 
 export const OPEN_QUESTION_DUPLICATE_PRESENTATION_LIMIT = 150;
-export const OPEN_QUESTION_DUPLICATE_BACKSTOP_SIMILARITY_THRESHOLD = 0.9;
 const OPEN_QUESTION_DUPLICATE_TEXT_EXCERPT_CHARS = 240;
 
 export type OpenQuestionDuplicatePresentationRow = {
@@ -85,6 +85,7 @@ export async function buildOpenQuestionDuplicatePresentation(input: {
 }
 
 export async function findOpenQuestionDuplicateBackstop(input: {
+  minSimilarity?: number;
   repository: OpenQuestionsRepository;
   question: string;
   onSearchFailure?: (error: unknown) => void;
@@ -103,7 +104,8 @@ export async function findOpenQuestionDuplicateBackstop(input: {
         await input.repository.searchByText(input.question, {
           status: "open",
           limit: 1,
-          minSimilarity: OPEN_QUESTION_DUPLICATE_BACKSTOP_SIMILARITY_THRESHOLD,
+          minSimilarity:
+            input.minSimilarity ?? similarityThresholds().openQuestionDuplicateBackstop,
         })
       )[0] ?? null
     );

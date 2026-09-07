@@ -1,3 +1,4 @@
+import { similarityThresholds, type SimilarityConfigSource } from "../../config/similarity.js";
 import { z } from "zod";
 
 import type { EmbeddingClient } from "../../embeddings/index.js";
@@ -15,7 +16,6 @@ import type { GenerationSuppressionReason } from "./types.js";
 
 const GATE_TOOL_NAME = "EmitGenerationGateDecision";
 const MINIMAL_LOOP_TURN_COUNT = 3;
-const REPEATED_SIMILARITY_THRESHOLD = 0.96;
 
 const generationGateDecisionSchema = z.object({
   decision: z.enum(["proceed", "suppress"]),
@@ -50,6 +50,7 @@ export type GenerationGateResult = {
 };
 
 export type GenerationGateOptions = {
+  similarityConfig?: SimilarityConfigSource;
   llmClient?: LLMClient;
   embeddingClient: EmbeddingClient;
   model?: string;
@@ -195,7 +196,10 @@ export class GenerationGate {
       compactProbe &&
       recentUsers.length > 0 &&
       repeatedMinimalSimilarity !== null &&
-      repeatedMinimalSimilarity >= REPEATED_SIMILARITY_THRESHOLD;
+      repeatedMinimalSimilarity >=
+        similarityThresholds(
+          this.options.similarityConfig ?? { embedding: this.options.embeddingClient?.profile },
+        ).generationRepeatedInput;
     const hardCapActiveTurns =
       activeStop === null
         ? 0

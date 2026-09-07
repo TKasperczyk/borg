@@ -1,3 +1,4 @@
+import { similarityThresholds, type SimilarityConfigSource } from "../config/similarity.js";
 import type { AttentionWeights, TemporalCue } from "../contracts/cognitive-contracts.js";
 import {
   commitmentMemoryDisclosureLabel,
@@ -153,6 +154,7 @@ export type {
 } from "./semantic-retrieval.js";
 
 export type RetrievalPipelineOptions = {
+  similarityConfig?: SimilarityConfigSource;
   embeddingClient: EmbeddingClient;
   llmClient?: LLMClient;
   recallExpansionModel?: string;
@@ -390,9 +392,6 @@ type WarmRecallCandidate = {
   stateHandle: RecallStateHandle;
 };
 
-// Tunes the minimum similarity for commitment evidence admission.
-const DEFAULT_COMMITMENT_EVIDENCE_SIMILARITY_THRESHOLD = 0.3;
-
 // Tunes concurrent fanout across independent retrieval intent searches.
 const RETRIEVAL_FANOUT_CONCURRENCY = 5;
 
@@ -480,6 +479,7 @@ export class RetrievalPipeline {
       query,
       {
         ...options,
+        similarityConfig: this.options.similarityConfig,
         onDegraded:
           this.tracer.enabled && options.traceTurnId !== undefined
             ? (reason, error) => {
@@ -1935,6 +1935,7 @@ export class RetrievalPipeline {
             {
               ...options,
               queryVector: intentVector,
+              similarityConfig: this.options.similarityConfig,
               exactTerms: intent.kind === "known_term" ? intent.terms : [],
               underReviewMultiplier:
                 options.underReviewMultiplier ?? this.options.semanticUnderReviewMultiplier,
@@ -2137,7 +2138,9 @@ export class RetrievalPipeline {
     }
     const threshold =
       this.options.commitmentEvidenceSimilarityThreshold ??
-      DEFAULT_COMMITMENT_EVIDENCE_SIMILARITY_THRESHOLD;
+      similarityThresholds(
+        this.options.similarityConfig ?? { embedding: this.options.embeddingClient?.profile },
+      ).commitmentEvidence;
     const evidence: EvidenceItem[] = [];
 
     for (const [intentIndex, intent] of relevantIntents.entries()) {

@@ -39,6 +39,7 @@ type OpenQuestionWriter =
 export type ReviewOpenQuestionExtractorLike = Pick<ReviewOpenQuestionExtractor, "extract">;
 
 export type ReviewOpenQuestionHookOptions = {
+  minSimilarity?: number;
   extractor?: ReviewOpenQuestionExtractorLike | null;
   openQuestionsRepository?: OpenQuestionsRepository;
 };
@@ -285,6 +286,7 @@ export async function enqueueOpenQuestionForReview(
         ? await writer.findSimilarOpenQuestion({ question: createInput.question })
         : await findOpenQuestionDuplicateBackstop({
             repository: duplicateRepository,
+            minSimilarity: options.minSimilarity,
             question: createInput.question,
             onSearchFailure: (error) => {
               console.warn("Review open-question duplicate backstop failed open", {

@@ -1023,6 +1023,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
           entityRepository: deps.entityRepository,
         });
         const extractor = new SemanticExtractor({
+          similarityConfig: deps.config,
           nodeRepository: deps.semanticNodeRepository,
           edgeRepository: deps.semanticEdgeRepository,
           embeddingClient: deps.embeddingClient,

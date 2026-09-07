@@ -48,7 +48,6 @@ export {
   type OpenQuestionsRepositoryOptions,
 } from "./open-questions.js";
 export {
-  OPEN_QUESTION_DUPLICATE_BACKSTOP_SIMILARITY_THRESHOLD,
   OPEN_QUESTION_DUPLICATE_PRESENTATION_LIMIT,
   buildOpenQuestionDuplicatePresentation,
   buildOpenQuestionReinforcementPatch,

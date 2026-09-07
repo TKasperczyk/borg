@@ -1,3 +1,4 @@
+import { similarityThresholds, type SimilarityConfigSource } from "../config/similarity.js";
 /* Semantic-band retrieval for label/vector lookup and graph walks. */
 import type { EmbeddingClient } from "../embeddings/index.js";
 import {
@@ -73,7 +74,6 @@ export const DEFAULT_SEMANTIC_STATUS_MULTIPLIERS = {
 export type SemanticStatusMultipliers = Record<SemanticNodeStatus, number>;
 
 // Tunes the minimum semantic node similarity for candidate admission.
-const DEFAULT_SEMANTIC_NODE_MIN_SIMILARITY = 0.01;
 
 export type RetrievedSemanticUnderReview = {
   review_id: number;
@@ -117,6 +117,7 @@ export type RetrievedSemantic = SemanticContext & {
 };
 
 export type SemanticRetrievalOptions = {
+  similarityConfig?: SimilarityConfigSource;
   audienceEntityId?: EntityId | null;
   // Disclosure/admin-only all-audiences source search. Ignored for cognition source recall.
   crossAudience?: boolean;
@@ -822,7 +823,9 @@ async function resolveSemanticContextWithDisclosureSourceMode(
   const queryVector = options.queryVector ?? (await embeddingClient.embed(query));
   const byVector = await semanticNodeRepository.searchByVector(queryVector, {
     limit: overfetchLimit(DEFAULT_VECTOR_MATCH_LIMIT, overfetchMultiplier),
-    minSimilarity: DEFAULT_SEMANTIC_NODE_MIN_SIMILARITY,
+    minSimilarity: similarityThresholds(
+      options.similarityConfig ?? { embedding: embeddingClient.profile },
+    ).semanticRecall,
     includeArchived: false,
   });
 

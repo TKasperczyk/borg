@@ -8,7 +8,13 @@ import { DEFAULT_PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_TOKEN_BUDGET } from "../
 import { OFFLINE_PROCESS_NAMES } from "../contracts/offline-process.js";
 import { writeJsonFileAtomic } from "../util/atomic-write.js";
 import { ConfigError } from "../util/errors.js";
-import { DEFAULT_CONFIG, configSchema, loadConfig, redactConfig } from "./index.js";
+import {
+  DEFAULT_CONFIG,
+  configSchema,
+  loadConfig,
+  redactConfig,
+  similarityThresholds,
+} from "./index.js";
 
 describe("config", () => {
   const tempDirs: string[] = [];
@@ -189,7 +195,6 @@ describe("config", () => {
       enabled: true,
       currentSessionTranscriptTokenBudget: 2_500,
       actionThreadRenderLimit: 12,
-      actionThreadSimilarityThreshold: 0.85,
       actionThreadSourceRecordLimit: 256,
       actionThreadSalienceClassReservedSlots: 1,
       actionThreadAudienceReservedSlots: 1,
@@ -1082,7 +1087,7 @@ describe("config", () => {
     expect(config.generation.evidenceLedger.enabled).toBe(true);
     expect(config.generation.evidenceLedger.currentSessionTranscriptTokenBudget).toBe(16_000);
     expect(config.generation.evidenceLedger.actionThreadRenderLimit).toBe(8);
-    expect(config.generation.evidenceLedger.actionThreadSimilarityThreshold).toBe(0.9);
+    expect(similarityThresholds(config).actionThread).toBe(0.9);
     expect(config.generation.evidenceLedger.actionThreadSourceRecordLimit).toBe(128);
     expect(config.generation.evidenceLedger.actionThreadSalienceClassReservedSlots).toBe(2);
     expect(config.generation.evidenceLedger.actionThreadAudienceReservedSlots).toBe(3);

@@ -1,3 +1,4 @@
+import { logSimilarityProfile } from "../config/similarity.js";
 import {
   requireEmbeddingClientProfile,
   acquireEmbeddingBankAccess,
@@ -100,11 +101,17 @@ export async function openBorgDependencies(
     );
     const config = {
       ...resolvedConfig,
+      embedding: {
+        ...resolvedConfig.embedding,
+        model: effectiveEmbeddingProfile.model,
+        dims: effectiveEmbeddingProfile.dimensions,
+      },
       host_capabilities: withDerivedOutboundCapabilities({
         hostCapabilities: resolvedConfig.host_capabilities,
         outboundSourceTypes: outboundConnectorRegistry.sourceTypes(),
       }),
     };
+    logSimilarityProfile(config, "borg open");
     const tracer = compositeTracer([
       createTurnTracer({
         tracerPath: options.tracerPath,

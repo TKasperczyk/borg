@@ -1,3 +1,4 @@
+import { similarityThresholds, type SimilarityConfigSource } from "../../config/similarity.js";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
@@ -16,6 +17,7 @@ import {
 } from "./types.js";
 
 export type WorkingMemoryStoreOptions = {
+  similarityConfig?: SimilarityConfigSource;
   dataDir?: string;
   clock?: Clock;
 };
@@ -28,7 +30,6 @@ export type RelationalSlotPendingActionSanitization = {
 
 const PENDING_ACTIONS_LIMIT = 16;
 const HOT_ENTITIES_LIMIT = 32;
-export const PENDING_ACTION_SEMANTIC_MERGE_THRESHOLD = 0.85;
 
 function cloneWorkingMemory(state: WorkingMemory): WorkingMemory {
   return structuredClone(state) as WorkingMemory;
@@ -91,7 +92,9 @@ export async function mergePendingActionsBySimilarity(input: {
   threshold?: number;
   onSemanticMerge?: () => void;
 }): Promise<WorkingMemory["pending_actions"]> {
-  const threshold = input.threshold ?? PENDING_ACTION_SEMANTIC_MERGE_THRESHOLD;
+  const threshold =
+    input.threshold ??
+    similarityThresholds({ embedding: input.embeddingClient?.profile }).pendingActionMerge;
   let merged = normalizePendingActions([...input.existing]);
 
   for (const action of input.incoming) {
@@ -331,7 +334,11 @@ export class WorkingMemoryStore {
       existing: current.pending_actions,
       incoming: [input.action],
       embeddingClient: input.embeddingClient,
-      threshold: input.similarityThreshold,
+      threshold:
+        input.similarityThreshold ??
+        similarityThresholds(
+          this.options.similarityConfig ?? { embedding: input.embeddingClient?.profile },
+        ).pendingActionMerge,
       nowMs,
       onSemanticMerge: () => {
         semanticMergeCount += 1;

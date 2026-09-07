@@ -1,3 +1,4 @@
+import { similarityThresholds, type SimilarityConfigSource } from "../../config/similarity.js";
 import type { EmbeddingClient } from "../../embeddings/index.js";
 import type { LLMClient } from "../../llm/index.js";
 import type { ExecutiveStepsRepository } from "../../executive/index.js";
@@ -30,7 +31,6 @@ const GOAL_PROMOTION_PROVENANCE = {
   kind: "online" as const,
   process: "goal-promotion-extractor",
 };
-const GOAL_PROMOTION_DUPLICATE_SIMILARITY_THRESHOLD = 0.9;
 
 export type PersistedGoalPromotionIds = {
   goalIds: GoalId[];
@@ -38,6 +38,7 @@ export type PersistedGoalPromotionIds = {
 };
 
 export type TurnGoalPromotionServiceOptions = {
+  similarityConfig?: SimilarityConfigSource;
   model: string;
   identityService: Pick<IdentityService, "addGoal">;
   goalsRepository: Pick<GoalsRepository, "list">;
@@ -395,11 +396,14 @@ export class TurnGoalPromotionService {
 
     let bestMatch: { goalId: GoalId; similarity: number } | null = null;
 
+    const duplicateThreshold = similarityThresholds(
+      this.options.similarityConfig ?? { embedding: this.options.embeddingClient.profile },
+    ).goalPromotionDuplicate;
     for (const existing of [...input.state.activeVectors, ...input.state.acceptedVectors]) {
       const similarity = cosineSimilarity(candidateVector, existing.vector);
 
       if (
-        similarity >= GOAL_PROMOTION_DUPLICATE_SIMILARITY_THRESHOLD &&
+        similarity >= duplicateThreshold &&
         (bestMatch === null || similarity > bestMatch.similarity)
       ) {
         bestMatch = {

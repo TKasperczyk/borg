@@ -1,3 +1,4 @@
+import { similarityThresholds } from "../config/similarity.js";
 import { EmbeddingBankError } from "../embeddings/bank-profile.js";
 // HTTP request handler for the borg memory sidecar: a thin, tenant-routed wrapper
 // over BorgPool that exposes long-term memory to an external (e.g. Python) service.
@@ -1393,7 +1394,6 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
     options;
   const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
   const maxRecallLimit = options.maxRecallLimit ?? DEFAULT_MAX_RECALL_LIMIT;
-  const recallAbstainThreshold = options.recallAbstainThreshold ?? 0;
   const recallDeadlineMs = options.recallDeadlineMs ?? DEFAULT_RECALL_DEADLINE_MS;
   const recentActivityWindowMs = Math.max(
     0,
@@ -2810,6 +2810,10 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
           try {
             const recallResult = await raceRecallDeadline(
               pool.withTenant(tenant, async (borg) => {
+                const recallAbstainThreshold =
+                  options.recallAbstainThreshold ??
+                  borg.similarityThresholds?.recallAbstain ??
+                  similarityThresholds().recallAbstain;
                 let recallPlan: RecallPlanOutcome | null = null;
                 const recallOptions = {
                   limit: episodeSearchLimit,
@@ -2898,6 +2902,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
                 }
 
                 return {
+                  shouldAbstain,
                   hiddenEpisodeCount: recalled.length - visible.length,
                   topRawScore,
                   plannerTemporalCue: parsed.data.time_range === undefined ? actedCue : null,
@@ -2912,11 +2917,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
 
             hiddenEpisodeCount = recallResult.hiddenEpisodeCount;
             plannerTemporalCue = recallResult.plannerTemporalCue;
-            if (
-              recallAbstainThreshold > 0 &&
-              (recallResult.topRawScore === null ||
-                recallResult.topRawScore < recallAbstainThreshold)
-            ) {
+            if (recallResult.shouldAbstain) {
               abstained = true;
               episodes = [];
             } else {
@@ -3640,6 +3641,10 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
       try {
         hits = await raceRecallDeadline(
           pool.withTenant(tenant, async (borg) => {
+            const recallAbstainThreshold =
+              options.recallAbstainThreshold ??
+              borg.similarityThresholds?.recallAbstain ??
+              similarityThresholds().recallAbstain;
             const memoryOwner = borg.entities.getSelf();
             const recallOptions = {
               limit: searchLimit,
@@ -3680,6 +3685,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
             }
 
             return {
+              shouldAbstain,
               episodes: included,
               projected: projectEpisodeHitsForResponse(included, borg.entities, false),
               topRawScore,
@@ -3716,10 +3722,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
                 .join("; "),
             };
 
-      if (
-        recallAbstainThreshold > 0 &&
-        (topRawScore === null || topRawScore < recallAbstainThreshold)
-      ) {
+      if (hits.shouldAbstain) {
         send(res, 200, {
           ok: true,
           episodes: [],

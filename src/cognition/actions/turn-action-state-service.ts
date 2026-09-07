@@ -1,3 +1,4 @@
+import type { SimilarityConfigSource } from "../../config/similarity.js";
 import type { LLMClient } from "../../llm/index.js";
 import type { EmbeddingClient } from "../../embeddings/index.js";
 import { ACTIVE_ACTION_STATES, type ActionRepository } from "../../memory/actions/index.js";
@@ -19,6 +20,7 @@ import type { CurrentTurnUserInputSenderAttribution } from "../turn-input.js";
 import { ActionStateExtractor } from "./action-state-extractor.js";
 
 export type TurnActionStateServiceOptions = {
+  similarityConfig?: SimilarityConfigSource;
   model: string;
   actionRepository: ActionRepository;
   embeddingClient: EmbeddingClient;
@@ -86,6 +88,7 @@ export class TurnActionStateService {
     }
 
     const actionStateExtractor = new ActionStateExtractor({
+      similarityConfig: this.options.similarityConfig,
       llmClient: input.llmClient,
       model: this.options.model,
       actionRepository: this.options.actionRepository,
@@ -165,6 +168,7 @@ export class TurnActionStateService {
     }
 
     const actionStateExtractor = new ActionStateExtractor({
+      similarityConfig: this.options.similarityConfig,
       llmClient: input.llmClient,
       model: this.options.model,
       actionRepository: this.options.actionRepository,

@@ -1,4 +1,5 @@
 import { EmbeddingBankError } from "../embeddings/bank-profile.js";
+import { similarityThresholds } from "../config/similarity.js";
 import { createServer, request as httpRequest, type Server } from "node:http";
 import { AddressInfo } from "node:net";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -1907,6 +1908,58 @@ describe("memory sidecar handler", () => {
       ],
     });
   });
+
+  it.each(["/memory/recall", "/memory/context"])(
+    "uses each tenant's fused abstention override in %s",
+    async (path) => {
+      const recorded = recordingPool();
+      recorded.rec.episodeOverrides = { shared: true };
+      const pool: MemoryPool = {
+        ...recorded.pool,
+        async withTenant(tenant, fn, opts) {
+          return recorded.pool.withTenant(
+            tenant,
+            async (borg) => {
+              Object.defineProperty(borg, "similarityThresholds", {
+                value: similarityThresholds({
+                  similarity: { overrides: { recallAbstain: tenant === "acme" ? 1.17 : 1.16 } },
+                }),
+              });
+              return fn(borg);
+            },
+            opts,
+          );
+        },
+      };
+      const base = await start(pool);
+      const body = {
+        query: "who leads",
+        limit: 3,
+        ...(path === "/memory/context"
+          ? {
+              session: "chat",
+              sections: ["episodes"],
+              sender: { external_id: "alice", display_name: "Alice" },
+              conversation: { type: "personal", name: "Alice" },
+            }
+          : {}),
+      };
+      const abstained = await post(base, path, { ...body, tenant: "acme" }, TOKEN);
+      const retained = await post(base, path, { ...body, tenant: "other" }, TOKEN);
+      expect(abstained.status).toBe(200);
+      expect(await abstained.json()).toMatchObject({ abstained: true, episodes: [] });
+      expect(retained.status).toBe(200);
+      expect(await retained.json()).toMatchObject({
+        episodes: [expect.objectContaining({ raw_score: 1.16 })],
+      });
+
+      const disabledBase = await start(pool, TOKEN, { recallAbstainThreshold: 0 });
+      const disabled = await post(disabledBase, path, { ...body, tenant: "acme" }, TOKEN);
+      expect(await disabled.json()).toMatchObject({
+        episodes: [expect.objectContaining({ raw_score: 1.16 })],
+      });
+    },
+  );
 
   it("lists episodes from the query tenant without a body, clamping limit and passing cursor", async () => {
     const { pool, rec } = recordingPool();

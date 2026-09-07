@@ -299,6 +299,7 @@ export class TurnOrchestrator {
       tracer: this.tracer,
     });
     const turnActionStateService = new TurnActionStateService({
+      similarityConfig: options.config,
       model: options.config.anthropic.models.recallExpansion,
       actionRepository: options.actionRepository,
       embeddingClient: options.embeddingClient,
@@ -306,6 +307,7 @@ export class TurnOrchestrator {
       tracer: this.tracer,
     });
     const turnGoalPromotionService = new TurnGoalPromotionService({
+      similarityConfig: options.config,
       model: options.config.anthropic.models.recallExpansion,
       identityService: options.identityService,
       goalsRepository: options.goalsRepository,
@@ -355,6 +357,7 @@ export class TurnOrchestrator {
               options.attachmentService.fetchImageForLlm(attachmentId),
           });
     const turnActionCoordinator = new TurnActionCoordinator({
+      similarityConfig: options.config,
       commitmentGuardRunner,
       postGenerationGuardRunner,
       embeddingClient: options.embeddingClient,
