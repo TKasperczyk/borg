@@ -259,3 +259,104 @@ npx vitest run src/retrieval/recall-core.test.ts -t 'maps N=3 variants to semant
 | `BORG_EMBEDDING_API_KEY` | config value; library default `lm-studio` | Parsed library setting; the shared sidecar client requires `LLM_API_KEY` instead. Also a CLI fallback when `LLM_API_KEY` is absent. |
 
 Deployment starts with the old model/dimensions and `EMBEDDING_LEGACY_SOURCE_MODEL=generative-apis/qwen3-embedding-8b`. Only after all five banks migrate and verify, set `EMBEDDING_MODEL=scw/bge-m3`, `EMBEDDING_DIMS=1024`, remove temporary legacy assertions (including any library-config fallback), and restart the shared sidecar.
+
+
+## Legacy consolidation resolution after the production dry-run
+
+The production dry-run exposed ambiguous legacy rows with no retained original synthesis. This change supersedes the review-fix requirement to recover that original synthesis before migrating. Strict reconstruction remains the default; the operator can now explicitly choose `--legacy-consolidation-input longest-prefix` for re-embedding to a new model.
+
+- The runtime builder enumerates every valid append boundary and counts distinct rendered inputs. Its typed error exposes the zero-appended-lines candidate only when it exactly reproduces the stored narrative. Runtime callers remain strict.
+- Inventory records every unrecoverable episode, its reason and candidate count, without stopping the scan. An unresolved row has a null text hash and retains its non-vector field hash. Completed dry-run inventories exit zero even when the report marks a migration blocked. Real runs emit the complete inventory and error report before stopping.
+- The opt-in selects the entire persisted narrative as synthesized prose, plus protected raw source lines in writer order. The source inventory remains immutable for source-change checks and backup verification. A separate expected target inventory accounts for the chosen input labels and, where necessary, the added nullable column.
+- The durable journal pins the policy, per-row choices and target identities. Staging writes each label with its new vector, and checkpoints hash the resulting target fields and text. Resume reuses that plan, including when the flag is omitted. A completed strict migration can be skipped when an all-tenant resume opts in for remaining banks.
+- Every cutover/verification path uses the expected target inventory and checks the exact runtime narrative-preservation invariant for labelled rows. Unambiguous rows retain their original reconstruction; other non-vector fields remain unchanged. Missing sources and inconsistent recorded inputs still block a migration.
+- Optional inventory/journal properties are omitted when unused so existing strict journals and backup fingerprints remain compatible.
+
+### Files changed for this request
+
+Paths are relative to the repository root; baseline is `ccded9f3`.
+
+- `src/memory/episodic/protected-lines.ts`
+- `src/memory/episodic/protected-lines.test.ts`
+- `scripts/embedding-migration/inventory.ts`
+- `scripts/embedding-migration/migrate.ts`
+- `scripts/migrate-embeddings.ts`
+- `scripts/migrate-embeddings.test.ts`
+- `docs/embedding-migration.md`
+- `docs/embedding-migration-development.md`
+
+### Regression coverage
+
+| Requirement | Covering test |
+| --- | --- |
+| Full dry-run inventory, counts, ids, distinct candidate counts, exit zero across tenants | `scripts/migrate-embeddings.test.ts`: reports every ambiguous legacy input in a mixed dry-run inventory and exits zero across tenants |
+| Real run reports the full list then fails before backup or staging | Same file: fails a real run only after reporting the full unrecoverable list, including missing raw sources |
+| Flag selection, nullable legacy column, unchanged other fields, vector/input equality, verify-only, subsequent dry-run without ambiguity | Same file: labels only ambiguous legacy inputs with their vectors and verifies them (both schema layouts) |
+| Atomic label/vector persistence and checkpoint replay/skip | Same file: resumes labelled vectors after a checkpointed/uncheckpointed interruption without changing the recorded policy |
+| Recovery after both renames with labelled target inventory | Same file: recovers labelled rows after the previous/live cutover rename |
+| Source changes, strict remaining blockers, completed-tenant resume | Same file: rejects a changed source after recording fallback choices; keeps missing or inconsistent inputs blocked even with the longest-prefix opt-in; skips completed strict migrations when an all-tenant resume opts in for remaining banks |
+| Real runtime open and input rendering | Same file: opens a migrated bank through Borg and renders the persisted fallback with the runtime recipe |
+| Every candidate counted; fallback preserves the exact narrative | `src/memory/episodic/protected-lines.test.ts`: counts every distinct legacy candidate and exposes only a narrative-preserving longest prefix |
+
+### Verification
+
+Node 22.23.2, Vitest 4.1.9. `TMPDIR=$HOME/.cache/borg-bge-longest-prefix/tmp`, `npm_config_cache=$HOME/.cache/borg-bge-longest-prefix/npm`; logs are under `$HOME/.cache/borg-bge-longest-prefix/logs`. All embedding/LLM clients in the regressions are fakes. No production bank or gateway was accessed.
+
+`npm run typecheck` exited 0; exact output (`typecheck-final.log`):
+
+```text
+> borg@0.1.0 typecheck
+> tsc --noEmit && tsc --noEmit -p tsconfig.eval.json && tsc --noEmit -p tsconfig.assessor.json && tsc --noEmit -p tsconfig.simulator.json && tsc --noEmit -p tsconfig.test.json
+```
+
+The touched tests and related writer/repository/runtime/runbook coverage ran with:
+
+```sh
+npx vitest run scripts/migrate-embeddings.test.ts scripts/embedding-migration-runbook.test.ts src/memory/episodic/protected-lines.test.ts src/memory/episodic/repository.test.ts src/memory/episodic/extractor.test.ts src/offline/consolidator/index.test.ts src/embeddings/serialized.test.ts src/embeddings/bank-profile.test.ts --maxWorkers=2 --testTimeout=60000 --hookTimeout=60000
+```
+
+Exit 0; exact summary (`touched-tests-final.log`):
+
+```text
+ Test Files  8 passed (8)
+      Tests  168 passed (168)
+   Start at  13:58:54
+   Duration  71.15s (transform 5.41s, setup 0ms, import 10.95s, tests 85.97s, environment 1ms)
+```
+
+The full suite ran once, on `eda019f2`, with:
+
+```sh
+npx vitest run --maxWorkers=2 --testTimeout=60000 --hookTimeout=60000
+```
+
+Exit 1; exact summary (`full-vitest.log`):
+
+```text
+ Test Files  2 failed | 375 passed (377)
+      Tests  2 failed | 4500 passed | 1 todo (4503)
+   Start at  14:00:28
+   Duration  1138.19s (transform 19.22s, setup 0ms, import 209.73s, tests 2007.96s, environment 50ms)
+```
+
+The two failures were:
+
+- `assessor/scenarios/index.test.ts:32`, "runs every scenario through the scripted mock path and produces a report": `Test timed out in 60000ms` (60,379 ms). This same test timed out in the previous full review run.
+- `src/retrieval/recall-core.test.ts:411`, "maps N=3 variants to semantic lanes without changing episode fusion": expected `decayedSalience: 0.0038047635709747476`, received `0.0038047635709747467`. These values exactly match the prior `dev` reproduction in `$HOME/.cache/borg-bge-fixes/logs/dev-floating-point.log`; that test and its implementation were not changed for this request.
+
+The assessor timeout passed in isolation with the same 60-second test limit:
+
+```sh
+npx vitest run assessor/scenarios/index.test.ts -t 'runs every scenario through the scripted mock path and produces a report' --maxWorkers=1 --testTimeout=60000 --hookTimeout=60000
+```
+
+Exit 0; exact summary (`assessor-isolated.log`):
+
+```text
+ Test Files  1 passed (1)
+      Tests  1 passed | 12 skipped (13)
+   Start at  14:20:00
+   Duration  24.42s (transform 4.11s, setup 0ms, import 5.42s, tests 18.85s, environment 0ms)
+```
+
+All requested regressions passed in both focused and full validation. The full run remains non-green because of the two failures above; it was not repeated. The pre-existing untracked `pnpm-lock.yaml` was left untouched. No sidecar environment variable was added or changed; the opt-in is a CLI flag, persisted per attempt in the migration journal and per resolved row in LanceDB.
