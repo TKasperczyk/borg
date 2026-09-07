@@ -1145,15 +1145,21 @@ describe("Borg", () => {
 
     const sqliteCloseSpy = vi.spyOn(SqliteDatabase.prototype, "close");
     const lanceCloseSpy = vi.spyOn(LanceDbStore.prototype, "close");
-    const failure = new Error("embedding init failed");
+    const failure = new Error("LLM init failed");
     const openOptions = {
       dataDir: tempDir,
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
     } as {
       dataDir: string;
+      embeddingDimensions: number;
       embeddingClient?: ScriptedEmbeddingClient;
+      llmClient?: FakeLLMClient;
     };
 
-    Object.defineProperty(openOptions, "embeddingClient", {
+    // Embedding initialization now precedes storage for the profile guard;
+    // fail at the subsequent LLM composition step to exercise cleanup.
+    Object.defineProperty(openOptions, "llmClient", {
       get() {
         throw failure;
       },
