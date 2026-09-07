@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { connect } from "@lancedb/lancedb";
+import { DataType, Precision } from "apache-arrow";
 import { z } from "zod";
 
 import { readJsonFile, writeJsonFileAtomic } from "../util/atomic-write.js";
@@ -10,6 +11,15 @@ import { withFileLock } from "../stream/file-lock.js";
 export const EMBEDDING_PROFILE_FILE = "embedding-profile.json";
 export const EMBEDDING_FENCE_FILE = "embedding-migration.lock";
 export const EMBEDDING_ACCESS_FILE = "embedding-bank-access.lock";
+export const VECTOR_TABLE_NAMES = [
+  "action_records",
+  "episodes",
+  "image_perception_embeddings",
+  "observed_events",
+  "open_questions",
+  "semantic_nodes",
+  "skills",
+] as const;
 
 export const embeddingProfileSchema = z.object({
   model: z.string().trim().min(1),
@@ -34,6 +44,19 @@ export const embeddingFenceSchema = z.object({
 });
 
 export class EmbeddingBankError extends StorageError {}
+
+export function requireEmbeddingClientProfile(client: {
+  readonly profile?: unknown;
+}): EmbeddingProfile {
+  const parsed = embeddingProfileSchema.safeParse(client.profile);
+  if (!parsed.success) {
+    throw new EmbeddingBankError("Embedding client must declare its model and dimensions", {
+      code: "EMBEDDING_CLIENT_PROFILE_REQUIRED",
+      cause: parsed.error,
+    });
+  }
+  return parsed.data;
+}
 
 export function readBankEmbeddingProfile(dataDir: string): BankEmbeddingProfile | undefined {
   try {
@@ -75,19 +98,36 @@ export function embeddingDimensionsFromSchema(tableSchema: {
   fields: readonly { name: string; type: unknown }[];
 }): number {
   const type = tableSchema.fields.find((field) => field.name === "embedding")?.type as
-    | { listSize?: unknown }
+    | DataType
     | undefined;
-  return z.number().int().positive().parse(type?.listSize);
+  if (
+    type !== undefined &&
+    DataType.isFixedSizeList(type) &&
+    Number.isInteger(type.listSize) &&
+    type.listSize > 0 &&
+    DataType.isFloat(type.valueType) &&
+    type.valueType.precision === Precision.SINGLE
+  ) {
+    return type.listSize;
+  }
+  throw new EmbeddingBankError(
+    "Vector table requires embedding: FixedSizeList(dimensions, float32)",
+    {
+      code: "EMBEDDING_SCHEMA_INVALID",
+    },
+  );
 }
 
 export async function guardBankEmbeddingProfile(
   dataDir: string,
   effective: EmbeddingProfile,
+  legacySourceModel?: string,
 ): Promise<BankEmbeddingProfile> {
   assertBankNotFenced(dataDir);
   const profile = embeddingProfileSchema.parse(effective);
   const stored = readBankEmbeddingProfile(dataDir);
   if (stored !== undefined) assertEmbeddingProfilesMatch(stored, profile);
+  const existingBank = existsSync(join(dataDir, "borg.db")) || existsSync(join(dataDir, "lancedb"));
   try {
     // Direct opens only: no schema evolution, SQL migrations or reconciliation.
     if (existsSync(join(dataDir, "lancedb"))) {
@@ -97,7 +137,11 @@ export async function guardBankEmbeddingProfile(
           const table = await connection.openTable(name);
           try {
             const tableSchema = await table.schema();
-            if (!tableSchema.fields.some((field) => field.name === "embedding")) continue;
+            if (
+              !(VECTOR_TABLE_NAMES as readonly string[]).includes(name) &&
+              !tableSchema.fields.some((field) => field.name === "embedding")
+            )
+              continue;
             if (embeddingDimensionsFromSchema(tableSchema) !== profile.dimensions) {
               throw new EmbeddingBankError(
                 `Bank embedding dimension mismatch in ${name}; migration required`,
@@ -120,6 +164,12 @@ export async function guardBankEmbeddingProfile(
     });
   }
   if (stored !== undefined) return stored;
+  if (existingBank && legacySourceModel !== profile.model) {
+    throw new EmbeddingBankError(
+      "Unlabelled bank requires an explicit legacy source model matching the effective embedding client",
+      { code: "EMBEDDING_LEGACY_SOURCE_REQUIRED" },
+    );
+  }
   const now = Date.now();
   const adopted: BankEmbeddingProfile = {
     ...profile,

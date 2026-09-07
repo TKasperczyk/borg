@@ -188,6 +188,8 @@ export type BorgOpenOptions = {
   dataDir?: string;
   embeddingDimensions?: number;
   embeddingProfile?: EmbeddingProfile;
+  /** Assertion of the model used by an existing, unlabelled bank. */
+  embeddingLegacySourceModel?: string;
   embeddingClient?: EmbeddingClient;
   llmClient?: LLMClient;
   clock?: Clock;

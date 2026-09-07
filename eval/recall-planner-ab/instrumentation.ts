@@ -155,6 +155,9 @@ export class ScratchPlannerLlmClient implements LLMClient {
 }
 
 export class ScratchCachingEmbeddingClient implements EmbeddingClient {
+  get profile() {
+    return this.runtime.client.profile;
+  }
   readonly calls: EmbeddingLogicalCallRecord[] = [];
   private readonly pending = new Map<string, Promise<Float32Array>>();
   private cacheWriteTail: Promise<void> = Promise.resolve();

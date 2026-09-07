@@ -57,6 +57,9 @@ function tokenizeEvalText(text: string): Set<string> {
  * stable substrate benchmarks and should not be used in production.
  */
 export class DeterministicEmbeddingClient implements EmbeddingClient {
+  get profile() {
+    return { model: "eval-deterministic", dimensions: this.dims };
+  }
   private readonly tokenCache = new Map<string, Float32Array>();
 
   constructor(private readonly dims = DEFAULT_DIMS) {}

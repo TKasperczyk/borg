@@ -1072,6 +1072,7 @@ describe("autonomy integration", () => {
     tempDirs.push(tempDir);
     const clock = new ManualClock(1_800_000_000_000);
     const zeroEmbeddingClient: EmbeddingClient = {
+      profile: { model: "fake-embed", dimensions: 4 },
       embed: async () => new Float32Array(4),
       embedBatch: async (texts) => texts.map(() => new Float32Array(4)),
     };

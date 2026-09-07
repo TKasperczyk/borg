@@ -20,6 +20,7 @@ import { DEFAULT_SESSION_ID, createEpisodeId, createStreamEntryId } from "./util
 import { createMigrations as createBorgMigrations } from "./borg/storage-setup.js";
 
 class RustEmbeddingClient implements EmbeddingClient {
+  readonly profile = { model: "fake-embed", dimensions: 4 };
   async embed(text: string): Promise<Float32Array> {
     return this.vector(text);
   }

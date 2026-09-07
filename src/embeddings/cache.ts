@@ -62,7 +62,7 @@ class CachingEmbeddingClient implements EmbeddingClient {
   }
 
   get profile() {
-    return { model: this.options.model, dimensions: this.options.dims };
+    return this.inner.profile;
   }
 
   async embed(text: string): Promise<Float32Array> {

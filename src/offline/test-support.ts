@@ -131,6 +131,9 @@ import {
 } from "./index.js";
 
 export class TestEmbeddingClient implements EmbeddingClient {
+  get profile() {
+    return { model: "fake-embed", dimensions: this.dims };
+  }
   constructor(
     private readonly vectorsByText: ReadonlyMap<string, readonly number[]> = new Map(),
     private readonly dims = 4,

@@ -201,6 +201,7 @@ pool = new BorgPool({
   openOptions: {
     embeddingDimensions: embeddingDims,
     embeddingProfile: { model: embeddingModel, dimensions: embeddingDims },
+    embeddingLegacySourceModel: process.env.EMBEDDING_LEGACY_SOURCE_MODEL,
     embeddingClient,
     llmClient,
     clock: sidecarClock,

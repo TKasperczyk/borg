@@ -6609,29 +6609,27 @@ describe("embedding migration administration", () => {
     expect(evict).toHaveBeenCalledWith("acme");
     expect(withTenant).not.toHaveBeenCalled();
   });
-  it.each(["EMBEDDING_MIGRATION_FENCED", "EMBEDDING_PROFILE_MISMATCH"])(
-    "reports %s as unavailable without a stack",
-    async (code) => {
-      const base = await start({
-        withTenant: async () => {
-          throw new EmbeddingBankError("embedding migration unavailable", { code });
-        },
-        listTenantIds: async () => [],
-      });
-      const response = await post(
-        base,
-        "/memory/recall",
-        { tenant: "acme", query: "memory" },
-        TOKEN,
-      );
-      expect(response.status).toBe(503);
-      const body = await response.json();
-      expect(body).toMatchObject({
-        code,
-        degraded: true,
-        degraded_reason: "embedding migration unavailable",
-      });
-      expect(body).not.toHaveProperty("stack");
-    },
-  );
+  it.each([
+    "EMBEDDING_MIGRATION_FENCED",
+    "EMBEDDING_PROFILE_MISMATCH",
+    "EMBEDDING_CLIENT_PROFILE_REQUIRED",
+    "EMBEDDING_LEGACY_SOURCE_REQUIRED",
+    "EMBEDDING_SCHEMA_INVALID",
+  ])("reports %s as unavailable without a stack", async (code) => {
+    const base = await start({
+      withTenant: async () => {
+        throw new EmbeddingBankError("embedding migration unavailable", { code });
+      },
+      listTenantIds: async () => [],
+    });
+    const response = await post(base, "/memory/recall", { tenant: "acme", query: "memory" }, TOKEN);
+    expect(response.status).toBe(503);
+    const body = await response.json();
+    expect(body).toMatchObject({
+      code,
+      degraded: true,
+      degraded_reason: "embedding migration unavailable",
+    });
+    expect(body).not.toHaveProperty("stack");
+  });
 });

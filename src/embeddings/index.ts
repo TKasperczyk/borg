@@ -20,6 +20,7 @@ type OpenAIEmbeddingsClient = {
 };
 
 export type EmbeddingClient = {
+  /** Required when injecting into Borg.open; wrappers must preserve this identity. */
   readonly profile?: EmbeddingProfile;
   embed(text: string): Promise<Float32Array>;
   embedBatch(texts: readonly string[]): Promise<Float32Array[]>;
@@ -328,10 +329,17 @@ function nextPseudoRandom(seed: number): number {
 }
 
 export class FakeEmbeddingClient implements EmbeddingClient {
-  constructor(private readonly dims = 32) {
+  constructor(
+    private readonly dims = 32,
+    private readonly model = "fake-embed",
+  ) {
     if (!Number.isInteger(dims) || dims <= 0) {
       throw new ConfigError("FakeEmbeddingClient dims must be a positive integer");
     }
+  }
+
+  get profile(): EmbeddingProfile {
+    return { model: this.model, dimensions: this.dims };
   }
 
   async embed(text: string): Promise<Float32Array> {

@@ -22,6 +22,7 @@ const CONSOLIDATION_TOOL_NAME = "EmitConsolidation";
 const EPISODE_TOOL_NAME = "EmitEpisodeCandidates";
 
 class ScriptedEmbeddingClient implements EmbeddingClient {
+  readonly profile = { model: "fake-embed", dimensions: 4 };
   async embed(text: string): Promise<Float32Array> {
     return this.vector(text);
   }

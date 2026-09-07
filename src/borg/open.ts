@@ -1,4 +1,5 @@
 import {
+  requireEmbeddingClientProfile,
   acquireEmbeddingBankAccess,
   assertBankNotFenced,
   assertEmbeddingProfilesMatch,
@@ -80,20 +81,20 @@ export async function openBorgDependencies(
     const resolvedConfig = resolveBorgConfig(options);
     assertBankNotFenced(resolvedConfig.dataDir);
     const embeddingClient = options.embeddingClient ?? createEmbeddingClient(resolvedConfig);
-    const effectiveEmbeddingProfile = options.embeddingProfile ??
-      embeddingClient.profile ?? {
-        model: resolvedConfig.embedding.model,
-        dimensions: options.embeddingDimensions ?? resolvedConfig.embedding.dims,
-      };
-    if (embeddingClient.profile !== undefined)
-      assertEmbeddingProfilesMatch(embeddingClient.profile, effectiveEmbeddingProfile);
+    const effectiveEmbeddingProfile = requireEmbeddingClientProfile(embeddingClient);
+    if (options.embeddingProfile !== undefined)
+      assertEmbeddingProfilesMatch(effectiveEmbeddingProfile, options.embeddingProfile);
     if (options.embeddingDimensions !== undefined)
       assertEmbeddingProfilesMatch(effectiveEmbeddingProfile, {
         ...effectiveEmbeddingProfile,
         dimensions: options.embeddingDimensions,
       });
     releaseEmbeddingBankAccess = await acquireEmbeddingBankAccess(resolvedConfig.dataDir);
-    await guardBankEmbeddingProfile(resolvedConfig.dataDir, effectiveEmbeddingProfile);
+    await guardBankEmbeddingProfile(
+      resolvedConfig.dataDir,
+      effectiveEmbeddingProfile,
+      options.embeddingLegacySourceModel ?? resolvedConfig.embedding.legacySourceModel,
+    );
     const outboundConnectorRegistry = new MessageConnectorRegistry(
       options.outboundConnectors ?? [],
     );
