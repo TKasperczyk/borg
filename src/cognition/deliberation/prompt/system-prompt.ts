@@ -406,6 +406,21 @@ const AUTONOMOUS_OUTBOUND_REFLECTION_POSTURE = [
 const AUTONOMOUS_OUTBOUND_REACHABLE_THREADS_ORDERING =
   "These routes are listed most-recently-active first, and the cap on this list drops the least-recently-active routes rather than sampling. A thread's activity stamp moves when a message arrives in it, not only when its turn ends, so the route at the top is the one that most recently received something -- which is also the one most likely to be inside its own turn while I am reading this. Position here says when that thread last moved, and nothing about whether it can be reached now.";
 
+// `remaining_posts_in_window` is drawn once per turn: the coordinator calls
+// `AutonomousOutboundPolicy.promptContext` while assembling the deliberation
+// context, and both the planner and the finalizer render that one captured
+// value. `tool.outbound.post` is a non-terminal finalizer tool, so a post can
+// be made after the draw and inside the same turn -- and nothing recomputes the
+// count afterwards. The figure is therefore stale by exactly the turn's own
+// posts, and the failure is silent in the worse direction: a private entry
+// written after posting can state the pre-post number as the current one, which
+// reads as a record that no post was made. Name the basis so an unmoved count is
+// legible as un-recomputed rather than as evidence of not having sent.
+// Presentation only: this labels a number that is already on the surface, adds
+// no draw, and gates nothing.
+const AUTONOMOUS_OUTBOUND_REMAINING_POSTS_BASIS =
+  "This count was taken once, at the start of this turn: it is the posts already inside the rolling window at that moment. It is not recomputed while the turn runs, so a post I make during this turn does not move it. If I have posted since this turn began, the number here is stale by exactly those posts -- unchanged because nothing re-read it, not because nothing was sent -- and any remaining-budget figure I state is about the turn's start unless I subtract them myself.";
+
 // Belief revision over recalled decisions. Reflection that only recalls past
 // decisions re-applies them; a mind re-examines them against what it now knows.
 // This frame is deliberately general (any standing conclusion) and non-coercive:
@@ -452,6 +467,7 @@ export function buildAutonomousOutboundAuthorizationSection(
     lines.push(
       `  <reachable_threads max_posts_per_window="${context.maxPostsPerWindow}" max_posts_per_target_per_window="${context.maxPostsPerTargetPerWindow}" remaining_posts_in_window="${context.remainingPostsInWindow}" window_ms="${context.windowMs}" ordered_by="most_recently_active_first">`,
       `    <ordering>${escapeXmlText(AUTONOMOUS_OUTBOUND_REACHABLE_THREADS_ORDERING)}</ordering>`,
+      `    <remaining_basis>${escapeXmlText(AUTONOMOUS_OUTBOUND_REMAINING_POSTS_BASIS)}</remaining_basis>`,
     );
 
     for (const target of context.targets) {

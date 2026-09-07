@@ -5799,6 +5799,41 @@ describe("buildAutonomousOutboundAuthorizationSection", () => {
     expect(withoutTargets).not.toContain("most_recently_active_first");
   });
 
+  it("names remaining_posts_in_window as a turn-start draw that this turn's own posts do not move", () => {
+    const section =
+      buildAutonomousOutboundAuthorizationSection(baseContext, "autonomous", toolMenu) ?? "";
+
+    expect(section).toContain('remaining_posts_in_window="4"');
+    expect(section).toContain("<remaining_basis>");
+    expect(section).toContain("This count was taken once, at the start of this turn");
+    expect(section).toContain("It is not recomputed while the turn runs");
+    // The count is drawn once per turn while tool.outbound.post stays callable at
+    // the finalizer, so the number is stale by the turn's own posts -- and the
+    // dangerous reading is the negative one, where an unmoved count is taken as a
+    // record that nothing was sent.
+    expect(section).toContain(
+      "unchanged because nothing re-read it, not because nothing was sent",
+    );
+    expect(section).toContain("unless I subtract them myself");
+  });
+
+  it("keeps the remaining basis inside the route list rather than the posture", () => {
+    const section =
+      buildAutonomousOutboundAuthorizationSection(baseContext, "autonomous", toolMenu) ?? "";
+    const withoutTargets =
+      buildAutonomousOutboundAuthorizationSection(
+        { ...baseContext, targets: [] },
+        "autonomous",
+        toolMenu,
+      ) ?? "";
+
+    expect(section.indexOf("<remaining_basis>")).toBeGreaterThan(
+      section.indexOf("<reachable_threads "),
+    );
+    expect(section.indexOf("<remaining_basis>")).toBeLessThan(section.indexOf("<target "));
+    expect(withoutTargets).not.toContain("<remaining_basis>");
+  });
+
   it("omits audience_entity_id when the thread has no audience entity", () => {
     const target = baseContext.targets[0]!;
     const section =
