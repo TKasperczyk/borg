@@ -11,7 +11,7 @@ import { EmbeddingBankError } from "../embeddings/bank-profile.js";
 //        sender.operator? and conversation.external_id? enrich sessions/audience/activity;
 //        absent assistant records an observation; absent user records a reply-only turn;
 //        incomplete identity keeps legacy append behavior
-//   POST /memory/context { tenant, session, sender, conversation, query?, focus?, context_turns?,
+//   POST /memory/context { tenant, session, sender, conversation, focus, context_turns,
 //                          limit?, sections?,
 //                          participants?, entity_terms?, time_range?, exclude?, venue_since?,
 //                          venue_limit? }
@@ -370,9 +370,12 @@ const memoryContextBodySchema = z
       .array(z.string().trim().min(1).max(MAX_CONTEXT_ENTITY_TERM_CHARS))
       .max(MAX_CONTEXT_ENTITY_TERMS)
       .optional(),
-    query: z.string().trim().min(1).optional(),
-    focus: z.string().trim().min(1).optional(),
-    context_turns: z.array(contextTurnSchema).max(MAX_CONTEXT_TURNS).optional(),
+    focus: z.string({ error: "focus is required and must be a string" }).trim().min(1),
+    context_turns: z
+      .array(contextTurnSchema, {
+        error: "context_turns is required and must be an array of structured turns",
+      })
+      .max(MAX_CONTEXT_TURNS),
     limit: z.number().finite().optional(),
     sections: z.array(memoryContextSectionSchema).min(1).optional(),
     time_range: episodeTimeRangeSchema.optional(),
@@ -399,22 +402,6 @@ const memoryContextBodySchema = z
         code: "custom",
         path: ["conversation", "external_id"],
         message: "groupChat and channel context requires conversation.external_id",
-      });
-    }
-
-    if (value.context_turns !== undefined && value.focus === undefined) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["context_turns"],
-        message: "context_turns requires focus",
-      });
-    }
-
-    if (episodesRequested && !value.focus && !value.query) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["focus"],
-        message: "focus or query is required when episodes are requested",
       });
     }
 
@@ -2555,12 +2542,16 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
         const parsed = memoryContextBodySchema.safeParse(body);
 
         if (!parsed.success) {
-          send(res, 400, { error: "invalid memory context body" });
+          send(res, 400, {
+            error: `invalid memory context body: ${parsed.error.issues
+              .map((issue) => `${issue.path.join(".") || "body"}: ${issue.message}`)
+              .join("; ")}`,
+          });
           return;
         }
 
         const requestedSections = new Set(parsed.data.sections ?? DEFAULT_MEMORY_CONTEXT_SECTIONS);
-        const recallFocus = parsed.data.focus ?? parsed.data.query ?? "";
+        const recallFocus = parsed.data.focus;
         const episodeLimit = Math.max(
           1,
           Math.min(
@@ -2568,19 +2559,12 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
             Math.floor(parsed.data.limit === undefined ? 8 : parsed.data.limit),
           ),
         );
-        // Overfetch and account after selection whenever the response may be reordered or filtered
-        // after retrieval: exclusions, an explicit range, or a planner-driven recall (focus) whose
-        // cue can promote in-period episodes that a plain limit would already have cut.
-        const deferEpisodeRetrievalAccounting =
-          parsed.data.exclude !== undefined ||
-          parsed.data.time_range !== undefined ||
-          parsed.data.focus !== undefined;
-        const episodeSearchLimit = deferEpisodeRetrievalAccounting
-          ? Math.min(
-              maxRecallLimit * EPISODE_OVERFETCH_MULTIPLIER,
-              episodeLimit * EPISODE_OVERFETCH_MULTIPLIER,
-            )
-          : episodeLimit;
+        // Planner cues can promote candidates below the response limit. Account
+        // only for the episodes returned after cue ordering and exclusions.
+        const episodeSearchLimit = Math.min(
+          maxRecallLimit * EPISODE_OVERFETCH_MULTIPLIER,
+          episodeLimit * EPISODE_OVERFETCH_MULTIPLIER,
+        );
         const venueLimit = parsed.data.venue_limit ?? DEFAULT_VENUE_RECENT_LIMIT;
         const venueSearchLimit =
           parsed.data.exclude === undefined
@@ -2828,7 +2812,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
                     : { entityTerms: parsed.data.entity_terms }),
                   semanticVariantCount: recallSemanticVariantCount,
                   recallQueryPlannerContext: {
-                    contextTurns: (parsed.data.context_turns ?? []).map((turn) => ({
+                    contextTurns: parsed.data.context_turns.map((turn) => ({
                       role: turn.role,
                       content: turn.text,
                     })),
@@ -2847,7 +2831,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
                     ownerLivedExperience: context.plannerOwnerLivedExperience,
                   },
                   ...(recencyPrior === undefined ? {} : { recencyPrior }),
-                  ...(deferEpisodeRetrievalAccounting ? { recordRetrieval: false } : {}),
+                  recordRetrieval: false,
                   ...(traceTurnId === undefined ? {} : { traceTurnId }),
                 };
                 const recalled = await borg.episodic.search(recallFocus, {
@@ -2895,7 +2879,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
                   recallAbstainThreshold > 0 &&
                   (topRawScore === null || topRawScore < recallAbstainThreshold);
 
-                if (deferEpisodeRetrievalAccounting && !shouldAbstain) {
+                if (!shouldAbstain) {
                   for (const hit of included) {
                     borg.episodic.recordRetrieval(hit.episode.id, hit.score);
                   }

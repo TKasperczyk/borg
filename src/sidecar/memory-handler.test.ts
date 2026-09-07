@@ -1933,16 +1933,17 @@ describe("memory sidecar handler", () => {
       };
       const base = await start(pool);
       const body = {
-        query: "who leads",
         limit: 3,
         ...(path === "/memory/context"
           ? {
+              focus: "who leads",
+              context_turns: [],
               session: "chat",
               sections: ["episodes"],
               sender: { external_id: "alice", display_name: "Alice" },
               conversation: { type: "personal", name: "Alice" },
             }
-          : {}),
+          : { query: "who leads" }),
       };
       const abstained = await post(base, path, { ...body, tenant: "acme" }, TOKEN);
       const retained = await post(base, path, { ...body, tenant: "other" }, TOKEN);
@@ -3452,97 +3453,99 @@ describe("memory sidecar handler", () => {
     expect(rec.appendManyCalls).toEqual([]);
   });
 
-  it("validates structured focus/context requests while retaining query-only compatibility", async () => {
+  it.each([
+    { label: "missing focus", fields: { context_turns: [] }, error: "focus" },
+    {
+      label: "missing context turns",
+      fields: { focus: "Current question" },
+      error: "context_turns",
+    },
+    {
+      label: "opaque query only",
+      fields: { query: "user: earlier\nassistant: reply" },
+      error: "focus",
+    },
+    {
+      label: "query alongside structured input",
+      fields: { focus: "Current question", context_turns: [], query: "opaque" },
+      error: "query",
+    },
+    {
+      label: "opaque context",
+      fields: { focus: "Current question", context_turns: "user: earlier" },
+      error: "context_turns",
+    },
+    { label: "empty focus", fields: { focus: " ", context_turns: [] }, error: "focus" },
+    {
+      label: "invalid role",
+      fields: { focus: "Current question", context_turns: [{ role: "system", text: "earlier" }] },
+      error: "role",
+    },
+    {
+      label: "missing turn text",
+      fields: { focus: "Current question", context_turns: [{ role: "user" }] },
+      error: "text",
+    },
+    {
+      label: "too many turns",
+      fields: {
+        focus: "Current question",
+        context_turns: Array.from({ length: 4 }, () => ({ role: "user", text: "earlier" })),
+      },
+      error: "context_turns",
+    },
+    {
+      label: "unknown request option",
+      fields: { focus: "Current question", context_turns: [], semanticVariantCount: 2 },
+      error: "semanticVariantCount",
+    },
+    {
+      label: "missing focus for non-episode sections",
+      fields: { context_turns: [], sections: ["audience"] },
+      error: "focus",
+    },
+  ])("rejects $label before opening a tenant", async ({ fields, error }) => {
     const { pool, rec } = recordingPool();
     const base = await start(pool);
-    const identity = {
-      tenant: "acme",
-      session: "structured-context",
-      sender: { external_id: "alice", display_name: "Alice" },
-      conversation: { type: "personal", name: "Alice" },
-      sections: ["episodes"],
-    };
-
-    const focusOnly = await post(
-      base,
-      "/memory/context",
-      { ...identity, focus: "What happened?", context_turns: [] },
-      TOKEN,
-    );
-    expect(focusOnly.status).toBe(200);
-    await focusOnly.json();
-    expect(rec.lastRecallQuery).toBe("What happened?");
-
-    expect(
-      (
-        await post(
-          base,
-          "/memory/context",
-          {
-            ...identity,
-            query: "legacy",
-            context_turns: [{ role: "user", text: "missing focus" }],
-          },
-          TOKEN,
-        )
-      ).status,
-    ).toBe(400);
-    expect((await post(base, "/memory/context", identity, TOKEN)).status).toBe(400);
-    expect(
-      (
-        await post(
-          base,
-          "/memory/context",
-          {
-            ...identity,
-            focus: "bounded",
-            context_turns: Array.from({ length: 4 }, () => ({ role: "user", text: "turn" })),
-          },
-          TOKEN,
-        )
-      ).status,
-    ).toBe(400);
-    expect(
-      (
-        await post(
-          base,
-          "/memory/context",
-          { ...identity, focus: "bounded", semanticVariantCount: 2 },
-          TOKEN,
-        )
-      ).status,
-    ).toBe(400);
-  });
-
-  it("treats a query-only role-prefixed legacy blob as opaque planner FOCUS", async () => {
-    const { pool, rec } = recordingPool();
-    const base = await start(pool);
-    const legacyQuery = [
-      "user: I described the chat and reviewer roles.",
-      "assistant: You compared their permissions.",
-      "user: Which one did Jacek ask about?",
-    ].join("\n");
-
     const response = await post(
       base,
       "/memory/context",
       {
         tenant: "acme",
-        session: "legacy-role-prefixed-query",
+        session: "structured-context",
         sender: { external_id: "alice", display_name: "Alice" },
         conversation: { type: "personal", name: "Alice" },
-        query: legacyQuery,
+        sections: ["episodes"],
+        ...fields,
+      },
+      TOKEN,
+    );
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: expect.stringContaining(error) });
+    expect(rec.tenants).toEqual([]);
+  });
+
+  it("accepts an explicit empty dialogue history", async () => {
+    const { pool, rec } = recordingPool();
+    const base = await start(pool);
+    const response = await post(
+      base,
+      "/memory/context",
+      {
+        tenant: "acme",
+        session: "structured-context",
+        sender: { external_id: "alice", display_name: "Alice" },
+        conversation: { type: "personal", name: "Alice" },
+        focus: "What happened?",
+        context_turns: [],
         sections: ["episodes"],
       },
       TOKEN,
     );
-
     expect(response.status).toBe(200);
     await response.json();
-    expect(rec.lastRecallQuery).toBe(legacyQuery);
-    expect(rec.lastRecallOptions?.recallQueryPlannerContext).toMatchObject({
-      contextTurns: [],
-    });
+    expect(rec.lastRecallQuery).toBe("What happened?");
+    expect(rec.lastRecallOptions?.recallQueryPlannerContext).toMatchObject({ contextTurns: [] });
   });
 
   it("assembles personal context from only the person and observed group audiences", async () => {
@@ -3671,11 +3674,12 @@ describe("memory sidecar handler", () => {
       base,
       "/memory/context",
       {
+        context_turns: [],
         tenant: "acme",
         session: "tenant::alice::personal",
         sender: { external_id: "alice", display_name: "Alice", operator: true },
         conversation: { type: "personal", name: "Alice" },
-        query: "What matters now?",
+        focus: "What matters now?",
       },
       TOKEN,
     );
@@ -3717,7 +3721,8 @@ describe("memory sidecar handler", () => {
     expect(rec.lastRecallOptions).toMatchObject({
       audienceEntityId: alice,
       visibleAudienceEntityIds: [alice, group],
-      limit: 8,
+      limit: 24,
+      recordRetrieval: false,
     });
     expect(rec.lastVisibleActivityInput).toMatchObject({
       audienceEntityIds: [alice, group],
@@ -3745,20 +3750,21 @@ describe("memory sidecar handler", () => {
       session: "entity-context",
       sender: { external_id: "alice", display_name: "Alice" },
       conversation: { type: "personal", name: "Alice" },
-      query: "What did Jacek say about team-agent?",
+      focus: "What did Alex say about team-agent?",
+      context_turns: [],
       sections: ["episodes"],
     };
 
     const withTerms = await post(
       base,
       "/memory/context",
-      { ...request, entity_terms: ["Jacek", "team-agent"] },
+      { ...request, entity_terms: ["Alex", "team-agent"] },
       TOKEN,
     );
     expect(withTerms.status).toBe(200);
     await withTerms.json();
     expect(rec.lastRecallOptions).toMatchObject({
-      entityTerms: ["Jacek", "team-agent"],
+      entityTerms: ["Alex", "team-agent"],
       recencyPrior: { weight: 0.15, halfLifeHours: 36 },
       semanticVariantCount: 1,
       recallQueryPlannerContext: {
@@ -3768,15 +3774,15 @@ describe("memory sidecar handler", () => {
           currentSenderName: "Alice",
           currentAudienceName: "Alice",
           currentVenue: { type: "personal", name: "Alice" },
-          entityTerms: ["Jacek", "team-agent"],
+          entityTerms: ["Alex", "team-agent"],
         },
         ownerRecentActivity: [],
       },
     });
 
-    const oldShape = await post(base, "/memory/context", request, TOKEN);
-    expect(oldShape.status).toBe(200);
-    await oldShape.json();
+    const withoutTerms = await post(base, "/memory/context", request, TOKEN);
+    expect(withoutTerms.status).toBe(200);
+    await withoutTerms.json();
     expect(rec.lastRecallOptions).not.toHaveProperty("entityTerms");
     expect(rec.lastRecallOptions?.recallQueryPlannerContext).toMatchObject({
       contextTurns: [],
@@ -3804,20 +3810,19 @@ describe("memory sidecar handler", () => {
       "/memory/context",
       {
         tenant: "acme",
-        session: "tenant::ai-ninjas::thread",
-        sender: { external_id: "jacek", display_name: "Jacek Nowak" },
+        session: "tenant::example-group::thread",
+        sender: { external_id: "alex", display_name: "Alex Example" },
         conversation: {
           type: "groupChat",
-          name: "AI Ninjas",
-          external_id: "ai-ninjas",
+          name: "Example Group",
+          external_id: "example-group",
         },
-        query: "user: legacy blob\nassistant: legacy answer",
-        focus: "O które role pytał Jacek?",
+        focus: "O które role pytał Alex?",
         context_turns: [
           { role: "user", text: "Opisałem role chat i reviewer." },
-          { role: "assistant", text: "Na grupie AI Ninjas." },
+          { role: "assistant", text: "Na grupie Example Group." },
         ],
-        entity_terms: ["Jacek", "AI Ninjas"],
+        entity_terms: ["Alex", "Example Group"],
         sections: ["episodes"],
       },
       TOKEN,
@@ -3825,20 +3830,20 @@ describe("memory sidecar handler", () => {
 
     expect(response.status).toBe(200);
     await response.json();
-    expect(rec.lastRecallQuery).toBe("O które role pytał Jacek?");
+    expect(rec.lastRecallQuery).toBe("O które role pytał Alex?");
     expect(rec.lastRecallOptions).toMatchObject({
       semanticVariantCount: 3,
       recallQueryPlannerContext: {
         contextTurns: [
           { role: "user", content: "Opisałem role chat i reviewer." },
-          { role: "assistant", content: "Na grupie AI Ninjas." },
+          { role: "assistant", content: "Na grupie Example Group." },
         ],
         identity: {
           memoryOwnerName: "team-agent",
-          currentSenderName: "Jacek Nowak",
-          currentAudienceName: "AI Ninjas",
-          currentVenue: { type: "groupChat", name: "AI Ninjas" },
-          entityTerms: ["Jacek", "AI Ninjas"],
+          currentSenderName: "Alex Example",
+          currentAudienceName: "Example Group",
+          currentVenue: { type: "groupChat", name: "Example Group" },
+          entityTerms: ["Alex", "Example Group"],
         },
         ownerRecentActivity: [],
       },
@@ -3913,11 +3918,12 @@ describe("memory sidecar handler", () => {
       base,
       "/memory/context",
       {
+        context_turns: [],
         tenant: "acme",
         session: "source-context",
         sender: { external_id: "alice", display_name: "Alice" },
         conversation: { type: "personal", name: "Alice" },
-        query: "What was said?",
+        focus: "What was said?",
         sections: ["episodes"],
       },
       TOKEN,
@@ -4133,6 +4139,8 @@ describe("memory sidecar handler", () => {
           base,
           "/memory/context",
           {
+            focus: "Current conversation",
+            context_turns: [],
             tenant: "acme",
             session: "teams::personal::activity-alice",
             sender: { external_id: "alice", display_name: "Alice" },
@@ -4334,6 +4342,7 @@ describe("memory sidecar handler", () => {
       base,
       "/memory/context",
       {
+        context_turns: [],
         tenant: "acme",
         session: "activity-planner-context",
         sender: { external_id: "alice", display_name: "Alice" },
@@ -4390,6 +4399,7 @@ describe("memory sidecar handler", () => {
       base,
       "/memory/context",
       {
+        context_turns: [],
         tenant: "acme",
         session: "lived-experience-planner",
         sender: { external_id: "alice", display_name: "Alice" },
@@ -4427,6 +4437,8 @@ describe("memory sidecar handler", () => {
       base,
       "/memory/context",
       {
+        focus: "Current conversation",
+        context_turns: [],
         tenant: "acme",
         session: "lived-experience-planner",
         sender: { external_id: "alice", display_name: "Alice" },
@@ -4488,6 +4500,7 @@ describe("memory sidecar handler", () => {
       base,
       "/memory/context",
       {
+        context_turns: [],
         tenant: "acme",
         session: "activity-planner-starved",
         sender: { external_id: "alice", display_name: "Alice" },
@@ -4529,6 +4542,7 @@ describe("memory sidecar handler", () => {
       base,
       "/memory/context",
       {
+        context_turns: [],
         tenant: "acme",
         session: "activity-planner-starved",
         sender: { external_id: "alice", display_name: "Alice" },
@@ -4574,11 +4588,12 @@ describe("memory sidecar handler", () => {
         base,
         "/memory/context",
         {
+          context_turns: [],
           tenant: "acme",
           session: "activity-context",
           sender: { external_id: "alice", display_name: "Alice" },
           conversation: { type: "personal", name: "Alice" },
-          query: "activity context",
+          focus: "activity context",
           sections: ["episodes", "recent_activity"],
         },
         TOKEN,
@@ -4666,6 +4681,7 @@ describe("memory sidecar handler", () => {
       base,
       "/memory/context",
       {
+        context_turns: [],
         tenant: "acme",
         session: "group-session",
         sender: { external_id: "alice", display_name: "Alice" },
@@ -4674,7 +4690,7 @@ describe("memory sidecar handler", () => {
           name: "Current Group",
           external_id: "current",
         },
-        query: "group context",
+        focus: "group context",
         sections: ["episodes"],
       },
       TOKEN,
@@ -4716,11 +4732,12 @@ describe("memory sidecar handler", () => {
       base,
       "/memory/context",
       {
+        context_turns: [],
         tenant: "acme",
         session: "personal-time-range",
         sender: { external_id: "alice", display_name: "Alice" },
         conversation: { type: "personal", name: "Alice" },
-        query: "today's discussion",
+        focus: "today's discussion",
         limit: 2,
         sections: ["episodes"],
         time_range: { start: 100, end: 200 },
@@ -4847,6 +4864,7 @@ describe("memory sidecar handler", () => {
       base,
       "/memory/context",
       {
+        context_turns: [],
         tenant: "acme",
         session: "personal-planner-cue",
         sender: { external_id: "alice", display_name: "Alice" },
@@ -4912,6 +4930,7 @@ describe("memory sidecar handler", () => {
       base,
       "/memory/context",
       {
+        context_turns: [],
         tenant: "acme",
         session: "personal-no-budget",
         sender: { external_id: "alice", display_name: "Alice" },
@@ -4942,6 +4961,7 @@ describe("memory sidecar handler", () => {
       base,
       "/memory/context",
       {
+        context_turns: [],
         tenant: "acme",
         session: "personal-no-cue",
         sender: { external_id: "alice", display_name: "Alice" },
@@ -4967,6 +4987,7 @@ describe("memory sidecar handler", () => {
       base,
       "/memory/context",
       {
+        context_turns: [],
         tenant: "acme",
         session: "personal-failed-cue",
         sender: { external_id: "alice", display_name: "Alice" },
@@ -4987,6 +5008,8 @@ describe("memory sidecar handler", () => {
       base,
       "/memory/context",
       {
+        focus: "Current conversation",
+        context_turns: [],
         tenant: "acme",
         session: "personal-rejected",
         sender: { external_id: "alice", display_name: "Alice" },
@@ -5062,11 +5085,12 @@ describe("memory sidecar handler", () => {
       base,
       "/memory/context",
       {
+        context_turns: [],
         tenant: "acme",
         session: "personal-exclusions",
         sender: { external_id: "alice", display_name: "Alice" },
         conversation: { type: "personal", name: "Alice" },
-        query: "technology",
+        focus: "technology",
         limit: 2,
         sections: ["episodes"],
         exclude,
@@ -5114,6 +5138,8 @@ describe("memory sidecar handler", () => {
       base,
       "/memory/context",
       {
+        focus: "Current conversation",
+        context_turns: [],
         tenant: "acme",
         session: "venue-room",
         sender: { external_id: "alice", display_name: "Alice" },
@@ -5132,6 +5158,8 @@ describe("memory sidecar handler", () => {
       base,
       "/memory/context",
       {
+        focus: "Current conversation",
+        context_turns: [],
         tenant: "acme",
         session: "venue-room",
         sender: { external_id: "alice", display_name: "Alice" },
@@ -5254,6 +5282,8 @@ describe("memory sidecar handler", () => {
           base,
           "/memory/context",
           {
+            focus: "Current conversation",
+            context_turns: [],
             tenant: "acme",
             session: "venue",
             sender: { external_id: "alice", display_name: "Alice" },
@@ -5272,6 +5302,8 @@ describe("memory sidecar handler", () => {
           base,
           "/memory/context",
           {
+            focus: "Current conversation",
+            context_turns: [],
             tenant: "acme",
             session: "participants",
             sender: { external_id: "alice", display_name: "Alice" },
@@ -5289,6 +5321,8 @@ describe("memory sidecar handler", () => {
           base,
           "/memory/context",
           {
+            focus: "Current conversation",
+            context_turns: [],
             tenant: "acme",
             session: "participants",
             sender: { external_id: "alice", display_name: "Alice" },
@@ -5317,6 +5351,8 @@ describe("memory sidecar handler", () => {
           base,
           "/memory/context",
           {
+            focus: "",
+            context_turns: [],
             tenant: "acme",
             session: "personal",
             sender: { external_id: "alice", display_name: "Alice" },
@@ -5332,6 +5368,8 @@ describe("memory sidecar handler", () => {
           base,
           "/memory/context",
           {
+            focus: "Current conversation",
+            context_turns: [],
             tenant: "acme",
             session: "personal",
             sender: { external_id: "alice", display_name: "Alice" },
@@ -5348,11 +5386,12 @@ describe("memory sidecar handler", () => {
           base,
           "/memory/context",
           {
+            context_turns: [],
             tenant: "acme",
             session: "group",
             sender: { external_id: "alice", display_name: "Alice" },
             conversation: { type: "channel", name: "General" },
-            query: "context",
+            focus: "context",
           },
           TOKEN,
         )
@@ -5364,11 +5403,12 @@ describe("memory sidecar handler", () => {
       base,
       "/memory/context",
       {
+        context_turns: [],
         tenant: "acme",
         session: "personal",
         sender: { external_id: "alice", display_name: "Alice" },
         conversation: { type: "personal", name: "Alice" },
-        query: "context",
+        focus: "context",
         sections: ["audience", "episodes"],
       },
       TOKEN,
@@ -5390,11 +5430,12 @@ describe("memory sidecar handler", () => {
       base,
       "/memory/context",
       {
+        context_turns: [],
         tenant: "acme",
         session: "personal",
         sender: { external_id: "alice", display_name: "Alice" },
         conversation: { type: "personal", name: "Alice" },
-        query: "context",
+        focus: "context",
         sections: ["audience", "episodes"],
       },
       TOKEN,
@@ -6085,6 +6126,8 @@ describe("memory sidecar handler", () => {
         base,
         "/memory/context",
         {
+          focus: "Current conversation",
+          context_turns: [],
           tenant: "acme",
           session: "teams::group::directive-room",
           sender: { external_id: "alice", display_name: "Alice" },
@@ -6164,6 +6207,8 @@ describe("memory sidecar handler", () => {
         base,
         "/memory/context",
         {
+          focus: "Current conversation",
+          context_turns: [],
           tenant: "acme",
           session: "teams::group::directive-room",
           sender: { external_id: "alice", display_name: "Alice" },
@@ -6460,12 +6505,13 @@ describe("memory sidecar handler", () => {
         base,
         "/memory/context",
         {
+          context_turns: [],
           tenant: "acme",
           session: "teams::personal::alice",
           sender: { external_id: "alice", display_name: "Alice", operator: true },
           conversation: { type: "personal", name: "Alice" },
           participants: [{ external_id: "bob", display_name: "Bob", operator: true }],
-          query: "situational awareness",
+          focus: "situational awareness",
           sections: ["audience", "episodes", "recent_activity", "commitments", "directives"],
         },
         TOKEN,
@@ -6532,6 +6578,7 @@ describe("memory sidecar handler", () => {
         base,
         "/memory/context",
         {
+          context_turns: [],
           tenant: "acme",
           session: "teams::group::ai-ninjas",
           sender: { external_id: "alice", display_name: "Alice" },
@@ -6540,7 +6587,7 @@ describe("memory sidecar handler", () => {
             name: "AI Ninjas",
             external_id: "ai-ninjas",
           },
-          query: "situational awareness",
+          focus: "situational awareness",
           sections: ["episodes"],
         },
         TOKEN,
@@ -6575,11 +6622,12 @@ describe("memory sidecar handler", () => {
         base,
         "/memory/context",
         {
+          context_turns: [],
           tenant: "acme",
           session: "teams::personal::alice",
           sender: { external_id: "alice", display_name: "Alice", operator: true },
           conversation: { type: "personal", name: "Alice" },
-          query: "situational awareness",
+          focus: "situational awareness",
           limit: 1,
           sections: ["episodes"],
           exclude: {

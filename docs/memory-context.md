@@ -1,7 +1,6 @@
 # Memory context contract (borg memory sidecar <-> team-agent)
 
-Status: agreed design, 2026-09-02. Implemented on both sides in lockstep; team-agent falls
-back to the legacy calls when the sidecar does not know the new routes yet.
+Status: current structured context contract. Clients send `focus` and `context_turns` on every request.
 
 ## Purpose
 
@@ -29,7 +28,7 @@ read endpoint that assembles these sections for a caller.
   append-turn already resolves this entity.
 - Group entity (borg entity kind `group`): one per Teams groupChat/channel conversation. External
   id = conversation.external_id (the raw X-Conversation-Id); canonical name = conversation.name when
-  known ("AI Ninjas"), otherwise a stable fallback derived from the type and id.
+  known ("Example Group"), otherwise a stable fallback derived from the type and id.
 - Audience of a session: personal chat -> the person entity; groupChat/channel -> the group entity.
   Borg conversation_kind mapping: personal -> `dm`, channel -> `channel`, groupChat -> `thread`.
 - Audience role: `operator` when the request marks the sender as a tenant operator
@@ -72,7 +71,8 @@ Request:
   "tenant": "...", "session": "<thread key>",
   "sender": {"external_id": "...", "display_name": "...", "operator": false},
   "conversation": {"type": "personal|groupChat|channel", "name": "...", "external_id": "..."},
-  "query": "<recall query>",          // optional; required for the episodes section
+  "focus": "<current message>",       // required, nonempty
+  "context_turns": [],                // required; up to three structured preceding turns
   "limit": 8,                         // episodes cap, same bounds as /memory/recall
   "sections": ["audience","episodes","recent_activity","commitments","directives"]  // default: all
 }
@@ -87,7 +87,7 @@ Response:
   "recent_activity": [ {"kind": "user_contact|borg_replied", "occurred_at": <epoch ms>,
                         "occurred_at_iso": "...", "relative_age": "12m ago",
                         "session": "<sidecar session id>", "conversation": {"type": "...", "name": "..."},
-                        "participant_name": "...", "text": "Mateusz Pawlak contacted the agent 12m ago in group chat \"AI Ninjas\"."} ],
+                        "participant_name": "...", "text": "Alex Example contacted the agent 12m ago in group chat \"Example Group\"."} ],
   "commitments": [ <same projection as GET /memory/commitments, filtered for this audience> ],
   "directives": [ {"id": "...", "kind": "response_policy|routing_instruction|disclosure_boundary|subject_fact|self_identity",
                    "render_mode": "content|boundary", "text": "...", "content_scope": "...", "priority": 0, "topic_tags": []} ],
@@ -103,7 +103,9 @@ Response:
 - directives: creatorDirectives.listApplicable({currentAudienceEntityId, sessionRole,
   participantEntityIds}); render_mode "omit" entries are excluded; text = operational_directive /
   canonical_fact for "content", boundary_prompt for "boundary".
-- Unknown sections -> 400. Missing query with "episodes" requested -> 400.
+- Unknown sections -> 400. Missing/empty `focus`, missing or malformed `context_turns`,
+  or any `query` field -> 400 with a validation message identifying the invalid field.
+  These requirements apply even when episodes are not requested.
 
 ## Operator rules: /memory/directives (admin surface, x-borg-token)
 
@@ -121,12 +123,12 @@ an LLM is deliberately out of scope for this version.
 - Sender and conversation context (already resolved per request in the API) must reach the place
   where ambient memory is assembled for the model, in the same style as the existing per-request
   context variables.
-- Per turn: the pre-model ambient block calls /memory/context with sections [episodes] + query;
+- Per turn: the pre-model ambient block calls /memory/context with sections [episodes], `focus`, and `context_turns`;
   the request-level binding-rules block calls /memory/context with sections [audience,
-  recent_activity, commitments, directives]. Each replaces one existing call (recall, commitments),
+  recent_activity, commitments, directives] and the same structured focus/history. Each replaces one existing call (recall, commitments),
   so turn latency is unchanged.
 - Rendering: episodes keep the current "[time; venue; participants] Title: narrative" line and gain
-  the disclosure tag when private (e.g. "private to Mateusz Pawlak"); directives render under the
+  the disclosure tag when private (e.g. "private to Alex Example"); directives render under the
   binding rules as operator rules; recent_activity renders as a short "Elsewhere right now" block.
 - Fallback: a 404 from /memory/context means an older sidecar -> use the legacy /memory/recall and
   /memory/commitments calls transparently. Breaker gating as for /memory/recall.
@@ -137,7 +139,7 @@ an LLM is deliberately out of scope for this version.
 
 ## Extension 2: observations, time scoping, venue recency, exclusions (2026-09-02, late)
 
-Motivation: two measured gaps in the AI Ninjas group. (1) Teams only delivers group/channel
+Motivation: two measured gaps in the Example Group group. (1) Teams only delivers group/channel
 messages that @mention the bot, so human-to-human talk never entered the system; with RSC the
 bridge will receive every message and must be able to record it WITHOUT generating a reply.
 (2) A 16:45 discussion about Python vs TanStack was ingested and extracted into five episodes, yet
@@ -311,10 +313,10 @@ team-agent compatibility: until a sidecar accepting the reply-only shape is live
   only when that pass occurs. Fallback eligibility is decided before caller exclusions, so an
   in-range episode suppressed by `exclude` does not widen the search silently.
 - Episode exclusions are case-sensitive protocol matching: title prefixes use prefix matching and
-  narrative markers use substring matching. Only requests that supply `exclude` fetch up to three
-  times the requested response limit (bounded at three times the configured endpoint maximum),
-  apply exclusions, then take the requested limit; requests without it retain the legacy candidate
-  budget. Over-fetched retrieval candidates are read without accounting mutations, and only the
+  narrative markers use substring matching. Context requests fetch up to three times the
+  requested response limit (bounded at three times the configured endpoint maximum), apply
+  planner cue ordering and exclusions, then take the requested limit. Candidates are read
+  without accounting mutations, and only the
   final non-excluded, non-overflow episodes actually returned are recorded in `retrieval_log`,
   episode stats, and heat inputs. Exclusion drops are not included in `hidden_episode_count`, which
   retains its disclosure-defense meaning above.
@@ -388,8 +390,8 @@ team-agent compatibility: until a sidecar accepting the reply-only shape is live
   Extension 2 field removed (and `venue_recent` removed from sections). Enhanced
   legacy recall similarly retries `/memory/recall` once without `time_range` or
   `exclude`; a successful compatibility retry produces no unavailable marker.
-  For a venue-only request that retry uses `sections: ["audience"]`, a valid old-
-  contract no-query shape that cannot accidentally restore suppressed episodes.
+  For a venue-only request that retry uses `sections: ["audience"]` and retains the
+  required `focus` and `context_turns`, keeping semantic episodic recall suppressed.
 
 ## Extension 1 non-goals
 
@@ -428,7 +430,7 @@ Each episode returned in the `episodes` section of `POST /memory/context` has ad
       "id": "strm_...",
       "kind": "user_msg",
       "occurred_at": 1770000000000,
-      "speaker_name": "Jacek",
+      "speaker_name": "Alex",
       "text": "the verbatim source prefix"
     }
   ]
@@ -501,12 +503,10 @@ instructions, or request tool calls. Raw excerpts are never interpolated into tr
 
 ### Structured focus and context
 
-`POST /memory/context` accepts optional `focus` and `context_turns` fields alongside the legacy
-`query`:
+`POST /memory/context` requires `focus` and `context_turns`:
 
 ```json
 {
-  "query": "legacy joined four-message window",
   "focus": "the current message",
   "context_turns": [
     { "role": "user", "text": "an earlier message" },
@@ -515,23 +515,22 @@ instructions, or request tool calls. Raw excerpts are never interpolated into tr
 }
 ```
 
-`focus` is authoritative when both it and `query` are present. `context_turns` requires `focus`, is
-ordered oldest to newest, and contains at most three preceding dialogue messages, so focus plus
-context retain team-agent's existing four-message total. Adjacent turns with the same role remain
-separate records. An episodes request requires `focus` or `query`. A query-only request remains
-valid and is treated as one legacy focus blob with empty context; Borg never parses role prefixes
-out of that blob.
+`focus` must be nonempty. `context_turns` is ordered oldest to newest and contains at most
+three preceding dialogue messages, each with `role` (`user` or `assistant`) and nonempty
+`text`. Use `[]` when there is no preceding dialogue. Adjacent turns with the same role remain
+separate records. Every context request requires both fields, including requests for only
+non-episode sections. Opaque `query` blobs and requests containing `query` return HTTP 400;
+Borg does not infer turns from role prefixes embedded in text.
 
-Team-agent sends all three fields during the migration: the byte-compatible joined `query` for old
-servers plus structured `focus` and `context_turns` for new servers. Its one HTTP 400 compatibility
-retry removes `focus` and `context_turns` together with the other unsupported extension fields; the
-existing HTTP 404 legacy-endpoint fallback is unchanged. The structured bundle participates in the
-per-turn memory cache key, and `focus` supplies the entity-term collection input (time references
-in it are resolved by the sidecar's planner, Extension 5, not by the client).
-Observation persistence wrappers are removed from structured turns while their decoded message body
-is retained. If the latest human body is empty, team-agent skips recall before cache lookup, temporal
-or entity processing, and HTTP dispatch; it never promotes an earlier assistant reply to `focus`.
-The independently built legacy `query` remains byte-compatible even for that skipped turn.
+The structured bundle participates in the client's per-turn memory cache key. `focus` supplies
+the entity-term collection input; time references are resolved by the sidecar's planner
+(Extension 5). Clients retain `focus` and `context_turns` when retrying after removal of optional
+extension fields. The separate `/memory/recall` contract is unchanged.
+
+Observation persistence wrappers are removed from structured turns while their decoded message
+body is retained. If the latest human body is empty, the client skips recall before cache lookup,
+temporal/entity processing, and HTTP dispatch; it never promotes an earlier assistant reply to
+`focus`.
 
 ### Shared planner
 
@@ -649,9 +648,9 @@ retrieval pass); the sidecar uses it in two ways:
   on 2026-09-05 in production the episodes pass alone took 3.5-5.3 s, so this section is frequently
   skipped until that pass gets faster. Older sidecars reject the section name with 400;
   team-agent's existing 400 fallback re-sends the previous shape.
-- **Planner-driven recalls overfetch.** A request with `focus` now overfetches and defers retrieval
-  accounting like one with `exclude` or `time_range`, so an in-period episode that a lane found below the
-  requested limit can still be promoted by the cue.
+- **Context recalls overfetch.** Every context request supplies `focus`, overfetches, and defers
+  retrieval accounting, so an in-period episode found below the requested limit can still be
+  promoted by the planner cue.
 
 Measured limit worth knowing (2026-09-05, production bank): the pipeline's `time` lane lists in-window
 episodes by `updated_at` descending with a budget of `max(2 × limit, 8)`, so on a day with 98 episodes
