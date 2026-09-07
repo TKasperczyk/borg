@@ -229,4 +229,16 @@ describe("similarity profiles", () => {
       `borg open: similarity model="test/unknown-at-startup" profile="${QWEN_SIMILARITY_MODEL}" fallback=true overrides={"actionThread":0.4}`,
     );
   });
+
+  it("warns once per unknown model across repeated startup logs", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const config = configSchema.parse({ embedding: { model: "test/unknown-repeated" } });
+    logSimilarityProfile(config, "borg memory sidecar");
+    logSimilarityProfile(config, "borg open");
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]?.[0]).toContain("borg memory sidecar: similarity");
+    expect(stderr).toHaveBeenCalledTimes(1);
+    expect(stderr.mock.calls[0]?.[0]).toContain('borg open: similarity model="test/unknown-repeated"');
+  });
 });

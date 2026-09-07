@@ -157,10 +157,13 @@ export function similarityThresholds(config: SimilarityConfigSource = {}): Simil
   return resolved.values;
 }
 
-/** One startup line, including a named warning when the Qwen fallback is used. */
+/**
+ * One startup line per open. An unknown model warns once per process (shared with
+ * the accessor); later opens of the same model log the line informationally.
+ */
 export function logSimilarityProfile(config: SimilarityConfigSource, context: string): void {
   const resolved = resolveSimilarity(config);
-  if (resolved.fallback) {
+  if (resolved.fallback && !warnedModels.has(resolved.model)) {
     warnedModels.add(resolved.model);
     console.warn(profileLine(resolved, context));
   } else {
