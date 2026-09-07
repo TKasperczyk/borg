@@ -11,6 +11,7 @@ import { DEFAULT_GATEWAY_BASE_URL } from "../src/sidecar/gateway-config.js";
 import { parsePositiveIntegerValue } from "../src/util/parse.js";
 import { BorgError, ConfigError } from "../src/util/errors.js";
 import { migrateTenant, MigrationInputBlockedError } from "./embedding-migration/migrate.js";
+import { legacyConsolidationPolicySchema } from "./embedding-migration/inventory.js";
 
 export function parseEmbeddingMigrationArgs(args: string[]) {
   const { values } = parseArgs({
@@ -23,6 +24,7 @@ export function parseEmbeddingMigrationArgs(args: string[]) {
       "target-model": { type: "string" },
       "target-dims": { type: "string" },
       "source-model": { type: "string" },
+      "legacy-consolidation-input": { type: "string" },
       "dry-run": { type: "boolean" },
       resume: { type: "boolean" },
       "verify-only": { type: "boolean" },
@@ -65,6 +67,9 @@ export function parseEmbeddingMigrationArgs(args: string[]) {
     tenants: [...new Set(values.tenant ?? [])],
     allTenants: values["all-tenants"] ?? false,
     sourceModel: values["source-model"],
+    legacyConsolidationInput: legacyConsolidationPolicySchema
+      .optional()
+      .parse(values["legacy-consolidation-input"]),
     dryRun: values["dry-run"] ?? false,
     resume: values.resume ?? false,
     verifyOnly: values["verify-only"] ?? false,
@@ -75,7 +80,7 @@ export async function embeddingMigrationMain(args = process.argv.slice(2)): Prom
   const options = parseEmbeddingMigrationArgs(args);
   if (!options) {
     process.stdout.write(
-      "Usage: node --import tsx scripts/migrate-embeddings.ts --data-root /data (--tenant ID ... | --all-tenants) --target-model MODEL --target-dims N [--source-model MODEL] [--dry-run | --resume | --verify-only] [--backup-dir PATH] [--batch-size 32] [--concurrency 2]\n",
+      "Usage: node --import tsx scripts/migrate-embeddings.ts --data-root /data (--tenant ID ... | --all-tenants) --target-model MODEL --target-dims N [--source-model MODEL] [--legacy-consolidation-input longest-prefix] [--dry-run | --resume | --verify-only] [--backup-dir PATH] [--batch-size 32] [--concurrency 2]\n",
     );
     return 0;
   }

@@ -84,6 +84,13 @@ export const unrecoverableInputSchema = z.object({
   candidate_count: z.number().int().nonnegative(),
 });
 export type UnrecoverableInput = z.infer<typeof unrecoverableInputSchema>;
+export const legacyConsolidationPolicySchema = z.enum(["longest-prefix"]);
+export const consolidationResolutionSchema = z.object({
+  episode_id: z.string(),
+  candidate_count: z.number().int().min(2),
+  input: consolidationEmbeddingInputSchema,
+});
+export type ConsolidationResolution = z.infer<typeof consolidationResolutionSchema>;
 type MigrationRecord = {
   row: Record<string, unknown>;
   text: string | null;
@@ -175,9 +182,23 @@ export function migrationRowIdentity(
   };
 }
 
-export function migrationSchema(source: Schema, dimensions: number): Schema {
+export function migrationSchema(
+  source: Schema,
+  dimensions: number,
+  labelConsolidations = false,
+): Schema {
+  const fields = [...source.fields];
+  if (
+    labelConsolidations &&
+    !fields.some((field) => field.name === "consolidation_embedding_input")
+  )
+    fields.push(
+      createEpisodesTableSchema(dimensions).fields.find(
+        (field) => field.name === "consolidation_embedding_input",
+      )!,
+    );
   return new Schema(
-    source.fields.map((field) =>
+    fields.map((field) =>
       field.name === "embedding"
         ? new Field(
             field.name,
@@ -235,10 +256,20 @@ export async function* migrationRecords(
   batchSize: number,
   includeVectors = false,
   sourceTable = table,
+  resolutions: readonly ConsolidationResolution[] = [],
 ): AsyncGenerator<MigrationRecord[]> {
+  const inputs = new Map(
+    resolutions.map((resolution) => [resolution.episode_id, resolution.input]),
+  );
   for await (const rows of migrationRows(table, batchSize, includeVectors)) {
     const records: MigrationRecord[] = [];
     for (const row of rows) {
+      if (name === "episodes" && resolutions.length) {
+        const input = inputs.get(String(row.id));
+        if (input) row.consolidation_embedding_input = JSON.stringify(input);
+        else if (row.consolidation_embedding_input === undefined)
+          row.consolidation_embedding_input = null;
+      }
       try {
         let sources: string[] | undefined;
         if (
@@ -314,6 +345,7 @@ export async function inventoryBank(
   targetDims: number,
   batchSize = 256,
   lanceDir = join(tenantDir, "lancedb"),
+  resolutions: readonly ConsolidationResolution[] = [],
 ): Promise<BankInventory> {
   const db = openReadOnlyDatabase(join(tenantDir, "borg.db"));
   let connection: Connection | undefined;
@@ -340,7 +372,13 @@ export async function inventoryBank(
           name: definition.name,
           present: table !== undefined,
           dimensions: table ? embeddingDimensionsFromSchema(sourceSchema) : null,
-          schema_hash: migrationSchemaHash(migrationSchema(sourceSchema, targetDims)),
+          schema_hash: migrationSchemaHash(
+            migrationSchema(
+              sourceSchema,
+              targetDims,
+              definition.name === "episodes" && resolutions.length > 0,
+            ),
+          ),
           rows: [],
           sql_only: [],
           vector_only: [],
@@ -353,7 +391,14 @@ export async function inventoryBank(
         }
         const seen = new Set<string>();
         if (table)
-          for await (const records of migrationRecords(table, definition.name, batchSize))
+          for await (const records of migrationRecords(
+            table,
+            definition.name,
+            batchSize,
+            false,
+            table,
+            resolutions,
+          ))
             for (const { row, identity, unrecoverable } of records) {
               if (unrecoverable) (result.embedding_text_unrecoverable ??= []).push(unrecoverable);
               if (seen.has(identity.id))
@@ -420,4 +465,41 @@ export async function inventoryBank(
     connection?.close();
     db.close();
   }
+}
+
+/** Keep the immutable source inventory separate from explicitly labelled target rows. */
+export async function planConsolidationInputs(
+  tenantDir: string,
+  targetDims: number,
+  source: BankInventory,
+  policy?: z.infer<typeof legacyConsolidationPolicySchema>,
+): Promise<{ targetInventory: BankInventory; resolutions: ConsolidationResolution[] }> {
+  const resolutions: ConsolidationResolution[] = [];
+  if (policy === "longest-prefix" && source.embedding_text_unrecoverable?.length) {
+    const connection = await connect(join(tenantDir, "lancedb"));
+    try {
+      const table = await connection.openTable("episodes");
+      try {
+        for await (const records of migrationRecords(table, "episodes", 256))
+          for (const record of records)
+            if (record.unrecoverable && record.longestPrefix)
+              resolutions.push({
+                episode_id: record.unrecoverable.episode_id,
+                candidate_count: record.unrecoverable.candidate_count,
+                input: record.longestPrefix,
+              });
+      } finally {
+        table.close();
+      }
+    } finally {
+      connection.close();
+    }
+  }
+  resolutions.sort((a, b) => a.episode_id.localeCompare(b.episode_id));
+  return {
+    resolutions,
+    targetInventory: resolutions.length
+      ? await inventoryBank(tenantDir, targetDims, 256, join(tenantDir, "lancedb"), resolutions)
+      : source,
+  };
 }

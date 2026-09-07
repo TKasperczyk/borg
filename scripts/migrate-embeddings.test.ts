@@ -34,7 +34,17 @@ import {
 } from "./embedding-migration/migrate.js";
 import { parseEmbeddingMigrationArgs } from "./migrate-embeddings.js";
 import { migrationHeadroom, verifyTenantBackup } from "./embedding-migration/backup.js";
-import { preserveProtectedEpisodeTokenLines } from "../src/memory/episodic/protected-lines.js";
+import {
+  buildConsolidationEpisodeEmbeddingText,
+  buildEpisodeEmbeddingText,
+  collectProtectedEpisodeTokenLines,
+  preserveProtectedEpisodeTokenLines,
+} from "../src/memory/episodic/protected-lines.js";
+import { Borg } from "../src/borg.js";
+import { FakeLLMClient } from "../src/llm/test-support/fake-client.js";
+import { EpisodicRepository } from "../src/memory/episodic/repository.js";
+import { openDatabase } from "../src/storage/sqlite/index.js";
+import { createEpisodeFixture } from "../src/offline/test-support.js";
 
 const cleanup: string[] = [];
 afterEach(() => {
@@ -202,6 +212,384 @@ async function mixedLegacyConsolidations(missingInputColumn = false) {
 }
 
 describe("storage-only embedding migration", () => {
+  it.each([false, true])(
+    "labels only ambiguous legacy inputs with their vectors and verifies them (missing column=%s)",
+    async (missingColumn) => {
+      const bank = await mixedLegacyConsolidations(missingColumn);
+      const source = await connect(join(bank.tenantDir, "lancedb"));
+      const sourceTable = await source.openTable("episodes");
+      const before = await sourceTable.query().toArray();
+      sourceTable.close();
+      source.close();
+      const options = { ...bank.options, legacyConsolidationInput: "longest-prefix" as const };
+      expect(await migrateTenant({ ...options, dryRun: true })).toMatchObject({
+        complete: true,
+        embedding_text_unrecoverable: { count: 2 },
+        legacy_consolidation_resolutions: { count: 2, ids: ["episodes-1", "episodes-4"] },
+      });
+      expect(bank.client.embedBatch).not.toHaveBeenCalled();
+      expect(existsSync(join(bank.tenantDir, MIGRATION_JOURNAL))).toBe(false);
+      await expect(migrateTenant(bank.options, { client: bank.client })).rejects.toMatchObject({
+        code: "EMBEDDING_TEXT_UNRECOVERABLE",
+        report: { embedding_text_unrecoverable: { ids: ["episodes-1", "episodes-4"] } },
+      });
+      const report = await migrateTenant({ ...options, resume: true }, { client: bank.client });
+      expect(report).toMatchObject({
+        complete: true,
+        embedding_text_unrecoverable: { count: 0 },
+        legacy_consolidation_resolutions: { count: 2, ids: ["episodes-1", "episodes-4"] },
+      });
+      const target = await connect(join(bank.tenantDir, "lancedb"));
+      const table = await target.openTable("episodes");
+      try {
+        const after = await table.query().toArray();
+        for (const row of after) {
+          const original = before.find((original) => original.id === row.id)!;
+          const {
+            embedding: _oldVector,
+            consolidation_embedding_input: _oldInput,
+            ...oldFields
+          } = original;
+          const { embedding: vector, consolidation_embedding_input: recorded, ...newFields } = row;
+          expect(newFields).toEqual(oldFields);
+          expect(vector.length).toBe(2);
+          if (row.id === "episodes-1" || row.id === "episodes-4") {
+            const input = JSON.parse(recorded);
+            expect(input).toEqual({
+              synthesized_narrative: original.narrative,
+              protected_source_lines: collectProtectedEpisodeTokenLines([
+                String(before.find((row) => row.id === "episodes-0")!.narrative),
+              ]),
+            });
+            expect(
+              preserveProtectedEpisodeTokenLines(
+                input.synthesized_narrative,
+                input.protected_source_lines,
+              ),
+            ).toBe(row.narrative);
+            const text = buildConsolidationEpisodeEmbeddingText({
+              title: String(row.title),
+              synthesizedNarrative: input.synthesized_narrative,
+              protectedSourceTexts: input.protected_source_lines,
+              tags: JSON.parse(row.tags),
+              participants: JSON.parse(row.participants),
+            });
+            expect(migrationRowText("episodes", row)).toBe(text);
+            expect(bank.client.embedBatch.mock.calls.flatMap(([texts]) => texts)).toContain(text);
+            expect(Array.from(vector)).toEqual(Array.from(await bank.client.embed(text)));
+          } else expect(recorded).toBeNull();
+        }
+        // Unambiguous rows retain exact reconstruction without labelling their input.
+        expect(bank.client.embedBatch.mock.calls.flatMap(([texts]) => texts)).toContain(
+          "Episode 3\nSynthesis 3\nOUTCOME fp=two\ntag étiquette\nparticipant",
+        );
+      } finally {
+        table.close();
+        target.close();
+      }
+      const verification = spawnSync(
+        process.execPath,
+        [
+          "--import",
+          "tsx",
+          "scripts/migrate-embeddings.ts",
+          "--data-root",
+          bank.root,
+          "--tenant",
+          "team-agent-ai",
+          "--target-model",
+          bank.options.target.model,
+          "--target-dims",
+          "2",
+          "--verify-only",
+        ],
+        { encoding: "utf8" },
+      );
+      expect(verification.status, verification.stderr).toBe(0);
+      expect(JSON.parse(verification.stdout.trim()).report).toMatchObject({
+        complete: true,
+        legacy_consolidation_resolutions: { count: 2 },
+      });
+      expect(
+        await migrateTenant({
+          ...bank.options,
+          sourceModel: bank.options.target.model,
+          dryRun: true,
+        }),
+      ).toMatchObject({
+        complete: true,
+        embedding_text_unrecoverable: { count: 0, ids: [] },
+        legacy_consolidation_resolutions: { count: 0 },
+      });
+
+      const tampered = await connect(join(bank.tenantDir, "lancedb"));
+      const episodes = await tampered.openTable("episodes");
+      await episodes.update({
+        where: "id = 'episodes-1'",
+        values: {
+          consolidation_embedding_input: JSON.stringify({
+            synthesized_narrative: "Wrong prose",
+            protected_source_lines: [],
+          }),
+        },
+      });
+      episodes.close();
+      tampered.close();
+      await expect(migrateTenant({ ...bank.options, verifyOnly: true })).rejects.toMatchObject({
+        code: "EMBEDDING_TEXT_UNRECOVERABLE",
+      });
+    },
+    60_000,
+  );
+
+  it.each(["checkpointed", "uncheckpointed"])(
+    "resumes labelled vectors after a %s interruption without changing the recorded policy",
+    async (boundary) => {
+      const bank = await mixedLegacyConsolidations(true);
+      let batches = 0;
+      const stop = () => {
+        batches += 1;
+        if (
+          bank.client.embedBatch.mock.calls
+            .at(-1)![0]
+            .some((text) => text.startsWith("Episode 1\n"))
+        )
+          throw new Error("interrupted after labelled vector");
+      };
+      await expect(
+        migrateTenant(
+          { ...bank.options, legacyConsolidationInput: "longest-prefix" },
+          {
+            client: bank.client,
+            ...(boundary === "checkpointed" ? { afterBatch: stop } : { afterTableWrite: stop }),
+          },
+        ),
+      ).rejects.toThrow("interrupted after labelled vector");
+      const journal = readJsonFile<{
+        consolidation_resolutions: { episode_id: string }[];
+        legacy_consolidation_input: string;
+      }>(join(bank.tenantDir, MIGRATION_JOURNAL))!;
+      expect(journal).toMatchObject({
+        legacy_consolidation_input: "longest-prefix",
+        consolidation_resolutions: [
+          expect.objectContaining({ episode_id: "episodes-1" }),
+          expect.objectContaining({ episode_id: "episodes-4" }),
+        ],
+      });
+      const staging = await connect(join(bank.tenantDir, "lancedb.staging-1"));
+      const table = await staging.openTable("episodes");
+      const row = (await table.query().where("id = 'episodes-1'").toArray())[0]!;
+      expect(row.embedding.length).toBe(2);
+      expect(JSON.parse(row.consolidation_embedding_input).synthesized_narrative).toBe(
+        row.narrative,
+      );
+      table.close();
+      staging.close();
+      const committed = parseJsonLines(join(bank.tenantDir, ".embedding-migration-g1.jsonl"))
+        .flatMap((batch) => (batch as { rows: { id: string }[] }).rows)
+        .map((row) => row.id);
+      expect(committed.includes("episodes-1")).toBe(boundary === "checkpointed");
+      const beforeResume = bank.client.embedBatch.mock.calls.length;
+      // Omitted flags on resume retain the explicit policy and choices in the journal.
+      expect(
+        await migrateTenant({ ...bank.options, resume: true }, { client: bank.client }),
+      ).toMatchObject({ complete: true, legacy_consolidation_resolutions: { count: 2 } });
+      expect(bank.client.embedBatch.mock.calls.length - beforeResume).toBe(
+        35 - (boundary === "checkpointed" ? batches : batches - 1),
+      );
+      expect(await migrateTenant({ ...bank.options, verifyOnly: true })).toMatchObject({
+        complete: true,
+      });
+    },
+    60_000,
+  );
+
+  it.each(["previous", "live"] as const)(
+    "recovers labelled rows after the %s cutover rename",
+    async (boundary) => {
+      const bank = await mixedLegacyConsolidations(true);
+      await expect(
+        migrateTenant(
+          { ...bank.options, batchSize: 5, legacyConsolidationInput: "longest-prefix" },
+          {
+            client: bank.client,
+            afterRename: (step) => {
+              if (step === boundary) throw new Error("cutover interrupted");
+            },
+          },
+        ),
+      ).rejects.toThrow("cutover interrupted");
+      const calls = bank.client.embedBatch.mock.calls.length;
+      expect(
+        await migrateTenant({ ...bank.options, resume: true }, { client: bank.client }),
+      ).toMatchObject({
+        complete: true,
+        legacy_consolidation_resolutions: { ids: ["episodes-1", "episodes-4"] },
+      });
+      expect(bank.client.embedBatch).toHaveBeenCalledTimes(calls);
+      expect(await migrateTenant({ ...bank.options, verifyOnly: true })).toMatchObject({
+        complete: true,
+      });
+    },
+    60_000,
+  );
+
+  it("skips completed strict migrations when an all-tenant resume opts in for remaining banks", async () => {
+    const bank = await fixture(1);
+    expect(await migrateTenant(bank.options, { client: bank.client })).toMatchObject({
+      complete: true,
+    });
+    const calls = bank.client.embedBatch.mock.calls.length;
+    expect(
+      await migrateTenant(
+        { ...bank.options, resume: true, legacyConsolidationInput: "longest-prefix" },
+        { client: bank.client },
+      ),
+    ).toMatchObject({
+      complete: true,
+      already_complete: true,
+      legacy_consolidation_resolutions: { count: 0 },
+    });
+    expect(bank.client.embedBatch).toHaveBeenCalledTimes(calls);
+  });
+
+  it("rejects a changed source after recording fallback choices", async () => {
+    const bank = await mixedLegacyConsolidations(true);
+    await expect(
+      migrateTenant(
+        { ...bank.options, legacyConsolidationInput: "longest-prefix" },
+        {
+          client: bank.client,
+          afterBatch: () => {
+            throw new Error("interrupted");
+          },
+        },
+      ),
+    ).rejects.toThrow("interrupted");
+    const source = await connect(join(bank.tenantDir, "lancedb"));
+    const table = await source.openTable("episodes");
+    await table.update({
+      where: "id = 'episodes-1'",
+      values: {
+        narrative:
+          "Changed synthesis\nFirst source prose OUTCOME fp=one decision=send\nSecond source prose decision=hold",
+      },
+    });
+    table.close();
+    source.close();
+    const calls = bank.client.embedBatch.mock.calls.length;
+    await expect(
+      migrateTenant({ ...bank.options, resume: true }, { client: bank.client }),
+    ).rejects.toMatchObject({ code: "EMBEDDING_MIGRATION_SOURCE_CHANGED" });
+    expect(bank.client.embedBatch).toHaveBeenCalledTimes(calls);
+  });
+
+  it("keeps missing or inconsistent inputs blocked even with the longest-prefix opt-in", async () => {
+    const bank = await mixedLegacyConsolidations();
+    const connection = await connect(join(bank.tenantDir, "lancedb"));
+    const table = await connection.openTable("episodes");
+    await table.update({
+      where: "id = 'episodes-3'",
+      values: {
+        consolidation_embedding_input:
+          '{"synthesized_narrative":"Incorrect","protected_source_lines":[]}',
+      },
+    });
+    table.close();
+    connection.close();
+    await expect(
+      migrateTenant(
+        { ...bank.options, legacyConsolidationInput: "longest-prefix" },
+        { client: bank.client },
+      ),
+    ).rejects.toMatchObject({
+      code: "EMBEDDING_TEXT_UNRECOVERABLE",
+      report: {
+        embedding_text_unrecoverable: { ids: ["episodes-1", "episodes-3", "episodes-4"] },
+        blocked_embedding_inputs: { ids: ["episodes-3"] },
+        legacy_consolidation_resolutions: { ids: ["episodes-1", "episodes-4"] },
+      },
+    });
+    expect(bank.client.embedBatch).not.toHaveBeenCalled();
+    expect(existsSync(bank.options.backupDir)).toBe(false);
+  });
+
+  it("opens a migrated bank through Borg and renders the persisted fallback with the runtime recipe", async () => {
+    const root = mkdtempSync(join(tmpdir(), "borg-consolidation-runtime-"));
+    cleanup.push(root);
+    const tenantDir = join(root, "team-agent-ai");
+    const sourceModel = "generative-apis/qwen3-embedding-8b";
+    const sourceClient = new FakeEmbeddingClient(4, sourceModel);
+    await (
+      await Borg.open({
+        dataDir: tenantDir,
+        embeddingClient: sourceClient,
+        llmClient: new FakeLLMClient(),
+      })
+    ).close();
+    const db = openDatabase(join(tenantDir, "borg.db"));
+    const connection = await connect(join(tenantDir, "lancedb"));
+    const table = await connection.openTable("episodes");
+    const repository = new EpisodicRepository({ table: new LanceDbTable(table), db });
+    const raw = createEpisodeFixture({ narrative: "Source prose OUTCOME fp=legacy decision=send" });
+    const consolidated = {
+      ...createEpisodeFixture({
+        narrative: preserveProtectedEpisodeTokenLines("Synthesized prose", [raw.narrative]),
+        lineage: { derived_from: [raw.id], supersedes: [] },
+      }),
+      episode_kind: "consolidation_version" as const,
+    };
+    try {
+      await repository.createEpisode(raw);
+      await repository.createEpisode(consolidated);
+    } finally {
+      table.close();
+      connection.close();
+      db.close();
+    }
+    const client = new FakeEmbeddingClient(2, "scw/bge-m3");
+    const options = {
+      tenantDir,
+      backupDir: join(root, "backups"),
+      sourceModel,
+      target: client.profile,
+      legacyConsolidationInput: "longest-prefix" as const,
+    };
+    expect(await migrateTenant(options, { client })).toMatchObject({
+      complete: true,
+      legacy_consolidation_resolutions: { ids: [consolidated.id] },
+    });
+    expect(
+      await migrateTenant({ ...options, legacyConsolidationInput: undefined, verifyOnly: true }),
+    ).toMatchObject({ complete: true });
+    const reopened = await Borg.open({
+      dataDir: tenantDir,
+      embeddingClient: client,
+      llmClient: new FakeLLMClient(),
+    });
+    try {
+      const stored = await reopened.episodic.inspect(consolidated.id);
+      expect(stored?.consolidation_embedding_input).toEqual({
+        synthesized_narrative: consolidated.narrative,
+        protected_source_lines: [raw.narrative],
+      });
+      expect(buildEpisodeEmbeddingText(stored!)).toBe(
+        buildConsolidationEpisodeEmbeddingText({
+          title: consolidated.title,
+          synthesizedNarrative: consolidated.narrative,
+          protectedSourceTexts: [raw.narrative],
+          tags: consolidated.tags,
+          participants: consolidated.participants,
+        }),
+      );
+      expect(Array.from(stored!.embedding)).toEqual(
+        Array.from(await client.embed(buildEpisodeEmbeddingText(stored!))),
+      );
+    } finally {
+      await reopened.close();
+    }
+  }, 60_000);
+
   it("reports every ambiguous legacy input in a mixed dry-run inventory and exits zero across tenants", async () => {
     const bank = await mixedLegacyConsolidations();
     const report = await migrateTenant({ ...bank.options, dryRun: true });
@@ -862,6 +1250,22 @@ describe("storage-only embedding migration", () => {
     ).toThrow("Choose");
     expect(() =>
       parseEmbeddingMigrationArgs([...args, "--all-tenants", "--concurrency", "0"]),
+    ).toThrow();
+    expect(
+      parseEmbeddingMigrationArgs([
+        ...args,
+        "--all-tenants",
+        "--legacy-consolidation-input",
+        "longest-prefix",
+      ]),
+    ).toMatchObject({ legacyConsolidationInput: "longest-prefix" });
+    expect(() =>
+      parseEmbeddingMigrationArgs([
+        ...args,
+        "--all-tenants",
+        "--legacy-consolidation-input",
+        "shortest-prefix",
+      ]),
     ).toThrow();
   });
 });

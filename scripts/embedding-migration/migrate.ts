@@ -19,6 +19,10 @@ import {
   type EmbeddingProfile,
 } from "../../src/embeddings/bank-profile.js";
 import { assertUsableEmbedding } from "../../src/embeddings/serialized.js";
+import {
+  consolidationEmbeddingInputSchema,
+  preserveProtectedEpisodeTokenLines,
+} from "../../src/memory/episodic/protected-lines.js";
 import { readJsonFile, syncDirectory, writeJsonFileAtomic } from "../../src/util/atomic-write.js";
 import { appendDurableJsonl, parseJsonLines } from "../../src/util/durable-jsonl.js";
 import { withFileLock } from "../../src/stream/file-lock.js";
@@ -39,8 +43,12 @@ import {
   migrationSchema,
   migrationSchemaHash,
   unrecoverableInputSchema,
+  consolidationResolutionSchema,
+  legacyConsolidationPolicySchema,
+  planConsolidationInputs,
   VECTOR_TABLES,
   type BankInventory,
+  type ConsolidationResolution,
 } from "./inventory.js";
 
 const rowIdentitySchema = z.object({
@@ -72,11 +80,16 @@ const journalSchema = z.object({
   target: bankEmbeddingProfileSchema,
   backup: z.string(),
   inventory: inventorySchema,
+  target_inventory: inventorySchema.optional(),
+  legacy_consolidation_input: legacyConsolidationPolicySchema.optional(),
+  consolidation_resolutions: z.array(consolidationResolutionSchema).optional(),
   phase: z.enum(["inventoried", "backed_up", "embedding", "verified", "cutover", "complete"]),
   started_at: z.number(),
   updated_at: z.number(),
 });
 type Journal = z.infer<typeof journalSchema>;
+const expectedInventory = (journal: Journal): BankInventory =>
+  journal.target_inventory ?? journal.inventory;
 const checkpointSchema = z.object({
   version: z.literal(1),
   generation: z.number(),
@@ -108,7 +121,7 @@ async function remainingStagingRows(
   journal: Journal,
 ): Promise<{ remainingRows: number; remainingTables: string[] }> {
   const remaining = new Map(
-    journal.inventory.tables.map((table) => [table.name, table.rows.length]),
+    expectedInventory(journal).tables.map((table) => [table.name, table.rows.length]),
   );
   const result = () => ({
     remainingRows: [...remaining.values()].reduce((sum, count) => sum + count, 0),
@@ -121,7 +134,7 @@ async function remainingStagingRows(
   const connection = await connect(stagingDir);
   try {
     const names = await connection.tableNames();
-    for (const expected of journal.inventory.tables) {
+    for (const expected of expectedInventory(journal).tables) {
       if (!names.includes(expected.name)) continue;
       const table = await connection.openTable(expected.name);
       try {
@@ -168,6 +181,7 @@ export type MigrationOptions = {
   verifyOnly?: boolean;
   batchSize?: number;
   concurrency?: number;
+  legacyConsolidationInput?: z.infer<typeof legacyConsolidationPolicySchema>;
 };
 export type MigrationDependencies = {
   client?: EmbeddingClient;
@@ -180,9 +194,21 @@ export type MigrationDependencies = {
   diskSpace?: DiskSpaceReader;
 };
 
-function inputReport(inventory: BankInventory) {
+function inputReport(
+  inventory: BankInventory,
+  resolutions: readonly ConsolidationResolution[] = [],
+) {
   const rows = inventory.embedding_text_unrecoverable ?? [];
   return {
+    legacy_consolidation_resolutions: {
+      count: resolutions.length,
+      ids: resolutions.map((row) => row.episode_id),
+      rows: resolutions.map(({ episode_id, candidate_count }) => ({
+        episode_id,
+        candidate_count,
+        policy: "longest-prefix",
+      })),
+    },
     embedding_text_unrecoverable: {
       count: rows.length,
       ids: rows.map((row) => row.episode_id),
@@ -193,19 +219,32 @@ function inputReport(inventory: BankInventory) {
 
 export class MigrationInputBlockedError extends EmbeddingBankError {
   readonly report;
-  constructor(inventory: BankInventory) {
+  constructor(
+    inventory: BankInventory,
+    source = inventory,
+    resolutions: readonly ConsolidationResolution[] = [],
+  ) {
     const report = inputReport(inventory);
     super(
       `Unrecoverable embedding input for ${report.embedding_text_unrecoverable.count} episodes: ${report.embedding_text_unrecoverable.ids.join(", ")}`,
       { code: "EMBEDDING_TEXT_UNRECOVERABLE" },
     );
-    this.report = { complete: false, inventory, ...report };
+    this.report = {
+      complete: false,
+      inventory: source,
+      ...inputReport(source, resolutions),
+      blocked_embedding_inputs: report.embedding_text_unrecoverable,
+    };
   }
 }
 
-function requireComplete(inventory: BankInventory): void {
+function requireComplete(
+  inventory: BankInventory,
+  source = inventory,
+  resolutions: readonly ConsolidationResolution[] = [],
+): void {
   if (inventory.embedding_text_unrecoverable?.length)
-    throw new MigrationInputBlockedError(inventory);
+    throw new MigrationInputBlockedError(inventory, source, resolutions);
   if (inventory.problems.length)
     throw new EmbeddingBankError(inventory.problems.join("; "), {
       code: "EMBEDDING_MIGRATION_INCOMPLETE",
@@ -252,6 +291,7 @@ export async function verifyMigratedBank(
   lanceDir: string,
   inventory: BankInventory,
   target: EmbeddingProfile,
+  resolutions: readonly ConsolidationResolution[] = [],
 ): Promise<{ tables: Record<string, number>; sanity_queries: number }> {
   const actual = await inventoryBank(tenantDir, target.dimensions, 256, lanceDir);
   requireComplete(actual);
@@ -263,6 +303,7 @@ export async function verifyMigratedBank(
       code: "EMBEDDING_MIGRATION_VERIFY_FAILED",
     });
   const connection = await connect(lanceDir);
+  const labelledEpisodes = new Set(resolutions.map((resolution) => resolution.episode_id));
   const report = { tables: {} as Record<string, number>, sanity_queries: 0 };
   try {
     for (const expected of inventory.tables) {
@@ -283,6 +324,20 @@ export async function verifyMigratedBank(
         let probes = 0;
         for await (const rows of migrationRows(table, 128, true))
           for (const row of rows) {
+            if (expected.name === "episodes" && labelledEpisodes.has(String(row.id))) {
+              const input = consolidationEmbeddingInputSchema.parse(
+                JSON.parse(String(row.consolidation_embedding_input)),
+              );
+              if (
+                preserveProtectedEpisodeTokenLines(
+                  input.synthesized_narrative,
+                  input.protected_source_lines,
+                ) !== row.narrative
+              )
+                throw new EmbeddingBankError(`Fallback input does not preserve episode ${row.id}`, {
+                  code: "EMBEDDING_MIGRATION_VERIFY_FAILED",
+                });
+            }
             const vector = row.embedding as ArrayLike<number>;
             assertUsableEmbedding(vector, target.dimensions);
             if (probes < 3) {
@@ -342,10 +397,13 @@ async function embedStaging(
       const original = sourceNames.includes(definition.name)
         ? await source.openTable(definition.name)
         : undefined;
-      const expected = journal.inventory.tables.find((table) => table.name === definition.name)!;
+      const expected = expectedInventory(journal).tables.find(
+        (table) => table.name === definition.name,
+      )!;
       const targetSchema = migrationSchema(
         original ? await original.schema() : definition.schema(journal.target.dimensions),
         journal.target.dimensions,
+        definition.name === "episodes" && (journal.consolidation_resolutions?.length ?? 0) > 0,
       );
       const destination = existing.includes(definition.name)
         ? await staging.openTable(definition.name)
@@ -387,9 +445,14 @@ async function embedStaging(
         let completed = 0;
         const wrapper = new LanceDbTable(destination);
         const iterator = original
-          ? migrationRecords(original, definition.name, options.batchSize ?? 32)[
-              Symbol.asyncIterator
-            ]()
+          ? migrationRecords(
+              original,
+              definition.name,
+              options.batchSize ?? 32,
+              false,
+              original,
+              journal.consolidation_resolutions,
+            )[Symbol.asyncIterator]()
           : undefined;
         let stopped = false;
         // Bounded worker pool; Lance commits and checkpoint appends are serialized.
@@ -524,6 +587,7 @@ export async function migrateTenant(
   deps: MigrationDependencies = {},
 ): Promise<Record<string, unknown>> {
   const target = embeddingProfileSchema.parse(options.target);
+  const policy = legacyConsolidationPolicySchema.optional().parse(options.legacyConsolidationInput);
   if (!options.dryRun && !options.verifyOnly && deps.client)
     assertEmbeddingProfilesMatch(target, requireEmbeddingClientProfile(deps.client));
   const tenantDir = options.tenantDir;
@@ -532,6 +596,12 @@ export async function migrateTenant(
   const fencePath = join(tenantDir, EMBEDDING_FENCE_FILE);
   if (options.dryRun) {
     const inventory = await inventoryBank(tenantDir, target.dimensions);
+    const { targetInventory, resolutions } = await planConsolidationInputs(
+      tenantDir,
+      target.dimensions,
+      inventory,
+      policy,
+    );
     const source = sourceProfile(tenantDir, inventory, options.sourceModel);
     const headroom = migrationHeadroom(
       tenantDir,
@@ -544,12 +614,14 @@ export async function migrateTenant(
     return {
       tenant: tenantDir,
       dry_run: true,
-      complete: inventory.problems.length === 0 && !inventory.embedding_text_unrecoverable?.length,
+      complete:
+        targetInventory.problems.length === 0 &&
+        !targetInventory.embedding_text_unrecoverable?.length,
       provisional: true,
       source,
       target,
       inventory,
-      ...inputReport(inventory),
+      ...inputReport(inventory, resolutions),
       headroom,
     };
   }
@@ -583,6 +655,16 @@ export async function migrateTenant(
       }
       if (journal) {
         assertEmbeddingProfilesMatch(journal.target, target);
+        if (
+          policy &&
+          policy !== journal.legacy_consolidation_input &&
+          journal.phase !== "complete" &&
+          !options.verifyOnly
+        )
+          throw new EmbeddingBankError(
+            "Cannot change the consolidation input policy of an existing migration",
+            { code: "EMBEDDING_MIGRATION_CHECKPOINT_INVALID" },
+          );
         if (options.sourceModel)
           assertEmbeddingProfilesMatch(journal.source, {
             model: options.sourceModel,
@@ -603,8 +685,9 @@ export async function migrateTenant(
           const verified = await verifyMigratedBank(
             tenantDir,
             directory,
-            journal.inventory,
+            expectedInventory(journal),
             target,
+            journal.consolidation_resolutions,
           );
           if (directory === live)
             assertEmbeddingProfilesMatch(
@@ -618,6 +701,7 @@ export async function migrateTenant(
             phase: journal.phase,
             backup: journal.backup,
             serialized_vectors: journal.inventory.serialized_vectors,
+            ...inputReport(expectedInventory(journal), journal.consolidation_resolutions),
           };
         } finally {
           await release();
@@ -636,6 +720,7 @@ export async function migrateTenant(
           already_complete: true,
           profile: journal.target,
           backup: journal.backup,
+          ...inputReport(expectedInventory(journal), journal.consolidation_resolutions),
         };
       }
       const labelled = readBankEmbeddingProfile(tenantDir);
@@ -669,8 +754,18 @@ export async function migrateTenant(
       try {
         if (!journal) {
           const inventory = await inventoryBank(tenantDir, target.dimensions);
-          deps.progress?.({ phase: "inventory", inventory });
-          requireComplete(inventory);
+          const { targetInventory, resolutions } = await planConsolidationInputs(
+            tenantDir,
+            target.dimensions,
+            inventory,
+            policy,
+          );
+          deps.progress?.({
+            phase: "inventory",
+            inventory,
+            ...inputReport(inventory, resolutions),
+          });
+          requireComplete(targetInventory, inventory, resolutions);
           const source = sourceProfile(tenantDir, inventory, options.sourceModel);
           if (source.model === target.model && source.dimensions === target.dimensions)
             throw new EmbeddingBankError("Bank already uses the target profile", {
@@ -694,6 +789,10 @@ export async function migrateTenant(
             source,
             target: migrated,
             inventory,
+            ...(policy ? { legacy_consolidation_input: policy } : {}),
+            ...(resolutions.length
+              ? { target_inventory: targetInventory, consolidation_resolutions: resolutions }
+              : {}),
             backup: join(
               options.backupDir,
               basename(tenantDir),
@@ -756,7 +855,13 @@ export async function migrateTenant(
           mkdirSync(staging, { recursive: true, mode: 0o700 });
           advance("embedding");
           await embedStaging(options, deps, state, live, staging);
-          await verifyMigratedBank(tenantDir, staging, state.inventory, target);
+          await verifyMigratedBank(
+            tenantDir,
+            staging,
+            expectedInventory(state),
+            target,
+            state.consolidation_resolutions,
+          );
           advance("verified");
         }
         // Fence + durable intent make the two filesystem renames one service-level
@@ -768,7 +873,13 @@ export async function migrateTenant(
               throw new EmbeddingBankError("Cutover paths are incomplete", {
                 code: "EMBEDDING_MIGRATION_RECOVERY_REQUIRED",
               });
-            await verifyMigratedBank(tenantDir, staging, state.inventory, target);
+            await verifyMigratedBank(
+              tenantDir,
+              staging,
+              expectedInventory(state),
+              target,
+              state.consolidation_resolutions,
+            );
             renameSync(live, previous);
             syncDirectory(tenantDir);
             await deps.afterRename?.("previous");
@@ -779,12 +890,24 @@ export async function migrateTenant(
                 "Both live and staging exist after the previous rename",
                 { code: "EMBEDDING_MIGRATION_RECOVERY_REQUIRED" },
               );
-            await verifyMigratedBank(tenantDir, staging, state.inventory, target);
+            await verifyMigratedBank(
+              tenantDir,
+              staging,
+              expectedInventory(state),
+              target,
+              state.consolidation_resolutions,
+            );
             renameSync(staging, live);
             syncDirectory(tenantDir);
             await deps.afterRename?.("live");
           }
-          await verifyMigratedBank(tenantDir, live, state.inventory, target);
+          await verifyMigratedBank(
+            tenantDir,
+            live,
+            expectedInventory(state),
+            target,
+            state.consolidation_resolutions,
+          );
           state.target.updated_at = Date.now();
           writeJsonFileAtomic(join(tenantDir, EMBEDDING_PROFILE_FILE), state.target, {
             mode: 0o600,
@@ -792,7 +915,13 @@ export async function migrateTenant(
           advance("complete");
         }
         assertEmbeddingProfilesMatch(readBankEmbeddingProfile(tenantDir) ?? state.source, target);
-        const verified = await verifyMigratedBank(tenantDir, live, state.inventory, target);
+        const verified = await verifyMigratedBank(
+          tenantDir,
+          live,
+          expectedInventory(state),
+          target,
+          state.consolidation_resolutions,
+        );
         const report = {
           tenant: tenantDir,
           complete: true,
@@ -801,6 +930,7 @@ export async function migrateTenant(
           previous,
           verified,
           serialized_vectors: state.inventory.serialized_vectors,
+          ...inputReport(expectedInventory(state), state.consolidation_resolutions),
           started_at: state.started_at,
           completed_at: Date.now(),
         };
