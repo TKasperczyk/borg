@@ -93,7 +93,7 @@ describe("Borg", () => {
       cognition: "test-cognition",
     });
     expect(config.affective).toEqual(DEFAULT_CONFIG.affective);
-    expect(config.procedural).toEqual(DEFAULT_CONFIG.procedural);
+    expect(config.similarity).toEqual(DEFAULT_CONFIG.similarity);
     expect(config.retrieval).toEqual(DEFAULT_CONFIG.retrieval);
     expect(config.executive).toEqual(DEFAULT_CONFIG.executive);
     expect(config.host_capabilities).toBe(DEFAULT_CONFIG.host_capabilities);

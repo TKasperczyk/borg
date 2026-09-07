@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { seedTestEmbeddingProfile } from "../../test-support/embedding-profile.js";
 import { AuditLog } from "../../offline/audit-log.js";
 import { createMaintenanceRunId } from "../../util/ids.js";
 import {
@@ -90,6 +91,7 @@ describe("Borg", () => {
     db.close();
     await store.close();
 
+    seedTestEmbeddingProfile(tempDir);
     const borg = await Borg.open({
       config: createTestConfig({
         dataDir: tempDir,
@@ -111,9 +113,9 @@ describe("Borg", () => {
             extraction: "haiku",
           },
         },
+        similarity: { overrides: { consolidationSimilarity: 0.82 } },
         offline: {
           consolidator: {
-            similarityThreshold: 0.82,
             minClusterSize: 2,
             maxClustersPerRun: 2,
             budget: 15_000,

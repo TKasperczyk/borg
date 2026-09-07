@@ -1995,11 +1995,7 @@ describe("RuminatorProcess", () => {
         ]),
       ),
       configOverrides: {
-        offline: {
-          ruminator: {
-            duplicateSimilarityThreshold: 0.9,
-          },
-        },
+        similarity: { overrides: { ruminatorDuplicate: 0.9 } },
       },
     });
     const process = new RuminatorProcess({
@@ -2395,11 +2391,7 @@ describe("RuminatorProcess", () => {
         ]),
       ),
       configOverrides: {
-        offline: {
-          ruminator: {
-            duplicateSimilarityThreshold: 0.9,
-          },
-        },
+        similarity: { overrides: { ruminatorDuplicate: 0.9 } },
       },
     });
     const process = new RuminatorProcess({
@@ -2461,11 +2453,7 @@ describe("RuminatorProcess", () => {
         ]),
       ),
       configOverrides: {
-        offline: {
-          ruminator: {
-            duplicateSimilarityThreshold: 0.9,
-          },
-        },
+        similarity: { overrides: { ruminatorDuplicate: 0.9 } },
       },
     });
     const process = new RuminatorProcess({
@@ -2700,9 +2688,9 @@ describe("RuminatorProcess", () => {
         ]),
       ),
       configOverrides: {
+        similarity: { overrides: { ruminatorDuplicate: 0.9 } },
         offline: {
           ruminator: {
-            duplicateSimilarityThreshold: 0.9,
             staleNoTractionTicks: 2,
             maxQuestionsPerRun: 1,
           },

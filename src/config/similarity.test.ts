@@ -91,7 +91,7 @@ describe("similarity profiles", () => {
     expect(warn.mock.calls[0]?.[0]).toContain(`profile="${QWEN_SIMILARITY_MODEL}" fallback=true`);
   });
 
-  it("applies explicit overrides after complete custom profiles and legacy settings", () => {
+  it("applies explicit overrides after complete custom profiles", () => {
     const config = configSchema.parse({
       embedding: { model: "test/custom" },
       similarity: {
@@ -101,10 +101,8 @@ describe("similarity profiles", () => {
             actionThread: 0.6,
           },
         },
-        overrides: { actionThread: 0, semanticRecall: 0.2 },
+        overrides: { actionThread: 0, semanticRecall: 0.2, skillSelection: 0.4 },
       },
-      generation: { evidenceLedger: { actionThreadSimilarityThreshold: 0.7 } },
-      procedural: { skillSelectionMinSimilarity: 0.4 },
     });
     expect(similarityThresholds(config)).toMatchObject({
       actionThread: 0,
@@ -126,20 +124,20 @@ describe("similarity profiles", () => {
     ).toBe(false);
   });
 
-  it("preserves all explicitly configured legacy gates without old defaults masking BGE", () => {
+  it("overrides all eight configurable gates without masking other BGE defaults", () => {
     const config = configSchema.parse({
       embedding: { model: BGE_SIMILARITY_MODEL },
-      generation: { evidenceLedger: { actionThreadSimilarityThreshold: 0.1 } },
-      procedural: { skillSelectionMinSimilarity: 0.2 },
-      offline: {
-        consolidator: {
-          similarityThreshold: 0.3,
-          maxClusterDiameter: 0.4,
-          highSimilarityTemporalBypassThreshold: 0.5,
+      similarity: {
+        overrides: {
+          actionThread: 0.1,
+          skillSelection: 0.2,
+          consolidationSimilarity: 0.3,
+          consolidationDiameter: 0.4,
+          consolidationTemporalBypass: 0.5,
+          reflectionGoalAndTagGrouping: 0.6,
+          skillSynthesisDuplicate: 0.7,
+          ruminatorDuplicate: 0.8,
         },
-        reflector: { goalSimilarityThreshold: 0.6 },
-        proceduralSynthesizer: { dedupThreshold: 0.7 },
-        ruminator: { duplicateSimilarityThreshold: 0.8 },
       },
     });
     expect(similarityThresholds(config)).toMatchObject({
@@ -162,22 +160,25 @@ describe("similarity profiles", () => {
       join(dir, "config.json"),
       JSON.stringify({
         embedding: { model: BGE_SIMILARITY_MODEL },
-        similarity: { overrides: { actionThread: 0.2, recallAbstain: 0.4 } },
+        similarity: { overrides: { actionThread: 0.2, recallAbstain: 0.4, semanticRecall: 0.12 } },
       }),
     );
     const config = loadConfig({
       dataDir: dir,
       env: {
-        BORG_GENERATION_EVIDENCE_LEDGER_ACTION_THREAD_SIMILARITY_THRESHOLD: "0.91",
-        BORG_PROCEDURAL_SKILL_SELECTION_MIN_SIMILARITY: "0.61",
-        BORG_OFFLINE_REFLECTOR_GOAL_SIMILARITY_THRESHOLD: "0.81",
-        BORG_OFFLINE_PROCEDURAL_SYNTHESIZER_DEDUP_THRESHOLD: "0.89",
-        BORG_OFFLINE_CONSOLIDATOR_SIMILARITY_THRESHOLD: "0.83",
-        BORG_RECALL_ABSTAIN_THRESHOLD: "1.17",
+        BORG_SIMILARITY_OVERRIDES: JSON.stringify({
+          actionThread: 0.91,
+          skillSelection: 0.61,
+          reflectionGoalAndTagGrouping: 0.81,
+          skillSynthesisDuplicate: 0.89,
+          consolidationSimilarity: 0.83,
+          recallAbstain: 1.17,
+        }),
       },
     });
     expect(config.similarity.overrides).toEqual({
       actionThread: 0.91,
+      semanticRecall: 0.12,
       skillSelection: 0.61,
       reflectionGoalAndTagGrouping: 0.81,
       skillSynthesisDuplicate: 0.89,
@@ -187,17 +188,31 @@ describe("similarity profiles", () => {
     expect(similarityThresholds(config)).toMatchObject(config.similarity.overrides);
   });
 
-  it.each(["invalid", "Infinity", "0", "-1", "1.5"])(
-    "retains fused abstention env semantics (%s)",
-    (raw) => {
-      const dir = mkdtempSync(join(tmpdir(), "similarity-abstain-"));
-      directories.push(dir);
-      const config = loadConfig({ dataDir: dir, env: { BORG_RECALL_ABSTAIN_THRESHOLD: raw } });
-      expect(config.similarity.overrides.recallAbstain).toBe(
-        Number.isFinite(Number(raw)) ? Number(raw) : 0,
-      );
-    },
-  );
+  it.each([0, -1, 1.5])("retains fused abstention score semantics (%s)", (value) => {
+    const dir = mkdtempSync(join(tmpdir(), "similarity-abstain-"));
+    directories.push(dir);
+    const config = loadConfig({
+      dataDir: dir,
+      env: { BORG_SIMILARITY_OVERRIDES: JSON.stringify({ recallAbstain: value }) },
+    });
+    expect(config.similarity.overrides.recallAbstain).toBe(value);
+    expect(similarityThresholds(config).recallAbstain).toBe(value);
+  });
+
+  it.each([
+    "invalid",
+    "null",
+    "[]",
+    '{"actionThred":0.2}',
+    '{"semanticRecall":2}',
+    '{"recallAbstain":"Infinity"}',
+  ])("rejects invalid environment overrides (%s)", (raw) => {
+    const dir = mkdtempSync(join(tmpdir(), "similarity-invalid-"));
+    directories.push(dir);
+    expect(() => loadConfig({ dataDir: dir, env: { BORG_SIMILARITY_OVERRIDES: raw } })).toThrow(
+      "BORG_SIMILARITY_OVERRIDES must be a JSON object of valid similarity overrides",
+    );
+  });
 
   it.each(["borg open", "borg memory sidecar"])(
     "logs one startup profile line for %s",

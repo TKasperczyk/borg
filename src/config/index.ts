@@ -1,4 +1,4 @@
-import { similarityConfigSchema, similarityThresholds } from "./similarity.js";
+import { similarityConfigSchema, similarityValuesSchema } from "./similarity.js";
 export {
   similarityThresholds,
   logSimilarityProfile,
@@ -217,8 +217,6 @@ const evidenceLedgerConfigSchema = z
     enabled: z.boolean().default(true),
     currentSessionTranscriptTokenBudget: z.number().int().positive().default(2_500),
     actionThreadRenderLimit: z.number().int().positive().default(12),
-    // Deprecated input alias; defaults and overrides live in similarity.
-    actionThreadSimilarityThreshold: z.number().min(0).max(1).optional(),
     actionThreadSourceRecordLimit: z.number().int().positive().default(256),
     actionThreadSalienceClassReservedSlots: z.number().int().nonnegative().default(1),
     actionThreadAudienceReservedSlots: z.number().int().nonnegative().default(1),
@@ -402,12 +400,6 @@ const configBaseSchema = z.object({
     })
     .prefault({}),
   anthropic: anthropicConfigSchema,
-  procedural: z
-    .object({
-      // Deprecated input alias; defaults and overrides live in similarity.
-      skillSelectionMinSimilarity: z.number().min(0).max(1).optional(),
-    })
-    .prefault({}),
   retrieval: z
     .object({
       semanticOverfetchMultiplier: z.number().int().min(1).max(10).default(3),
@@ -510,17 +502,11 @@ const configBaseSchema = z.object({
     .object({
       consolidator: z
         .object({
-          // Deprecated input alias; defaults and overrides live in similarity.
-          similarityThreshold: z.number().positive().optional(),
-          // Deprecated input alias; defaults and overrides live in similarity.
-          maxClusterDiameter: z.number().min(0).max(2).optional(),
           temporalProximityMs: z
             .number()
             .int()
             .nonnegative()
             .default(30 * 24 * 60 * 60 * 1_000),
-          // Deprecated input alias; defaults and overrides live in similarity.
-          highSimilarityTemporalBypassThreshold: z.number().min(0).max(1).optional(),
           highSimilarityTemporalBypassMaxGapMs: z
             .number()
             .int()
@@ -535,8 +521,6 @@ const configBaseSchema = z.object({
       reflector: z
         .object({
           minSupport: z.number().int().positive().default(3),
-          // Deprecated input alias; defaults and overrides live in similarity.
-          goalSimilarityThreshold: z.number().min(0).max(1).optional(),
           ceilingConfidence: z.number().positive().max(0.5).default(0.5),
           maxInsightsPerRun: z.number().int().positive().default(2),
           // Sized against observed usage, not guessed. The budget sink runs
@@ -570,8 +554,6 @@ const configBaseSchema = z.object({
         .object({
           minSupport: z.number().int().positive().default(2),
           maxSkillsPerRun: z.number().int().positive().default(3),
-          // Deprecated input alias; defaults and overrides live in similarity.
-          dedupThreshold: z.number().min(0).max(1).optional(),
           minContextAttemptsForSplit: z.number().int().positive().default(5),
           minDivergenceForSplit: z.number().min(0).max(1).default(0.3),
           splitCooldownDays: z.number().positive().default(7),
@@ -642,8 +624,6 @@ const configBaseSchema = z.object({
           // Threshold applies to RetrievalConfidence.overall, a conservative
           // epistemic evidence-quality signal, not the relevance ranking score.
           resolveConfidenceThreshold: z.number().min(0).max(1).default(0.55),
-          // Deprecated input alias; defaults and overrides live in similarity.
-          duplicateSimilarityThreshold: z.number().min(0).max(1).optional(),
           duplicateJudgmentMaxPairs: z.number().int().positive().default(24),
           duplicateJudgmentMinRemainingBudgetFraction: z.number().min(0).max(1).default(0.25),
           revisitPeriodMinDays: z.number().positive().default(2),
@@ -1121,13 +1101,20 @@ function setConfigOverride(
 
 function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
   const overrides: ConfigOverrides = {};
-  if (env.BORG_RECALL_ABSTAIN_THRESHOLD !== undefined) {
-    const value = Number(env.BORG_RECALL_ABSTAIN_THRESHOLD);
-    setConfigOverride(
-      overrides,
-      ["similarity", "overrides", "recallAbstain"],
-      Number.isFinite(value) ? value : similarityThresholds().recallAbstain,
-    );
+  const similarityOverrides = readOptionalEnvString(env, "BORG_SIMILARITY_OVERRIDES");
+  if (similarityOverrides !== undefined) {
+    try {
+      setConfigOverride(
+        overrides,
+        ["similarity", "overrides"],
+        similarityValuesSchema.partial().parse(JSON.parse(similarityOverrides) as unknown),
+      );
+    } catch (cause) {
+      throw new ConfigError(
+        "BORG_SIMILARITY_OVERRIDES must be a JSON object of valid similarity overrides",
+        { cause },
+      );
+    }
   }
 
   setConfigOverride(overrides, ["dataDir"], readOptionalEnvString(env, "BORG_DATA_DIR"));
@@ -1269,11 +1256,6 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["anthropic", "transportStallMaxRetries"],
     readOptionalEnvNumber(env, "BORG_ANTHROPIC_TRANSPORT_STALL_MAX_RETRIES"),
-  );
-  setConfigOverride(
-    overrides,
-    ["similarity", "overrides", "skillSelection"],
-    readOptionalEnvUnitInterval(env, "BORG_PROCEDURAL_SKILL_SELECTION_MIN_SIMILARITY"),
   );
   setConfigOverride(
     overrides,
@@ -1451,14 +1433,6 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
   );
   setConfigOverride(
     overrides,
-    ["similarity", "overrides", "actionThread"],
-    readOptionalEnvUnitInterval(
-      env,
-      "BORG_GENERATION_EVIDENCE_LEDGER_ACTION_THREAD_SIMILARITY_THRESHOLD",
-    ),
-  );
-  setConfigOverride(
-    overrides,
     ["generation", "evidenceLedger", "actionThreadSourceRecordLimit"],
     readOptionalEnvNumber(env, "BORG_GENERATION_EVIDENCE_LEDGER_ACTION_THREAD_SOURCE_RECORD_LIMIT"),
   );
@@ -1544,11 +1518,6 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
   );
   setConfigOverride(
     overrides,
-    ["similarity", "overrides", "consolidationSimilarity"],
-    readOptionalEnvFloat(env, "BORG_OFFLINE_CONSOLIDATOR_SIMILARITY_THRESHOLD"),
-  );
-  setConfigOverride(
-    overrides,
     ["offline", "consolidator", "minClusterSize"],
     readOptionalEnvNumber(env, "BORG_OFFLINE_CONSOLIDATOR_MIN_CLUSTER_SIZE"),
   );
@@ -1566,11 +1535,6 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["offline", "reflector", "minSupport"],
     readOptionalEnvNumber(env, "BORG_OFFLINE_REFLECTOR_MIN_SUPPORT"),
-  );
-  setConfigOverride(
-    overrides,
-    ["similarity", "overrides", "reflectionGoalAndTagGrouping"],
-    readOptionalEnvFloat(env, "BORG_OFFLINE_REFLECTOR_GOAL_SIMILARITY_THRESHOLD"),
   );
   setConfigOverride(
     overrides,
@@ -1636,11 +1600,6 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["offline", "proceduralSynthesizer", "maxSkillsPerRun"],
     readOptionalEnvNumber(env, "BORG_OFFLINE_PROCEDURAL_SYNTHESIZER_MAX_SKILLS_PER_RUN"),
-  );
-  setConfigOverride(
-    overrides,
-    ["similarity", "overrides", "skillSynthesisDuplicate"],
-    readOptionalEnvUnitInterval(env, "BORG_OFFLINE_PROCEDURAL_SYNTHESIZER_DEDUP_THRESHOLD"),
   );
   setConfigOverride(
     overrides,
@@ -2310,9 +2269,6 @@ export function redactConfig(config: Config): Config {
     anthropic: {
       ...config.anthropic,
       apiKey: redactSecret(config.anthropic.apiKey),
-    },
-    procedural: {
-      ...config.procedural,
     },
     retrieval: {
       semanticOverfetchMultiplier: config.retrieval.semanticOverfetchMultiplier,

@@ -97,18 +97,6 @@ export type SimilarityConfigSource = {
     profiles?: Readonly<Record<string, SimilarityThresholds>>;
     overrides?: Partial<SimilarityThresholds>;
   };
-  generation?: { evidenceLedger?: { actionThreadSimilarityThreshold?: number } };
-  procedural?: { skillSelectionMinSimilarity?: number };
-  offline?: {
-    consolidator?: {
-      similarityThreshold?: number;
-      maxClusterDiameter?: number;
-      highSimilarityTemporalBypassThreshold?: number;
-    };
-    reflector?: { goalSimilarityThreshold?: number };
-    proceduralSynthesizer?: { dedupThreshold?: number };
-    ruminator?: { duplicateSimilarityThreshold?: number };
-  };
 };
 
 function resolveSimilarity(config: SimilarityConfigSource) {
@@ -116,22 +104,10 @@ function resolveSimilarity(config: SimilarityConfigSource) {
   const profiles = { ...DEFAULT_SIMILARITY_PROFILES, ...config.similarity?.profiles };
   const fallback = !Object.hasOwn(profiles, model);
   const profileModel = fallback ? QWEN_SIMILARITY_MODEL : model;
-  const legacy: Partial<SimilarityThresholds> = {
-    actionThread: config.generation?.evidenceLedger?.actionThreadSimilarityThreshold,
-    skillSelection: config.procedural?.skillSelectionMinSimilarity,
-    consolidationSimilarity: config.offline?.consolidator?.similarityThreshold,
-    consolidationDiameter: config.offline?.consolidator?.maxClusterDiameter,
-    consolidationTemporalBypass:
-      config.offline?.consolidator?.highSimilarityTemporalBypassThreshold,
-    reflectionGoalAndTagGrouping: config.offline?.reflector?.goalSimilarityThreshold,
-    skillSynthesisDuplicate: config.offline?.proceduralSynthesizer?.dedupThreshold,
-    ruminatorDuplicate: config.offline?.ruminator?.duplicateSimilarityThreshold,
-  };
+  const source = config.similarity?.overrides ?? {};
   const overrides: Partial<z.infer<typeof similarityValuesSchema>> = {};
-  for (const source of [legacy, config.similarity?.overrides ?? {}]) {
-    for (const key of Object.keys(source) as (keyof SimilarityThresholds)[]) {
-      if (source[key] !== undefined) overrides[key] = source[key];
-    }
+  for (const key of Object.keys(source) as (keyof SimilarityThresholds)[]) {
+    if (source[key] !== undefined) overrides[key] = source[key];
   }
   return {
     model,

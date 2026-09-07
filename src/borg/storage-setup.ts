@@ -91,10 +91,6 @@ export function resolveBorgConfig(options: {
         ...rawConfig.anthropic?.models,
       },
     },
-    procedural: {
-      ...DEFAULT_CONFIG.procedural,
-      ...(rawConfig as Partial<Config>).procedural,
-    },
     attachments: {
       ...DEFAULT_CONFIG.attachments,
       ...(rawConfig as Partial<Config>).attachments,

@@ -145,10 +145,6 @@ export async function createEvalBorg(options: CreateEvalBorgOptions): Promise<Bo
         extraction: "eval-extraction",
       },
     },
-    procedural: {
-      ...DEFAULT_CONFIG.procedural,
-      ...options.config?.procedural,
-    },
     retrieval: {
       ...DEFAULT_CONFIG.retrieval,
       ...options.config?.retrieval,

@@ -55,22 +55,18 @@ For example, in a tenant's `config.json`:
 }
 ```
 
-Existing environment variables populate `similarity.overrides` and take precedence
-over the tenant file:
+`similarity.overrides` is the only threshold override surface. For deployments configured
+through environment variables, pass that same object as JSON:
 
-| Environment variable | Key |
-| --- | --- |
-| `BORG_GENERATION_EVIDENCE_LEDGER_ACTION_THREAD_SIMILARITY_THRESHOLD` | `actionThread` |
-| `BORG_PROCEDURAL_SKILL_SELECTION_MIN_SIMILARITY` | `skillSelection` |
-| `BORG_OFFLINE_CONSOLIDATOR_SIMILARITY_THRESHOLD` | `consolidationSimilarity` |
-| `BORG_OFFLINE_REFLECTOR_GOAL_SIMILARITY_THRESHOLD` | `reflectionGoalAndTagGrouping` |
-| `BORG_OFFLINE_PROCEDURAL_SYNTHESIZER_DEDUP_THRESHOLD` | `skillSynthesisDuplicate` |
-| `BORG_RECALL_ABSTAIN_THRESHOLD` | `recallAbstain` |
+```sh
+export BORG_SIMILARITY_OVERRIDES='{"semanticDuplicateReview":0.89,"recallAbstain":1.17}'
+```
 
-Explicit values at the old config paths remain accepted as deprecated aliases;
-they no longer supply defaults. Precedence is environment overrides, then
-`similarity.overrides` in the file, then explicit legacy values, then the profile.
-Use the new section for new configuration.
+Environment override keys take precedence over matching keys in the tenant file; other file
+keys are preserved. Remaining values come from the selected model profile. Invalid JSON,
+unknown keys, and out-of-range values fail configuration loading. Per-threshold environment
+variables and the former scattered config fields are no longer read. Runtime deployments
+without overrides need only the explicit embedding model and dimensions.
 
 ## Re-measure and add a model
 

@@ -598,7 +598,10 @@ describe("ProceduralSynthesizerProcess", () => {
     async ({ similarity, expectedSkillCount }) => {
       harness = await createOfflineTestHarness({
         embeddingClient: new BoundaryEmbeddingClient(similarity),
-        configOverrides: proceduralConfig({ minSupport: 2, dedupThreshold: 0.88 }),
+        configOverrides: {
+          ...proceduralConfig({ minSupport: 2 }),
+          similarity: { overrides: { skillSynthesisDuplicate: 0.88 } },
+        },
         llmClient: new FakeLLMClient({
           responses: [
             createSkillCandidateResponse({

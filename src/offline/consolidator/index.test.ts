@@ -468,10 +468,9 @@ describe("consolidator process", () => {
     const harness = await createOfflineTestHarness({
       llmClient: llm,
       configOverrides: {
+        similarity: { overrides: { consolidationSimilarity: 0.9, consolidationDiameter: 0.02 } },
         offline: {
           consolidator: {
-            similarityThreshold: 0.9,
-            maxClusterDiameter: 0.02,
             maxClustersPerRun: 10,
           },
         },
@@ -653,10 +652,9 @@ describe("consolidator process", () => {
         new Map([[consolidationEmbeddingText(summaryTitle, summaryNarrative), [0, 1, 0, 0]]]),
       ),
       configOverrides: {
+        similarity: { overrides: { consolidationSimilarity: 0.8, consolidationDiameter: 0.05 } },
         offline: {
           consolidator: {
-            similarityThreshold: 0.8,
-            maxClusterDiameter: 0.05,
             maxClustersPerRun: 10,
           },
         },

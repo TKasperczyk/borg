@@ -238,10 +238,6 @@ export function createTestConfig(
         ...overrides.anthropic?.models,
       },
     },
-    procedural: {
-      ...DEFAULT_CONFIG.procedural,
-      ...overrides.procedural,
-    },
     retrieval: {
       ...DEFAULT_CONFIG.retrieval,
       ...overrides.retrieval,
