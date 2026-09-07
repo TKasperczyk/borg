@@ -432,7 +432,8 @@ describe("Recall Core", () => {
         rawScore: 0.7011414290712924,
         scoreBreakdown: {
           similarity: 1,
-          decayedSalience: 0.0038047635709747476,
+          // Math decay can differ by a final bit between Node/libm versions.
+          decayedSalience: expect.closeTo(0.0038047635709747476, 15),
           heat: 1.5894073724114668,
           goalRelevance: 0,
           valueAlignment: 0,

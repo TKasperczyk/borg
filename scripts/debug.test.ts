@@ -96,7 +96,9 @@ describe("debug script", () => {
       });
 
       expect(result.code).toBe(0);
-      expect(result.stderr).toBe("");
+      expect(result.stderr).toBe(
+        'borg open: similarity model="fake-embed" profile="generative-apis/qwen3-embedding-8b" fallback=true overrides={}\n',
+      );
       expect(result.stdout).toContain("Using LLM: fake, Embeddings: fake");
       expect(result.stdout).toContain("=== Phase 1. Setup & self ===");
       expect(result.stdout).toContain("=== Phase 2. Stream + extraction ===");
