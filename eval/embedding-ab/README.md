@@ -87,8 +87,17 @@ because no valid query exists to rank.
 The implementation was based on searches through `src/memory/episodic`, `src/borg/open.ts`,
 `src/borg/storage-setup.ts`, `src/storage/lancedb`, `src/embeddings`, and `src/retrieval`:
 
-- Episode text exactly matches `EpisodicExtractor`: `title + "\n" + narrative + "\n" +
-  tags.join(" ")`.
+- Episode text uses the current `buildEpisodeEmbeddingText` recipe. Raw episodes use
+  `title + "\n" + narrative + "\n" + tags.join(" ")`. Consolidation versions use the
+  trimmed title, synthesized prose with protected protocol lines removed, outcome headers
+  from the protected source lines, tags, and participants, separated by newlines.
+- Consolidation inputs must be reconstructible before an embedding comparison. Prefer the
+  persisted `consolidation_embedding_input` (synthesized narrative and protected source
+  lines), which the builder checks against the stored narrative. Older consolidations with
+  protected lines require their raw source narratives and an unambiguous reconstruction;
+  narrative text alone is insufficient. The evaluation bank calls the builder directly, so
+  prepare those inputs before running it. Missing, stale, or ambiguous inputs fail explicitly;
+  see the [migration runbook](../../docs/embedding-migration.md).
 - Episode decoding and active/effective-visibility filtering use `EpisodicRepository.listAll()` and
   `isEpisodeEffectivelyVisible()`.
 - Gateway vectors use `OpenAICompatibleEmbeddingClient`, including its float encoding and dimension

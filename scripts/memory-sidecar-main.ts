@@ -1,12 +1,13 @@
 import { logSimilarityProfile } from "../src/config/similarity.js";
 import { requireEmbeddingClientProfile } from "../src/embeddings/bank-profile.js";
 import { DEFAULT_GATEWAY_BASE_URL } from "../src/sidecar/gateway-config.js";
+import { sidecarEmbeddingProfileFromEnv } from "../src/sidecar/embedding-config.js";
 // borg memory sidecar: a long-lived HTTP service exposing per-tenant long-term
 // memory (one being per tenant via BorgPool) to an external consumer such as the
 // Python "team-agent" service.
 //
 // Run: BORG_MEMORY_TOKEN=... LLM_API_KEY=aif-... NODE_EXTRA_CA_CERTS=/path/ca.pem \
-//        tsx scripts/memory-sidecar.ts
+//        EMBEDDING_MODEL=scw/bge-m3 EMBEDDING_DIMS=1024 tsx scripts/memory-sidecar.ts
 //
 // TLS to the kratos inference endpoint uses the process-level NODE_EXTRA_CA_CERTS
 // (the endpoint is server-CA-only, no client cert), matching the embedding client.
@@ -65,8 +66,7 @@ const token = requireEnv("BORG_MEMORY_TOKEN");
 const apiKey = requireEnv("LLM_API_KEY");
 const baseUrl = process.env.KRATOS_BASE_URL ?? DEFAULT_GATEWAY_BASE_URL;
 const llmModel = process.env.LLM_MODEL ?? "generative-apis/qwen3-235b-a22b-instruct-2507";
-const embeddingModel = process.env.EMBEDDING_MODEL ?? "generative-apis/qwen3-embedding-8b";
-const embeddingDims = Number(process.env.EMBEDDING_DIMS ?? 4096);
+const { model: embeddingModel, dimensions: embeddingDims } = sidecarEmbeddingProfileFromEnv(process.env);
 const root = process.env.BORG_DATA_ROOT ?? "./data/borg";
 const host = process.env.BORG_MEMORY_HOST ?? "127.0.0.1";
 const port = Number(process.env.BORG_MEMORY_PORT ?? 8088);

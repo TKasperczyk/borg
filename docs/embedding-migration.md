@@ -152,7 +152,7 @@ EMBEDDING_DIMS=1024
 
 Every migrated bank must carry its persisted target profile before the sidecar resumes serving it.
 
-The sidecar's default constants remain unchanged. Validate through the actual sidecar for **each** tenant: authenticated `GET /memory/episodes?tenant=<tenant>&limit=3` should open the bank successfully; `POST /memory/recall` with a representative query should return HTTP 200 without an embedding/profile degradation. For example:
+The sidecar requires both `EMBEDDING_MODEL` and `EMBEDDING_DIMS` explicitly at startup; missing values or invalid dimensions stop startup. Validate through the actual sidecar for **each** tenant: authenticated `GET /memory/episodes?tenant=<tenant>&limit=3` should open the bank successfully; `POST /memory/recall` with a representative query should return HTTP 200 without an embedding/profile degradation. For example:
 
 ```sh
 nice -n 19 node --input-type=module - <<'JS'
@@ -205,8 +205,8 @@ Directory-only rollback is appropriate before new production writes. If target-m
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `EMBEDDING_MODEL` | `generative-apis/qwen3-embedding-8b` | Actual model used by the one shared injected client and its explicit profile. |
-| `EMBEDDING_DIMS` | `4096` | Positive integer dimension expected from that client and required in every bank table. |
+| `EMBEDDING_MODEL` | required | Actual model used by the one shared injected client and its explicit profile. |
+| `EMBEDDING_DIMS` | required | Positive integer dimension expected from that client and required in every bank table. |
 
 The gateway URL and credential for the shared sidecar client come from `KRATOS_BASE_URL` and `LLM_API_KEY`; TLS uses `NODE_EXTRA_CA_CERTS`. The three `BORG_EMBEDDING_STALL_*` controls affect transport timing, not bank identity: `BORG_EMBEDDING_STALL_TIMEOUT_MS` defaults to 1000 per single attempt, `BORG_EMBEDDING_STALL_BATCH_TIMEOUT_MS` to 20000 per batch attempt, and `BORG_EMBEDDING_STALL_RETRIES` to 1 retry. Library `BORG_EMBEDDING_MODEL`/`BORG_EMBEDDING_DIMS` settings do not override the sidecar's injected client identity.
 

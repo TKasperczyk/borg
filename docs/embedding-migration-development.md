@@ -246,8 +246,8 @@ npx vitest run src/retrieval/recall-core.test.ts -t 'maps N=3 variants to semant
 
 | Variable | Default | Effective behavior |
 | --- | --- | --- |
-| `EMBEDDING_MODEL` | `generative-apis/qwen3-embedding-8b` | Model sent by the shared OpenAI-compatible client and declared in its explicit profile. |
-| `EMBEDDING_DIMS` | `4096` | Positive integer returned-vector dimension and bank schema requirement. |
+| `EMBEDDING_MODEL` | required | Model sent by the shared OpenAI-compatible client and declared in its explicit profile. |
+| `EMBEDDING_DIMS` | required | Positive integer returned-vector dimension and bank schema requirement. |
 | `BORG_EMBEDDING_STALL_TIMEOUT_MS` | `1000` | Timeout in milliseconds per single-text embedding attempt. |
 | `BORG_EMBEDDING_STALL_BATCH_TIMEOUT_MS` | `20000` | Timeout in milliseconds per batch attempt. |
 | `BORG_EMBEDDING_STALL_RETRIES` | `1` | Number of retries after an attempt stalls. |
