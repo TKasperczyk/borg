@@ -148,3 +148,23 @@ export function buildConsolidationEpisodeEmbeddingText(input: {
 
   return `${input.title.trim()}\n${narrativeParts.join("\n")}\n${input.tags.join(" ")}\n${input.participants.join(" ")}`;
 }
+
+/** Reconstruct the production embedding input from a persisted episode body. */
+export function buildEpisodeEmbeddingText(input: {
+  title: string;
+  narrative: string;
+  tags: readonly string[];
+  participants?: readonly string[];
+  episode_kind?: string | null;
+}): string {
+  if (input.episode_kind === "consolidation_version") {
+    return buildConsolidationEpisodeEmbeddingText({
+      title: input.title,
+      synthesizedNarrative: input.narrative,
+      protectedSourceTexts: [input.narrative],
+      tags: input.tags,
+      participants: input.participants ?? [],
+    });
+  }
+  return `${input.title}\n${input.narrative}\n${input.tags.join(" ")}`;
+}

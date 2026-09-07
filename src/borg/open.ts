@@ -73,6 +73,7 @@ export async function openBorgDependencies(
   let sqlite: SqliteDatabase | undefined;
   let lance: LanceDbStore | undefined;
   let releaseEmbeddingBankAccess: (() => Promise<void>) | undefined;
+  const pendingStartupTasks: Promise<unknown>[] = [];
   let catchUpWorker: ChatResponseCatchUpWorker | undefined;
 
   try {
@@ -158,6 +159,7 @@ export async function openBorgDependencies(
       }
     };
     const repositories = await buildBorgRepositories({
+      pendingStartupTasks,
       config,
       sqlite,
       episodesTable: tables.episodesTable,
@@ -647,10 +649,12 @@ export async function openBorgDependencies(
       llmFactory,
       embeddingClient,
       releaseEmbeddingBankAccess,
+      pendingStartupTasks,
       tracer,
       clock,
     };
   } catch (error) {
+    await Promise.allSettled(pendingStartupTasks);
     await closeBestEffort(sqlite, lance);
     await releaseEmbeddingBankAccess?.();
     throw error;

@@ -1,3 +1,4 @@
+import type { SerializedEmbeddingPreparer } from "../embeddings/serialized.js";
 import { z } from "zod";
 
 import { SqliteDatabase } from "../storage/sqlite/index.js";
@@ -115,6 +116,7 @@ export class ReverserRegistry {
 }
 
 export type AuditLogOptions = {
+  prepareSerializedEmbeddings?: SerializedEmbeddingPreparer;
   db: SqliteDatabase;
   clock?: Clock;
   registry?: ReverserRegistry;
@@ -234,6 +236,12 @@ export class AuditLog {
       });
     }
 
+    const reversal = this.options.prepareSerializedEmbeddings
+      ? ((await this.options.prepareSerializedEmbeddings(audit.reversal)) as Record<
+          string,
+          unknown
+        >)
+      : audit.reversal;
     const revertedAt = this.clock.now();
 
     this.db.exec("BEGIN IMMEDIATE");
@@ -241,7 +249,7 @@ export class AuditLog {
       await reverser({
         audit,
         targets: audit.targets,
-        reversal: audit.reversal,
+        reversal,
       });
 
       this.db

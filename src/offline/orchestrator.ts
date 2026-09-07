@@ -1,3 +1,4 @@
+import type { SerializedEmbeddingPreparer } from "../embeddings/serialized.js";
 import { performance } from "node:perf_hooks";
 
 import { StreamWriter } from "../stream/index.js";
@@ -21,6 +22,7 @@ import {
 } from "./types.js";
 
 export type MaintenanceOrchestratorOptions = {
+  prepareSerializedEmbeddings?: SerializedEmbeddingPreparer;
   baseContext: Omit<OfflineContext, "runId" | "streamWriter" | "auditLog">;
   auditLog: AuditLog;
   createStreamWriter: () => StreamWriter;
@@ -251,7 +253,11 @@ export class MaintenanceOrchestrator {
     rawPlan: MaintenancePlan,
     runId: MaintenanceRunId,
   ): Promise<OrchestratorResult> {
-    const plan = maintenancePlanSchema.parse(rawPlan);
+    const plan = maintenancePlanSchema.parse(
+      this.options.prepareSerializedEmbeddings
+        ? await this.options.prepareSerializedEmbeddings(rawPlan)
+        : rawPlan,
+    );
     const streamWriter = this.options.createStreamWriter();
     const results: OfflineResult[] = [];
 

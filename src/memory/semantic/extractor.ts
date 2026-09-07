@@ -1,3 +1,4 @@
+import { buildNodeEmbeddingText } from "./embedding-text.js";
 import { z } from "zod";
 
 import type { EmbeddingClient } from "../../embeddings/index.js";
@@ -446,21 +447,6 @@ function mergeAliases(left: readonly string[], right: readonly string[]): string
       [...left, ...right].map((value) => value.trim()).filter((value) => value.length > 0),
     ),
   ];
-}
-
-function buildNodeEmbeddingText(input: {
-  label: string;
-  description: string;
-  aliases: readonly string[];
-  observationMetadata: SemanticObservationMetadata | null;
-}): string {
-  const parts = [input.label, input.description, input.aliases.join(" ")];
-
-  if (input.observationMetadata !== null) {
-    parts.push(JSON.stringify(input.observationMetadata));
-  }
-
-  return parts.join("\n");
 }
 
 function observationMetadataIdentity(input: SemanticObservationMetadata | null): string | null {

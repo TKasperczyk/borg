@@ -83,6 +83,7 @@ export async function closeBorgDependencies(deps: BorgDependencies): Promise<voi
       collectCloseError("review queue enqueue hooks", error);
     }
 
+    await Promise.allSettled(deps.pendingStartupTasks ?? []);
     await Promise.allSettled([
       deps.actionRepository?.waitForPendingEmbeddings(),
       deps.openQuestionsRepository?.waitForPendingEmbeddings(),

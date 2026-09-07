@@ -1,3 +1,4 @@
+import { buildEpisodeEmbeddingText } from "./protected-lines.js";
 import type { EmbeddingClient } from "../../embeddings/index.js";
 import type { TurnTracer } from "../../tracing/tracer.js";
 import {
@@ -1181,7 +1182,7 @@ export class EpisodicExtractor {
     };
 
     const embedding = await this.options.embeddingClient.embed(
-      `${protectedCandidate.title}\n${protectedCandidate.narrative}\n${protectedCandidate.tags.join(" ")}`,
+      buildEpisodeEmbeddingText(protectedCandidate),
     );
     const nowMs = this.clock.now();
     const nextEpisode = buildEpisodeFromCandidate(

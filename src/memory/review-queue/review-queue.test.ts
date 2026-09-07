@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
+import { refreshSerializedEmbeddings } from "../../embeddings/serialized.js";
 
 import { LanceDbStore } from "../../storage/lancedb/index.js";
 import { composeMigrations, openDatabase } from "../../storage/sqlite/index.js";
@@ -116,6 +117,34 @@ describe("review queue", () => {
     while (cleanup.length > 0) {
       await cleanup.pop()?.();
     }
+  });
+
+  it("rejects a queued update with an unrecoverable serialized vector before resolving it", async () => {
+    const harness = await createOfflineTestHarness();
+    cleanup.push(harness.cleanup);
+    const queue = new ReviewQueueRepository({
+      db: harness.db,
+      prepareSerializedEmbeddings: (payload) =>
+        refreshSerializedEmbeddings(payload, harness.createContext().embeddingClient),
+    });
+    registerBuiltinReviewQueueHandlers(queue);
+    const item = queue.enqueue({
+      kind: "new_insight",
+      reason: "Pending old-model update",
+      refs: createPendingInsightRefs({
+        nodeId: createSemanticNodeId(),
+        episodeId: createEpisodeFixture().id,
+        description: "Updated description",
+        confidence: 0.7,
+        lastVerifiedAt: 1000,
+        embedding: [1, 2, 3, 4],
+      }),
+    });
+    await expect(queue.resolve(item.id, "accept")).rejects.toMatchObject({
+      code: "SERIALIZED_EMBEDDING_INCOMPATIBLE",
+    });
+    expect(queue.get(item.id)?.resolved_at).toBeNull();
+    expect(harness.db.raw.inTransaction).toBe(false);
   });
 
   it("opens review_queue schema on empty databases and databases with existing review rows", () => {

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildConsolidationEpisodeEmbeddingText,
+  buildEpisodeEmbeddingText,
   collectProtectedEpisodeTokenLines,
   preserveProtectedEpisodeTokenLines,
 } from "./protected-lines.js";
@@ -13,6 +14,31 @@ describe("protected episode token lines", () => {
     "ticket=AININJAS-1187 action=transition transition=Ready_for_dev verdict=approved";
   const overlappingNewGrammarLine = "ticket=AININJAS-1188 action=created summary=Prepare release";
   const bareTeamsCardLine = "action=teams_card";
+
+  it("reconstructs the production consolidation recipe from its persisted narrative", () => {
+    const prose = "The team completed the scheduled triage.";
+    const source = `${outcomeLine}\n${oldGrammarLine}\n${ticketActionLine}`;
+    const title = " Daily rollup ";
+    const tags = ["triage"];
+    const participants = ["team-agent-ai"];
+    expect(
+      buildEpisodeEmbeddingText({
+        title,
+        tags,
+        participants,
+        episode_kind: "consolidation_version",
+        narrative: preserveProtectedEpisodeTokenLines(prose, [source]),
+      }),
+    ).toBe(
+      buildConsolidationEpisodeEmbeddingText({
+        title,
+        tags,
+        participants,
+        synthesizedNarrative: prose,
+        protectedSourceTexts: [source],
+      }),
+    );
+  });
 
   it("collects complete old- and new-grammar lines once in source order", () => {
     const first = [

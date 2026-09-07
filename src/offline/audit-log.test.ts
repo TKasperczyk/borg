@@ -4,6 +4,7 @@ import { createMaintenanceRunId } from "../util/ids.js";
 
 import { AuditLog, ReverserRegistry } from "./audit-log.js";
 import { createOfflineTestHarness } from "./test-support.js";
+import { refreshSerializedEmbeddings } from "../embeddings/serialized.js";
 
 describe("offline audit log", () => {
   const cleanup: Array<() => Promise<void>> = [];
@@ -14,6 +15,33 @@ describe("offline audit log", () => {
     while (cleanup.length > 0) {
       await cleanup.pop()?.();
     }
+  });
+
+  it("rejects an unrecoverable serialized vector before starting a reversal transaction", async () => {
+    const harness = await createOfflineTestHarness();
+    cleanup.push(harness.cleanup);
+    const registry = new ReverserRegistry();
+    const reverser = vi.fn();
+    registry.register("curator", "archive", reverser);
+    const auditLog = new AuditLog({
+      db: harness.db,
+      registry,
+      prepareSerializedEmbeddings: (payload) =>
+        refreshSerializedEmbeddings(payload, harness.createContext().embeddingClient),
+    });
+    const audit = auditLog.record({
+      run_id: createMaintenanceRunId(),
+      process: "curator",
+      action: "archive",
+      targets: {},
+      reversal: { previous: [{ embedding: [1, 2, 3, 4] }] },
+    });
+    await expect(auditLog.revert(audit.id)).rejects.toMatchObject({
+      code: "SERIALIZED_EMBEDDING_INCOMPATIBLE",
+    });
+    expect(reverser).not.toHaveBeenCalled();
+    expect(harness.db.raw.inTransaction).toBe(false);
+    expect(auditLog.get(audit.id)?.reverted_at).toBeNull();
   });
 
   it("records, lists, and reverts audit rows idempotently", async () => {

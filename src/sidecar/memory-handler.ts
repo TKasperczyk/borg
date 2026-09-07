@@ -1849,6 +1849,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
         }
       } catch (error) {
         cancelWaiter?.();
+        if (sendEmbeddingBankUnavailable(res, error)) return;
         console.error(`memory-sidecar: ${rawPath} failed for tenant "${input.tenant}"`, error);
         if (!disconnected) {
           send(res, 503, { error: "tenant unavailable" });
@@ -2514,6 +2515,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
 
         send(res, 404, { error: "not found" });
       } catch (error) {
+        if (sendEmbeddingBankUnavailable(res, error)) return;
         if (isInvalidEpisodeCursorError(error)) {
           send(res, 400, { error: "invalid 'cursor'" });
           return;

@@ -595,14 +595,12 @@ export class OpenQuestionsRepository {
     });
   }
 
-  private reportEmbeddingFailure(
+  private async reportEmbeddingFailure(
     error: unknown,
     details: OpenQuestionEmbeddingFailureDetails,
-  ): void {
+  ): Promise<void> {
     try {
-      void Promise.resolve(this.options.onEmbeddingFailure?.(error, details)).catch(() => {
-        // Best-effort failure reporting only.
-      });
+      await this.options.onEmbeddingFailure?.(error, details);
     } catch {
       // Best-effort failure reporting only.
     }
@@ -654,7 +652,7 @@ export class OpenQuestionsRepository {
         on: "id",
       });
     } catch (error) {
-      this.reportEmbeddingFailure(error, {
+      await this.reportEmbeddingFailure(error, {
         operation,
         questionId: question.id,
         question: question.question,
@@ -910,7 +908,7 @@ export class OpenQuestionsRepository {
         report.embedded += 1;
       } catch (error) {
         report.failed += 1;
-        this.reportEmbeddingFailure(error, {
+        await this.reportEmbeddingFailure(error, {
           operation: "backfill",
           questionId: question.id,
           question: question.question,

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import { ConfigError } from "../util/errors.js";
 import type { EmbeddingClient } from "./index.js";
+import { assertEmbeddingProfilesMatch } from "./bank-profile.js";
 
 const DEFAULT_MAX_ENTRIES = 5_000;
 
@@ -52,6 +53,11 @@ class CachingEmbeddingClient implements EmbeddingClient {
     private readonly inner: EmbeddingClient,
     private readonly options: { model: string; dims: number; maxEntries?: number },
   ) {
+    if (inner.profile)
+      assertEmbeddingProfilesMatch(inner.profile, {
+        model: options.model,
+        dimensions: options.dims,
+      });
     this.maxEntries = normalizeMaxEntries(options.maxEntries);
   }
 

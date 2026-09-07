@@ -177,6 +177,7 @@ export type BorgDependencies = {
   llmFactory: () => LLMClient;
   embeddingClient: EmbeddingClient;
   releaseEmbeddingBankAccess?: () => Promise<void>;
+  pendingStartupTasks?: readonly Promise<unknown>[];
   tracer: TurnTracer;
   clock: Clock;
 };

@@ -1,3 +1,5 @@
+import { refreshSerializedEmbeddings } from "../embeddings/serialized.js";
+import { parseSemanticNodeId } from "../util/ids.js";
 // Builds Borg's repository graph and the cross-repository services that sit on top of it.
 
 import { AutonomyWakesRepository, ScheduledWakesRepository } from "../autonomy/index.js";
@@ -135,6 +137,7 @@ export type BorgRepositorySetup = Pick<
 };
 
 export type BuildBorgRepositoriesOptions = {
+  pendingStartupTasks?: Promise<unknown>[];
   taskEventsEnabled?: boolean;
   config: Config;
   sqlite: SqliteDatabase;
@@ -230,9 +233,9 @@ export async function buildBorgRepositories(
     table: options.openQuestionsTable,
     embeddingClient,
     clock,
-    onEmbeddingFailure: (error, details) => {
+    onEmbeddingFailure: async (error, details) => {
       const writer = createDefaultStreamWriter();
-      void appendInternalFailureEvent(writer, "open_question_embedding", error, {
+      await appendInternalFailureEvent(writer, "open_question_embedding", error, {
         operation: details.operation,
         questionId: details.questionId,
       }).finally(() => {
@@ -240,14 +243,17 @@ export async function buildBorgRepositories(
       });
     },
   });
-  void openQuestionsRepository.backfillMissingEmbeddings().catch((error) => {
-    const writer = createDefaultStreamWriter();
-    void appendInternalFailureEvent(writer, "open_question_embedding_backfill", error).finally(
-      () => {
-        writer.close();
-      },
-    );
-  });
+  const questionBackfill = openQuestionsRepository
+    .backfillMissingEmbeddings()
+    .catch(async (error) => {
+      const writer = createDefaultStreamWriter();
+      await appendInternalFailureEvent(writer, "open_question_embedding_backfill", error).finally(
+        () => {
+          writer.close();
+        },
+      );
+    });
+  options.pendingStartupTasks?.push(questionBackfill);
   const executiveStepsRepository = new ExecutiveStepsRepository({
     db: sqlite,
     clock,
@@ -368,9 +374,9 @@ export async function buildBorgRepositories(
     table: options.observedEventsTable,
     embeddingClient,
     clock,
-    onEmbeddingFailure: (error, details) => {
+    onEmbeddingFailure: async (error, details) => {
       const writer = createDefaultStreamWriter();
-      void appendInternalFailureEvent(writer, "observed_event_embedding", error, {
+      await appendInternalFailureEvent(writer, "observed_event_embedding", error, {
         operation: details.operation,
         eventId: details.eventId,
       }).finally(() => {
@@ -385,7 +391,7 @@ export async function buildBorgRepositories(
       recall_consistency: "topic_recall_eventual_until_complete",
     });
   }
-  void observedEventRepository
+  const eventBackfill = observedEventRepository
     .backfillMissingEmbeddings()
     .then((report) => {
       if (options.tracer?.enabled === true) {
@@ -399,7 +405,7 @@ export async function buildBorgRepositories(
         });
       }
     })
-    .catch((error) => {
+    .catch(async (error) => {
       if (options.tracer?.enabled === true) {
         options.tracer.emit("observed_event_embedding_backfill.failed", {
           turnId: "startup",
@@ -410,12 +416,13 @@ export async function buildBorgRepositories(
         });
       }
       const writer = createDefaultStreamWriter();
-      void appendInternalFailureEvent(writer, "observed_event_embedding_backfill", error).finally(
+      await appendInternalFailureEvent(writer, "observed_event_embedding_backfill", error).finally(
         () => {
           writer.close();
         },
       );
     });
+  options.pendingStartupTasks?.push(eventBackfill);
   const identityService = new IdentityService({
     valuesRepository,
     goalsRepository,
@@ -460,6 +467,10 @@ export async function buildBorgRepositories(
     }),
   );
   const createdReviewQueueRepository = new ReviewQueueRepository({
+    prepareSerializedEmbeddings: (payload) =>
+      refreshSerializedEmbeddings(payload, embeddingClient, (id) =>
+        semanticNodeRepository.get(parseSemanticNodeId(id)),
+      ),
     db: sqlite,
     clock,
     handlers: reviewHandlers,

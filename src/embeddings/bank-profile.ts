@@ -88,28 +88,36 @@ export async function guardBankEmbeddingProfile(
   const profile = embeddingProfileSchema.parse(effective);
   const stored = readBankEmbeddingProfile(dataDir);
   if (stored !== undefined) assertEmbeddingProfilesMatch(stored, profile);
-  // Direct opens only: no schema evolution, SQL migrations or reconciliation.
-  if (existsSync(join(dataDir, "lancedb"))) {
-    const connection = await connect(join(dataDir, "lancedb"));
-    try {
-      for (const name of await connection.tableNames()) {
-        const table = await connection.openTable(name);
-        try {
-          const tableSchema = await table.schema();
-          if (!tableSchema.fields.some((field) => field.name === "embedding")) continue;
-          if (embeddingDimensionsFromSchema(tableSchema) !== profile.dimensions) {
-            throw new EmbeddingBankError(
-              `Bank embedding dimension mismatch in ${name}; migration required`,
-              { code: "EMBEDDING_PROFILE_MISMATCH" },
-            );
+  try {
+    // Direct opens only: no schema evolution, SQL migrations or reconciliation.
+    if (existsSync(join(dataDir, "lancedb"))) {
+      const connection = await connect(join(dataDir, "lancedb"));
+      try {
+        for (const name of await connection.tableNames()) {
+          const table = await connection.openTable(name);
+          try {
+            const tableSchema = await table.schema();
+            if (!tableSchema.fields.some((field) => field.name === "embedding")) continue;
+            if (embeddingDimensionsFromSchema(tableSchema) !== profile.dimensions) {
+              throw new EmbeddingBankError(
+                `Bank embedding dimension mismatch in ${name}; migration required`,
+                { code: "EMBEDDING_PROFILE_MISMATCH" },
+              );
+            }
+          } finally {
+            table.close();
           }
-        } finally {
-          table.close();
         }
+      } finally {
+        connection.close();
       }
-    } finally {
-      connection.close();
     }
+  } catch (cause) {
+    if (cause instanceof EmbeddingBankError) throw cause;
+    throw new EmbeddingBankError("Cannot validate bank embedding schemas; refusing to open bank", {
+      code: "EMBEDDING_PROFILE_UNVERIFIABLE",
+      cause,
+    });
   }
   if (stored !== undefined) return stored;
   const now = Date.now();

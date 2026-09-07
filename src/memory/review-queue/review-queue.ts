@@ -1,3 +1,4 @@
+import type { SerializedEmbeddingPreparer } from "../../embeddings/serialized.js";
 import { z } from "zod";
 
 import { NOOP_TRACER, type TurnTracer } from "../../tracing/tracer.js";
@@ -119,6 +120,7 @@ export type ReviewResolveOptions = {
 };
 
 export type ReviewQueueRepositoryOptions = {
+  prepareSerializedEmbeddings?: SerializedEmbeddingPreparer;
   db: SqliteDatabase;
   clock?: Clock;
   episodicRepository?: EpisodicRepository;
@@ -1235,6 +1237,17 @@ export class ReviewQueueRepository {
       );
     }
 
+    if (
+      this.options.prepareSerializedEmbeddings &&
+      !["dismiss", "reject"].includes(resolution.decision)
+    ) {
+      item = {
+        ...item,
+        refs: z
+          .record(z.string(), z.unknown())
+          .parse(await this.options.prepareSerializedEmbeddings(item.refs)),
+      };
+    }
     const refs = this.parseHandlerRefs(handler, item);
     const scope = handler.transactionScope({
       item,

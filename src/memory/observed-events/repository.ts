@@ -294,14 +294,12 @@ export class ObservedEventRepository {
     });
   }
 
-  private reportEmbeddingFailure(
+  private async reportEmbeddingFailure(
     error: unknown,
     details: ObservedEventEmbeddingFailureDetails,
-  ): void {
+  ): Promise<void> {
     try {
-      void Promise.resolve(this.options.onEmbeddingFailure?.(error, details)).catch(() => {
-        // Best-effort failure reporting only.
-      });
+      await this.options.onEmbeddingFailure?.(error, details);
     } catch {
       // Best-effort failure reporting only.
     }
@@ -353,7 +351,7 @@ export class ObservedEventRepository {
         on: "id",
       });
     } catch (error) {
-      this.reportEmbeddingFailure(error, {
+      await this.reportEmbeddingFailure(error, {
         operation,
         eventId: event.id,
         interactionText: event.interaction_text,
@@ -463,7 +461,7 @@ export class ObservedEventRepository {
         report.embedded += 1;
       } catch (error) {
         report.failed += 1;
-        this.reportEmbeddingFailure(error, {
+        await this.reportEmbeddingFailure(error, {
           operation: "backfill",
           eventId: event.id,
           interactionText: event.interaction_text,
