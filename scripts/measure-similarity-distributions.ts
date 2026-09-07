@@ -28,6 +28,7 @@ const optionsSchema = z.object({
     .refine((tables) => new Set(tables).size === tables.length, "Duplicate table names"),
   sample: z.coerce.number().int().positive().max(Number.MAX_SAFE_INTEGER),
   seed: z.string().min(1),
+  cacheDir: z.string().min(1).optional(),
 });
 export type MeasurementOptions = z.infer<typeof optionsSchema>;
 
@@ -40,6 +41,7 @@ Read stored vectors only. Never calls an embedding gateway or opens Borg.
   --seed <string>          Deterministic sample seed (default borg-similarity-v1)
   --bank <dir>             Quiescent copied tenant with lancedb and optional lancedb.prev-<N>
   --out <dir>              Report root outside the bank; one child directory per bank
+  --cache-dir <dir>        Scratch/cache root (else XDG_CACHE_HOME, else OS temporary directory)
 
 Run current and prev sequentially with the same bank, out, seed, tables and sample.
 The second run adds percentile proposals to report.json and summary.md. Exact nearest
@@ -59,12 +61,14 @@ export function parseMeasurementArgs(args: string[]): MeasurementOptions | null 
       tables: { type: "string", default: DEFAULT_TABLES.join(",") },
       sample: { type: "string", default: "10000" },
       seed: { type: "string", default: "borg-similarity-v1" },
+      "cache-dir": { type: "string" },
       help: { type: "boolean", short: "h" },
     },
   });
   if (values.help) return null;
   return optionsSchema.parse({
     ...values,
+    cacheDir: values["cache-dir"],
     tables: values.tables!.split(",").map((table) => table.trim()),
   });
 }
@@ -96,7 +100,9 @@ export async function measureBank(
   };
   progress(`Reading ${run.vectors}: ${run.vector_directory}`);
   for (const warning of run.warnings) progress(warning);
-  const families = options.tables.includes("episodes") ? readFamilies(paths.directory) : undefined;
+  const families = options.tables.includes("episodes")
+    ? readFamilies(paths.directory, options.cacheDir)
+    : undefined;
   const connections = await openVectorBanks(paths);
   try {
     for (const name of options.tables) {

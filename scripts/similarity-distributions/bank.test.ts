@@ -21,6 +21,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { measureBank, parseMeasurementArgs } from "../measure-similarity-distributions.js";
 import {
   decodeRows,
+  measurementCacheDirectory,
   outputDirectory,
   pairTables,
   readFamilies,
@@ -125,6 +126,20 @@ function fingerprintTree(root: string): Record<string, { bytes: string; mtime: n
 }
 
 describe("bank reading and model pairing", () => {
+  it("honors an explicit cache and XDG_CACHE_HOME when HOME is read-only", async () => {
+    const { bank, root } = await fixture();
+    const cache = join(root, "cache");
+    expect(measurementCacheDirectory(cache, { HOME: "/", XDG_CACHE_HOME: "/other" })).toBe(cache);
+    expect(measurementCacheDirectory(undefined, { HOME: "/", XDG_CACHE_HOME: cache })).toBe(cache);
+    expect(measurementCacheDirectory(undefined, { HOME: "/" })).not.toBe("/.cache");
+    expect(readFamilies(bank, cache).byId.size).toBe(3);
+    expect(existsSync(join(cache, "borg-similarity-distributions"))).toBe(true);
+    expect(() => readFamilies(bank, bank)).toThrow("outside");
+    expect(
+      parseMeasurementArgs(["--bank", bank, "--out", root, "--cache-dir", cache])?.cacheDir,
+    ).toBe(cache);
+  });
+
   it.each([1024, 4096])(
     "reads all seven table shapes without a hidden row limit at %i dimensions",
     async (dimensions) => {

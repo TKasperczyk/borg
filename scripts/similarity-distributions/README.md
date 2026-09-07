@@ -9,18 +9,21 @@ changes thresholds, calls an embedding gateway, or opens the Borg facade.
 From the Borg checkout, with Node 22 and the existing dependencies (including tsx):
 
 ```sh
-mkdir -p "$HOME/.cache/borg-similarity/tmp"
-export TMPDIR="$HOME/.cache/borg-similarity/tmp"
-export XDG_CACHE_HOME="$HOME/.cache"
+export PATH=/layers/paketo-buildpacks_node-engine/node/bin:$PATH
+mkdir -p /tmp/borg-measure-cache/tmp
+export TMPDIR=/tmp/borg-measure-cache/tmp
+export XDG_CACHE_HOME=/tmp/borg-measure-cache
 
 node --import tsx scripts/measure-similarity-distributions.ts \
   --bank /tmp/borg-bank-copies/team-agent-ai \
   --vectors current --sample 10000 --seed borg-similarity-v1 \
+  --cache-dir /tmp/borg-measure-cache \
   --out /tmp/borg-similarity-results
 
 node --import tsx scripts/measure-similarity-distributions.ts \
   --bank /tmp/borg-bank-copies/team-agent-ai \
   --vectors prev --sample 10000 --seed borg-similarity-v1 \
+  --cache-dir /tmp/borg-measure-cache \
   --out /tmp/borg-similarity-results
 ```
 
@@ -72,7 +75,10 @@ Family metadata comes from SQLite
 `episode_index(episode_id, consolidation_family_id)`. Read-only SQLite connections
 can still write WAL shared-memory sidecars, so the script first copies the main
 SQLite file and WAL to a disposable directory under
-`$HOME/.cache/borg-similarity-distributions/`. It opens that scratch copy with
+`<cache>/borg-similarity-distributions/`. Cache precedence is `--cache-dir`, then
+`XDG_CACHE_HOME`, then `borg-cache` under the OS temporary directory. It never
+derives this path from HOME (which can be `/` and read-only in the pod).
+It opens that scratch copy with
 `openReadOnlyDatabase` and removes it afterward. The bank itself receives no
 writes. Reports must be outside the bank; output paths through symlinks into the
 bank are rejected. Each report file is written with temp/fsync/rename and mode

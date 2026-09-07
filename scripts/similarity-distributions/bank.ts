@@ -9,7 +9,7 @@ import {
   rmSync,
   statSync,
 } from "node:fs";
-import { homedir } from "node:os";
+import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { connect, type Connection } from "@lancedb/lancedb";
 import { z } from "zod";
@@ -224,14 +224,21 @@ export function tableFingerprint(table: LoadedTable | null): string {
   return hash.digest("hex");
 }
 
-export function readFamilies(bank: string): Families {
+export function measurementCacheDirectory(cacheDir?: string, env = process.env): string {
+  return resolve(cacheDir ?? env.XDG_CACHE_HOME ?? join(tmpdir(), "borg-cache"));
+}
+
+export function readFamilies(bank: string, cacheDir?: string): Families {
   const path = join(bank, "borg.db");
   const unavailable = (reason: string): Families => ({ source: null, reason, byId: new Map() });
   if (!existsSync(path)) return unavailable("No borg.db in bank copy");
   // SQLite readOnly can still create/update WAL shared-memory sidecars. Query
-  // a disposable main+WAL copy under HOME so even those writes stay off-bank.
+  // a disposable main+WAL copy in the selected cache so writes stay off-bank.
   // The input must be a quiescent copy, as with the embedding A/B evaluator.
-  const scratchRoot = join(homedir(), ".cache", "borg-similarity-distributions");
+  const scratchRoot = outputDirectory(
+    bank,
+    join(measurementCacheDirectory(cacheDir), "borg-similarity-distributions"),
+  );
   mkdirSync(scratchRoot, { recursive: true, mode: 0o700 });
   const scratch = mkdtempSync(join(scratchRoot, "sqlite-"));
   try {
