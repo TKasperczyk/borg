@@ -240,6 +240,8 @@ borg social profile|upsert|adjust-trust
 
 For per-tenant embedding model changes, use the [embedding migration runbook](docs/embedding-migration.md), including backup, live-tenant drain, resumable re-embedding, verification, and rollback.
 
+See [similarity calibration](docs/similarity-calibration.md) for model-specific thresholds, overrides, and the measurement workflow.
+
 - **Node >= 22.**
 - **An OpenAI-compatible embeddings endpoint.** Defaults to LM Studio on
   `localhost:1234` with `text-embedding-qwen3-embedding-8b` (4096 dims).
