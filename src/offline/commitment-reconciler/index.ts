@@ -185,7 +185,6 @@ const supersedeReversalSchema = z
   .strict();
 
 export type CommitmentReconcilerPlan = z.infer<typeof commitmentReconcilerPlanSchema>;
-export type CommitmentReconciliationToolInput = z.infer<typeof reconciliationToolInputSchema>;
 export type CommitmentReconcilerProcessOptions = {
   commitmentRepository: OfflineContext["commitmentRepository"];
   registry: ReverserRegistry;

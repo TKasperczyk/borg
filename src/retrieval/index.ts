@@ -83,7 +83,6 @@ export {
   type RetrievalGetEpisodeOptions,
   type RetrievalPipelineOptions,
   type RetrievalSharedOptions,
-  type RetrievalSearchOptions,
 } from "./pipeline.js";
 export type {
   RecallContextTurn,

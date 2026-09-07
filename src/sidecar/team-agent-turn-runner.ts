@@ -29,7 +29,6 @@ export const teamsInboxTransportMetadataSchema = z
   })
   .strict();
 
-export type TeamsInboxTransportMetadata = z.infer<typeof teamsInboxTransportMetadataSchema>;
 
 const storedMetadataSchema = z
   .record(z.string(), jsonValueSchema)

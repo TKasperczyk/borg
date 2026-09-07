@@ -41,7 +41,6 @@ import {
 } from "../episodic/index.js";
 import type { EntityRecord, EntityRepository } from "../commitments/index.js";
 import type {
-  RelationshipEvidenceStreamEntryTrustResult,
   RelationshipEvidenceStreamEntryTrustValidator,
 } from "../source-trust.js";
 import { SemanticEdgeRepository, SemanticNodeRepository } from "./repository.js";
@@ -159,11 +158,6 @@ export type SemanticExtractorOptions = {
   dedupThreshold?: number;
   confidenceCeiling?: number;
 };
-
-export type SemanticRelationshipEvidenceStreamEntryTrustResult =
-  RelationshipEvidenceStreamEntryTrustResult;
-export type SemanticRelationshipEvidenceStreamEntryTrustValidator =
-  RelationshipEvidenceStreamEntryTrustValidator;
 
 export type ExtractSemanticResult = {
   insertedNodes: number;

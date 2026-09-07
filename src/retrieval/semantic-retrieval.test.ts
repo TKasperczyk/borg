@@ -13,7 +13,7 @@ import {
   memoryDisclosureLabelForEpisodeIds,
   resolveMemoryDisclosureLabelForEpisodeIds,
   resolveMemoryDisclosureLabelsByEpisodeId,
-  resolveSemanticContext,
+  resolveSemanticContextForCognition,
   resolveSemanticContextForDisclosure,
   toRetrievedSemantic,
 } from "./semantic-retrieval.js";
@@ -30,7 +30,7 @@ async function resolveCognitionProbe(
   });
 
   return toRetrievedSemantic(
-    await resolveSemanticContext(
+    await resolveSemanticContextForCognition(
       "Atlas visibility probe",
       {
         audienceEntityId,
@@ -145,7 +145,7 @@ describe("semantic disclosure label batching", () => {
   });
 });
 
-describe("resolveSemanticContext temporal validity", () => {
+describe("resolveSemanticContextForCognition temporal validity", () => {
   let harness: Awaited<ReturnType<typeof createOfflineTestHarness>> | undefined;
 
   afterEach(async () => {
@@ -197,7 +197,7 @@ describe("resolveSemanticContext temporal validity", () => {
     });
 
     const cognition = toRetrievedSemantic(
-      await resolveSemanticContext(
+      await resolveSemanticContextForCognition(
         "continuity",
         {
           audienceEntityId,
@@ -297,7 +297,7 @@ describe("resolveSemanticContext temporal validity", () => {
       edgeRepository: harness.semanticEdgeRepository,
     });
 
-    const current = await resolveSemanticContext(
+    const current = await resolveSemanticContextForCognition(
       "Atlas",
       {
         graphWalkDepth: 1,
@@ -311,7 +311,7 @@ describe("resolveSemanticContext temporal validity", () => {
         semanticGraph,
       },
     );
-    const historical = await resolveSemanticContext(
+    const historical = await resolveSemanticContextForCognition(
       "Atlas",
       {
         graphWalkDepth: 1,
@@ -384,7 +384,7 @@ describe("resolveSemanticContext temporal validity", () => {
       edgeRepository: harness.semanticEdgeRepository,
     });
 
-    const current = await resolveSemanticContext(
+    const current = await resolveSemanticContextForCognition(
       "Atlas requires pnpm install",
       {
         graphWalkDepth: 1,
@@ -398,7 +398,7 @@ describe("resolveSemanticContext temporal validity", () => {
         semanticGraph,
       },
     );
-    const beforeClosure = await resolveSemanticContext(
+    const beforeClosure = await resolveSemanticContextForCognition(
       "Atlas requires pnpm install",
       {
         graphWalkDepth: 1,
@@ -470,7 +470,7 @@ describe("resolveSemanticContext temporal validity", () => {
     });
 
     const fromCause = toRetrievedSemantic(
-      await resolveSemanticContext(
+      await resolveSemanticContextForCognition(
         "Atlas failed deploys",
         {
           graphWalkDepth: 1,
@@ -485,7 +485,7 @@ describe("resolveSemanticContext temporal validity", () => {
       ),
     );
     const fromEffect = toRetrievedSemantic(
-      await resolveSemanticContext(
+      await resolveSemanticContextForCognition(
         "Rollback pressure rises",
         {
           graphWalkDepth: 1,
@@ -556,7 +556,7 @@ describe("resolveSemanticContext temporal validity", () => {
     });
 
     const result = toRetrievedSemantic(
-      await resolveSemanticContext(
+      await resolveSemanticContextForCognition(
         "Atlas stabilizes when rollback plans are explicit",
         {
           graphWalkDepth: 1,
@@ -632,7 +632,7 @@ describe("resolveSemanticContext temporal validity", () => {
       edgeRepository: harness.semanticEdgeRepository,
     });
 
-    const result = await resolveSemanticContext(
+    const result = await resolveSemanticContextForCognition(
       "Atlas release",
       {
         graphWalkDepth: 1,
@@ -693,7 +693,7 @@ describe("resolveSemanticContext temporal validity", () => {
       edgeRepository: harness.semanticEdgeRepository,
     });
 
-    const result = await resolveSemanticContext(
+    const result = await resolveSemanticContextForCognition(
       "Atlas itinerary nights",
       {
         graphWalkDepth: 1,
@@ -758,7 +758,7 @@ describe("resolveSemanticContext temporal validity", () => {
       edgeRepository: harness.semanticEdgeRepository,
     });
 
-    const result = await resolveSemanticContext(
+    const result = await resolveSemanticContextForCognition(
       "San Sebastian nights",
       {
         graphWalkDepth: 1,
@@ -784,7 +784,7 @@ describe("resolveSemanticContext temporal validity", () => {
     const requestedVectorLimits: number[] = [];
     const requestedExactLimits: number[] = [];
 
-    await resolveSemanticContext(
+    await resolveSemanticContextForCognition(
       "Atlas",
       {
         exactTerms: ["Atlas"],
@@ -858,7 +858,7 @@ describe("resolveSemanticContext temporal validity", () => {
       edgeRepository: harness.semanticEdgeRepository,
     });
 
-    const result = await resolveSemanticContext(
+    const result = await resolveSemanticContextForCognition(
       "Atlas",
       {
         graphWalkDepth: 1,
@@ -925,7 +925,7 @@ describe("resolveSemanticContext temporal validity", () => {
     });
 
     const forAudienceA = toRetrievedSemantic(
-      await resolveSemanticContext(
+      await resolveSemanticContextForCognition(
         "Atlas shared claim",
         {
           audienceEntityId: audienceA,
@@ -1059,7 +1059,7 @@ describe("resolveSemanticContext temporal validity", () => {
     });
 
     const forAudienceA = toRetrievedSemantic(
-      await resolveSemanticContext(
+      await resolveSemanticContextForCognition(
         "Atlas public claim",
         {
           audienceEntityId: audienceA,

@@ -47,11 +47,6 @@ import {
 } from "./semantic-revision-cache.js";
 
 const SHARED_STATE_SEMANTIC_REVISION_TOOL_NAME = "EmitSharedStateSemanticRevision";
-const LEGACY_SHARED_STATE_SEMANTIC_REVISION_TOOL_NAME = "EmitDecisionArtifactSemanticRevision";
-const SHARED_STATE_SEMANTIC_REVISION_ACCEPTED_TOOL_NAMES = [
-  SHARED_STATE_SEMANTIC_REVISION_TOOL_NAME,
-  LEGACY_SHARED_STATE_SEMANTIC_REVISION_TOOL_NAME,
-] as const;
 const SHARED_STATE_SEMANTIC_REVISION_LABEL = "shared_state_semantic_revision";
 const DEFAULT_SEMANTIC_REVISION_CANDIDATE_LIMIT = 10;
 const MAX_SEMANTIC_REVISION_CANDIDATE_LIMIT = 10;
@@ -427,7 +422,6 @@ async function judgeSemanticRevision(input: {
           budget: "shared-state-semantic-revision",
         },
         toolName: SHARED_STATE_SEMANTIC_REVISION_TOOL_NAME,
-        acceptedToolNames: SHARED_STATE_SEMANTIC_REVISION_ACCEPTED_TOOL_NAMES,
         parse: parseSemanticRevisionJudgeResult,
         trace: {
           tracer: input.tracer,

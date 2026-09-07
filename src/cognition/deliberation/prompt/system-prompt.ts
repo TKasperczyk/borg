@@ -151,11 +151,6 @@ export type BuildBaseSystemPromptOptions = {
 
 export type ResolvedPromptBlocks = Record<PromptKey, string>;
 
-export type AssembledFramingPromptPreview = {
-  text: string;
-  sections: readonly string[];
-};
-
 function resolvePromptBlocks(options: BuildBaseSystemPromptOptions): ResolvedPromptBlocks {
   const overrides = options.promptBlocks ?? {};
   const result = {} as ResolvedPromptBlocks;
@@ -1468,20 +1463,6 @@ export function createAssembledFramingPreviewContext(nowMs: number): Deliberatio
       goals: [],
       traits: [],
     },
-  };
-}
-
-export function buildAssembledFramingPromptPreview(
-  options: BuildBaseSystemPromptOptions,
-): AssembledFramingPromptPreview {
-  const parts = buildCacheableBaseSystemPromptParts(
-    createAssembledFramingPreviewContext(options.nowMs ?? 0),
-    options,
-  );
-
-  return {
-    text: parts.staticPrefix,
-    sections: [...parts.staticPrefixSections],
   };
 }
 

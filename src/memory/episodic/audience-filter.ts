@@ -100,30 +100,6 @@ function hasAnyPrivateEpisode(input: EpisodeAccessLike): boolean {
   return normalized.shared !== true && normalized.origin_audience_entity_ids.length > 0;
 }
 
-export function inferSinglePrivateAudience(
-  episodes: readonly EpisodeAccessLike[],
-): EntityId | null | "multiple" {
-  const privateAudiences = new Set<EntityId>();
-
-  for (const episode of episodes) {
-    const normalized = normalizeEpisodeAccess(episode);
-
-    if (normalized.shared || normalized.origin_audience_entity_ids.length === 0) {
-      continue;
-    }
-
-    for (const audienceEntityId of normalized.origin_audience_entity_ids) {
-      privateAudiences.add(audienceEntityId);
-    }
-  }
-
-  if (privateAudiences.size > 1) {
-    return "multiple";
-  }
-
-  return [...privateAudiences][0] ?? null;
-}
-
 export function filterEpisodesByAudience(
   episodes: readonly AudienceEpisodeAccess[],
   audienceEntityId: EntityId | null,

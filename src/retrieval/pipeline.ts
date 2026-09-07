@@ -273,12 +273,6 @@ export type DisclosureRetrievalOptions = RetrievalSharedOptions &
 
 export type CognitionRecallSearchOptions = CognitionRetrievalOptions;
 
-/**
- * @deprecated Use DisclosureRetrievalOptions for disclosure reads or CognitionRetrievalOptions
- * for cognition recall.
- */
-export type RetrievalSearchOptions = DisclosureRetrievalOptions;
-
 type RetrievalExecutionOptions = CognitionRetrievalOptions | DisclosureRetrievalOptions;
 
 type RetrievalExecutionMode = "cognition" | "disclosure";

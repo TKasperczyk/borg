@@ -759,17 +759,3 @@ export function renderPromptSurfaceAdditionalBlock(
 
   return rendered.length === 0 ? null : rendered.join("\n\n");
 }
-
-export function promptSurfaceCountsBySurface(): Record<PromptSurface, number> {
-  const counts = Object.fromEntries(
-    Object.values(PROMPT_SURFACES).map((surface) => [surface, 0]),
-  ) as Record<PromptSurface, number>;
-
-  for (const entry of PROMPT_SURFACE_BLOCKS) {
-    for (const placement of entry.surfaces) {
-      counts[placement.surface] += 1;
-    }
-  }
-
-  return counts;
-}

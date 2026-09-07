@@ -1166,22 +1166,6 @@ export type BorgOrchestratorResult = {
   errors: BorgOfflineProcessError[];
 };
 
-export type BorgOfflineMaintenanceProcessPlan = {
-  process: string;
-  tokens_used: number;
-  errors: BorgOfflineProcessError[];
-  budget_exhausted: boolean;
-  [key: string]: unknown;
-};
-
-export type BorgMaintenancePlan = {
-  kind: "borg_maintenance_plan";
-  version: 2;
-  run_id: MaintenanceRunId;
-  created_at: number;
-  processes: BorgOfflineMaintenanceProcessPlan[];
-};
-
 export type BorgMaintenanceAuditRecord = {
   id: AuditId;
   run_id: MaintenanceRunId;

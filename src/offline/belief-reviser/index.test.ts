@@ -5,7 +5,10 @@ import { type LLMCompleteOptions, type LLMCompleteResult } from "../../llm/index
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { SemanticGraph, type SemanticEdge } from "../../memory/semantic/index.js";
 import { type ReviewQueueItem } from "../../memory/review-queue/index.js";
-import { resolveSemanticContext, toRetrievedSemantic } from "../../retrieval/semantic-retrieval.js";
+import {
+  resolveSemanticContextForCognition,
+  toRetrievedSemantic,
+} from "../../retrieval/semantic-retrieval.js";
 import { StreamReader } from "../../stream/index.js";
 import { FixedClock, ManualClock } from "../../util/clock.js";
 import type { EntityId, EpisodeId } from "../../util/ids.js";
@@ -731,7 +734,7 @@ describe("belief reviser process", () => {
         edgeRepository: harness.semanticEdgeRepository,
       });
       const retrieved = toRetrievedSemantic(
-        await resolveSemanticContext(
+        await resolveSemanticContextForCognition(
           "Target belief",
           {
             graphWalkDepth: 1,

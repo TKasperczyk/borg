@@ -7,7 +7,6 @@ import type { EntityId, EpisodeId } from "../../util/ids.js";
 
 import {
   filterEpisodesByAudience,
-  inferSinglePrivateAudience,
   type AudienceEpisodeAccess,
 } from "./audience-filter.js";
 
@@ -255,34 +254,41 @@ describe("filterEpisodesByAudience", () => {
   });
 });
 
-describe("inferSinglePrivateAudience", () => {
-  it("returns null for public-only episode sets", () => {
-    expect(inferSinglePrivateAudience([episode(PUBLIC_EPISODE, null)])).toBeNull();
-  });
-
-  it("returns the single private audience when one is present", () => {
-    expect(
-      inferSinglePrivateAudience([
-        episode(PUBLIC_EPISODE, null),
-        episode(PRIVATE_A_EPISODE, AUDIENCE_A),
-      ]),
-    ).toBe(AUDIENCE_A);
-  });
-
-  it("returns multiple when private audiences differ", () => {
-    expect(
-      inferSinglePrivateAudience([
-        episode(PRIVATE_A_EPISODE, AUDIENCE_A),
-        episode(PRIVATE_B_EPISODE, AUDIENCE_B),
-      ]),
-    ).toBe("multiple");
-  });
-
-  it("returns multiple for a single multi-origin private episode", () => {
-    expect(
-      inferSinglePrivateAudience([
-        episode(PRIVATE_GROUP_EPISODE, null, false, [AUDIENCE_A, AUDIENCE_B]),
-      ]),
-    ).toBe("multiple");
-  });
+// Each request supplies an audience; visibility is resolved by the disclosure filter.
+describe("filterEpisodesByAudience explicit audience", () => {
+  it.each([
+    {
+      label: "public-only episodes",
+      episodes: [episode(PUBLIC_EPISODE, null)],
+      visibleEpisodeIds: [PUBLIC_EPISODE],
+      hiddenEpisodeIds: [],
+    },
+    {
+      label: "a single private audience",
+      episodes: [episode(PUBLIC_EPISODE, null), episode(PRIVATE_A_EPISODE, AUDIENCE_A)],
+      visibleEpisodeIds: [PUBLIC_EPISODE, PRIVATE_A_EPISODE],
+      hiddenEpisodeIds: [],
+    },
+    {
+      label: "different private audiences",
+      episodes: [episode(PRIVATE_A_EPISODE, AUDIENCE_A), episode(PRIVATE_B_EPISODE, AUDIENCE_B)],
+      visibleEpisodeIds: [PRIVATE_A_EPISODE],
+      hiddenEpisodeIds: [PRIVATE_B_EPISODE],
+    },
+    {
+      label: "a multi-origin private episode",
+      episodes: [episode(PRIVATE_GROUP_EPISODE, null, false, [AUDIENCE_A, AUDIENCE_B])],
+      visibleEpisodeIds: [PRIVATE_GROUP_EPISODE],
+      hiddenEpisodeIds: [],
+    },
+  ])(
+    "filters $label for the requested audience",
+    ({ episodes, visibleEpisodeIds, hiddenEpisodeIds }) => {
+      expect(filterEpisodesByAudience(episodes, AUDIENCE_A, "filter")).toEqual({
+        visibleEpisodeIds,
+        hiddenEpisodeIds,
+        hasPrivateMix: hiddenEpisodeIds.length > 0,
+      });
+    },
+  );
 });

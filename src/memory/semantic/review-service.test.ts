@@ -11,7 +11,7 @@ import {
   createOfflineTestHarness,
   createSemanticNodeFixture,
 } from "../../offline/test-support.js";
-import { resolveSemanticContext } from "../../retrieval/semantic-retrieval.js";
+import { resolveSemanticContextForCognition } from "../../retrieval/semantic-retrieval.js";
 import { LanceDbStore } from "../../storage/lancedb/index.js";
 import { openDatabase } from "../../storage/sqlite/index.js";
 import { StreamReader, StreamWriter } from "../../stream/index.js";
@@ -302,7 +302,7 @@ describe("semantic review service", () => {
       quarantined: 0,
     });
 
-    const retrieval = await resolveSemanticContext(
+    const retrieval = await resolveSemanticContextForCognition(
       "Project runtime Python",
       {
         graphWalkDepth: 1,

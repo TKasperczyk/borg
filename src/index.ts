@@ -545,7 +545,6 @@ export {
   type DisclosureRetrievalOptions,
   type RetrievalGetEpisodeOptions,
   type RetrievalSharedOptions,
-  type RetrievalSearchOptions,
 } from "./retrieval/index.js";
 export {
   NARRATIVE_STREAM_ENTRY_KINDS,

@@ -18,7 +18,6 @@ import type { EntityId, StreamEntryId } from "../../util/ids.js";
 import { actionMemoryDisclosureLabel } from "../../memory/common/disclosure-serializers.js";
 import type { ActiveParticipant } from "../participants.js";
 import type { ActionLedgerRepository } from "./builder-types.js";
-import { isActionVisibleForCurrentAudienceStanding } from "./audience-visibility.js";
 import { actionScope, combineScopes, type ScopeResolver } from "./scope-resolver.js";
 import type { EvidenceLedgerActionSalienceClass, EvidenceLedgerSessionScope } from "./types.js";
 
@@ -27,7 +26,6 @@ export const DEFAULT_ACTION_THREAD_SOURCE_RECORD_LIMIT = 256;
 export const DEFAULT_ACTION_THREAD_SALIENCE_CLASS_RESERVED_SLOTS = 1;
 export const DEFAULT_ACTION_THREAD_AUDIENCE_RESERVED_SLOTS = 1;
 export const PARTICIPANT_RECENT_ACTION_TURN_WINDOW = 3;
-export const PARTICIPANT_DORMANT_ACTION_TURN_WINDOW = 15;
 export const STALE_PARTICIPANT_ACTION_RENDER_LIMIT = 5;
 
 const OLDER_ACTION_THREAD_SAMPLE_LIMIT = 4;
@@ -153,37 +151,6 @@ export function listActionCandidatesForCognition(input: {
       record,
       disclosureLabel: actionMemoryDisclosureLabel(record),
     }));
-}
-
-export function listActionsForDisclosure(
-  actionRepository: ActionLedgerRepository,
-  audienceEntityId: EntityId | null,
-  activeParticipants: readonly ActiveParticipant[] | undefined,
-  limit: number,
-): ActionRecord[] {
-  const records: ActionRecord[] = [...actionRepository.list({ audienceEntityId: null, limit })];
-  const activeParticipantIds = new Set(
-    (activeParticipants ?? []).map((participant) => participant.entityId),
-  );
-
-  if (audienceEntityId !== null) {
-    records.push(...actionRepository.list({ audienceEntityId, limit }));
-  }
-
-  for (const participant of activeParticipants ?? []) {
-    records.push(
-      ...actionRepository
-        .list({ actor: participant.entityId })
-        .filter((action) =>
-          isActionVisibleForCurrentAudienceStanding(action, audienceEntityId, activeParticipantIds),
-        ),
-    );
-    records.push(...actionRepository.list({ audienceEntityId: participant.entityId, limit }));
-  }
-
-  return [...new Map(records.map((record) => [record.id, record])).values()]
-    .sort((left, right) => right.updated_at - left.updated_at || left.id.localeCompare(right.id))
-    .slice(0, limit);
 }
 
 export function actionActorDisplay(

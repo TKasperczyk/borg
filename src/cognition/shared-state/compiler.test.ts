@@ -13,7 +13,10 @@ import {
 } from "../../offline/test-support.js";
 import { selfMigrations } from "../../memory/self/migrations.js";
 import { GoalsRepository } from "../../memory/self/goals-repository.js";
-import { resolveSemanticContext, toRetrievedSemantic } from "../../retrieval/semantic-retrieval.js";
+import {
+  resolveSemanticContextForCognition,
+  toRetrievedSemantic,
+} from "../../retrieval/semantic-retrieval.js";
 import {
   composeMigrations,
   openDatabase,
@@ -145,9 +148,12 @@ function emitRawSharedStateArtifactPatchResponse(
   };
 }
 
-function emitSemanticRevisionResponse(input: {
-  verdicts: Array<{ node_id: string; verdict: "supersede" | "contradict" | "keep" | "uncertain" }>;
-}) {
+function emitSemanticRevisionResponse(
+  input: {
+    verdicts: Array<{ node_id: string; verdict: "supersede" | "contradict" | "keep" | "uncertain" }>;
+  },
+  toolName = "EmitSharedStateSemanticRevision",
+) {
   return {
     text: "",
     input_tokens: 7,
@@ -156,7 +162,7 @@ function emitSemanticRevisionResponse(input: {
     tool_calls: [
       {
         id: "toolu_shared_state_semantic_revision",
-        name: "EmitSharedStateSemanticRevision",
+        name: toolName,
         input: {
           verdicts: input.verdicts,
         },
@@ -1165,7 +1171,7 @@ describe("compileSharedStateArtifact", () => {
       });
 
       const semantic = toRetrievedSemantic(
-        await resolveSemanticContext(
+        await resolveSemanticContextForCognition(
           "Project runtime",
           {
             audienceEntityId: audience,
@@ -1195,7 +1201,7 @@ describe("compileSharedStateArtifact", () => {
     }
   });
 
-  it.each(["search", "judge"] as const)(
+  it.each(["search", "judge", "retired tool name"] as const)(
     "accepts the artifact when semantic revision %s fails",
     async (failure) => {
       const embeddingClient = new TestEmbeddingClient(
@@ -1241,6 +1247,14 @@ describe("compileSharedStateArtifact", () => {
               ],
             }),
             ...(failure === "judge" ? [throwingResponse] : []),
+            ...(failure === "retired tool name"
+              ? [
+                  emitSemanticRevisionResponse(
+                    { verdicts: [{ node_id: staleNode.id, verdict: "supersede" }] },
+                    "EmitDecisionArtifactSemanticRevision",
+                  ),
+                ]
+              : []),
           ],
         });
         const semanticNodeRepository = {
