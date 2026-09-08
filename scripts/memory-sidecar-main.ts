@@ -66,7 +66,9 @@ const token = requireEnv("BORG_MEMORY_TOKEN");
 const apiKey = requireEnv("LLM_API_KEY");
 const baseUrl = process.env.KRATOS_BASE_URL ?? DEFAULT_GATEWAY_BASE_URL;
 const llmModel = process.env.LLM_MODEL ?? "generative-apis/qwen3-235b-a22b-instruct-2507";
-const { model: embeddingModel, dimensions: embeddingDims } = sidecarEmbeddingProfileFromEnv(process.env);
+const { model: embeddingModel, dimensions: embeddingDims } = sidecarEmbeddingProfileFromEnv(
+  process.env,
+);
 const root = process.env.BORG_DATA_ROOT ?? "./data/borg";
 const host = process.env.BORG_MEMORY_HOST ?? "127.0.0.1";
 const port = Number(process.env.BORG_MEMORY_PORT ?? 8088);
@@ -130,6 +132,8 @@ for (const slot of [
   "BORG_MODEL_COGNITION",
   "BORG_MODEL_BACKGROUND",
   "BORG_MODEL_CREATOR_DIRECTIVE",
+  "BORG_MODEL_CORRECTIVE_PREFERENCE",
+  "BORG_MODEL_SHARED_STATE_COMPILER",
 ]) {
   process.env[slot] ??= llmModel;
 }
