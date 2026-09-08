@@ -54,6 +54,7 @@ type MemoryDisclosurePromptFields = ReturnType<typeof memoryDisclosurePayloadFie
 export type SharedStatePromptSummaryEntry = {
   id: SharedStateEntry["id"];
   state_key: SharedStateEntry["state_key"];
+  kind: SharedStateEntryKind;
   text: string;
   disclosure: MemoryDisclosurePromptFields["disclosure"];
   disclosure_label: MemoryDisclosurePromptFields["disclosure_label"];
@@ -243,6 +244,8 @@ function toSharedStatePromptSummaryEntry(
   return {
     id: entry.id,
     state_key: entry.state_key,
+    // Carry the lock/salience state on the row itself, including in the by-key view.
+    kind: entry.kind,
     text,
     ...memoryDisclosurePayloadFields(sharedStateMemoryDisclosureLabel(entry)),
     ...(entry.owner_entity_id === null ? {} : { owner_entity_id: entry.owner_entity_id }),

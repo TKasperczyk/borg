@@ -1,3 +1,4 @@
+import { goalBlockStateFields } from "../../memory/self/goal-blocks.js";
 import { z } from "zod";
 
 import {
@@ -210,7 +211,7 @@ async function assistantAuthoredCitedStreamEntryIds(
 }
 
 function summarizeSelfState(ctx: OfflineContext): string {
-  const rawGoals = ctx.goalsRepository.list({ status: "active" });
+  const rawGoals = ctx.goalsRepository.list({ statuses: ["active", "blocked"] });
   const rawCommitments = ctx.commitmentRepository.list({ activeOnly: true });
   const resolvedDisclosure = ctx.sourceStreamAudienceDisclosureResolver?.resolve({
     goalTrees: rawGoals,
@@ -233,6 +234,8 @@ function summarizeSelfState(ctx: OfflineContext): string {
         JSON.stringify({
           id: goal.id,
           description: goal.description,
+          status: goal.status,
+          ...goalBlockStateFields(goal),
           counterparty_entity_id: goal.counterparty_entity_id ?? null,
           ...memoryDisclosurePayloadFields(goalMemoryDisclosureLabel(goal)),
         }),

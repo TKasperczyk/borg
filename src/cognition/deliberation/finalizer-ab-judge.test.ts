@@ -163,6 +163,7 @@ describe("finalizer A/B blind judge", () => {
     expect(prompt).not.toContain("876543210");
     expect(prompt).not.toContain("a".repeat(64));
     expect(prompt).toContain("[TERMINAL_PRESENTATION_REFERENCE]");
+    expect(prompt).not.toContain("[TERMINAL_PRESENTATION_REFERENCE]_state");
     expect(prompt).toContain("<available_terminal_tools>EmitAnswer</available_terminal_tools>");
     expect(prepared.assignment).toEqual({ left: "compact", right: "legacy" });
     expect(

@@ -1,5 +1,7 @@
 // Public facade property types exposed by the Borg class.
 
+import type { BorgOperatorAttentionFacade } from "../memory/operator-attention/types.js";
+
 import type { AutonomyScheduler, AutonomyWakesRepository } from "../autonomy/index.js";
 import type {
   MaintenanceScheduler,
@@ -195,6 +197,12 @@ export type BorgSelfFacade = {
     ) => ReturnType<ValuesRepository["listContradictionEvents"]>;
   };
   goals: {
+    block: (...args: Parameters<GoalsRepository["block"]>) => BorgGoalWithDisclosure;
+    unblock: (
+      goalId: Parameters<GoalsRepository["unblock"]>[0],
+      reason: string,
+      provenance: Parameters<GoalsRepository["unblock"]>[2],
+    ) => BorgGoalWithDisclosure;
     get: (...args: Parameters<GoalsRepository["get"]>) => BorgGoalWithDisclosure | null;
     list: (...args: Parameters<GoalsRepository["list"]>) => BorgGoalTreeWithDisclosure[];
     add: (...args: Parameters<IdentityService["addGoal"]>) => BorgGoalWithDisclosure;
@@ -736,6 +744,7 @@ export type BorgFacades = {
   semantic: BorgSemanticFacade;
   relationalSlots: BorgRelationalSlotsFacade;
   commitments: BorgCommitmentsFacade;
+  operatorAttention: BorgOperatorAttentionFacade;
   activity: BorgActivityFacade;
   creatorDirectives: BorgCreatorDirectivesFacade;
   identity: BorgIdentityFacade;

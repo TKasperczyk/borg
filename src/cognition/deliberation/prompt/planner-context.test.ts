@@ -947,6 +947,28 @@ describe("compact planner context", () => {
     expect(allSystemText(conversational)).toContain('open_loop_rows_total="not_drawn"');
     expect(allSystemText(wake)).toContain('open_loop_rows_total="0"');
 
+    // Both origins emit the attribute, so the un-drawn case is a value and never
+    // an absence. Prose describing that case must key on the value being
+    // non-numeric: promising a missing attribute would describe a render neither
+    // origin produces, and a reader taking it literally would look for the slot
+    // to be gone, find it present, and have to invent what the third state is.
+    const openingLine = (planner: ReturnType<typeof build>) =>
+      taggedBlock(allSystemText(planner), "borg_planner_lived_experience_digest").split("\n")[0] ??
+      "";
+    for (const planner of [conversational, wake]) {
+      expect(openingLine(planner)).toMatch(/\bopen_loop_rows_total="[^"]+"/);
+    }
+    const laneProse = taggedBlock(
+      allSystemText(conversational),
+      "borg_planner_lived_experience_digest",
+    )
+      .split("\n")
+      .filter((line) => line.trim().startsWith("<lane_budget>"));
+    expect(laneProse).toHaveLength(1);
+    expect(laneProse[0]).toContain(
+      "a non-numeric value there means the lane was never queried and is not a count of zero",
+    );
+
     // Same totals, different aggregate: the trailing count sums lane residues,
     // so it moves with the caps and with which lanes were drawn at all.
     const aggregate = (planner: ReturnType<typeof build>) =>
@@ -2093,6 +2115,42 @@ describe("compact planner context", () => {
     );
     expect(planner.traceSummary.overallOverflow).toBe(true);
   });
+
+  it.each([6_000, 100_000])(
+    "keeps the autonomy bounding notice first on the final planner surface (%i chars)",
+    (textChars) => {
+      const planner = build(
+        context({
+          turnOrigin: "autonomous",
+          autonomyTrigger: {
+            source_name: "scheduled_reflection",
+            source_type: "trigger",
+            event_id: "scheduled-reflection:1000",
+            sort_ts: NOW_MS,
+            payload: {
+              recent_identity_events: [
+                {
+                  id: 1,
+                  record_type: "goal",
+                  record_id: "goal_aaaaaaaaaaaaaaaa",
+                  action: "update",
+                  change: { excerpt_head: "old-to-new", excerpt_tail: null, excerpt_exact: false },
+                },
+              ],
+              prior_self_thought: { text: "x".repeat(textChars) },
+            },
+          },
+        }),
+      );
+      const surface = taggedBlock(allSystemText(planner), "autonomy_trigger");
+      expect(surface).toMatch(/^<autonomy_trigger[^>]*>excerpt_notice:/);
+      expect(surface).toContain("mechanically bounded to 32000 chars");
+      expect(surface).toContain("old-to-new change excerpt is bounded to 1500 chars");
+      expect(surface).toContain("recent_identity_events_omitted: 0");
+      expect(surface.match(/excerpt_notice:/g)).toHaveLength(1);
+      expect(surface).toContain("HEAD+TAIL EXCERPT");
+    },
+  );
 
   it("keeps the generic excerpt shape mechanical and announces every cut", () => {
     const source = `HEAD_${"x".repeat(500)}_TAIL`;

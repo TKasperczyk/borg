@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { SessionsRepository } from "../../sessions/index.js";
-import { FixedClock } from "../../util/clock.js";
+import { FixedClock, ManualClock } from "../../util/clock.js";
 import {
   createActionId,
   createSessionId,
@@ -51,6 +51,75 @@ function createProcess(harness: OfflineTestHarness): LivedExperienceDaySummarize
 }
 
 describe("LivedExperienceDaySummarizerProcess", () => {
+  it("supplies a day containing only a goal block and its structural release, with interval disclosure", async () => {
+    const start = Date.UTC(2026, 5, 15);
+    const clock = new ManualClock(start + 1_000);
+    const llm = new FakeLLMClient({
+      responses: [
+        createSummaryToolResponse({
+          utc_day: "2026-06-15",
+          gist: "J'ai attendu après une tentative indisponible.",
+        }),
+      ],
+    });
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      clock,
+      configOverrides: {
+        offline: { livedExperienceDaySummarizer: { windowDays: 2, maxDaysPerRun: 2 } },
+      },
+    });
+    try {
+      harness.entityRepository.add({ canonicalName: "Self", kind: "self" });
+      const goal = harness.goalsRepository.add({
+        description: "資料待ち",
+        priority: 1,
+        provenance: { kind: "manual" },
+      });
+      harness.goalsRepository.block(
+        goal.id,
+        {
+          blocker: { kind: "until", until: start + 5_000 },
+          attempt_status: "attempted_unavailable",
+          reason: "Unique private block basis, absent from episodes and actions",
+        },
+        { kind: "manual" },
+      );
+      clock.advance(4_000);
+      harness.goalsRepository.reconcileBlocks();
+      clock.advance(24 * 60 * 60 * 1_000);
+      const plan = await createProcess(harness).plan(harness.createContext());
+      expect(plan.errors).toEqual([]);
+      expect(plan.items).toHaveLength(1);
+      const prompt = String(llm.requests[0]?.messages[0]?.content);
+      const row = prompt
+        .split("\n")
+        .filter((line) => line.startsWith("{"))
+        .map((line) => JSON.parse(line))
+        .find((value) => value.goal_id === goal.id);
+      expect(row).toMatchObject({
+        description: goal.description,
+        disclosure_label: { disclosure_class: "self_private" },
+        block_intervals: [
+          {
+            blocker: { kind: "until", until: start + 5_000 },
+            blocked_at: start + 1_000,
+            unblocked_at: start + 5_000,
+            reason: "Unique private block basis, absent from episodes and actions",
+            unblock_reason: expect.stringContaining(`until timestamp ${start + 5_000} passed`),
+            disclosure_label: { disclosure_class: "unknown" },
+          },
+        ],
+      });
+      expect(plan.items[0]?.summary.counts_snapshot).toMatchObject({
+        goal_blocks: { goal_count: 1, interval_count: 1 },
+      });
+      expect(plan.items[0]?.summary.disclosure_label.disclosureClass).toBe("unknown");
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
   it("summarizes only closed unsummarized UTC days and persists one disclosure-labeled gist", async () => {
     const nowMs = Date.UTC(2026, 5, 17, 12, 0, 0);
     const targetDayStart = Date.UTC(2026, 5, 15);

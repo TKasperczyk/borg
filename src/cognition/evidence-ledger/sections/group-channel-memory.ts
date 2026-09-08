@@ -1,3 +1,4 @@
+import { goalBlockStateFields } from "../../../memory/self/goal-blocks.js";
 import {
   DEFAULT_ACTION_THREAD_RENDER_LIMIT,
   DEFAULT_ACTION_THREAD_SOURCE_RECORD_LIMIT,
@@ -184,7 +185,7 @@ export function addGroupChannelMemorySection(context: BuilderSectionContext): vo
 
   const scopedGoals = scopedGoalsForEntity(
     context.repos.goals?.list({
-      status: "active",
+      statuses: ["active", "blocked"],
       visibleToAudienceEntityId: audienceEntityId,
     }) ?? [],
     audienceEntityId,
@@ -207,6 +208,7 @@ export function addGroupChannelMemorySection(context: BuilderSectionContext): vo
           ...(goal.last_progress_ts === null
             ? {}
             : { last_progress_at: new Date(goal.last_progress_ts).toISOString() }),
+          ...goalBlockStateFields(goal),
           owner_entity_id: goal.owner_entity_id ?? null,
           audience_entity_id: goal.audience_entity_id,
           counterparty_entity_id: goal.counterparty_entity_id ?? null,

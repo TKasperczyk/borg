@@ -251,3 +251,31 @@ export function renderInboundBatch(input: {
     "</inbound_batch>",
   ].join("\n");
 }
+
+/**
+ * The message bodies a rendered batch wrapped, without the envelope wrapped around
+ * them, in the order the renderer used.
+ *
+ * `renderInboundBatch` puts the `<inbound_batch>` tag and a whole `<inbound_message>`
+ * attribute list -- stream entry id, timestamp ms, sender entity id, sender display
+ * name -- ahead of the first body character, so a short head slice of its output names
+ * a stream id and stops before the message begins. Widening the slice does not fix
+ * that: the envelope widens with the ids it carries. Callers that want a short label
+ * for what arrived read the entries the renderer read instead of re-parsing its
+ * output, which also keeps the label free of the substrate ids the envelope carries.
+ */
+export function inboundMessageBodies(
+  entries: readonly Pick<StreamEntry, "id" | "timestamp" | "entry_index" | "content">[],
+): string {
+  return [...entries]
+    .sort(
+      (left, right) =>
+        (left.entry_index ?? Number.MAX_SAFE_INTEGER) -
+          (right.entry_index ?? Number.MAX_SAFE_INTEGER) ||
+        left.timestamp - right.timestamp ||
+        left.id.localeCompare(right.id),
+    )
+    .map((entry) => (typeof entry.content === "string" ? entry.content.trim() : ""))
+    .filter((content) => content.length > 0)
+    .join("\n");
+}

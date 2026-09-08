@@ -256,6 +256,7 @@ describe("sidecar corrective-preference ingestion wiring", () => {
             background: "qwen-background",
             extraction: "qwen-extraction",
             recallExpansion: "qwen-fast",
+            correctivePreference: "qwen-corrective-preference",
           },
         },
       }),
@@ -355,7 +356,7 @@ describe("sidecar corrective-preference ingestion wiring", () => {
         recent_history?: unknown[];
       };
 
-      expect(correctiveRequest?.model).toBe("qwen-fast");
+      expect(correctiveRequest?.model).toBe("qwen-corrective-preference");
       expect(correctivePayload).toMatchObject({
         audience_entity_id: senderEntityId,
         speaker_entity_id: senderEntityId,

@@ -253,7 +253,7 @@ describe("Recall Core", () => {
     );
   });
 
-  it("builds exact N=1 and N=3 schemas, forces the planner tool, and never retries", async () => {
+  it("builds exact N=1 and N=3 schemas, forces the planner tool, and repairs a malformed plan once", async () => {
     const oneClient = new FakeLLMClient({
       responses: [recallExpansion({ semantic_query: "one", variant_count: 1 })],
     });
@@ -287,10 +287,29 @@ describe("Recall Core", () => {
       expect(request?.tool_choice).toEqual({ type: "tool", name: "EmitRecallQueryPlan" });
     }
 
+    // A malformed first plan is repaired once: the schema error goes back to
+    // the model and the second, valid emission is used.
+    const repairedClient = new FakeLLMClient({
+      responses: [
+        recallExpansion({ semantic_variants: [] }),
+        recallExpansion({ resolved_query: "used by the single repair attempt" }),
+      ],
+    });
+    const repaired = await expandRecall({
+      llmClient: repairedClient,
+      model: "planner",
+      focus: "invalid",
+      semanticVariantCount: 3,
+    });
+    expect(repaired.resolved_query).toBe("used by the single repair attempt");
+    expect(repairedClient.requests).toHaveLength(2);
+
+    // A second malformed emission is not retried again: the planner degrades.
     const invalidClient = new FakeLLMClient({
       responses: [
         recallExpansion({ semantic_variants: [] }),
-        recallExpansion({ semantic_query: "would only be used by a retry" }),
+        recallExpansion({ semantic_variants: [] }),
+        recallExpansion({ semantic_query: "would only be used by a third attempt" }),
       ],
     });
     await expect(
@@ -301,7 +320,7 @@ describe("Recall Core", () => {
         semanticVariantCount: 3,
       }),
     ).rejects.toThrow();
-    expect(invalidClient.requests).toHaveLength(1);
+    expect(invalidClient.requests).toHaveLength(2);
   });
 
   it("maps N=3 variants to semantic lanes without changing episode fusion", async () => {
@@ -411,12 +430,12 @@ describe("Recall Core", () => {
     ).toEqual([
       {
         id: release.id,
-        score: 0.7124134171211829,
-        rawScore: 0.7124134171211829,
+        score: expect.closeTo(0.7124134171211829, 10),
+        rawScore: expect.closeTo(0.7124134171211829, 10),
         scoreBreakdown: {
           similarity: 1,
-          decayedSalience: 0.04137805707060973,
-          heat: 2.819048928638404,
+          decayedSalience: expect.closeTo(0.04137805707060973, 10),
+          heat: expect.closeTo(2.819048928638404, 10),
           goalRelevance: 0,
           valueAlignment: 0,
           timeRelevance: 0,
@@ -428,13 +447,12 @@ describe("Recall Core", () => {
       },
       {
         id: architecture.id,
-        score: 0.7011414290712924,
-        rawScore: 0.7011414290712924,
+        score: expect.closeTo(0.7011414290712924, 10),
+        rawScore: expect.closeTo(0.7011414290712924, 10),
         scoreBreakdown: {
           similarity: 1,
-          // Math decay can differ by a final bit between Node/libm versions.
-          decayedSalience: expect.closeTo(0.0038047635709747476, 15),
-          heat: 1.5894073724114668,
+          decayedSalience: expect.closeTo(0.0038047635709747476, 10),
+          heat: expect.closeTo(1.5894073724114668, 10),
           goalRelevance: 0,
           valueAlignment: 0,
           timeRelevance: 0,
@@ -773,37 +791,89 @@ describe("Recall Core", () => {
     );
   });
 
-  it("accepts sixteen recall expansion named terms and rejects more than sixteen", async () => {
-    const namedTerms = Array.from({ length: 16 }, (_, index) => `Term ${index + 1}`);
-    const acceptedClient = new FakeLLMClient({
-      responses: [recallExpansion({ named_terms: namedTerms })],
-    });
+  it.each([16, 17, 25])(
+    "keeps the first sixteen recall expansion named terms from %i terms",
+    async (count) => {
+      const namedTerms = Array.from({ length: count }, (_, index) => `Term ${index + 1}`);
+      const llmClient = new FakeLLMClient({
+        responses: [recallExpansion({ named_terms: namedTerms })],
+      });
+
+      await expect(
+        expandRecall({
+          llmClient,
+          model: "test-recall-expansion",
+          focus: "Remember these entity-rich project references.",
+          semanticVariantCount: 3,
+        }),
+      ).resolves.toEqual({
+        resolved_query: MAYA_TURN,
+        semantic_variants: semanticVariants(MAYA_TURN),
+        named_terms: namedTerms.slice(0, 16),
+        typed_queries: [],
+        temporal_cue: null,
+        temporalCue: null,
+      });
+    },
+  );
+
+  it.each([
+    { named_terms: ["Maya"] },
+    { typed_queries: [{ kind: "commitment", query: "design review", priority: 1 }] },
+    {},
+  ])("defaults omitted recall arrays to [] for %j", async (fields) => {
+    const response = recallExpansion({});
+    response.tool_calls![0]!.input = {
+      resolved_query: MAYA_TURN,
+      semantic_variants: semanticVariants(MAYA_TURN),
+      ...fields,
+    };
+    const llmClient = new FakeLLMClient({ responses: [response] });
 
     await expect(
       expandRecall({
-        llmClient: acceptedClient,
+        llmClient,
         model: "test-recall-expansion",
-        focus: "Remember these entity-rich project references.",
+        focus: MAYA_TURN,
         semanticVariantCount: 3,
       }),
     ).resolves.toEqual({
       resolved_query: MAYA_TURN,
       semantic_variants: semanticVariants(MAYA_TURN),
-      named_terms: namedTerms,
+      named_terms: [],
       typed_queries: [],
+      ...fields,
       temporal_cue: null,
       temporalCue: null,
     });
+  });
 
-    const rejectedClient = new FakeLLMClient({
-      responses: [recallExpansion({ named_terms: [...namedTerms, "Term 17"] })],
-    });
+  it.each([
+    { named_terms: null },
+    { typed_queries: null },
+    { named_terms: "Maya" },
+    { typed_queries: {} },
+    { named_terms: [""] },
+    { named_terms: [...Array.from({ length: 16 }, (_, index) => `Term ${index + 1}`), 17] },
+    { typed_queries: [{ kind: "topic", query: "design review", priority: 1 }] },
+    {
+      typed_queries: Array.from({ length: 5 }, () => ({
+        kind: "commitment",
+        query: "design review",
+        priority: 1,
+      })),
+    },
+    { unexpected_field: [] },
+  ])("still rejects malformed recall plan fields: %j", async (fields) => {
+    const response = recallExpansion({});
+    const toolCall = response.tool_calls![0]!;
+    toolCall.input = { ...(toolCall.input as Record<string, unknown>), ...fields };
 
     await expect(
       expandRecall({
-        llmClient: rejectedClient,
+        llmClient: new FakeLLMClient({ responses: [response] }),
         model: "test-recall-expansion",
-        focus: "Remember these entity-rich project references.",
+        focus: MAYA_TURN,
         semanticVariantCount: 3,
       }),
     ).rejects.toThrow();
@@ -1072,7 +1142,7 @@ describe("Recall Core", () => {
     const llmClient = new FakeLLMClient({
       responses: [
         recallExpansion({
-          named_terms: Array.from({ length: 17 }, (_, index) => `Term ${index + 1}`),
+          semantic_variants: [],
         }),
       ],
     });

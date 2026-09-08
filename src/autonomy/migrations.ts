@@ -171,4 +171,27 @@ export const autonomyMigrations = [
       `);
     },
   },
+  {
+    id: 8,
+    name: "autonomy_wakes_execution_counts",
+    up: (db) => {
+      // Nullable with no backfill: the trace held these facts for older wakes,
+      // but migrations must not parse trace files or invent zeroes for them.
+      db.exec(`
+        ALTER TABLE autonomy_wakes
+        ADD COLUMN finalizer_rounds INTEGER CHECK (
+          finalizer_rounds IS NULL OR (
+            typeof(finalizer_rounds) = 'integer' AND finalizer_rounds >= 0
+          )
+        );
+
+        ALTER TABLE autonomy_wakes
+        ADD COLUMN stall_retries INTEGER CHECK (
+          stall_retries IS NULL OR (
+            typeof(stall_retries) = 'integer' AND stall_retries >= 0
+          )
+        );
+      `);
+    },
+  },
 ] as const satisfies readonly Migration[];

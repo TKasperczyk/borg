@@ -1,22 +1,24 @@
 import { spawn } from "node:child_process";
-import { rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 const maybeIt = process.env.BORG_SKIP_DEBUG_SPAWN === "1" ? it.skip : it;
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const pnpmCommand = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
+const heuristicsGuardScriptPath = join(repoRoot, "scripts/heuristics-guard.ts");
 
-async function runHeuristicsGuardScript(): Promise<{
+async function runHeuristicsGuardScript(cwd: string): Promise<{
   code: number | null;
   stdout: string;
   stderr: string;
 }> {
   return new Promise((resolve, reject) => {
-    const child = spawn(pnpmCommand, ["exec", "tsx", "scripts/heuristics-guard.ts"], {
-      cwd: repoRoot,
+    const child = spawn(pnpmCommand, ["exec", "tsx", heuristicsGuardScriptPath], {
+      cwd,
       env: {
         ...process.env,
         FORCE_COLOR: "0",
@@ -113,8 +115,22 @@ describe("debug script", () => {
 });
 
 describe("heuristics guard", () => {
+  let guardRoot: string;
+
+  beforeEach(() => {
+    guardRoot = mkdtempSync(join(tmpdir(), "borg-heuristics-guard-"));
+    // The guard scans paths relative to cwd; keep every fixture and its source scan isolated.
+    cpSync(join(repoRoot, "src"), join(guardRoot, "src"), { recursive: true });
+    cpSync(join(repoRoot, "package.json"), join(guardRoot, "package.json"));
+    symlinkSync(join(repoRoot, "node_modules"), join(guardRoot, "node_modules"), "junction");
+  });
+
+  afterEach(() => {
+    rmSync(guardRoot, { recursive: true, force: true });
+  });
+
   it("fails broad frame-anomaly degraded fallback patterns", async () => {
-    const fixturePath = join(repoRoot, "src/cognition/frame-anomaly/heuristics-guard-fixture.ts");
+    const fixturePath = join(guardRoot, "src/cognition/frame-anomaly/heuristics-guard-fixture.ts");
     writeFileSync(
       fixturePath,
       'const fixture = [{ pattern: "as an ai", kind: "assistant_self_claim_in_user_role" }];\n',
@@ -126,8 +142,8 @@ describe("heuristics guard", () => {
         stdout: string;
         stderr: string;
       }>((resolve, reject) => {
-        const child = spawn(pnpmCommand, ["exec", "tsx", "scripts/heuristics-guard.ts"], {
-          cwd: repoRoot,
+        const child = spawn(pnpmCommand, ["exec", "tsx", heuristicsGuardScriptPath], {
+          cwd: guardRoot,
           env: {
             ...process.env,
             FORCE_COLOR: "0",
@@ -171,7 +187,7 @@ describe("heuristics guard", () => {
   }, 30_000);
 
   it("fails disclosure search calls from cognition paths", async () => {
-    const fixturePath = join(repoRoot, "src/cognition/recall-guard-fixture.ts");
+    const fixturePath = join(guardRoot, "src/cognition/recall-guard-fixture.ts");
     writeFileSync(
       fixturePath,
       [
@@ -190,8 +206,8 @@ describe("heuristics guard", () => {
         stdout: string;
         stderr: string;
       }>((resolve, reject) => {
-        const child = spawn(pnpmCommand, ["exec", "tsx", "scripts/heuristics-guard.ts"], {
-          cwd: repoRoot,
+        const child = spawn(pnpmCommand, ["exec", "tsx", heuristicsGuardScriptPath], {
+          cwd: guardRoot,
           env: {
             ...process.env,
             FORCE_COLOR: "0",
@@ -235,7 +251,7 @@ describe("heuristics guard", () => {
   }, 30_000);
 
   it("fails disclosure-suffixed search calls from cognition paths", async () => {
-    const fixturePath = join(repoRoot, "src/cognition/retrieval-guard-fixture.ts");
+    const fixturePath = join(guardRoot, "src/cognition/retrieval-guard-fixture.ts");
     writeFileSync(
       fixturePath,
       [
@@ -254,8 +270,8 @@ describe("heuristics guard", () => {
         stdout: string;
         stderr: string;
       }>((resolve, reject) => {
-        const child = spawn(pnpmCommand, ["exec", "tsx", "scripts/heuristics-guard.ts"], {
-          cwd: repoRoot,
+        const child = spawn(pnpmCommand, ["exec", "tsx", heuristicsGuardScriptPath], {
+          cwd: guardRoot,
           env: {
             ...process.env,
             FORCE_COLOR: "0",
@@ -299,7 +315,7 @@ describe("heuristics guard", () => {
   }, 30_000);
 
   it("fails aliased disclosure search calls from cognition paths", async () => {
-    const fixturePath = join(repoRoot, "src/cognition/alias-guard-fixture.ts");
+    const fixturePath = join(guardRoot, "src/cognition/alias-guard-fixture.ts");
     writeFileSync(
       fixturePath,
       [
@@ -318,8 +334,8 @@ describe("heuristics guard", () => {
         stdout: string;
         stderr: string;
       }>((resolve, reject) => {
-        const child = spawn(pnpmCommand, ["exec", "tsx", "scripts/heuristics-guard.ts"], {
-          cwd: repoRoot,
+        const child = spawn(pnpmCommand, ["exec", "tsx", heuristicsGuardScriptPath], {
+          cwd: guardRoot,
           env: {
             ...process.env,
             FORCE_COLOR: "0",
@@ -363,7 +379,7 @@ describe("heuristics guard", () => {
   }, 30_000);
 
   it("fails model-facing memory rows without disclosure labels", async () => {
-    const fixturePath = join(repoRoot, "src/offline/label-coverage-guard-fixture.ts");
+    const fixturePath = join(guardRoot, "src/offline/label-coverage-guard-fixture.ts");
     writeFileSync(
       fixturePath,
       [
@@ -387,8 +403,8 @@ describe("heuristics guard", () => {
         stdout: string;
         stderr: string;
       }>((resolve, reject) => {
-        const child = spawn(pnpmCommand, ["exec", "tsx", "scripts/heuristics-guard.ts"], {
-          cwd: repoRoot,
+        const child = spawn(pnpmCommand, ["exec", "tsx", heuristicsGuardScriptPath], {
+          cwd: guardRoot,
           env: {
             ...process.env,
             FORCE_COLOR: "0",
@@ -433,7 +449,7 @@ describe("heuristics guard", () => {
   }, 30_000);
 
   it("fails nested private rows even when an ancestor has disclosure labels", async () => {
-    const fixturePath = join(repoRoot, "src/offline/nested-label-coverage-guard-fixture.ts");
+    const fixturePath = join(guardRoot, "src/offline/nested-label-coverage-guard-fixture.ts");
     writeFileSync(
       fixturePath,
       [
@@ -458,7 +474,7 @@ describe("heuristics guard", () => {
     );
 
     try {
-      const result = await runHeuristicsGuardScript();
+      const result = await runHeuristicsGuardScript(guardRoot);
 
       expect(result.code).not.toBe(0);
       expect(result.stdout).toBe("");
@@ -471,7 +487,7 @@ describe("heuristics guard", () => {
   }, 30_000);
 
   it("fails unlabeled private rows returned by serializer helper functions", async () => {
-    const fixturePath = join(repoRoot, "src/offline/helper-label-coverage-guard-fixture.ts");
+    const fixturePath = join(guardRoot, "src/offline/helper-label-coverage-guard-fixture.ts");
     writeFileSync(
       fixturePath,
       [
@@ -492,7 +508,7 @@ describe("heuristics guard", () => {
     );
 
     try {
-      const result = await runHeuristicsGuardScript();
+      const result = await runHeuristicsGuardScript(guardRoot);
 
       expect(result.code).not.toBe(0);
       expect(result.stdout).toBe("");
@@ -505,7 +521,7 @@ describe("heuristics guard", () => {
   }, 30_000);
 
   it("fails non-labeling raw record-copy passthroughs in model-facing payloads", async () => {
-    const fixturePath = join(repoRoot, "src/offline/raw-record-label-coverage-fixture.ts");
+    const fixturePath = join(guardRoot, "src/offline/raw-record-label-coverage-fixture.ts");
     writeFileSync(
       fixturePath,
       [
@@ -528,7 +544,7 @@ describe("heuristics guard", () => {
     );
 
     try {
-      const result = await runHeuristicsGuardScript();
+      const result = await runHeuristicsGuardScript(guardRoot);
 
       expect(result.code).not.toBe(0);
       expect(result.stdout).toBe("");
@@ -543,7 +559,7 @@ describe("heuristics guard", () => {
   }, 30_000);
 
   it("allows labeled serializers, inline labeled objects, fallback record copies, and live-turn text", async () => {
-    const fixturePath = join(repoRoot, "src/offline/label-coverage-negative-fixture.ts");
+    const fixturePath = join(guardRoot, "src/offline/label-coverage-negative-fixture.ts");
     writeFileSync(
       fixturePath,
       [
@@ -595,7 +611,7 @@ describe("heuristics guard", () => {
     );
 
     try {
-      const result = await runHeuristicsGuardScript();
+      const result = await runHeuristicsGuardScript(guardRoot);
 
       expect(result.code).toBe(0);
       expect(result.stdout).toBe("");
@@ -606,7 +622,7 @@ describe("heuristics guard", () => {
   }, 30_000);
 
   it("fails unlabeled shared-state text rows in prompt serializers", async () => {
-    const fixturePath = join(repoRoot, "src/cognition/shared-state-label-coverage-fixture.ts");
+    const fixturePath = join(guardRoot, "src/cognition/shared-state-label-coverage-fixture.ts");
     writeFileSync(
       fixturePath,
       [
@@ -640,7 +656,7 @@ describe("heuristics guard", () => {
     );
 
     try {
-      const result = await runHeuristicsGuardScript();
+      const result = await runHeuristicsGuardScript(guardRoot);
 
       expect(result.code).not.toBe(0);
       expect(result.stdout).toBe("");

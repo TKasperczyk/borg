@@ -1,5 +1,8 @@
+import { goalBlockStateAttribute } from "../../../memory/self/goal-blocks.js";
+import { renderAnsweredWindowEvidence } from "../../../stream/answered-window.js";
 // Assembles the base deliberation system prompt from memory, state, and guidance sections.
 import { summarizeProvenanceForPrompt, type Provenance } from "../../../memory/common/index.js";
+import { operatorAttentionPromptRow } from "../../../memory/operator-attention/disclosure.js";
 import type { ActionRecord } from "../../../memory/actions/index.js";
 import type { ExecutiveFocus, ExecutiveGoalScoreBasis } from "../../../executive/index.js";
 import {
@@ -1516,7 +1519,7 @@ function summarizeSelfSnapshotGoal(goal: SelfSnapshot["goals"][number]): string 
     goalMemoryDisclosureLabel(goal),
   )}`;
 
-  return `${goal.description} counterparty_entity_id=${goal.counterparty_entity_id ?? "none"} (participant the responsibility runs toward; not owner or audience) ${summarizeProvenanceForPrompt(goal.provenance)}${disclosure}`;
+  return `${goal.description} status=${goal.status}${goalBlockStateAttribute(goal)} counterparty_entity_id=${goal.counterparty_entity_id ?? "none"} (participant the responsibility runs toward; not owner or audience) ${summarizeProvenanceForPrompt(goal.provenance)}${disclosure}`;
 }
 
 const EXECUTIVE_FOCUS_IDENTITY_LABEL_MAX_CHARS = 120;
@@ -1550,7 +1553,7 @@ function summarizeExecutiveFocus(focus: ExecutiveFocus | null | undefined): stri
   );
 
   return [
-    `Current driving goal: ${focus.selected_goal.description} counterparty_entity_id=${focus.selected_goal.counterparty_entity_id ?? "none"} (participant the responsibility runs toward; not owner or audience) ${selectedGoalDisclosure}`,
+    `Current driving goal: ${focus.selected_goal.description} status=${focus.selected_goal.status}${goalBlockStateAttribute(focus.selected_goal)} counterparty_entity_id=${focus.selected_goal.counterparty_entity_id ?? "none"} (participant the responsibility runs toward; not owner or audience) ${selectedGoalDisclosure}`,
     `Focus identity: goal_id=${focus.selected_goal.id} label=${JSON.stringify(
       compactPromptText(focus.selected_goal.description, EXECUTIVE_FOCUS_IDENTITY_LABEL_MAX_CHARS),
     )}`,
@@ -1771,6 +1774,58 @@ function formatInFlightStamps(startedAt: readonly number[]): string {
   return `(fired ${stamps}${omitted === 0 ? "" : `, ${omitted} newer not listed`})`;
 }
 
+function renderWakeWindowRows(
+  wakes: NonNullable<
+    NonNullable<
+      NonNullable<DeliberationContext["turnMechanismEvidence"]>["autonomySchedulerState"]
+    >["windowWakes"]
+  >,
+): string[] {
+  const finalizerRounds = wakes.flatMap((wake) =>
+    wake.finalizer_rounds === null ? [] : [wake.finalizer_rounds],
+  );
+  const stallRetries = wakes.flatMap((wake) =>
+    wake.stall_retries === null ? [] : [wake.stall_retries],
+  );
+  const rows = wakes.map((wake) => {
+    const headwayBases =
+      wake.headway_bases === null
+        ? ""
+        : ` hb="${escapeXmlAttribute(wake.headway_bases.join("; "))}"`;
+    const finalizerRoundsAttribute =
+      wake.finalizer_rounds === null ? "" : ` fr="${wake.finalizer_rounds}"`;
+    const stallRetriesAttribute = wake.stall_retries === null ? "" : ` sr="${wake.stall_retries}"`;
+    const answeredWindowAttribute =
+      wake.answered_window === undefined
+        ? ""
+        : ` answered_window="${escapeXmlAttribute(wake.answered_window === null ? "not_applicable_no_recorded_session" : JSON.stringify(wake.answered_window))}"`;
+
+    return `- <wake at="${new Date(wake.ts).toISOString()}" tr="${wake.trigger_name}" o="${
+      wake.outcome ?? "in_flight"
+    }"${headwayBases}${finalizerRoundsAttribute}${stallRetriesAttribute}${answeredWindowAttribute} />`;
+  });
+
+  return [
+    wakes.length === 0
+      ? "Wake rows in that current window, newest first: none."
+      : "Wake rows in that current window, newest first:",
+    ...rows,
+    "Wake row legend: at=fired_at, tr=trigger_name, o=outcome (in_flight means no terminal outcome is recorded yet), hb=ordered headway bases, fr=finalizer rounds, sr=transport stall retries. hb absent means no structural headway bases were recorded. fr or sr absent means not recorded or unknown. Causes include older rows, callers that omit counts, in_flight rows awaiting outcome recording, and interrupted recording (including startup-interrupted rows).",
+    ...(wakes.some((wake) => wake.answered_window !== undefined)
+      ? [
+          "answered_window=current read of the wake's session, not a fired_at snapshot. Absent=unavailable; not_applicable_no_recorded_session=no session to join. Its counts are scope labels, not pending-response counts.",
+        ]
+      : []),
+    `Wake execution totals over those ${wakes.length} row(s): fr=${finalizerRounds.reduce(
+      (sum, count) => sum + count,
+      0,
+    )} from ${finalizerRounds.length}/${wakes.length} rows with fr recorded; sr=${stallRetries.reduce(
+      (sum, count) => sum + count,
+      0,
+    )} from ${stallRetries.length}/${wakes.length} rows with sr recorded. Absent values are excluded, not counted as zero.`,
+  ];
+}
+
 export function summarizeAutonomySchedulerState(
   schedulerState: NonNullable<
     NonNullable<DeliberationContext["turnMechanismEvidence"]>["autonomySchedulerState"]
@@ -1859,6 +1914,22 @@ export function summarizeAutonomySchedulerState(
       // rather than as "none right now".
       "in_flight counts rows written when the wake fired whose terminal outcome has not yet been recorded, stamped with when each fired. A normal completion records headway, silent, error, or busy; a post-turn bookkeeping failure records interrupted, and startup reconciliation records any NULL row left by a prior process as interrupted. A non-zero in_flight count can therefore be a healthy turn currently running. It is taken over the rolling window named above, so a live row can also leave this display by ageing past the lower edge before it closes. The stamps support cross-read identity: one repeating across two reads is one row still open, one that changes is a different wake, and one that disappears either closed or left the window.",
     );
+  }
+
+  if (schedulerState.operatorAttentionIndex !== undefined) {
+    const attention = schedulerState.operatorAttentionIndex;
+    lines.push(
+      `Operator attention records: total=${attention.total}; latest ${attention.records.length} shown, newest first.`,
+      "Filing metadata only: existence, date, filer, subject. Bodies remain with the operator; a filing is not a decision or an instruction. These records do not gate action. Treat this index as private to you and the operator; disclose contextually.",
+      ...attention.records.map((record) => {
+        const row = operatorAttentionPromptRow(record);
+        return `- ${new Date(row.filed_at).toISOString()} | filer=${row.filer_entity_id} | subject=${row.subject === null ? "subject unavailable" : escapeXmlText(JSON.stringify(row.subject))} | disclosure: ${escapeXmlText(renderMemoryDisclosureLabelForModel(row.disclosure_label))}`;
+      }),
+    );
+  }
+
+  if (schedulerState.windowWakes !== undefined) {
+    lines.push(...renderWakeWindowRows(schedulerState.windowWakes));
   }
 
   lines.push(
@@ -2162,15 +2233,29 @@ function renderWakeSourceLines(
     // times, two later once, and earlier never. The previous wording here said
     // the read is always strictly earlier, which is the same overclaim the old
     // "equal means already due" copy made, pointed the other way.
-    // A difference between two floored stamps is the whole traversal between
-    // their rows, not the cost of the two rows themselves: rows that publish no
-    // stamp (a null, or a genuinely future one) still sit in that span and still
-    // spend time in it. The prose said "rows that publish no stamp of their
-    // own", which names the null and excludes the future stamp by its own
-    // wording -- a genuinely future stamp IS a stamp. On the live list the row
-    // between scheduled_reflection and goal_followup_due is scheduled_wake,
-    // whose stamp is days out, so the one case the sentence left out is the one
-    // sitting in the middle of the span a reader is most likely to measure.
+    // A difference between two floored stamps covers the earlier row's own scan
+    // as well as the whole traversal between the rows: clock.now() is the first
+    // statement of every nextDueAt body, so a row's cost is charged to the gap
+    // after its own stamp, and rows that publish no stamp (a null, or a
+    // genuinely future one) still sit in that span and still spend time in it.
+    // Two wordings have been wrong here. "rows that publish no stamp of their
+    // own" names the null and excludes the future stamp by its own wording -- a
+    // genuinely future stamp IS a stamp -- and on the live list the row between
+    // scheduled_reflection and goal_followup_due is scheduled_wake, whose stamp
+    // is days out, so the case that wording left out is the one sitting in the
+    // middle of the span a reader is most likely to measure. "the scan cost of
+    // everything between their rows" then omitted the term that dominates it.
+    // On a live page for 2026-09-03: open_question_dormant and
+    // scheduled_reflection are adjacent and 13ms apart, while the 1ms from
+    // scheduled_reflection to goal_followup_due spans scheduled_wake. The 13ms
+    // is open_question_dormant's own scan -- ten thousand open questions listed
+    // and a watermark lookup each -- charged to the gap after its stamp, which
+    // the sentence had no slot for. The consequence -- an adjacent pair sitting
+    // further apart than a pair with rows between them, which reads as
+    // backwards until the earlier row's own cost is in the accounting -- is
+    // left to the reader rather than spelled out: naming the term costs 15 of
+    // the 19 characters under the section's width ceiling, and spelling out
+    // what follows from it costs another 200. The ceiling is not raised for it.
     // (2) A stamp is eligibility, and three refusal paths sit between it and a
     // wake -- all three already on this block, none of them consulted here.
     // (3) A null is not a prediction of quiet: the reasons a source declines to
@@ -2178,7 +2263,7 @@ function renderWakeSourceLines(
     // The third is the one that matters most, because it is the reading that
     // costs nothing to make and cannot be checked against a wake that never
     // comes for some other reason.
-    `next_due_at is that source's own earliest eligibility, floored the way next_tick_at is -- but to a clock the trigger reads inside its own call, as the scan reaches its row in the order printed, not to the read stamp above. So an already-due source prints a stamp at or after that read and never before it -- equal to it when the scan reaches its row inside the same millisecond, later when it does not -- and two already-due sources print two different stamps whose difference is the scan cost of everything between their rows, including rows whose own stamp is null or genuinely future, rather than which of them is due first. How long a floored source had already been due is not recoverable from this block. Eligibility is not a fire: the tick still has to run, the budget still has to have room under the ceiling for that source's category, and the fleet brake still has to not be holding, and all three refuse independently of the stamp. next_due_at=none does not mean nothing is due from that source. It means the source published no stamp, and it covers several states that are not the same: nothing eligible; the source declining to compute one because its candidate set was larger than the bounded scan it will do for a read-only field; and a trigger deciding part of what it fires on inside the scan, from scoring rather than from schedule data, which a field read before the scan cannot predict at all. A none is therefore consistent with that source firing on the very next tick. Conditions publish no stamp by construction -- they are detected from state when the tick scans -- so their absence here is the field not existing rather than nothing being due. registered says the source was built into this scheduler, not that it is otherwise unblocked.${
+    `next_due_at is that source's own earliest eligibility, floored the way next_tick_at is -- but to a clock the trigger reads inside its own call, as the scan reaches its row in the order printed, not to the read stamp above. So an already-due source prints a stamp at or after that read and never before it -- equal to it when the scan reaches its row inside the same millisecond, later when it does not -- and two already-due sources print two different stamps whose difference is the earlier row's own scan plus everything between their rows, including rows whose own stamp is null or genuinely future, rather than which of them is due first. How long a floored source had already been due is not recoverable from this block. Eligibility is not a fire: the tick still has to run, the budget still has to have room under the ceiling for that source's category, and the fleet brake still has to not be holding, and all three refuse independently of the stamp. next_due_at=none does not mean nothing is due from that source. It means the source published no stamp, and it covers several states that are not the same: nothing eligible; the source declining to compute one because its candidate set was larger than the bounded scan it will do for a read-only field; and a trigger deciding part of what it fires on inside the scan, from scoring rather than from schedule data, which a field read before the scan cannot predict at all. A none is therefore consistent with that source firing on the very next tick. Conditions publish no stamp by construction -- they are detected from state when the tick scans -- so their absence here is the field not existing rather than nothing being due. registered says the source was built into this scheduler, not that it is otherwise unblocked.${
       observationLagMs === 0
         ? ""
         : ` The parenthesised countdowns are measured from the current_time_ms at the top of this prompt, ${observationLagMs}ms after the read, so like the other countdowns here they read shorter than the wait as of the read.`
@@ -2230,10 +2315,20 @@ function renderWakeReasonLine(reason: AutonomyWakeOutcomeDetailTally["reasons"][
  * reading about the entity: a scatter of closures and a consecutive stretch of
  * them are the same number and a different fact, and only the second has the
  * shape of a disposition.
+ *
+ * A bucket holding one row is the case the interleaving read cannot serve: its
+ * first and last are the same row, so nothing can fall between them and the
+ * count is zero by construction rather than by observation. Rendered through
+ * the plural wording that produced the strongest available reading -- one
+ * unbroken run -- on a single isolated wake, which is the exact misreading
+ * toward disposition this line exists to prevent. The singleton copy states the
+ * count instead and keeps the edge clause, which is the half that still carries
+ * evidence at one row.
  */
 const WAKE_SPAN_BUCKETS = {
   error: {
     label: "errored wakes",
+    singular: "errored wake",
     interleaved: "the failures are interleaved rather than one run",
     edgeUnknown:
       "no earlier wake is retained, so whether the failures start at the window edge or merely become visible there is not answerable from here",
@@ -2241,9 +2336,16 @@ const WAKE_SPAN_BUCKETS = {
       "the wake immediately before the first of them also errored, and that wake is outside this window -- the run started earlier, so any rate taken over this window is a slice of it and the trigger mix of that slice is whatever was firing when the edge fell",
     beginsInside:
       "the wake immediately before the first of them did not error, so the run does begin inside this window",
+    singleEdgeUnknown:
+      "no earlier wake is retained, so whether it is the visible edge of a longer run or the whole of one is not answerable from here",
+    singleExtendsBefore:
+      "the wake immediately before it also errored, and that wake is outside this window -- so the one inside is the tail of a run that starts earlier, and a rate taken over this window is a rate over that tail",
+    singleBeginsInside:
+      "the wake immediately before it did not error, so it is not the tail of anything the table retains",
   },
   silent: {
     label: "silent wakes",
+    singular: "silent wake",
     interleaved: "the silences are interleaved rather than one stretch",
     edgeUnknown:
       "no earlier wake is retained, so whether the silences start at the window edge or merely become visible there is not answerable from here",
@@ -2251,18 +2353,38 @@ const WAKE_SPAN_BUCKETS = {
       "the wake immediately before the first of them was also silent, and that wake is outside this window -- the stretch started earlier, so reading these as a run of chosen quiet reads a slice of a longer one, and the endings mixed into the part outside the window are not shown here",
     beginsInside:
       "the wake immediately before the first of them was not silent, so the stretch does begin inside this window",
+    singleEdgeUnknown:
+      "no earlier wake is retained, so whether it is the visible edge of a longer stretch or the whole of one is not answerable from here",
+    singleExtendsBefore:
+      "the wake immediately before it was also silent, and that wake is outside this window -- so the one inside is the tail of a stretch that starts earlier, and how far back that stretch runs is not on this page",
+    singleBeginsInside:
+      "the wake immediately before it was not silent, so it is not the tail of anything the table retains",
   },
 } as const;
 
 function renderWakeOutcomeSpanLine(
   span: AutonomyWakeOutcomeSpan | null,
   bucket: keyof typeof WAKE_SPAN_BUCKETS,
+  total: number,
 ): string[] {
   if (span === null) {
     return [];
   }
 
   const copy = WAKE_SPAN_BUCKETS[bucket];
+
+  if (total === 1) {
+    const soleBefore =
+      span.extends_before_window === null
+        ? copy.singleEdgeUnknown
+        : span.extends_before_window
+          ? copy.singleExtendsBefore
+          : copy.singleBeginsInside;
+
+    return [
+      `Where that ${copy.singular} sits: it is the only one in this window, so its first and last are the same row and nothing can fall between them -- the interleaving count is empty by construction here, and neither a run nor a scatter is readable from one row; ${soleBefore}.`,
+    ];
+  }
   const between =
     span.other_outcomes_between === 0
       ? "No wake that ended any other way falls between the first and last of them, so inside this window they are one unbroken run"
@@ -2325,7 +2447,7 @@ function renderWakeErrorReasonLines(
   if (tally.reasons.length === 0) {
     return [
       `Errored wakes in that window: ${tally.total}, none of them carrying a recorded failure (rows written before the scheduler kept one). The count is real; why is unavailable from here, and their absence of a reason is not evidence that they share one.`,
-      ...renderWakeOutcomeSpanLine(span, "error"),
+      ...renderWakeOutcomeSpanLine(span, "error", tally.total),
     ];
   }
 
@@ -2349,7 +2471,7 @@ function renderWakeErrorReasonLines(
     remainder.length === 0
       ? `The reasons above account for all ${tally.total}.`
       : `The reasons above account for ${tally.total - tally.without_detail - hiddenCount} of ${tally.total}; the rest is ${remainder.join(" and ")}.`,
-    ...renderWakeOutcomeSpanLine(span, "error"),
+    ...renderWakeOutcomeSpanLine(span, "error", tally.total),
   ];
 }
 
@@ -2374,7 +2496,7 @@ function renderWakeSilentReasonLines(
   if (tally.reasons.length === 0) {
     return [
       `Silent wakes in that window: ${tally.total}, none of them carrying a recorded ending (rows written before the scheduler kept one). The count is real; whether they were closures you chose, failed emissions or guard blocks is unavailable from here, and their shared absence of a reason is not evidence that they share an ending.`,
-      ...renderWakeOutcomeSpanLine(span, "silent"),
+      ...renderWakeOutcomeSpanLine(span, "silent", tally.total),
     ];
   }
 
@@ -2398,7 +2520,7 @@ function renderWakeSilentReasonLines(
     remainder.length === 0
       ? `The endings above account for all ${tally.total}.`
       : `The endings above account for ${tally.total - tally.without_detail - hiddenCount} of ${tally.total}; the rest is ${remainder.join(" and ")}.`,
-    ...renderWakeOutcomeSpanLine(span, "silent"),
+    ...renderWakeOutcomeSpanLine(span, "silent", tally.total),
   ];
 }
 
@@ -2432,6 +2554,11 @@ function summarizeMechanismEvidence(
   const recentRegenerations = evidence.recentRegenerations.slice(-RECENT_REGENERATIONS_LIMIT);
   const lines: string[] = [];
   const schedulerState = evidence.autonomySchedulerState;
+  lines.push(
+    evidence.answeredWindow === undefined
+      ? "Answered-window edge: evidence unavailable on this capture; absence of a basis is not evidence of zero outside entries. Labels only."
+      : renderAnsweredWindowEvidence(evidence.answeredWindow),
+  );
   // Both lists below are count-capped rings, not time windows (RECENT_*_LIMIT, capNewest): an entry
   // stays until that many newer ones displace it, however long that takes. Without an age the oldest
   // and newest read alike, so a fossil from a guard that has since been scoped off this session
@@ -3068,13 +3195,20 @@ function summarizeAffectiveTrajectory(
   // text plus up to ten recency strings, self-turns included. Two blocks disagreeing about
   // what one quantity was computed from is worse than either being silent; keep them in step.
   //
-  // `trigger` is not that input under another name. Reflection stores
-  // `input.userMessage.slice(0, 120)`, a head slice of the arrived message only, so it names
-  // the start of one half of what was scored and nothing of the other. Rendering it beside
-  // valence/arousal without saying so invites reading the row as a function of the quoted
-  // string, which is the stronger form of the same error.
+  // `trigger` is not that input under another name, and naming it a head slice of the
+  // arrived message was still too generous on a wrapping transport. Reflection used to store
+  // `input.userMessage.slice(0, 120)`, and `renderInboundBatch` spends its first ~215
+  // characters on `<inbound_batch>` plus an `<inbound_message>` attribute list, so on the
+  // demo connector every stored trigger was envelope and stream id with zero characters of
+  // the message: 1324 of 1324 rows in `mood_history` at the time of the fix, across all eight
+  // sessions and the whole life of the table. It now stores the message bodies
+  // (`inboundMessageBodies` over the same entries the renderer wrapped), which is a subset of
+  // what was scored rather than a prefix of it. Rows written before that change keep the
+  // envelope, and open with a transport tag rather than with text -- said on the line, since
+  // a reader who trusts the legend against a pre-change row would otherwise catch the legend
+  // lying rather than the row aging.
   return [
-    "Affective trajectory (newest first). Each row is one turn's raw classifier reading, written after the reply: the newest row is the last scored turn, never this one. The reading is not a function of that turn's arrived text alone -- the classifier is handed that text plus up to the last ten recency strings for the session, prior turns rendered as role and content and including mine, so a row can differ from its neighbour where the arrived texts did not; trigger= is a 120-character head slice of the arrived message and names no part of the recency half. Rows exist only for undegraded user turns -- a turn missing here was autonomous or had a dead classifier, never a turn that felt nothing. Working state's mood= is not a member of this series (this turn's own raw reading on an undegraded user turn, a carried-forward blend otherwise), so comparing it against the newest row settles neither.",
+    "Affective trajectory (newest first). Each row is one turn's raw classifier reading, written after the reply: the newest row is the last scored turn, never this one. The reading is not a function of that turn's arrived text alone -- the classifier is handed that text plus up to the last ten recency strings for the session, prior turns rendered as role and content and including mine, so a row can differ from its neighbour where the arrived texts did not; trigger= is a 120-character head slice of the arrived message bodies with the transport envelope stripped, so it is a subset of what was scored rather than a prefix of it and names no part of the recency half -- and a trigger that opens with a transport tag instead of with text is a row written before that source changed, naming only the envelope that carried the message. Rows exist only for undegraded user turns -- a turn missing here was autonomous or had a dead classifier, never a turn that felt nothing. Working state's mood= is not a member of this series (this turn's own raw reading on an undegraded user turn, a carried-forward blend otherwise), so comparing it against the newest row settles neither.",
     ...entries.slice(0, 5).map((entry) => {
       const triggerText =
         entry.trigger_reason === null ? "" : compactPromptText(entry.trigger_reason, 120);

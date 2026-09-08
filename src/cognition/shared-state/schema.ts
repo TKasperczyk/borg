@@ -36,7 +36,7 @@ function sharedStateToolDefinition(name: (typeof SHARED_STATE_ACCEPTED_TOOL_NAME
   return {
     name,
     description:
-      "Compile durable shared state for this audience into additive, updating, superseding, or pruning operations.",
+      "Compile durable shared state for this audience into additive, updating, superseding, or pruning operations. Corrections and contradictions target an existing entry id with supersede or update, including locked entries; never add a correcting sibling. Preserve intentions, plans, and decisions with their stated timing. Record an act as performed only when source material evidences the act itself, never from a stated intention.",
     inputSchema: toToolInputSchema(sharedStatePatchSchema),
   } satisfies LLMToolDefinition;
 }

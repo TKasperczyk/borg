@@ -11,6 +11,7 @@ import { DEFAULT_SESSION_ID, goalIdHelpers, type GoalId, type SessionId } from "
 import type { ToolDispatcher } from "../tools/dispatcher.js";
 import { classifySuppressionReason } from "../cognition/generation/suppression-outcome.js";
 import type { TurnOrchestrator, TurnResult } from "../cognition/index.js";
+import { turnExecutionMetricsFromError } from "../cognition/turn-execution-metrics.js";
 import { memoryDisclosurePayloadFields } from "../memory/common/disclosure-serializers.js";
 import type { SelfDecisionRepository } from "../memory/self-decisions/index.js";
 import type { TrainOfThoughtRepository } from "../memory/train-of-thought/index.js";
@@ -35,7 +36,7 @@ import {
   AUTONOMY_WAKE_SOURCE_NAMES,
   HEADWAY_EMISSION_KINDS,
 } from "./types.js";
-import type { AutonomyWakesRepository } from "./wakes-repository.js";
+import type { AutonomyWakeExecutionCounts, AutonomyWakesRepository } from "./wakes-repository.js";
 import {
   getExecutiveFocusGoalStaleBackoffProcessName,
   readExecutiveFocusGoalStaleBackoffMetadata,
@@ -112,6 +113,19 @@ const WAKE_PRUNE_SAFETY_BUFFER_MS = 7 * 24 * 60 * 60 * 1_000;
 // search under load, which made prep fail and the trigger retry-loop. Live/
 // reactive tool calls keep the 5s default; only prep gets this longer bound.
 const DEFAULT_AUTONOMY_PREP_TOOL_TIMEOUT_MS = 30_000;
+const ZERO_TURN_EXECUTION_COUNTS: AutonomyWakeExecutionCounts = {
+  finalizer_rounds: 0,
+  stall_retries: 0,
+};
+
+function executionCountsForTurnResult(
+  result: Pick<TurnResult, "finalizer_rounds" | "stall_retries">,
+): AutonomyWakeExecutionCounts {
+  return {
+    finalizer_rounds: result.finalizer_rounds,
+    stall_retries: result.stall_retries,
+  };
+}
 
 export type AutonomySchedulerObserver = {
   onTick?(result: TickResult): void | Promise<void>;
@@ -123,6 +137,11 @@ export type AutonomySchedulerStopOptions = {
 };
 
 export type AutonomySchedulerOptions = {
+  beforeTick?: () => void;
+  describeAnsweredWindow?: (
+    sessionId: SessionId,
+    observedAt: number,
+  ) => import("../stream/answered-window.js").AnsweredWindowEvidence;
   enabled: boolean;
   intervalMs: number;
   prepToolTimeoutMs?: number;
@@ -594,7 +613,10 @@ export class AutonomyScheduler {
   private readonly fleetBrakeOptions: FleetBrakeOptions;
   private readonly respectGoalFollowupStaleBackoff: boolean;
   private readonly retryBackoff = new Map<string, RetryBackoffState>();
+  // Preparation history recovers on an empty scan or successful preparation.
+  // Failed-turn history is independent and survives those recovery signals.
   private readonly sourceRetryBackoff = new Map<AutonomyWakeSource["name"], RetryBackoffState>();
+  private readonly triggerErrorBackoff = new Map<AutonomyWakeSource["name"], RetryBackoffState>();
   private intervalHandle: IntervalHandle | null = null;
   private activeTick: Promise<TickResult> | null = null;
   private observer: AutonomySchedulerObserver | null = null;
@@ -671,7 +693,8 @@ export class AutonomyScheduler {
     for (const candidate of dueEvents) {
       if (
         consumedEventKeys.has(backoffKey(candidate.event)) ||
-        this.sourceRetryIsActive(candidate.event.sourceName, this.clock.now())
+        this.sourceRetryIsActive(candidate.event.sourceName, this.clock.now()) ||
+        this.triggerErrorRetryIsActive(candidate.event.sourceName, this.clock.now())
       ) {
         continue;
       }
@@ -862,6 +885,19 @@ export class AutonomyScheduler {
 
   async describe(): Promise<AutonomySchedulerDescription> {
     const nowMs = this.clock.now();
+    const answeredBySession = new Map<
+      SessionId,
+      import("../stream/answered-window.js").AnsweredWindowEvidence
+    >();
+    const answeredWindowForSession = (sessionId: SessionId | null) => {
+      if (sessionId === null || this.options.describeAnsweredWindow === undefined) return null;
+      let evidence = answeredBySession.get(sessionId);
+      if (evidence === undefined) {
+        evidence = this.options.describeAnsweredWindow(sessionId, nowMs);
+        answeredBySession.set(sessionId, evidence);
+      }
+      return evidence;
+    };
     const budgetCutoff = nowMs - this.options.budgetWindowMs;
     const registeredSources = new Map(this.options.sources.map((source) => [source.name, source]));
     const sources: AutonomySchedulerSourceDescription[] = [];
@@ -958,6 +994,17 @@ export class AutonomyScheduler {
       // preserved unfloored on the next line rather than recomputed downstream.
       next_tick_at: scheduledTickAt === null ? null : Math.max(scheduledTickAt, nowMs),
       scheduled_tick_at: scheduledTickAt,
+      window_wakes: currentWindowWakes.map((wake) => ({
+        ...(this.options.describeAnsweredWindow === undefined
+          ? {}
+          : { answered_window: answeredWindowForSession(wake.session_id) }),
+        ts: wake.ts,
+        trigger_name: wake.trigger_name,
+        outcome: wake.outcome,
+        headway_bases: wake.headway_bases,
+        finalizer_rounds: wake.finalizer_rounds,
+        stall_retries: wake.stall_retries,
+      })),
       budget: {
         max_wakes_per_window: this.options.maxWakesPerWindow,
         window_ms: this.options.budgetWindowMs,
@@ -1069,6 +1116,7 @@ export class AutonomyScheduler {
   }
 
   private async tickOnce(): Promise<TickResult> {
+    this.options.beforeTick?.();
     const nowMs = this.clock.now();
     this.lastTickTs = nowMs;
     const scannedSources = this.options.sources.map((source) => source.name);
@@ -1093,7 +1141,10 @@ export class AutonomyScheduler {
 
     try {
       const scanResult = await this.scanDueEvents();
-      const scannedDueEvents = this.orderDueEventsForRecoveryProbe(scanResult.events, nowMs);
+      const scannedDueEvents = this.orderDueEventsForAdmission(
+        this.orderDueEventsForRecoveryProbe(scanResult.events, nowMs),
+        this.clock.now(),
+      );
       const dueEventKeys = new Set(scannedDueEvents.map(({ event }) => backoffKey(event)));
 
       for (const key of this.retryBackoff.keys()) {
@@ -1104,7 +1155,10 @@ export class AutonomyScheduler {
 
       const dueEvents = scannedDueEvents.filter(({ event }) => {
         const backoff = this.retryBackoff.get(backoffKey(event));
-        return backoff === undefined || backoff.nextEligibleTs <= nowMs;
+        return (
+          (backoff === undefined || backoff.nextEligibleTs <= nowMs) &&
+          !this.triggerErrorRetryIsActive(event.sourceName, nowMs)
+        );
       });
       const writer = this.options.createStreamWriter(this.sessionId);
       const eventResults: AutonomyTickEventResult[] = [];
@@ -1124,7 +1178,10 @@ export class AutonomyScheduler {
             continue;
           }
 
-          if (this.sourceRetryIsActive(scannedEvent.event.sourceName, this.clock.now())) {
+          if (
+            this.sourceRetryIsActive(scannedEvent.event.sourceName, this.clock.now()) ||
+            this.triggerErrorRetryIsActive(scannedEvent.event.sourceName, this.clock.now())
+          ) {
             continue;
           }
 
@@ -1215,59 +1272,41 @@ export class AutonomyScheduler {
             selected_goal_id: selectedGoalIdForWake(dueEvent),
           });
 
-          const preparedEvent = await this.prepareEvent(dueEvent);
-
-          if ("toolError" in preparedEvent) {
-            errorCount += 1;
-            sourceErrorCount += 1;
-            const outcomeSummary = `Autonomous preparation failed: ${preparedEvent.toolError}`;
-            this.options.wakeRepository.recordOutcome(wakeRecord.id, "error", outcomeSummary);
-            this.consumeFleetFreshnessBypass(
-              dueEvent,
-              fleetAdmission.bypassKind,
-              fleetAdmission.metadata,
-            );
-            this.scheduleSourceRetryBackoff(dueEvent.sourceName);
-            await writer.append({
-              kind: "internal_event",
-              content: {
-                kind: "autonomous_action",
-                trigger: dueEvent.sourceName,
-                outcome_summary: outcomeSummary,
-                turn_result_id: null,
-                ts: this.clock.now(),
-              },
-            });
-            eventResults.push(
-              ...this.eventResultsForBatch(wakeBatch, {
-                status: "error",
-                error: preparedEvent.toolError,
-                outcomeSummary,
-                turnResultId: null,
-              }),
-            );
-            await this.notifyError(
-              new AutonomySourcePreparationError(dueEvent.sourceName, preparedEvent.toolError),
-            );
-            continue;
-          }
-
+          let preparedEvent: { source: AutonomyWakeSource; event: DueEvent };
           let turnInput;
 
           try {
+            const preparation = await this.prepareEvent(dueEvent);
+
+            if ("toolError" in preparation) {
+              throw new AutonomySourcePreparationError(dueEvent.sourceName, preparation.toolError);
+            }
+
+            preparedEvent = preparation;
             turnInput = preparedEvent.source.buildTurn(preparedEvent.event);
           } catch (error) {
+            // Install retry state before any outcome, fleet, or stream write:
+            // bookkeeping failures must not turn a source error into a hot loop.
+            this.scheduleSourceRetryBackoff(dueEvent.sourceName);
             errorCount += 1;
             sourceErrorCount += 1;
-            const preparationError = new AutonomySourcePreparationError(dueEvent.sourceName, error);
+            const preparationError =
+              error instanceof AutonomySourcePreparationError
+                ? error
+                : new AutonomySourcePreparationError(dueEvent.sourceName, error);
             const outcomeSummary = `Autonomous source preparation failed: ${formatError(error)}`;
-            this.options.wakeRepository.recordOutcome(wakeRecord.id, "error", outcomeSummary);
+            this.options.wakeRepository.recordOutcome(
+              wakeRecord.id,
+              "error",
+              outcomeSummary,
+              null,
+              ZERO_TURN_EXECUTION_COUNTS,
+            );
             this.consumeFleetFreshnessBypass(
               dueEvent,
               fleetAdmission.bypassKind,
               fleetAdmission.metadata,
             );
-            this.scheduleSourceRetryBackoff(dueEvent.sourceName);
             await writer.append({
               kind: "internal_event",
               content: {
@@ -1304,6 +1343,15 @@ export class AutonomyScheduler {
             });
           } catch (error) {
             const busy = error instanceof SessionBusyError;
+            this.scheduleBatchRetryBackoff(wakeBatch);
+            if (!busy) {
+              // Failed turns leave source watermarks unlatched. Install the
+              // source-name latch before fallible bookkeeping so new event ids
+              // cannot bypass retry spacing even when logging fails.
+              this.scheduleBatchTriggerErrorBackoff(wakeBatch);
+            }
+            const executionCounts =
+              turnExecutionMetricsFromError(error) ?? (busy ? ZERO_TURN_EXECUTION_COUNTS : undefined);
             const outcomeSummary = busy
               ? "Skipped autonomous turn because the session was busy."
               : `Autonomous turn failed: ${formatError(error)}`;
@@ -1321,10 +1369,22 @@ export class AutonomyScheduler {
 
             if (busy) {
               busySkipped += 1;
-              this.options.wakeRepository.recordOutcome(wakeRecord.id, "busy", outcomeSummary);
+              this.options.wakeRepository.recordOutcome(
+                wakeRecord.id,
+                "busy",
+                outcomeSummary,
+                null,
+                executionCounts,
+              );
             } else {
               errorCount += 1;
-              this.options.wakeRepository.recordOutcome(wakeRecord.id, "error", outcomeSummary);
+              this.options.wakeRepository.recordOutcome(
+                wakeRecord.id,
+                "error",
+                outcomeSummary,
+                null,
+                executionCounts,
+              );
               if (isGlobalCircuitFailure(error)) {
                 this.updateFleetBrakeAfterGlobalError(
                   dueEvent,
@@ -1339,8 +1399,6 @@ export class AutonomyScheduler {
                 );
               }
             }
-            this.scheduleBatchRetryBackoff(wakeBatch);
-
             eventResults.push(
               ...this.eventResultsForBatch(wakeBatch, {
                 status: busy ? "busy_skipped" : "error",
@@ -1398,8 +1456,11 @@ export class AutonomyScheduler {
               wakeHeadway ? "headway" : "silent",
               wakeHeadway ? null : (silentOutcome?.detail ?? null),
               wakeHeadway ? wakeHeadwayBases : null,
+              executionCountsForTurnResult(turnResult),
             );
           } catch (error) {
+            this.scheduleBatchRetryBackoff(wakeBatch);
+            this.scheduleBatchTriggerErrorBackoff(wakeBatch);
             const outcomeSummary = `Autonomous turn completed; bookkeeping failed: ${formatError(error)}`;
             let interruptedOutcomeError: unknown;
 
@@ -1408,6 +1469,8 @@ export class AutonomyScheduler {
                 wakeRecord.id,
                 "interrupted",
                 outcomeSummary,
+                null,
+                executionCountsForTurnResult(turnResult),
               );
             } catch (recordError) {
               interruptedOutcomeError = recordError;
@@ -1415,7 +1478,6 @@ export class AutonomyScheduler {
 
             firedEvents += 1;
             bookkeepingErrorCount += 1;
-            this.scheduleBatchRetryBackoff(wakeBatch);
             const bookkeepingError = new AutonomyBookkeepingError(dueEvent, error);
             eventResults.push(
               ...this.eventResultsForBatch(wakeBatch, {
@@ -1487,6 +1549,7 @@ export class AutonomyScheduler {
               }
 
               this.retryBackoff.delete(backoffKey(member.event));
+              this.triggerErrorBackoff.delete(member.event.sourceName);
             }
 
             eventResults.push(
@@ -1499,6 +1562,7 @@ export class AutonomyScheduler {
           } catch (error) {
             bookkeepingErrorCount += 1;
             this.scheduleBatchRetryBackoff(wakeBatch);
+            this.scheduleBatchTriggerErrorBackoff(wakeBatch);
             const bookkeepingError = new AutonomyBookkeepingError(dueEvent, error);
             eventResults.push(
               ...this.eventResultsForBatch(wakeBatch, {
@@ -1586,6 +1650,7 @@ export class AutonomyScheduler {
 
     if (
       concern === null ||
+      this.options.goalsRepository?.get(concern.goalId as GoalId)?.status === "blocked" ||
       (event.sourceName === "goal_followup_due" && !this.respectGoalFollowupStaleBackoff)
     ) {
       return;
@@ -1883,6 +1948,35 @@ export class AutonomyScheduler {
     return promise;
   }
 
+  private orderDueEventsForAdmission(
+    events: ScannedDueEvents["events"],
+    nowMs: number,
+  ): ScannedDueEvents["events"] {
+    const scheduledWakes: Array<{ candidate: ScannedDueEvent; fireAt: number }> = [];
+    const remainingEvents: ScannedDueEvent[] = [];
+
+    // Due self-scheduled times get first admission on every tick. Preserve the
+    // existing order for equal fire times and all other sources; the normal
+    // backoff, fleet brake, and budget checks still decide whether a wake runs.
+    for (const candidate of events) {
+      const fireAt = candidate.event.payload.fire_at;
+
+      if (
+        candidate.event.sourceName === "scheduled_wake" &&
+        typeof fireAt === "number" &&
+        Number.isFinite(fireAt) &&
+        fireAt <= nowMs
+      ) {
+        scheduledWakes.push({ candidate, fireAt });
+      } else {
+        remainingEvents.push(candidate);
+      }
+    }
+
+    scheduledWakes.sort((left, right) => left.fireAt - right.fireAt);
+    return [...scheduledWakes.map(({ candidate }) => candidate), ...remainingEvents];
+  }
+
   private orderDueEventsForRecoveryProbe(
     events: ScannedDueEvents["events"],
     nowMs: number,
@@ -1904,7 +1998,10 @@ export class AutonomyScheduler {
           return 0;
         }
 
-        return this.retryBackoff.has(backoffKey(candidate.event)) ? 2 : 1;
+        return this.retryBackoff.has(backoffKey(candidate.event)) ||
+          this.triggerErrorBackoff.has(candidate.event.sourceName)
+          ? 2
+          : 1;
       };
       const leftRank = recoveryRank(left);
       const rightRank = recoveryRank(right);
@@ -1922,7 +2019,10 @@ export class AutonomyScheduler {
     let sourceErrorCount = 0;
 
     for (const source of this.options.sources) {
-      if (this.sourceRetryIsActive(source.name, this.clock.now())) {
+      if (
+        this.sourceRetryIsActive(source.name, this.clock.now()) ||
+        this.triggerErrorRetryIsActive(source.name, this.clock.now())
+      ) {
         continue;
       }
 
@@ -2175,6 +2275,36 @@ export class AutonomyScheduler {
         : Math.min(previousBackoff.delayMs * 2, MAX_RETRY_BACKOFF_MS);
 
     this.retryBackoff.set(key, {
+      delayMs,
+      nextEligibleTs: this.clock.now() + delayMs,
+    });
+  }
+
+  private triggerErrorRetryIsActive(
+    sourceName: AutonomyWakeSource["name"],
+    nowMs: number,
+  ): boolean {
+    const backoff = this.triggerErrorBackoff.get(sourceName);
+
+    return backoff !== undefined && backoff.nextEligibleTs > nowMs;
+  }
+
+  private scheduleBatchTriggerErrorBackoff(batch: WakeBatch): void {
+    const sourceNames = new Set(batch.events.map(({ event }) => event.sourceName));
+
+    for (const sourceName of sourceNames) {
+      this.scheduleTriggerErrorBackoff(sourceName);
+    }
+  }
+
+  private scheduleTriggerErrorBackoff(sourceName: AutonomyWakeSource["name"]): void {
+    const previousBackoff = this.triggerErrorBackoff.get(sourceName);
+    const delayMs =
+      previousBackoff === undefined
+        ? INITIAL_RETRY_BACKOFF_MS
+        : Math.min(previousBackoff.delayMs * 2, MAX_RETRY_BACKOFF_MS);
+
+    this.triggerErrorBackoff.set(sourceName, {
       delayMs,
       nextEligibleTs: this.clock.now() + delayMs,
     });

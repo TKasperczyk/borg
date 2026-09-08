@@ -4,6 +4,7 @@
 // gated overwrites) does NOT live here -- it lives in memory/identity,
 // which composes these repositories with memory/commitments and routes
 // writes through IdentityService + IdentityGuard.
+export * from "./goal-blocks.js";
 
 export {
   AutobiographicalRepository,

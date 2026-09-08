@@ -1,3 +1,4 @@
+import { goalSchedulingTimes, goalBlockStateFields } from "../../memory/self/goal-blocks.js";
 import {
   DEFAULT_EXECUTIVE_GOAL_FOCUS_THRESHOLD,
   computeExecutiveContextFits,
@@ -66,6 +67,8 @@ export type ExecutiveFocusDuePayload = {
     description: string;
     priority: number;
     status: GoalRecord["status"];
+    block_history?: GoalRecord["block_history"];
+    block?: ReturnType<typeof goalBlockStateFields>["block"];
     target_at: number | null;
     last_progress_ts: number | null;
   } & ExecutiveFocusGoalDisclosurePayload;
@@ -247,6 +250,7 @@ function buildScorePayload(input: {
       description: input.goal.description,
       priority: input.goal.priority,
       status: input.goal.status,
+      ...goalBlockStateFields(input.goal),
       target_at: input.goal.target_at,
       last_progress_ts: input.goal.last_progress_ts,
       disclosure: input.disclosure.disclosure,
@@ -281,9 +285,8 @@ function isGoalFollowupDueMatch(input: {
   lookaheadMs: number;
   staleMs: number;
 }): boolean {
-  const baseProgressTs = input.goal.last_progress_ts ?? input.goal.created_at;
-  const deadlineDue =
-    input.goal.target_at !== null && input.goal.target_at - input.nowMs < input.lookaheadMs;
+  const { progressAnchor: baseProgressTs, targetAt } = goalSchedulingTimes(input.goal);
+  const deadlineDue = targetAt !== null && targetAt - input.nowMs < input.lookaheadMs;
   const staleDue = baseProgressTs + input.staleMs < input.nowMs;
 
   return deadlineDue || staleDue;
@@ -557,7 +560,7 @@ export function createExecutiveFocusDueTrigger(
       if (topEligibleCandidate !== undefined) {
         const selectedGoal =
           goalsById.get(topEligibleCandidate.goal_id) ?? topEligibleCandidate.goal;
-        const progressAnchor = selectedGoal.last_progress_ts ?? selectedGoal.created_at;
+        const progressAnchor = goalSchedulingTimes(selectedGoal).progressAnchor;
 
         // Keep staleness out of the skip predicate: a fresh top-eligible goal
         // must suppress goal_stale rather than reaching past it to a lower stale one.

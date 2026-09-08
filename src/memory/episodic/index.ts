@@ -26,6 +26,7 @@ export {
 } from "./protected-lines.js";
 export {
   episodeParticipantDisplayNames,
+  episodeParticipantEntityId,
   episodeParticipantEntityIds,
   episodeParticipantEntityIdTerm,
   parseEpisodeParticipantEntityIdTerm,

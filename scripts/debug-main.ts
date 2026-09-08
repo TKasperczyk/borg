@@ -136,12 +136,23 @@ async function ensurePhase1(borg: Borg, state: DebugState): Promise<void> {
     status: "active",
     provenance: { kind: "manual" },
   });
-  borg.self.goals.add({
+  // A blocked goal must name its blocker: seed it active, then block it on a
+  // date the way the autonomous verb would.
+  const simdRewrite = borg.self.goals.add({
     description: "Ship a risky SIMD rewrite",
     priority: 3,
-    status: "blocked",
+    status: "active",
     provenance: { kind: "manual" },
   });
+  borg.self.goals.block(
+    simdRewrite.id,
+    {
+      blocker: { kind: "until", until: Date.now() + 7 * 24 * 60 * 60 * 1000 },
+      attempt_status: "attempted_unavailable",
+      reason: "The rewrite was attempted and stalls on an unavailable toolchain until the next release.",
+    },
+    { kind: "manual" },
+  );
   borg.self.traits.reinforce({
     label: "curious",
     delta: 0.3,

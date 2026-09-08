@@ -89,6 +89,10 @@ describe("openQuestionStateMetadata", () => {
       "no episode created after the question citing it",
     );
     expect(live?.unresolved_rumination_ticks_note).toContain("no active action against it");
+    // The store advances this only when a note is recorded (stampRuminationForRun's note-less
+    // branch writes last_ruminated_at alone), so a sentence that calls it a count of passes
+    // invites reading a gap between the count and the notes as a lost note.
+    expect(live?.unresolved_rumination_ticks_note).toContain("recorded no note");
   });
 
   it("omits the threshold rather than inventing one when it was not supplied", () => {

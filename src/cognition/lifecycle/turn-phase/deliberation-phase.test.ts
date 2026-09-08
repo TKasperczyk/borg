@@ -6,9 +6,14 @@ import { DEFAULT_SESSION_ID, createEntityId, createStreamEntryId } from "../../.
 import { runDeliberationPhase } from "./deliberation-phase.js";
 
 const deliberatorRun = vi.hoisted(() => vi.fn());
+const deliberatorConstructor = vi.hoisted(() => vi.fn());
 
 vi.mock("../../deliberation/deliberator.js", () => ({
-  Deliberator: vi.fn(function DeliberatorMock(this: { run: typeof deliberatorRun }) {
+  Deliberator: vi.fn(function DeliberatorMock(
+    this: { run: typeof deliberatorRun },
+    options: unknown,
+  ) {
+    deliberatorConstructor(options);
     this.run = deliberatorRun;
   }),
 }));
@@ -37,6 +42,7 @@ function makeOptions(setStopState: ReturnType<typeof vi.fn>) {
       },
       deliberation: {
         contradictionRouting: {},
+        finalizerTransport: "unary",
       },
       host_capabilities: {},
       attachments: {
@@ -144,6 +150,24 @@ function makeInput(origin: "user" | "autonomous", setStopState: ReturnType<typeo
 describe("runDeliberationPhase", () => {
   beforeEach(() => {
     deliberatorRun.mockReset();
+    deliberatorConstructor.mockReset();
+  });
+
+  it("passes the configured finalizer transport to the deliberator", async () => {
+    const setStopState = vi.fn();
+    const input = makeInput("user", setStopState);
+    input.options.config.deliberation.finalizerTransport = "streaming";
+    deliberatorRun.mockResolvedValue({
+      response: "",
+      emissionRecommendation: "emit",
+      thoughtStreamEntryIds: [],
+    });
+
+    await runDeliberationPhase(input);
+
+    expect(deliberatorConstructor).toHaveBeenCalledWith(
+      expect.objectContaining({ finalizerTransport: "streaming" }),
+    );
   });
 
   it("arms S2 planner no_output stop state for user-origin turns", async () => {

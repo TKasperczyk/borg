@@ -7,6 +7,8 @@ import { cors } from "hono/cors";
 import { HTTPException } from "hono/http-exception";
 import {
   BorgError,
+  goalBlockInputSchema,
+  operatorAttentionRecordSchema,
   COMMITMENT_KINDS,
   DEFAULT_SESSION_ID,
   OFFLINE_PROCESS_NAMES,
@@ -485,10 +487,11 @@ const goalPatchBodySchema = z.discriminatedUnion("action", [
       note: optionalTextFieldSchema,
     })
     .strict(),
-  z
-    .object({
+  goalBlockInputSchema
+    .omit({ reason: true })
+    .extend({
       action: z.literal("block"),
-      note: optionalTextFieldSchema,
+      note: z.string().trim().min(1),
     })
     .strict(),
   z
@@ -2080,6 +2083,8 @@ function mapAutonomyWake(borg: Borg, wake: AutonomyWakeRecord) {
     outcome: wake.outcome,
     outcome_detail: wake.outcome_detail,
     headway_bases: wake.headway_bases,
+    finalizer_rounds: wake.finalizer_rounds,
+    stall_retries: wake.stall_retries,
   };
 }
 
@@ -2555,6 +2560,7 @@ function processDescription(name: OfflineProcessName): string {
     "creator-directive-reconciler": "reconcile redundant or conflicting creator directives",
     ruminator: "open-question rumination",
     "self-narrator": "autobiography and growth markers",
+    "lived-experience-day-summarizer": "summarize the day's lived experience",
     "procedural-synthesizer": "skill abstractions",
     "belief-reviser": "invalidate, weaken, contradict",
     "commitment-reconciler": "reconcile redundant or conflicting commitments",
@@ -3202,6 +3208,11 @@ export function createDemoServerApp(args: DemoServerAppInput) {
   });
 
   app.get("/api/sessions", (c) => c.json({ sessions: input.borg.sessions.list({ limit: 1000 }) }));
+
+  app.post("/api/operator-attention", async (c) => {
+    const record = parseRequest(operatorAttentionRecordSchema, await parseJsonBody(c));
+    return c.json(input.borg.operatorAttention.record(record));
+  });
 
   app.get("/api/entities/creator", (c) => c.json(input.borg.entities.getCreator()));
 
@@ -4085,16 +4096,9 @@ export function createDemoServerApp(args: DemoServerAppInput) {
       }
 
       if (body.action === "block") {
+        const { action: _action, note, ...block } = body;
         return c.json(
-          requireIdentityApplied(
-            input.borg.self.goals.updateStatus(
-              params.id,
-              "blocked",
-              { kind: "manual" },
-              { throughReview: true, reason: body.note ?? null },
-            ),
-            "Blocking goal",
-          ),
+          input.borg.self.goals.block(params.id, { ...block, reason: note }, { kind: "manual" }),
         );
       }
 

@@ -262,7 +262,9 @@ export {
   type AutonomySchedulerSourceDescription,
   type AutonomySchedulerTriggerSourceDescription,
   type AutonomySchedulerWakeGroupDescription,
+  type AutonomySchedulerWakeDescription,
   type AutonomyTickEventResult,
+  type AutonomyWakeExecutionCounts,
   type AutonomyWakeRecord,
   type AutonomyWakeRecordInput,
   type AutonomyWakeSourceCategory,
@@ -371,6 +373,10 @@ export {
   OPEN_QUESTION_STATUSES,
   type AutobiographicalPeriod,
   type AutobiographicalPeriodPatch,
+  goalBlockInputSchema,
+  goalBlockerSchema,
+  type GoalBlockInput,
+  type GoalBlockRecord,
   type GoalPatch,
   type GoalRecord,
   type GoalStatus,
@@ -691,3 +697,13 @@ export {
   type StoredAttachmentRecord,
   type TurnInputAttachment,
 } from "./attachments/index.js";
+
+export {
+  operatorAttentionRecordSchema,
+  OPERATOR_ATTENTION_RECENT_LIMIT,
+  OPERATOR_ATTENTION_SUBJECT_MAX_CHARS,
+  type BorgOperatorAttentionFacade,
+  type OperatorAttentionRecord,
+  type OperatorAttentionIndex,
+  type OperatorAttentionIndexRow,
+} from "./memory/operator-attention/types.js";

@@ -1,5 +1,6 @@
 // Self-memory CLI commands for goals, values, periods, growth, questions, traits, and working memory.
 import type { CAC } from "cac";
+import { goalBlockInputSchema } from "../../memory/self/goal-blocks.js";
 
 import { withBorg } from "../helpers/borg.js";
 import { CliError } from "../helpers/errors.js";
@@ -58,6 +59,14 @@ export function registerSelfCommands(cli: CAC, deps: CliCommandDeps): void {
     .option("--parent <id>", "Parent goal id")
     .option("--status <status>", "Goal status filter")
     .option("--note <text>", "Progress note")
+    .option("--blocker-goal <id>", "Block until this other goal reaches a terminal status")
+    .option("--blocker-entity <id>", "Block until a later inbound entry from this entity")
+    .option("--until <timestamp>", "Block until this timestamp in Unix milliseconds")
+    .option("--reason <text>", "Reason for blocking")
+    .option(
+      "--attempted-unavailable",
+      "Declare this goal was attempted and found unavailable; unattempted goals stay active",
+    )
     .action(async (action: string, arg: string | undefined, commandOptions: CommandOptions) => {
       if (action === "add") {
         const goal = await withBorg(options, async (borg) =>
@@ -97,12 +106,33 @@ export function registerSelfCommands(cli: CAC, deps: CliCommandDeps): void {
 
       if (action === "block") {
         const goalId = resolveGoalId(arg);
-        await withBorg(options, async (borg) => {
-          borg.self.goals.updateStatus(goalId, "blocked", {
-            kind: "manual",
-          });
+        const blockerOptions = [
+          commandOptions.blockerGoal,
+          commandOptions.blockerEntity,
+          commandOptions.until,
+        ];
+        if (blockerOptions.filter((value) => value !== undefined).length !== 1) {
+          throw new CliError("Choose exactly one of --blocker-goal, --blocker-entity, or --until");
+        }
+        if (commandOptions.attemptedUnavailable !== true) {
+          throw new CliError(
+            "Blocking requires --attempted-unavailable; unattempted goals stay active",
+          );
+        }
+        const block = goalBlockInputSchema.parse({
+          blocker:
+            commandOptions.blockerGoal !== undefined
+              ? { kind: "goal", goal_id: resolveGoalId(commandOptions.blockerGoal) }
+              : commandOptions.blockerEntity !== undefined
+                ? { kind: "entity", entity_id: commandOptions.blockerEntity }
+                : { kind: "until", until: parseFiniteNumber(commandOptions.until, "--until") },
+          reason: parseRequiredText(commandOptions.reason, "--reason"),
+          attempt_status: "attempted_unavailable",
         });
-        writeLine(stdout, JSON.stringify({ id: goalId, status: "blocked" }));
+        const goal = await withBorg(options, async (borg) =>
+          borg.self.goals.block(goalId, block, { kind: "manual" }),
+        );
+        writeLine(stdout, JSON.stringify(goal, null, 2));
         return;
       }
 

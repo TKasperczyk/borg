@@ -45,6 +45,7 @@
   - turn:phase:detail {turn_id, phase?, event, summary}  (summary = "k=v k=v" ≤200ch)
   - turn:token {turn_id, phase: "delib"|"final", chunk_text, sequence}
   - turn:token:flush {turn_id, phase, full_text}
+    - Unary finalizers publish the accepted terminal tool's user-visible text as one complete `turn:token`, followed by the authoritative flush; streaming finalizers publish incremental chunks.
   - turn:delib_path {turn_id, path: system_1|system_2}
   - turn:final_attempt {turn_id, attempt} (commitment-guard regeneration)
   - evidence_ledger:built {turn_id, ledger}

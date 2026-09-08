@@ -24,6 +24,8 @@ export const AUTONOMOUS_INTERIOR_FINALIZER_TOOL_NAMES = [
   "tool.openQuestions.resolve",
   "tool.openQuestions.ruminations",
   "tool.goals.retire",
+  "tool.goals.block",
+  "tool.goals.unblock",
   "tool.episodic.recent",
   "tool.episodic.search",
   "tool.semantic.walk",

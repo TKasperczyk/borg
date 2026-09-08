@@ -62,6 +62,7 @@ function identity(): IdentityResponse {
         last_progress_ts: null,
         created_at: now,
         target_at: null,
+        counterparty_entity_id: null,
       },
     ],
     traits: [
@@ -527,14 +528,26 @@ describe("Mind page", () => {
 
     expect(screen.getByText("BLOCK")).toBeTruthy();
     fireEvent.click(screen.getByText("BLOCK"));
-    fireEvent.change(screen.getByPlaceholderText("reason"), { target: { value: "not useful" } });
+    fireEvent.change(screen.getByPlaceholderText("reason"), {
+      target: { value: "attempted; waiting" },
+    });
+    fireEvent.change(screen.getByLabelText("Blocker kind"), { target: { value: "goal" } });
+    fireEvent.change(screen.getByLabelText("Named blocker"), {
+      target: { value: "goal_dependency" },
+    });
+    fireEvent.click(screen.getByLabelText("Attempted; unavailable"));
     fireEvent.click(screen.getByText("CONFIRM"));
     await waitFor(() =>
       expect(requests).toContainEqual(
         expect.objectContaining({
           url: "/api/identity/goals/goal_1",
           method: "PATCH",
-          body: { action: "block", note: "not useful" },
+          body: {
+            action: "block",
+            note: "attempted; waiting",
+            attempt_status: "attempted_unavailable",
+            blocker: { kind: "goal", goal_id: "goal_dependency" },
+          },
         }),
       ),
     );
@@ -574,6 +587,7 @@ describe("Mind page", () => {
       last_progress_ts: null,
       created_at: now,
       target_at: null,
+      counterparty_entity_id: null,
     }));
     const questionUrgencies = [0.1, 0.93, 0.55, 0.82, 0.2, 0.73, 0.64, 0.49, 0.31, 0.04];
     const manyQuestions = questionUrgencies.map((urgency, index) => ({
@@ -653,6 +667,29 @@ describe("Mind page", () => {
     renderMind("/mind/inspect/identity");
 
     expect(await screen.findByText("BUMP / BLOCK")).toBeTruthy();
+  });
+
+  it("renders legacy blocks without inventing an entity, attempt or start time", async () => {
+    const legacy = identity();
+    legacy.goals[0] = {
+      ...legacy.goals[0]!,
+      status: "blocked",
+      block_history: [{
+        blocker: { kind: "legacy_unknown" },
+        attempt_status: "not_recorded",
+        blocked_at: null,
+        reason: "legacy, blocker not recorded",
+        unblocked_at: null,
+        unblock_reason: null,
+      }],
+    };
+    renderMind("/mind", { identityOverride: legacy });
+
+    fireEvent.click(await screen.findByText("Block history (1)"));
+    expect(screen.getByText(/Legacy: blocker not recorded/).textContent).toContain(
+      "attempt not recorded · since not recorded",
+    );
+    expect(screen.queryByText(/Entity undefined|1970-01-01/)).toBeNull();
   });
 
   it("renders one graph inspector action per row and navigates to the graph detail route", async () => {

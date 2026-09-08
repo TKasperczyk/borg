@@ -1,4 +1,5 @@
 import type { GoalRecord } from "../memory/self/index.js";
+import { goalSchedulingTimes } from "../memory/self/goal-blocks.js";
 
 import type {
   ExecutiveFocus,
@@ -41,11 +42,12 @@ function normalizePriority(goal: GoalRecord, maxPriority: number): number {
 }
 
 function computeDeadlinePressure(goal: GoalRecord, nowMs: number, lookaheadMs: number): number {
-  if (goal.target_at === null || !Number.isFinite(goal.target_at) || lookaheadMs <= 0) {
+  const targetAt = goalSchedulingTimes(goal).targetAt;
+  if (targetAt === null || !Number.isFinite(targetAt) || lookaheadMs <= 0) {
     return 0;
   }
 
-  const remainingMs = goal.target_at - nowMs;
+  const remainingMs = targetAt - nowMs;
 
   if (remainingMs <= 0) {
     return 1;
@@ -68,7 +70,7 @@ function computeProgressDebt(goal: GoalRecord, nowMs: number, staleMs: number): 
     return 0;
   }
 
-  const progressAnchor = goal.last_progress_ts ?? goal.created_at;
+  const progressAnchor = goalSchedulingTimes(goal).progressAnchor;
 
   if (!Number.isFinite(progressAnchor)) {
     return 0;

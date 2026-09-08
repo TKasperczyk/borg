@@ -56,6 +56,8 @@ describe("runDirectedOutboundTurn", () => {
         referencedEpisodeIds: [],
         intents: [],
         toolCalls: [],
+        finalizer_rounds: 1,
+        stall_retries: 0,
         agentMessageId,
         outboundDelivery: {
           status: "transported" as const,
@@ -159,6 +161,8 @@ describe("runDirectedOutboundTurn", () => {
         referencedEpisodeIds: [],
         intents: [],
         toolCalls: [],
+        finalizer_rounds: 1,
+        stall_retries: 0,
       })),
     };
 
@@ -214,6 +218,8 @@ describe("runDirectedOutboundTurn", () => {
         referencedEpisodeIds: [],
         intents: [],
         toolCalls: [],
+        finalizer_rounds: 1,
+        stall_retries: 0,
       })),
     };
 
@@ -266,6 +272,8 @@ describe("runDirectedOutboundTurn", () => {
         referencedEpisodeIds: [],
         intents: [],
         toolCalls: [],
+        finalizer_rounds: 1,
+        stall_retries: 0,
       })),
     };
 

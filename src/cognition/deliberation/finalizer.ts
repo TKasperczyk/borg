@@ -7,7 +7,10 @@ import type {
   LLMConverseOptions,
   LLMSystemBlock,
 } from "../../llm/index.js";
-import { willSendThinkingUnderAutoToolChoice } from "../../llm/index.js";
+import {
+  LLM_STREAMING_CALL_TIMEOUT_MS,
+  willSendThinkingUnderAutoToolChoice,
+} from "../../llm/index.js";
 import type { ToolDefinition, ToolDispatcher } from "../../tools/dispatcher.js";
 import type { BorgRole } from "../../memory/commitments/index.js";
 import type { SessionAudienceRole, SessionParticipationPolicy } from "../../sessions/index.js";
@@ -50,7 +53,7 @@ import {
   type FinalizerToolAvailabilityState,
 } from "./prompt/finalizer-context.js";
 import type { BuildBaseSystemPromptOptions } from "./prompt/system-prompt.js";
-import type { DeliberationContext } from "./types.js";
+import type { DeliberationContext, FinalizerTransport } from "./types.js";
 import { toTraceJsonValue } from "../../tracing/tracer.js";
 import type {
   FinalizerCaptureOutcome,
@@ -412,6 +415,7 @@ export type RunFinalizerOptions = {
   additionalPromptSections?: readonly PromptSurfaceAdditionalSection[];
   cacheableSystemPrompt?: CacheableFinalizerSystemPrompt;
   finalizerDynamicPromptCacheEnabled?: boolean;
+  finalizerTransport?: FinalizerTransport;
   finalizerSurfaceVariant?: FinalizerSurfaceVariant;
   compactSurface?: {
     context: DeliberationContext;
@@ -602,14 +606,12 @@ function legacyFinalizerTraceSummary(
       terminal_static_head: {
         chars: staticText.length,
         estimatedTokens: estimatePromptTokens(staticText),
-        ttl: "1h",
+        ttl: system[0]?.cache_control?.ttl ?? null,
       },
-      terminal_durable_global: { chars: 0, estimatedTokens: 0, ttl: "1h" },
-      terminal_durable_audience: { chars: 0, estimatedTokens: 0, ttl: "1h" },
       terminal_turn_context: {
         chars: turnText.length,
         estimatedTokens: estimatePromptTokens(turnText),
-        ttl: "5m",
+        ttl: system[1]?.cache_control?.ttl ?? null,
       },
     },
     totalChars: totalText.length,
@@ -644,14 +646,43 @@ export function buildFinalizerSystemPrompt(options: RunFinalizerOptions): {
       path: options.path,
       additionalPromptSections: stableAdditionalSections,
     });
+    if (dynamicPrompt.regeneration === null) return compact;
+
+    // Keep the fourth marker on the final system block, including regeneration.
+    // Preserve the suffix's exact boundary bytes and include it in tier telemetry.
+    const system = compact.system.map((block, index) =>
+      index === compact.system.length - 1
+        ? { ...block, text: block.text + dynamicPrompt.regeneration }
+        : block,
+    );
+    const fastText = system[system.length - 1]!.text;
+    const totalText = system.map((block) => block.text).join("\n\n");
     return {
-      system: [
-        ...compact.system,
-        ...(dynamicPrompt.regeneration === null
-          ? []
-          : [{ type: "text" as const, text: dynamicPrompt.regeneration }]),
-      ],
-      traceSummary: compact.traceSummary,
+      system,
+      traceSummary: {
+        ...compact.traceSummary,
+        sections: {
+          ...compact.traceSummary.sections,
+          regeneration: {
+            chars: dynamicPrompt.regeneration.length,
+            estimatedTokens: estimatePromptTokens(dynamicPrompt.regeneration),
+            rowCount: 0,
+            truncationCount: 0,
+            omissionCount: 0,
+            cacheTier: "terminal_fast_turn",
+          },
+        },
+        blocks: {
+          ...compact.traceSummary.blocks,
+          terminal_fast_turn: {
+            chars: fastText.length,
+            estimatedTokens: estimatePromptTokens(fastText),
+            ttl: "5m",
+          },
+        },
+        totalChars: totalText.length,
+        totalEstimatedTokens: estimatePromptTokens(totalText),
+      },
     };
   }
 
@@ -1101,6 +1132,7 @@ export async function runFinalizer(options: RunFinalizerOptions): Promise<Finali
   // an emission tool so a structured emission stays guaranteed (e.g. manual
   // thinking on Opus is omitted by the client, so forcing is correct there).
   const useAutoToolChoice = willSendThinkingUnderAutoToolChoice(options.model, effectiveThinking);
+  const finalizerTransport = options.finalizerTransport ?? "unary";
   let tokenSequence = 0;
 
   let result: ToolLoopResult;
@@ -1120,6 +1152,8 @@ export async function runFinalizer(options: RunFinalizerOptions): Promise<Finali
       sessionAudienceRole: options.sessionAudienceRole,
       provenance: toolProvenance,
       maxTokens: options.maxTokens,
+      // Buffered delivery keeps the finalizer's existing streaming deadline.
+      timeoutMs: LLM_STREAMING_CALL_TIMEOUT_MS,
       ...(effectiveThinking === undefined ? {} : { thinking: effectiveThinking }),
       ...(effectiveEffort === undefined ? {} : { effort: effectiveEffort }),
       // Emission-tool protocol: the answer lives in the terminal tool input, so any
@@ -1140,7 +1174,7 @@ export async function runFinalizer(options: RunFinalizerOptions): Promise<Finali
       traceLabel: `${options.path}_finalizer`,
       terminalToolNames,
       unavailableToolNames,
-      stream: true,
+      stream: finalizerTransport === "streaming",
       onTextDelta: (chunkText) => {
         tokenSequence += 1;
         emitTurnTokenTrace({
@@ -1202,13 +1236,28 @@ export async function runFinalizer(options: RunFinalizerOptions): Promise<Finali
     result.toolCallsMade.length,
   );
 
-  if (tokenSequence > 0) {
+  const flushText = finalizerFlushText(result, decision);
+  if (finalizerTransport === "unary" && flushText.length > 0) {
+    // Buffered unary calls have no incremental deltas. Preserve the downstream
+    // live-token contract with one complete, accepted terminal-emission chunk;
+    // the authoritative flush immediately follows just as it does for streaming.
+    tokenSequence += 1;
+    emitTurnTokenTrace({
+      tracer: options.tracer,
+      turnId: options.turnId,
+      sessionId: options.sessionId,
+      phase: "final",
+      chunkText: flushText,
+      sequence: tokenSequence,
+    });
+  }
+  if (finalizerTransport === "unary" || tokenSequence > 0) {
     emitTurnTokenFlushTrace({
       tracer: options.tracer,
       turnId: options.turnId,
       sessionId: options.sessionId,
       phase: "final",
-      fullText: finalizerFlushText(result, decision),
+      fullText: flushText,
     });
   }
   emitFinalizerTrace(options, decision);

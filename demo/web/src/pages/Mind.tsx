@@ -25,6 +25,7 @@ import type {
   CreatorDirective,
   CreatorDirectiveKind,
   IdentityGoal,
+  GoalBlocker,
   IdentityOpenQuestion,
   IdentityPeriod,
   IdentityResponse,
@@ -769,6 +770,12 @@ function GoalRow({
 }) {
   const [blocking, setBlocking] = useState(false);
   const [reason, setReason] = useState("");
+  const [blockerKind, setBlockerKind] = useState<GoalBlocker["kind"]>("until");
+  const [blockerValue, setBlockerValue] = useState("");
+  const [attempted, setAttempted] = useState(false);
+  const blockerValid =
+    blockerValue.trim().length > 0 &&
+    (blockerKind !== "until" || Number.isFinite(Date.parse(blockerValue)));
   const [pendingAction, setPendingAction] = useState<"bump" | "block" | null>(null);
 
   const bump = async () => {
@@ -793,12 +800,23 @@ function GoalRow({
 
   const block = async (event: FormEvent) => {
     event.preventDefault();
-    if (pendingAction !== null || reason.trim().length === 0) {
+    if (pendingAction !== null || reason.trim().length === 0 || !attempted || !blockerValid) {
       return;
     }
     setPendingAction("block");
     try {
-      await patchGoal(goal.id, { action: "block", note: reason.trim() });
+      const blocker: GoalBlocker =
+        blockerKind === "until"
+          ? { kind: "until", until: Date.parse(blockerValue) }
+          : blockerKind === "goal"
+            ? { kind: "goal", goal_id: blockerValue.trim() }
+            : { kind: "entity", entity_id: blockerValue.trim() };
+      await patchGoal(goal.id, {
+        action: "block",
+        note: reason.trim(),
+        blocker,
+        attempt_status: "attempted_unavailable",
+      });
       showToast({ text: "goal blocked", tone: "ok" });
       setBlocking(false);
       setReason("");
@@ -829,18 +847,78 @@ function GoalRow({
           </button>
         ) : null}
       </div>
+      {(goal.block_history?.length ?? 0) > 0 ? (
+        <details>
+          <summary>Block history ({goal.block_history!.length})</summary>
+          {goal.block_history!.map((entry, index) => (
+            <p key={index}>
+              {entry.blocker.kind === "until"
+                ? `Until ${new Date(entry.blocker.until).toISOString()}`
+                : entry.blocker.kind === "goal"
+                  ? `Goal ${entry.blocker.goal_id}`
+                  : entry.blocker.kind === "entity"
+                    ? `Entity ${entry.blocker.entity_id}`
+                    : "Legacy: blocker not recorded"}
+              {` · ${entry.attempt_status === "not_recorded" ? "attempt not recorded" : "attempted, unavailable"} · since ${entry.blocked_at === null ? "not recorded" : new Date(entry.blocked_at).toISOString()} · ${entry.reason}`}
+              {entry.unblocked_at === null
+                ? " · blocked"
+                : ` · ended ${new Date(entry.unblocked_at).toISOString()}: ${entry.unblock_reason}`}
+              {entry.attempt_evidence === undefined
+                ? null
+                : ` · evidence ${entry.attempt_evidence.kind}:${entry.attempt_evidence.id}`}
+            </p>
+          ))}
+        </details>
+      ) : null}
       {blocking ? (
         <form className="inline-confirm" onSubmit={(event) => void block(event)}>
+          <select
+            aria-label="Blocker kind"
+            value={blockerKind}
+            onChange={(event) => {
+              setBlockerKind(event.target.value as GoalBlocker["kind"]);
+              setBlockerValue("");
+            }}
+            disabled={pendingAction !== null}
+          >
+            <option value="until">Until time</option>
+            <option value="goal">Goal id</option>
+            <option value="entity">Entity id</option>
+          </select>
+          <input
+            aria-label="Named blocker"
+            type={blockerKind === "until" ? "datetime-local" : "text"}
+            value={blockerValue}
+            onChange={(event) => setBlockerValue(event.target.value)}
+            disabled={pendingAction !== null}
+          />
+          <label>
+            <input
+              type="checkbox"
+              checked={attempted}
+              onChange={(event) => setAttempted(event.target.checked)}
+            />
+            Attempted; unavailable
+          </label>
           <input
             value={reason}
             onChange={(event) => setReason(event.target.value)}
             placeholder="reason"
             disabled={pendingAction !== null}
           />
-          <button type="submit" disabled={pendingAction !== null || reason.trim().length === 0}>
+          <button
+            type="submit"
+            disabled={
+              pendingAction !== null || reason.trim().length === 0 || !attempted || !blockerValid
+            }
+          >
             CONFIRM
           </button>
-          <button type="button" onClick={() => setBlocking(false)} disabled={pendingAction !== null}>
+          <button
+            type="button"
+            onClick={() => setBlocking(false)}
+            disabled={pendingAction !== null}
+          >
             CANCEL
           </button>
         </form>

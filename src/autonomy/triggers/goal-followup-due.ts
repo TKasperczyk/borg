@@ -1,3 +1,4 @@
+import { goalSchedulingTimes } from "../../memory/self/goal-blocks.js";
 import { computeExecutiveContextFits, selectExecutiveFocus } from "../../executive/index.js";
 import type { EmbeddingClient } from "../../embeddings/index.js";
 import { flattenGoalTree, type GoalRecord, type GoalsRepository } from "../../memory/self/index.js";
@@ -67,8 +68,9 @@ function dueAfterStrictThreshold(thresholdTs: number): number {
 type GoalFollowupPhase = "deadline" | "stale";
 
 function legacyLatchProcessName(goal: GoalRecord): string {
-  const targetAtKey = goal.target_at ?? "no-target";
-  const progressKey = goal.last_progress_ts ?? goal.created_at;
+  const { targetAt, progressAnchor } = goalSchedulingTimes(goal);
+  const targetAtKey = targetAt ?? "no-target";
+  const progressKey = progressAnchor;
 
   return `${WATERMARK_PREFIX}:${goal.id}:${targetAtKey}:${progressKey}`;
 }
@@ -199,17 +201,16 @@ export function createGoalFollowupDueTrigger(
         rawGoals;
       const dueEvents = goals
         .map<DueEvent<GoalFollowupDuePayload> | null>((goal) => {
-          const baseProgressTs = goal.last_progress_ts ?? goal.created_at;
-          const deadlineDue =
-            goal.target_at !== null && goal.target_at - nowMs < options.lookaheadMs;
+          const { progressAnchor: baseProgressTs, targetAt } = goalSchedulingTimes(goal);
+          const deadlineDue = targetAt !== null && targetAt - nowMs < options.lookaheadMs;
           const staleDue = baseProgressTs + options.staleMs < nowMs;
 
           if (!deadlineDue && !staleDue) {
             return null;
           }
 
-          const targetAtKey = goal.target_at ?? "no-target";
-          const progressKey = goal.last_progress_ts ?? goal.created_at;
+          const targetAtKey = targetAt ?? "no-target";
+          const progressKey = baseProgressTs;
           const phase: GoalFollowupPhase = deadlineDue ? "deadline" : "stale";
           const legacyProcessName = legacyLatchProcessName(goal);
           const watermarkProcessName = phaseLatchProcessName(goal, phase);
@@ -236,9 +237,9 @@ export function createGoalFollowupDueTrigger(
           const reason = deadlineDue && staleDue ? "both" : deadlineDue ? "deadline" : "stale";
           const staleSinceMs = Math.max(0, nowMs - baseProgressTs);
           const sortTs =
-            goal.target_at === null
+            targetAt === null
               ? baseProgressTs + options.staleMs
-              : Math.min(goal.target_at, baseProgressTs + options.staleMs);
+              : Math.min(targetAt, baseProgressTs + options.staleMs);
 
           return {
             id: `${goal.id}:${targetAtKey}:${progressKey}:${phase}`,
@@ -293,8 +294,8 @@ export function createGoalFollowupDueTrigger(
 
       for (const candidate of candidates) {
         const goal = candidate.goal;
-        const baseProgressTs = goal.last_progress_ts ?? goal.created_at;
-        const deadlineDue = goal.target_at !== null && goal.target_at - nowMs < options.lookaheadMs;
+        const { progressAnchor: baseProgressTs, targetAt } = goalSchedulingTimes(goal);
+        const deadlineDue = targetAt !== null && targetAt - nowMs < options.lookaheadMs;
         const legacyProcessName = legacyLatchProcessName(goal);
         const backoff = staleBackoff(goal, actionAvailabilityKey);
 
@@ -320,9 +321,9 @@ export function createGoalFollowupDueTrigger(
 
         const staleDueAt = dueAfterStrictThreshold(baseProgressTs + options.staleMs);
         const deadlineDueAt =
-          goal.target_at === null
+          targetAt === null
             ? Number.POSITIVE_INFINITY
-            : dueAfterStrictThreshold(goal.target_at - options.lookaheadMs);
+            : dueAfterStrictThreshold(targetAt - options.lookaheadMs);
         const staleCandidateAt =
           (!backoff.actionAvailabilityChanged &&
             options.watermarkRepository.get(phaseLatchProcessName(goal, "stale"), sessionId) !==

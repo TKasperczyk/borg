@@ -769,6 +769,9 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
           deps.valuesRepository.listContradictionEvents(...args),
       },
       goals: {
+        block: (...args) => goalWithDisclosure(deps, deps.goalsRepository.block(...args)),
+        unblock: (goalId, reason, provenance) =>
+          goalWithDisclosure(deps, deps.goalsRepository.unblock(goalId, reason, provenance)),
         get: (...args) => {
           const goal = deps.goalsRepository.get(...args);
           return goal === null ? null : goalWithDisclosure(deps, goal);
@@ -1139,6 +1142,10 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
       countRevoked: () => deps.commitmentRepository.countRevoked(),
       countExpired: () => deps.commitmentRepository.countExpired(),
       countCanonicalized: () => deps.commitmentRepository.countCanonicalized(),
+    },
+    operatorAttention: {
+      record: (input) => deps.operatorAttentionRepository.record(input),
+      snapshot: () => deps.operatorAttentionRepository.snapshot(),
     },
     activity: createActivityFacade(deps),
     creatorDirectives: createCreatorDirectivesFacade(deps),

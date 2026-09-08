@@ -16,6 +16,7 @@ import type { SuppressionSet } from "../attention/index.js";
 import type { DeliberationResult, SelfSnapshot } from "../deliberation/deliberator.js";
 import type { ExecutiveFocus } from "../../executive/index.js";
 import type { PendingProceduralAttemptTracker } from "../procedural/pending-attempt-tracker.js";
+import { inboundMessageBodies } from "../turn-input.js";
 import { runsReflectionPersistence, type PerceptionResult, type TurnOrigin } from "../types.js";
 import type { ReflectionEffects, ReflectionResult, Reflector } from "./index.js";
 import type { TurnTracer } from "../../tracing/tracer.js";
@@ -23,6 +24,7 @@ import type { ActualFrameAnomalyClassification } from "../frame-anomaly/index.js
 
 const ACTION_RESPONSE_SUMMARY_LIMIT = 240;
 const OPEN_QUESTIONS_REFLECTION_LIMIT = 20;
+export const MOOD_TRIGGER_REASON_LIMIT = 120;
 
 function emptyReflectionEffects(): ReflectionEffects {
   return {
@@ -74,6 +76,9 @@ export type RunTurnReflectionInput = {
   suppressionSet: SuppressionSet;
   persistedUserEntryId?: StreamEntryId;
   sourceUserEntryIds?: readonly StreamEntryId[];
+  // The entries the batch renderer wrapped, so the mood trigger can name what
+  // arrived rather than the envelope that carried it.
+  sourceUserEntries?: readonly StreamEntry[];
   persistedPerceptionEntry?: StreamEntry;
   persistedAgentEntry: StreamEntry;
   currentTurnJournalEntryIds?: readonly number[];
@@ -105,20 +110,31 @@ export class TurnReflectionCoordinator {
     // classifier, never a turn that felt nothing.
     //
     // `reason` is the trigger text rendered by `borg_affective_trajectory`, and
-    // a head slice of `userMessage` is a poor source for it on transports that
+    // a head slice of `userMessage` was a poor source for it on transports that
     // wrap the message: 120 characters of `<inbound_batch ...><inbound_message
-    // index="1" stream_entry_id="..." times` is the whole budget on the demo
-    // connector, so every rendered trigger on that surface names a stream id
-    // and stops before the message begins. The field meant to say why the mood
-    // moved says only which envelope carried it. Widening the slice is not the
-    // fix -- the envelope grows too; the trigger wants the message body the
-    // classifier actually scored.
+    // index="1" stream_entry_id="..." times` was the whole budget on the demo
+    // connector, so every rendered trigger on that surface named a stream id
+    // and stopped before the message began -- the field meant to say what moved
+    // the mood said only which envelope carried it. Widening the slice is not
+    // the fix, because the envelope widens with it; the trigger takes the
+    // message bodies instead, read from the same entries the renderer read.
+    //
+    // That is a subset of what was scored, not a prefix of it: the classifier
+    // is handed the rendered text, envelope attributes included, plus up to ten
+    // recency strings. The bodies are the part of that input a label can carry,
+    // and `borg_affective_trajectory` says so rather than letting the quoted
+    // string read as the whole input.
     if (input.isUserTurn && input.perception.affectiveSignalDegraded !== true) {
+      const arrivedBodies = inboundMessageBodies(input.sourceUserEntries ?? []);
+      const moodTrigger = (
+        arrivedBodies.length === 0 ? input.userMessage : arrivedBodies
+      ).slice(0, MOOD_TRIGGER_REASON_LIMIT);
+
       try {
         const nextMood = this.options.moodRepository.update(input.sessionId, {
           valence: input.perception.affectiveSignal.valence,
           arousal: input.perception.affectiveSignal.arousal,
-          reason: input.userMessage.slice(0, 120),
+          reason: moodTrigger,
           provenance: {
             kind: "system",
           },

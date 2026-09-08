@@ -301,6 +301,7 @@ const deliberationConfigSchema = z
       .positive()
       .default(DEFAULT_PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_TOKEN_BUDGET),
     finalizerDynamicPromptCacheEnabled: z.boolean().default(true),
+    finalizerTransport: z.enum(["unary", "streaming"]).default("unary"),
     finalizerSurfaceVariant: z
       .enum(["compact", "compact_conversational", "legacy"])
       .default("legacy"),
@@ -355,6 +356,10 @@ const anthropicModelsConfigSchema = z
     background: z.string().min(1).default("claude-opus-5"),
     extraction: z.string().min(1).default("claude-opus-5"),
     recallExpansion: z.string().min(1).default("claude-haiku-4-5-20251001"),
+    // Corrective preferences need careful interpretation of participant restrictions.
+    correctivePreference: z.string().min(1).default("claude-sonnet-5"),
+    // Shared-state compilation must distinguish corrections and decisions from completed acts.
+    sharedStateCompiler: z.string().min(1).default("claude-sonnet-5"),
     creatorDirective: z.string().min(1).default("claude-sonnet-4-6"),
     imagePerception: z.string().min(1).default("claude-haiku-4-5-20251001"),
   })
@@ -1214,6 +1219,16 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
   );
   setConfigOverride(
     overrides,
+    ["anthropic", "models", "correctivePreference"],
+    readOptionalEnvString(env, "BORG_MODEL_CORRECTIVE_PREFERENCE"),
+  );
+  setConfigOverride(
+    overrides,
+    ["anthropic", "models", "sharedStateCompiler"],
+    readOptionalEnvString(env, "BORG_MODEL_SHARED_STATE_COMPILER"),
+  );
+  setConfigOverride(
+    overrides,
     ["anthropic", "models", "creatorDirective"],
     readOptionalEnvString(env, "BORG_MODEL_CREATOR_DIRECTIVE"),
   );
@@ -1339,6 +1354,11 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
       env,
       "BORG_DELIBERATION_PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_TOKEN_BUDGET",
     ),
+  );
+  setConfigOverride(
+    overrides,
+    ["deliberation", "finalizerTransport"],
+    readOptionalEnvString(env, "BORG_DELIBERATION_FINALIZER_TRANSPORT"),
   );
   setConfigOverride(
     overrides,

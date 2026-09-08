@@ -1,3 +1,4 @@
+import type { OperatorAttentionIndex } from "../memory/operator-attention/types.js";
 import type {
   AgentSuppressedStreamContent,
   FinalizerInvalidToolDiagnostic,
@@ -28,6 +29,7 @@ import {
   type StreamReader,
 } from "../stream/index.js";
 import type { SessionId, StreamEntryId } from "../util/ids.js";
+import type { AnsweredWindowEvidence } from "../stream/answered-window.js";
 
 export type HydratedSuppressionDiagnostic = {
   noOutputCategories?: readonly FinalizerNoOutputCategory[];
@@ -107,6 +109,10 @@ export type AutonomySchedulerMechanismEvidence = {
   intervalArmedAt: number | null;
   nextTickAt: number | null;
   scheduledTickAt: number | null;
+  /** Optional only for historical captures and direct harness fixtures. */
+  windowWakes?: AutonomySchedulerDescription["window_wakes"];
+  /** Filing metadata only; independent of wake admission and outcome. */
+  operatorAttentionIndex?: OperatorAttentionIndex;
   budget: AutonomySchedulerBudgetDescription;
   fleetBrake: AutonomySchedulerFleetBrakeDescription;
   sources: AutonomySchedulerDescription["sources"];
@@ -150,6 +156,7 @@ export const AUTONOMY_SCHEDULER_DESCRIPTION_FIELD_DISPOSITION: Record<
   interval_armed_at: "carried",
   next_tick_at: "carried",
   scheduled_tick_at: "carried",
+  window_wakes: "carried",
   budget: "carried",
   fleet_brake: "carried",
   sources: "carried",
@@ -170,14 +177,17 @@ export type TurnMechanismEvidence = {
   recentSuppressions: readonly HydratedRecentSuppression[];
   recentRegenerations: readonly HydratedRecentRegeneration[];
   autonomySchedulerState?: AutonomySchedulerMechanismEvidence;
+  answeredWindow?: AnsweredWindowEvidence;
 };
 
 export type HydrateTurnMechanismEvidenceInput = {
+  nowMs?: number;
   dataDir: string;
   sessionId: SessionId;
   workingMemory: WorkingMemory;
   autonomySchedulerState?: AutonomySchedulerMechanismEvidence;
-  entryIndex?: Pick<StreamEntryIndexRepository, "lookupMany">;
+  entryIndex?: Pick<StreamEntryIndexRepository, "lookupMany"> &
+    Partial<Pick<StreamEntryIndexRepository, "describeAnsweredWindow">>;
   createStreamReader: (sessionId: SessionId) => StreamReader;
 };
 
@@ -312,6 +322,14 @@ export async function hydrateTurnMechanismEvidence(
   });
 
   return {
+    ...(input.entryIndex?.describeAnsweredWindow === undefined
+      ? {}
+      : {
+          answeredWindow: input.entryIndex.describeAnsweredWindow(
+            input.sessionId,
+            input.nowMs ?? Date.now(),
+          ),
+        }),
     recentSuppressions: recentSuppressions.map((entry: RecentSuppressionEntry) => ({
       turnId: entry.turn_id,
       reason: entry.reason,

@@ -1,3 +1,4 @@
+import type { OperatorAttentionRepository } from "../../../memory/operator-attention/index.js";
 import type { ToolLoopCallRecord } from "../../turn-action/index.js";
 import type {
   AttachmentRepository,
@@ -189,6 +190,7 @@ export type TurnPhaseCoordinatorOptions = {
   chatResponseWatermarkCoordinator?: ChatResponseWatermarkCoordinator;
   outboundDelivery?: Pick<OutboundDelivery, "deliver">;
   autonomousOutboundPolicy?: Pick<AutonomousOutboundPolicy, "promptContext">;
+  operatorAttentionRepository?: Pick<OperatorAttentionRepository, "snapshot">;
   autonomySchedulerStateProvider?: () => Promise<AutonomySchedulerDescription | null>;
   outboundSourceTypes?: readonly SessionSourceType[];
   llmFactory: () => LLMClient;

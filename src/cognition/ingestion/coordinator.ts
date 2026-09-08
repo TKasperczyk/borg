@@ -12,6 +12,8 @@ import { BorgError, CognitionError } from "../../util/errors.js";
 import { type Clock, SystemClock } from "../../util/clock.js";
 import type { SessionId, StreamEntryId } from "../../util/ids.js";
 import type { ChatResponseWatermarkCoordinator } from "./chat-response-watermark.js";
+import type { AnsweredStreamWindow } from "../../stream/answered-window.js";
+export type { AnsweredStreamWindow } from "../../stream/answered-window.js";
 
 const EPISODIC_PROCESS_NAME = "episodic-extractor";
 const ANSWERED_WINDOW_INTERVENING_CONTEXT_KINDS = new Set<StreamEntry["kind"]>([
@@ -98,10 +100,6 @@ export type IngestionResult = {
   error?: unknown;
 };
 
-export type AnsweredStreamWindow = {
-  responseTo: StreamResponseTo;
-  terminalCursor: StreamCursor;
-};
 type AnsweredBacklogWindow = AnsweredStreamWindow & { responseTo: StreamBacklogResponseTo };
 
 export type IngestOptions = {

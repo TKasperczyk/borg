@@ -3,6 +3,7 @@ import { refreshSerializedEmbeddings } from "../embeddings/serialized.js";
 import { parseSemanticNodeId } from "../util/ids.js";
 // Builds Borg's repository graph and the cross-repository services that sit on top of it.
 
+import { OperatorAttentionRepository } from "../memory/operator-attention/index.js";
 import { AutonomyWakesRepository, ScheduledWakesRepository } from "../autonomy/index.js";
 import type { AttachmentRepository } from "../attachments/index.js";
 import { ImagePerceptionRepository } from "../attachments/index.js";
@@ -112,6 +113,7 @@ export type BorgRepositorySetup = Pick<
   | "commitmentRepository"
   | "creatorDirectiveRepository"
   | "sharedStateRepository"
+  | "operatorAttentionRepository"
   | "activityRepository"
   | "livedExperienceDaySummaryRepository"
   | "selfDecisionRepository"
@@ -161,6 +163,7 @@ export async function buildBorgRepositories(
   options: BuildBorgRepositoriesOptions,
 ): Promise<BorgRepositorySetup> {
   const { config, sqlite, clock, embeddingClient } = options;
+  const operatorAttentionRepository = new OperatorAttentionRepository({ db: sqlite });
   const autonomyWakesRepository = new AutonomyWakesRepository({
     db: sqlite,
     clock,
@@ -214,7 +217,10 @@ export async function buildBorgRepositories(
       clock,
       entryIndex,
       repairSession: repairSessionStreamEntryIndex,
-      onAppend: options.onStreamAppend,
+      onAppend: (entries) => {
+        goalsRepository.reconcileBlocks();
+        options.onStreamAppend?.(entries);
+      },
     });
   const createNonNotifyingStreamWriter = (sessionId: Parameters<BorgStreamWriterFactory>[0]) =>
     new StreamWriter({
@@ -223,6 +229,7 @@ export async function buildBorgRepositories(
       clock,
       entryIndex,
       repairSession: repairSessionStreamEntryIndex,
+      onAppend: () => goalsRepository.reconcileBlocks(),
     });
   const createDefaultStreamWriter = () => createStreamWriter(DEFAULT_SESSION_ID);
   let reviewQueueRepository: ReviewQueueRepository | undefined;
@@ -308,10 +315,12 @@ export async function buildBorgRepositories(
   });
   const goalsRepository = new GoalsRepository({
     db: sqlite,
+    dataDir: config.dataDir,
     clock,
     identityEventRepository,
     executiveStepsRepository,
   });
+  goalsRepository.reconcileBlocks();
   const traitsRepository = new TraitsRepository({
     db: sqlite,
     clock,
@@ -636,6 +645,7 @@ export async function buildBorgRepositories(
     commitmentRepository,
     creatorDirectiveRepository,
     sharedStateRepository,
+    operatorAttentionRepository,
     activityRepository,
     livedExperienceDaySummaryRepository,
     selfDecisionRepository,

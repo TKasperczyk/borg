@@ -1,15 +1,15 @@
 /**
  * Usage: pnpm finalizer:cache-report -- <captures/finalizer-contexts.jsonl>
  *
- * Streams a frozen JSONL snapshot and retains only the previous autonomous
- * compact surface. Each output line is one consecutive-autonomous pair report.
+ * Streams a frozen JSONL snapshot. By default compares consecutive autonomous
+ * surfaces; --same-session compares all origins within each session instead.
  */
 import { isPlainRecord } from "../src/util/guards.ts";
 import { runAbCliEntrypoint } from "./ab-cli.ts";
 import { openPlannerCaptureSnapshot } from "./planner-ab-replay.ts";
 
 export const FINALIZER_CACHE_REPORT_USAGE =
-  "Usage: pnpm finalizer:cache-report -- <captures/finalizer-contexts.jsonl>";
+  "Usage: pnpm finalizer:cache-report -- <captures/finalizer-contexts.jsonl> [--same-session]";
 
 type AutonomousSurface = {
   captureId: string;
@@ -96,9 +96,13 @@ function compactSystemBlocks(value: unknown, location: string): readonly string[
   });
 }
 
-function autonomousSurface(value: unknown, location: string): AutonomousSurface | null {
+function autonomousSurface(
+  value: unknown,
+  location: string,
+  sameSession: boolean,
+): AutonomousSurface | null {
   if (!isPlainRecord(value)) throw new Error(`Capture is not an object at ${location}`);
-  if (value.turn_origin !== "autonomous") return null;
+  if (!sameSession && value.turn_origin !== "autonomous") return null;
   if (typeof value.capture_id !== "string") {
     throw new Error(`Missing capture_id at ${location}`);
   }
@@ -169,9 +173,11 @@ export function compareAutonomousSurfaces(
 export async function analyzeFinalizerCaptureFile(
   path: string,
   onPair: (report: FinalizerCachePairReport) => void,
+  options: { sameSession?: boolean } = {},
 ): Promise<FinalizerCacheReportSummary> {
   const { snapshotBytes, lines } = openPlannerCaptureSnapshot(path);
   let previousAutonomous: AutonomousSurface | null = null;
+  const previousBySession = new Map<string, AutonomousSurface>();
   let autonomousCaptures = 0;
   let consecutivePairs = 0;
   let lineNumber = 0;
@@ -187,26 +193,48 @@ export async function analyzeFinalizerCaptureFile(
         `Invalid capture JSON at ${path}:${lineNumber}: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
-    const current = autonomousSurface(parsed, `${path}:${lineNumber}`);
+    const current = autonomousSurface(
+      parsed,
+      `${path}:${lineNumber}`,
+      options.sameSession === true,
+    );
     if (current === null) continue;
-    autonomousCaptures += 1;
-    if (previousAutonomous !== null) {
-      onPair(compareAutonomousSurfaces(previousAutonomous, current));
+    if (isPlainRecord(parsed) && parsed.turn_origin === "autonomous") autonomousCaptures += 1;
+    let sessionId: string | null = null;
+    if (options.sameSession) {
+      if (!isPlainRecord(parsed) || typeof parsed.session_id !== "string") {
+        throw new Error(`Missing session_id at ${path}:${lineNumber}`);
+      }
+      sessionId = parsed.session_id;
+    }
+    const previous =
+      sessionId === null ? previousAutonomous : (previousBySession.get(sessionId) ?? null);
+    if (previous !== null) {
+      onPair(compareAutonomousSurfaces(previous, current));
       consecutivePairs += 1;
     }
-    previousAutonomous = current;
+    if (sessionId === null) previousAutonomous = current;
+    else previousBySession.set(sessionId, current);
   }
 
   return { autonomousCaptures, consecutivePairs };
 }
 
 export async function runFinalizerCacheReportCli(argv: readonly string[]): Promise<void> {
-  if (argv.length !== 1 || argv[0] === "--help" || argv[0] === "-h") {
+  if (
+    (argv.length !== 1 && !(argv.length === 2 && argv[1] === "--same-session")) ||
+    argv[0] === "--help" ||
+    argv[0] === "-h"
+  ) {
     throw new Error(FINALIZER_CACHE_REPORT_USAGE);
   }
-  const summary = await analyzeFinalizerCaptureFile(argv[0]!, (report) => {
-    console.log(JSON.stringify(report));
-  });
+  const summary = await analyzeFinalizerCaptureFile(
+    argv[0]!,
+    (report) => {
+      console.log(JSON.stringify(report));
+    },
+    { sameSession: argv[1] === "--same-session" },
+  );
   console.error(
     `finalizer cache report complete: autonomous_captures=${summary.autonomousCaptures} consecutive_pairs=${summary.consecutivePairs}`,
   );

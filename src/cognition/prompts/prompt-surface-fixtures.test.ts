@@ -1,3 +1,4 @@
+import type { AnsweredWindowEvidence } from "../../stream/answered-window.js";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -36,13 +37,14 @@ import { formatTurnPlanForPrompt } from "../deliberation/prompt/plan-rendering.j
 import {
   buildCompactPlannerSystemPrompt,
   PLANNER_GOAL_TARGET_TOKENS,
+  renderGoalDigest,
 } from "../deliberation/prompt/planner-context.js";
 import { summarizeRetrievedEvidence } from "../deliberation/prompt/retrieval.js";
 import {
   buildBaseSystemPrompt,
   buildCacheableBaseSystemPromptParts,
 } from "../deliberation/prompt/system-prompt.js";
-import { runFinalizer } from "../deliberation/finalizer.js";
+import { buildFinalizerSystemPrompt, runFinalizer } from "../deliberation/finalizer.js";
 import { runS2Planner, type TurnPlan } from "../deliberation/s2-planner.js";
 import type { DeliberationContext } from "../deliberation/types.js";
 import { buildCompactPlannerLedgerPrompt, renderEvidenceLedger } from "../evidence-ledger/index.js";
@@ -68,6 +70,27 @@ import { PROMPT_BLOCKS, type PromptKey } from "./registry.js";
 const UPDATE_FIXTURES = process.env.UPDATE_PROMPT_SURFACE_FIXTURES === "1";
 const FIXTURE_DIR = join(dirname(fileURLToPath(import.meta.url)), "__fixtures__", "prompt-surface");
 const NOW_MS = 1_700_000_000_000;
+const FIXTURE_ANSWERED_WINDOW: AnsweredWindowEvidence = {
+  session_id: DEFAULT_SESSION_ID,
+  observed_at: NOW_MS,
+  state: "recorded",
+  basis: {
+    turn_id: "turn_fixture_answered",
+    response_entry_id: "se_answer_fixture",
+    response_at: NOW_MS - 300,
+    response_kind: "agent_msg",
+    last_answered_entry_id: "se_input_fixture",
+    last_answered_at: NOW_MS - 900,
+    answered_entry_count: 2,
+  },
+  outside: {
+    state: "arrived_after_edge",
+    arrived_after_edge: 1,
+    unselected_within_window: 0,
+    before_window: 0,
+    without_edge: null,
+  },
+};
 const GROUP_ID = entityIdHelpers.parse("ent_aaaaaaaaaaaaaaaa");
 const CREATOR_ID = entityIdHelpers.parse("ent_bbbbbbbbbbbbbbbb");
 const MEMBER_ID = entityIdHelpers.parse("ent_cccccccccccccccc");
@@ -135,6 +158,41 @@ const FIXTURE_AUTONOMY_SCHEDULER_STATE: NonNullable<
       type: "condition",
       category: "operational",
       enabled: true,
+    },
+  ],
+  windowWakes: [
+    {
+      answered_window: FIXTURE_ANSWERED_WINDOW,
+      ts: NOW_MS - 10 * 60_000,
+      trigger_name: "scheduled_reflection",
+      outcome: "headway",
+      headway_bases: ["continued private thought"],
+      finalizer_rounds: 3,
+      stall_retries: 2,
+    },
+    {
+      ts: NOW_MS - 20 * 60_000,
+      trigger_name: "scheduled_reflection",
+      outcome: "silent",
+      headway_bases: null,
+      finalizer_rounds: 1,
+      stall_retries: 0,
+    },
+    {
+      ts: NOW_MS - 30 * 60_000,
+      trigger_name: "scheduled_reflection",
+      outcome: "silent",
+      headway_bases: null,
+      finalizer_rounds: null,
+      stall_retries: null,
+    },
+    {
+      ts: NOW_MS - 18 * 60 * 60_000,
+      trigger_name: "goal_followup_due",
+      outcome: "error",
+      headway_bases: null,
+      finalizer_rounds: 0,
+      stall_retries: 1,
     },
   ],
   fleetBrake: {
@@ -754,6 +812,7 @@ function makeContext(overrides: Partial<DeliberationContext> = {}): Deliberation
     entityRepository: makeEntityRepository(),
     workingMemory: makeWorkingMemory(),
     turnMechanismEvidence: {
+      answeredWindow: FIXTURE_ANSWERED_WINDOW,
       recentSuppressions: [
         {
           turnId: "turn_fixture_suppressed",
@@ -932,6 +991,14 @@ function makeAutonomousRelationalContext(): DeliberationContext {
         menuSummary: "Retire one of my own goals as done/superseded, with my reason.",
       },
       {
+        name: "tool.goals.block",
+        menuSummary: "Block an attempted but unavailable goal with a named blocker and reason.",
+      },
+      {
+        name: "tool.goals.unblock",
+        menuSummary: "Unblock a goal with my reason, preserving its history.",
+      },
+      {
         name: "tool.episodic.recent",
         menuSummary: "Read the most recent episodic memories.",
       },
@@ -969,6 +1036,7 @@ function makeAutonomousRelationalContext(): DeliberationContext {
       mode: "relational",
     }),
     turnMechanismEvidence: {
+      answeredWindow: FIXTURE_ANSWERED_WINDOW,
       recentSuppressions: [],
       recentRegenerations: [],
       autonomySchedulerState: FIXTURE_AUTONOMY_SCHEDULER_STATE,
@@ -1217,6 +1285,39 @@ describe("prompt surface fixtures", () => {
     );
   });
 
+  it.each(["user", "autonomous"])("keeps %s wake changes in dynamic cache content", (origin) => {
+    const context = origin === "user" ? makeContext() : makeAutonomousRelationalContext();
+    const baseline = buildCacheableBaseSystemPromptParts(context, PROMPT_OPTIONS);
+    const changed = buildCacheableBaseSystemPromptParts(
+      {
+        ...context,
+        turnMechanismEvidence: {
+          ...context.turnMechanismEvidence!,
+          autonomySchedulerState: {
+            ...FIXTURE_AUTONOMY_SCHEDULER_STATE,
+            windowWakes: FIXTURE_AUTONOMY_SCHEDULER_STATE.windowWakes!.map((wake, index) =>
+              index === 0 ? { ...wake, finalizer_rounds: 9, stall_retries: 4 } : wake,
+            ),
+          },
+        },
+      },
+      PROMPT_OPTIONS,
+    );
+
+    expect(baseline.dynamicContent).toContain('fr="3" sr="2"');
+    expect(baseline.dynamicContent).toContain('fr="1" sr="0"');
+    expect(baseline.dynamicContent).toContain('tr="scheduled_reflection" o="silent" />');
+    expect(baseline.dynamicContent).toContain("fr or sr absent means not recorded or unknown");
+    expect(baseline.dynamicContent).toContain(
+      "Wake execution totals over those 4 row(s): fr=4 from 3/4 rows with fr recorded; sr=3 from 3/4 rows with sr recorded.",
+    );
+    expect(changed.dynamicContent).toContain('fr="9" sr="4"');
+    expect(changed.dynamicContent).not.toBe(baseline.dynamicContent);
+    expect(changed.staticPrefix).toBe(baseline.staticPrefix);
+    expect(changed.staticPrefixSections).toEqual(baseline.staticPrefixSections);
+    expect(baseline.staticPrefix).not.toContain("Wake row legend");
+  });
+
   it("keeps batched autonomous goal identities out of the one-hour static prefix", () => {
     const parts = buildCacheableBaseSystemPromptParts(
       makeAutonomousRelationalContext(),
@@ -1289,6 +1390,56 @@ describe("prompt surface fixtures", () => {
     });
 
     expectFixture("finalizer-system-blocks-s2.txt", systemBlocksToFixture(llm.requests[0]?.system));
+  });
+
+  it("pins compact finalizer cache tiers with S2 extras", () => {
+    const evidenceLedger: EvidenceLedger = {
+      ...makeEvidenceLedger(),
+      audienceStanding: {
+        commitmentEntries: [],
+        relationalEntries: ["ledger:relational:first", "ledger:relational:second"].map((id) => ({
+          id,
+          source_type: "relational_slot",
+          session_scope: "global",
+          actor: "memory",
+          trust_rank: 70,
+          state: "established",
+          text: "Shared project collaboration.",
+          state_metadata: {
+            disclosure_label: {
+              disclosure_class: "relationship_private",
+              origin_audience_entity_ids: [MEMBER_ID],
+              private_to_entity_ids: [MEMBER_ID],
+              public_to_entity_ids: [],
+            },
+          },
+        })),
+        observedEventIntrospectionEntries: [],
+        recentLivedExperienceEntries: [],
+        renderRecentLivedExperience: false,
+      },
+    };
+    const context = makeContext({ evidenceLedger });
+    const cacheable = buildCacheableBaseSystemPromptParts(context, PROMPT_OPTIONS);
+    const result = buildFinalizerSystemPrompt({
+      llmClient: new FakeLLMClient(),
+      dispatcher: createDispatcher(tempDirs),
+      sessionId: DEFAULT_SESSION_ID,
+      model: "fake",
+      baseSystemPrompt: buildBaseSystemPrompt(context, PROMPT_OPTIONS),
+      cacheableSystemPrompt: cacheable,
+      initialMessages: [],
+      userEntryId: USER_ENTRY_ID,
+      maxTokens: 256,
+      path: "system_2",
+      finalizerSurfaceVariant: "compact",
+      compactSurface: { context, baseSystemPromptOptions: PROMPT_OPTIONS },
+      additionalPromptSections: [
+        { blockId: "borg_s2_plan", text: formatTurnPlanForPrompt(fixturePlan())! },
+        { blockId: "borg_evidence_ledger", text: renderEvidenceLedger(evidenceLedger)! },
+      ],
+    });
+    expectFixture("finalizer-system-blocks-s2-compact.txt", systemBlocksToFixture(result.system));
   });
 
   it("pins S2 planner system prompt", async () => {
@@ -1660,4 +1811,46 @@ describe("prompt surface fixtures", () => {
 
     expect(rendered).toEqual(expected);
   });
+});
+
+it("pins blocked goal labels and visible unblock history", () => {
+  const blocked: GoalRecord = {
+    ...makeGoal(),
+    status: "blocked",
+    block_history: [
+      {
+        blocker: { kind: "entity", entity_id: CREATOR_ID },
+        attempt_status: "attempted_unavailable",
+        reason: "試しました。返答を待っています。",
+        disclosure_label: {
+          disclosure_class: "unknown",
+          origin_audience_entity_ids: [],
+          private_to_entity_ids: [],
+          public_to_entity_ids: [],
+        },
+        blocked_at: NOW_MS - 10_000,
+        unblocked_at: null,
+        unblock_reason: null,
+      },
+    ],
+  };
+  const context = makeContext();
+  const digest = renderGoalDigest({
+    ...context,
+    selfSnapshot: { ...context.selfSnapshot, goals: [blocked] },
+  });
+  const active = {
+    ...blocked,
+    status: "active" as const,
+    block_history: blocked.block_history!.map((block) => ({
+      ...block,
+      unblocked_at: NOW_MS,
+      unblock_reason: "inbound stream entry se_fixture_arrival from entity at the recorded time",
+    })),
+  };
+  const resumed = renderGoalDigest({
+    ...context,
+    selfSnapshot: { ...context.selfSnapshot, goals: [active] },
+  });
+  expectFixture("goal-block-history.txt", `${digest.text}\n\n${resumed.text}`);
 });

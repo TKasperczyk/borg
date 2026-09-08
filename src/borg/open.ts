@@ -406,6 +406,7 @@ export async function openBorgDependencies(
       sourceStreamAudienceDisclosureResolver: repositories.sourceStreamAudienceDisclosureResolver,
       creatorDirectiveRepository: repositories.creatorDirectiveRepository,
       sharedStateRepository: repositories.sharedStateRepository,
+      operatorAttentionRepository: repositories.operatorAttentionRepository,
       activityRepository: repositories.activityRepository,
       livedExperienceDaySummaryRepository: repositories.livedExperienceDaySummaryRepository,
       selfDecisionRepository: repositories.selfDecisionRepository,
@@ -544,6 +545,7 @@ export async function openBorgDependencies(
       },
     });
     const autonomyScheduler = buildAutonomyScheduler({
+      entryIndex: repositories.entryIndex,
       config,
       commitmentRepository: repositories.commitmentRepository,
       sourceStreamAudienceDisclosureResolver: repositories.sourceStreamAudienceDisclosureResolver,
@@ -616,6 +618,7 @@ export async function openBorgDependencies(
       commitmentRepository: repositories.commitmentRepository,
       creatorDirectiveRepository: repositories.creatorDirectiveRepository,
       sharedStateRepository: repositories.sharedStateRepository,
+      operatorAttentionRepository: repositories.operatorAttentionRepository,
       activityRepository: repositories.activityRepository,
       livedExperienceDaySummaryRepository: repositories.livedExperienceDaySummaryRepository,
       correctionService: repositories.correctionService,

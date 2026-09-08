@@ -1,4 +1,3 @@
-import type { IdentityEvent } from "../../memory/identity/index.js";
 import type { memoryDisclosurePayloadFields } from "../../memory/common/disclosure-serializers.js";
 import type { StreamWatermarkRepository } from "../../stream/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
@@ -10,7 +9,7 @@ const WATERMARK_PROCESS_NAME = "autonomy:scheduled-reflection";
 
 type ScheduledReflectionPayload = {
   interval_ms: number;
-  recent_identity_events?: IdentityEvent[];
+  recent_identity_events?: Array<Record<string, unknown>>;
   prior_self_thought?: {
     text: string;
     updated_at: number;

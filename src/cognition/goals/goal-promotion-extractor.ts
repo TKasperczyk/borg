@@ -387,9 +387,10 @@ export type ExtractGoalPromotionInput = {
     | "audience_entity_id"
     | "owner_entity_id"
     | "counterparty_entity_id"
-  > & {
-    disclosure_label?: MemoryDisclosureLabel | MemoryDisclosureLabelMetadata | null;
-  })[];
+  > &
+    Partial<Pick<GoalRecord, "status" | "block_history">> & {
+      disclosure_label?: MemoryDisclosureLabel | MemoryDisclosureLabelMetadata | null;
+    })[];
 };
 
 type GoalPromotionParseResult = {
@@ -738,6 +739,8 @@ function buildGoalPromotionMessages(
         active_goal_priority_distribution: activeGoalPriorityDistribution(input.activeGoals),
         active_goals: input.activeGoals.map((goal) => ({
           id: goal.id,
+          status: goal.status ?? "active",
+          block_history: goal.block_history ?? [],
           description: goal.description,
           terminal_condition: goal.terminal_condition ?? null,
           priority: goal.priority,

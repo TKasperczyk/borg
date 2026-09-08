@@ -32,13 +32,14 @@ import type { SourceStreamAudienceDisclosureResolver } from "../../memory/common
 import type { SelfSnapshot } from "../deliberation/deliberator.js";
 import type { TurnTracer } from "../../tracing/tracer.js";
 import type { PerceptionResult } from "../types.js";
-import { listActiveGoalsForCognition as listActiveGoalRecordsForCognition } from "./active-goals.js";
+import { listUnfinishedGoalsForCognition as listActiveGoalRecordsForCognition } from "./active-goals.js";
 import { PLANNER_GOAL_EXPANSION_LIMIT } from "../deliberation/constants.js";
 
 export type TurnSelfContextOptions = {
   embeddingClient: EmbeddingClient;
   valuesRepository: Pick<ValuesRepository, "list"> & Partial<Pick<ValuesRepository, "count">>;
-  goalsRepository: Pick<GoalsRepository, "list">;
+  goalsRepository: Pick<GoalsRepository, "list"> &
+    Partial<Pick<GoalsRepository, "reconcileBlocks">>;
   sourceStreamAudienceDisclosureResolver?: SourceStreamAudienceDisclosureResolver;
   traitsRepository: Pick<TraitsRepository, "list"> & Partial<Pick<TraitsRepository, "count">>;
   autobiographicalRepository?: Pick<AutobiographicalRepository, "currentPeriod">;
@@ -167,6 +168,7 @@ export class TurnSelfContextBuilder {
   constructor(private readonly options: TurnSelfContextOptions) {}
 
   async buildSelfSnapshot(_audienceEntityId: EntityId | null): Promise<SelfSnapshot> {
+    this.options.goalsRepository.reconcileBlocks?.();
     const rawGoals = listActiveGoalRecordsForCognition(this.options.goalsRepository);
     const goals =
       this.options.sourceStreamAudienceDisclosureResolver?.resolve({ goals: rawGoals }).goals ??
@@ -193,6 +195,7 @@ export class TurnSelfContextBuilder {
   }
 
   async listActiveGoalsForCognition(_audienceEntityId: EntityId | null): Promise<GoalRecord[]> {
+    this.options.goalsRepository.reconcileBlocks?.();
     const goals = listActiveGoalRecordsForCognition(this.options.goalsRepository);
     return this.options.sourceStreamAudienceDisclosureResolver?.resolve({ goals }).goals ?? goals;
   }

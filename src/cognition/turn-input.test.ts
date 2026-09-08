@@ -9,6 +9,7 @@ import {
   createStreamEntryId,
 } from "../util/ids.js";
 import {
+  inboundMessageBodies,
   renderInboundBatch,
   type HydratedInboundAttachment,
   type TurnInput,
@@ -248,5 +249,34 @@ describe("turn input batch rendering", () => {
     );
     expect(rendered).toContain('<perception status="unavailable" />');
     expect(rendered).not.toContain("<caption>");
+  });
+
+  // Anything that wants a short label for what arrived has to read the entries rather
+  // than a head slice of the rendered batch: the envelope alone outruns the widths
+  // callers use. `mood_history.reason` is capped at 120 and named a stream id on every
+  // row until it stopped slicing the render.
+  it("puts more envelope ahead of the first body character than a short label can hold", () => {
+    const sessionId = createSessionId();
+    const sender = createEntityId();
+    const entryId = createStreamEntryId();
+    const entries = [
+      {
+        id: entryId,
+        session_id: sessionId,
+        entry_index: 1,
+        timestamp: 1_788_733_834_154,
+        kind: "user_msg" as const,
+        content: "the deadline moved",
+        sender_entity_id: sender,
+      },
+    ];
+    const rendered = renderInboundBatch({
+      entries,
+      senderDisplayNameById: () => "Claude Code",
+    });
+
+    expect(rendered.indexOf("the deadline moved")).toBeGreaterThan(200);
+    expect(rendered.slice(0, 120)).not.toContain("the deadline moved");
+    expect(inboundMessageBodies(entries)).toBe("the deadline moved");
   });
 });

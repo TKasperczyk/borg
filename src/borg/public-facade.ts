@@ -1,6 +1,8 @@
 // Public Borg facade declarations. Keep these structural and free of internal
 // repository/service/scheduler classes so generated declarations stay light.
 
+import type { BorgOperatorAttentionFacade } from "../memory/operator-attention/types.js";
+
 import type {
   AutonomyConditionName,
   AutonomySchedulerDescription,
@@ -303,6 +305,7 @@ export type BorgValueContradictionEvent = {
 
 export type BorgGoalListOptions = {
   status?: GoalStatus;
+  statuses?: readonly GoalStatus[];
   visibleToAudienceEntityId?: EntityId | null;
   ownerEntityId?: EntityId | null;
 };
@@ -463,6 +466,12 @@ export type BorgSelfFacade = {
     listContradictionEvents(valueId: ValueId): BorgValueContradictionEvent[];
   };
   goals: {
+    block(
+      goalId: GoalId,
+      input: import("../memory/self/goal-blocks.js").GoalBlockInput,
+      provenance: Provenance,
+    ): BorgGoalWithDisclosure;
+    unblock(goalId: GoalId, reason: string, provenance: Provenance): BorgGoalWithDisclosure;
     get(goalId: GoalId): BorgGoalWithDisclosure | null;
     list(options?: BorgGoalListOptions): BorgGoalTreeWithDisclosure[];
     add(input: BorgGoalAddInput): BorgGoalWithDisclosure;
@@ -1236,6 +1245,8 @@ export type BorgAutonomyWakeRecord = {
   outcome: AutonomyWakeOutcome | null;
   outcome_detail: string | null;
   headway_bases: string[] | null;
+  finalizer_rounds: number | null;
+  stall_retries: number | null;
 };
 
 export type BorgAutonomyWakeRecordInput = {
@@ -1477,6 +1488,7 @@ export type BorgFacades = {
   semantic: BorgSemanticFacade;
   relationalSlots: BorgRelationalSlotsFacade;
   commitments: BorgCommitmentsFacade;
+  operatorAttention: BorgOperatorAttentionFacade;
   activity: BorgActivityFacade;
   creatorDirectives: BorgCreatorDirectivesFacade;
   identity: BorgIdentityFacade;

@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 
+import { operatorAttentionPromptRow } from "../../../memory/operator-attention/disclosure.js";
+import { unknownMemoryDisclosureLabel } from "../../../memory/common/disclosure-label.js";
 import { HEADWAY_EMISSION_KINDS } from "../../../autonomy/index.js";
 import type { MoodHistoryEntry } from "../../../memory/affective/index.js";
 import type { CommitmentRecord } from "../../../memory/commitments/index.js";
@@ -2820,6 +2822,119 @@ describe("buildBaseSystemPrompt", () => {
     },
   );
 
+  it("renders the attention total, dates, filers and subjects beside wake rows on autonomous turns", () => {
+    const schedulerState = makeSchedulerStateWithSources();
+    const filer = createEntityId();
+    schedulerState.windowWakes = [];
+    schedulerState.operatorAttentionIndex = {
+      total: 125,
+      records: [
+        operatorAttentionPromptRow({
+          record_key: "new",
+          filed_at: NOW_MS,
+          filer_entity_id: filer,
+          subject: "件名 <handoff>",
+        }),
+        operatorAttentionPromptRow({
+          record_key: "old",
+          filed_at: NOW_MS - 1_000,
+          filer_entity_id: filer,
+          subject: null,
+          disclosure_label: unknownMemoryDisclosureLabel(),
+        }),
+      ],
+    };
+    const render = () =>
+      extractBlock(
+        buildBaseSystemPrompt(
+          makeContext({
+            turnOrigin: "autonomous",
+            turnMechanismEvidence: {
+              recentSuppressions: [],
+              recentRegenerations: [],
+              autonomySchedulerState: schedulerState,
+            },
+          }),
+          { ...PROMPT_OPTIONS, nowMs: NOW_MS },
+        ),
+        "borg_mechanism_evidence",
+      );
+    const block = render();
+    expect(block).toContain("Operator attention records: total=125; latest 2 shown, newest first.");
+    expect(block).toContain(
+      `2023-11-14T22:13:20.000Z | filer=${filer} | subject="件名 &lt;handoff&gt;"`,
+    );
+    expect(block).toContain(
+      `2023-11-14T22:13:19.000Z | filer=${filer} | subject=subject unavailable`,
+    );
+    expect(block).toContain("Wake rows in that current window, newest first: none.");
+    expect(block).toContain("These records do not gate action.");
+    const attentionRows = block.split("\n").filter((line) => line.includes("| subject="));
+    expect(attentionRows).toHaveLength(2);
+    expect(attentionRows[0]).toContain("disclosure_class=operator_private");
+    expect(attentionRows[1]).toContain("disclosure_class=unknown");
+    for (const row of attentionRows) {
+      expect(row).toContain(`origin_audience=${filer} private-to=unknown`);
+      expect(row).toContain("I can use this internally");
+    }
+    schedulerState.operatorAttentionIndex = { total: 0, records: [] };
+    expect(render()).toContain("Operator attention records: total=0; latest 0 shown");
+  });
+
+  it("renders per-wake finalizer and stall counts, their legend, and null-safe totals", () => {
+    const schedulerState = makeSchedulerStateWithSources();
+    schedulerState.windowWakes = [
+      {
+        ts: NOW_MS - 11 * 60_000,
+        trigger_name: "scheduled_reflection",
+        outcome: "headway",
+        headway_bases: ["continued private thought"],
+        finalizer_rounds: 3,
+        stall_retries: 2,
+      },
+      {
+        ts: NOW_MS - 20 * 60_000,
+        trigger_name: "goal_followup_due",
+        outcome: "silent",
+        headway_bases: null,
+        finalizer_rounds: null,
+        stall_retries: null,
+      },
+    ];
+    schedulerState.budget = {
+      ...schedulerState.budget,
+      used_in_current_window: 2,
+    };
+    const prompt = buildBaseSystemPrompt(
+      makeContext({
+        turnOrigin: "autonomous",
+        turnMechanismEvidence: {
+          recentSuppressions: [],
+          recentRegenerations: [],
+          autonomySchedulerState: schedulerState,
+        },
+      }),
+      { ...PROMPT_OPTIONS, nowMs: NOW_MS },
+    );
+    const block = extractBlock(prompt, "borg_mechanism_evidence");
+    const rows = block.split("\n").filter((line) => line.startsWith("- <wake "));
+
+    expect(rows[0]).toContain(
+      'tr="scheduled_reflection" o="headway" hb="continued private thought" fr="3" sr="2"',
+    );
+    expect(rows[1]).toContain('tr="goal_followup_due" o="silent"');
+    expect(rows[1]).not.toContain(" hb=");
+    expect(rows[1]).not.toContain(" fr=");
+    expect(rows[1]).not.toContain(" sr=");
+    expect(block).toContain("fr=finalizer rounds, sr=transport stall retries");
+    expect(block).toContain("fr or sr absent means not recorded or unknown");
+    expect(block).toContain("older rows, callers that omit counts");
+    expect(block).toContain("interrupted recording (including startup-interrupted rows)");
+    expect(block).toContain(
+      "Wake execution totals over those 2 row(s): fr=3 from 1/2 rows with fr recorded; sr=2 from 1/2 rows with sr recorded. Absent values are excluded, not counted as zero.",
+    );
+  });
+
   // `enabled` is the constructor flag and never a liveness fact, but the line
   // used to spend it as one ("Scheduler loop: running"). The two ways the loop
   // falls behind -- a tick still running, or the interval merely lagging --
@@ -3112,12 +3227,19 @@ describe("buildBaseSystemPrompt", () => {
     expect(block).toContain(
       "prints a stamp at or after that read and never before it -- equal to it when the scan reaches its row inside the same millisecond, later when it does not",
     );
-    // The span between two floored stamps is everything the loop did between
-    // them, which on the live list includes a trigger whose stamp is genuinely
-    // future and therefore not comparable to either.
+    // The span between two floored stamps is the earlier row's own scan plus
+    // everything the loop did between them, which on the live list includes a
+    // trigger whose stamp is genuinely future and therefore not comparable to
+    // either. The earlier row's term is the one that dominates: its read is the
+    // first statement of its own call, so its whole scan is charged after its
+    // stamp.
     expect(block).toContain(
-      "the scan cost of everything between their rows, including rows whose own stamp is null or genuinely future, rather than which of them is due first",
+      "the earlier row's own scan plus everything between their rows, including rows whose own stamp is null or genuinely future, rather than which of them is due first",
     );
+    // The wording that carried the traversal but not the row emitting it,
+    // pinned because it makes an adjacent 13ms gap and a 1ms gap spanning a
+    // third row read as contradictory.
+    expect(block).not.toContain("the scan cost of everything between their rows");
     // The narrower wording this replaced, pinned because it read as an
     // enumeration and left out the case that actually sits in the span: a row
     // publishing a genuinely future stamp is publishing a stamp, so "rows that
@@ -4033,6 +4155,28 @@ describe("buildBaseSystemPrompt", () => {
 
     expect(bareWithSpan).toContain("none of them carrying a recorded failure");
     expect(bareWithSpan).toContain("they are one unbroken run");
+
+    // A single failure in the window cannot be a run, and the between-count
+    // that would say so is empty by construction rather than by observation.
+    const sole = buildPrompt(
+      {
+        total: 1,
+        without_detail: 0,
+        reasons: [
+          {
+            detail: "Autonomous preparation failed: Timed out after 30000ms",
+            count: 1,
+            triggers: [{ trigger: "scheduled_reflection", count: 1 }],
+          },
+        ],
+      },
+      { other_outcomes_between: 0, extends_before_window: true },
+    );
+
+    expect(sole).toContain(
+      "Where that errored wake sits: it is the only one in this window, so its first and last are the same row and nothing can fall between them -- the interleaving count is empty by construction here, and neither a run nor a scatter is readable from one row; the wake immediately before it also errored, and that wake is outside this window -- so the one inside is the tail of a run that starts earlier, and a rate taken over this window is a rate over that tail.",
+    );
+    expect(sole).not.toContain("one unbroken run");
   });
 
   it("splits the silent-wake count by recorded ending and names the classes that can appear", () => {
@@ -4214,12 +4358,52 @@ describe("buildBaseSystemPrompt", () => {
       "no earlier wake is retained, so whether the silences start at the window edge or merely become visible there is not answerable from here",
     );
 
+    // One silence in the window is the case the interleaving read cannot serve:
+    // first and last are the same row, so the between-count is zero by
+    // construction and the plural wording would call an isolated closure an
+    // unbroken run -- the reading toward disposition this line exists against.
+    const sole = buildPrompt(
+      {
+        total: 1,
+        without_detail: 0,
+        reasons: [
+          {
+            detail: "deliberate-silence: finalizer_no_output",
+            count: 1,
+            triggers: [{ trigger: "open_question_dormant", count: 1 }],
+          },
+        ],
+      },
+      { other_outcomes_between: 0, extends_before_window: false },
+    );
+
+    expect(sole).toContain(
+      "Where that silent wake sits: it is the only one in this window, so its first and last are the same row and nothing can fall between them -- the interleaving count is empty by construction here, and neither a run nor a scatter is readable from one row; the wake immediately before it was not silent, so it is not the tail of anything the table retains.",
+    );
+    expect(sole).not.toContain("one unbroken run");
+
+    // The edge is the half that still carries evidence at one row: a lone
+    // in-window silence preceded by another is the tail of a longer stretch.
+    const soleClipped = buildPrompt(
+      {
+        total: 1,
+        without_detail: 1,
+        reasons: [],
+      },
+      { other_outcomes_between: 0, extends_before_window: true },
+    );
+
+    expect(soleClipped).toContain(
+      "the wake immediately before it was also silent, and that wake is outside this window -- so the one inside is the tail of a stretch that starts earlier, and how far back that stretch runs is not on this page",
+    );
+    expect(soleClipped).not.toContain("one unbroken run");
+
     expect(buildPrompt({ total: 0, without_detail: 0, reasons: [] })).toContain(
       "Silent wakes in that window: none, so there is no silence to attribute.",
     );
   });
 
-  it("omits mechanism evidence when scheduler and turn-mechanism state are absent", () => {
+  it("labels edge evidence as unavailable when scheduler and turn-mechanism state are absent", () => {
     const prompt = buildBaseSystemPrompt(
       makeContext({
         turnMechanismEvidence: {
@@ -4230,7 +4414,7 @@ describe("buildBaseSystemPrompt", () => {
       { ...PROMPT_OPTIONS, nowMs: NOW_MS },
     );
 
-    expect(prompt).not.toContain("<borg_mechanism_evidence>");
+    expect(prompt).toContain("Answered-window edge: evidence unavailable on this capture");
   });
 
   it("renders closure-loop finalizer guidance in trusted discourse control", () => {
@@ -5238,7 +5422,33 @@ describe("buildBaseSystemPrompt", () => {
     expect(block).toContain("The reading is not a function of that turn's arrived text alone");
     expect(block).toContain("up to the last ten recency strings for the session");
     expect(block).toContain(
-      "trigger= is a 120-character head slice of the arrived message and names no part of the recency half",
+      "trigger= is a 120-character head slice of the arrived message bodies with the transport envelope stripped",
+    );
+    expect(block).toContain("names no part of the recency half");
+  });
+
+  // The trigger= scope was still too generous: sliced off the rendered batch, 120
+  // characters never reached past the `<inbound_message>` attribute list, so the field
+  // named a stream id on every row a wrapping transport wrote. The write now takes the
+  // bodies, but rows stored before it keep the envelope and stay on the page until they
+  // age out -- so the legend has to describe the old shape too, or a reader checking it
+  // against a pre-change row catches the legend lying rather than the row aging.
+  it("tells a reader how to recognize a trigger written before the source changed", () => {
+    const block = extractBlock(
+      buildBaseSystemPrompt(
+        makeContext({
+          affectiveTrajectory: [makeMoodHistoryEntry(1, 2, -0.3, 0.4, "the deadline moved")],
+        }),
+        PROMPT_OPTIONS,
+      ),
+      "borg_affective_trajectory",
+    );
+
+    expect(block).toContain(
+      "a subset of what was scored rather than a prefix of it",
+    );
+    expect(block).toContain(
+      "a trigger that opens with a transport tag instead of with text is a row written before that source changed",
     );
   });
 

@@ -62,6 +62,8 @@ import {
 import { CognitionError, SessionBusyError } from "../util/errors.js";
 import type { SessionLock } from "./session-lock.js";
 import type { IntentRecord } from "./types.js";
+import { turnExecutionMetricsFromError } from "./turn-execution-metrics.js";
+import { TurnPhaseCoordinator } from "./lifecycle/turn-phase-coordinator.js";
 
 type TraceEvent = {
   event: string;
@@ -134,6 +136,7 @@ async function openTestBorg(
           background: "test-background",
           extraction: "test-extraction",
           recallExpansion: "test-recall",
+          correctivePreference: "test-corrective-preference",
           ...configOverrides.anthropic?.models,
         },
       },
@@ -3231,6 +3234,145 @@ describe("TurnOrchestrator evidence ledger", () => {
     ];
   }
 
+  it("counts recall-expansion stall retries on the shared client in the owning turn", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-recall-metrics-"));
+    tempDirs.push(tempDir);
+    const llm = new FakeLLMClient({
+      responses: [...ledgerTurnResponses("First answer."), ...ledgerTurnResponses("Next answer.")],
+    });
+    const complete = llm.complete.bind(llm);
+    let recallCalls = 0;
+    vi.spyOn(llm, "complete").mockImplementation((options) => {
+      if (options.budget === "recall-expansion") {
+        recallCalls += 1;
+        if (recallCalls === 1) {
+          options.onTransportRetry?.({
+            attempt: 2,
+            kind: "stall",
+            code: "LLM_STREAM_STALLED",
+            retry_transport: "unary",
+          });
+        }
+        return Promise.resolve(createRecallExpansionResponse());
+      }
+      return complete(options);
+    });
+    const borg = await openTestBorg(tempDir, llm, new ManualClock(1_800_000_180_000));
+    try {
+      const first = await borg.turn({ userMessage: "Recall our current focus.", stakes: "low" });
+      expect(recallCalls).toBe(1);
+      expect(first).toMatchObject({ finalizer_rounds: 1, stall_retries: 1 });
+      const next = await borg.turn({ userMessage: "Continue with that focus.", stakes: "low" });
+      expect(recallCalls).toBe(2);
+      expect(next).toMatchObject({ finalizer_rounds: 1, stall_retries: 0 });
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it.each(["terminal tracing", "lease release"])(
+    "associates executed counts with a rejection from %s",
+    async (failurePoint) => {
+      const tempDir = mkdtempSync(join(tmpdir(), "borg-terminal-metrics-"));
+      tempDirs.push(tempDir);
+      const failure = new Error(`${failurePoint} failed`);
+      const llm = new FakeLLMClient({ responses: ledgerTurnResponses("Completed answer.") });
+      const converse = llm.converse.bind(llm);
+      vi.spyOn(llm, "converse").mockImplementation((options) => {
+        options.onTransportRetry?.({ attempt: 2, kind: "stall", retry_transport: "unary" });
+        options.onTransportRetry?.({ attempt: 3, kind: "stall", retry_transport: "unary" });
+        return converse(options);
+      });
+      const borg = await openTestBorg(tempDir, llm, new ManualClock(1_800_000_180_000), undefined, {
+        tracerPath: join(tempDir, "trace.jsonl"),
+      });
+      const deps = (borg as unknown as { deps: BorgDependencies }).deps;
+      if (failurePoint === "terminal tracing") {
+        const emit = deps.tracer.emit.bind(deps.tracer);
+        vi.spyOn(deps.tracer, "emit").mockImplementation((event, data) => {
+          if (event === "turn.terminal") throw failure;
+          emit(event, data);
+        });
+      } else {
+        const lock = getSessionLock(borg);
+        const acquire = lock.acquire.bind(lock);
+        vi.spyOn(lock, "acquire").mockImplementation(async (...args) => {
+          const lease = await acquire(...args);
+          return lease === null
+            ? null
+            : {
+                async release() {
+                  await lease.release();
+                  throw failure;
+                },
+              };
+        });
+      }
+      try {
+        await expect(borg.turn({ userMessage: "Continue our work.", stakes: "low" })).rejects.toBe(
+          failure,
+        );
+        expect(turnExecutionMetricsFromError(failure)).toEqual({
+          finalizer_rounds: 1,
+          stall_retries: 2,
+        });
+      } finally {
+        await borg.close();
+      }
+    },
+  );
+
+  it("emits turn.terminal before a concurrent trace after the coordinator resolves", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-terminal-order-"));
+    tempDirs.push(tempDir);
+    const tracePath = join(tempDir, "trace.jsonl");
+    const borg = await openTestBorg(
+      tempDir,
+      new FakeLLMClient(),
+      new ManualClock(1_800_000_180_000),
+      undefined,
+      {
+        tracerPath: tracePath,
+      },
+    );
+    const deps = (borg as unknown as { deps: BorgDependencies }).deps;
+    const coordinator = vi
+      .spyOn(TurnPhaseCoordinator.prototype, "run")
+      .mockImplementation(({ turnId }) => {
+        // The concurrent producer has one more continuation to run. An extra
+        // async wrapper must not let it overtake the already completed turn.
+        queueMicrotask(() =>
+          queueMicrotask(() => {
+            deps.tracer.emit("llm_call.completed", { turnId: "concurrent-turn" });
+          }),
+        );
+        return Promise.resolve({
+          turn_id: turnId,
+          mode: "idle",
+          path: "suppressed",
+          response: "",
+          emitted: false,
+          emission: { kind: "suppressed", reason: "finalizer_no_output" },
+          thoughts: [],
+          usage: { input_tokens: 0, output_tokens: 0, stop_reason: null },
+          retrievedEpisodeIds: [],
+          referencedEpisodeIds: [],
+          intents: [],
+          toolCalls: [],
+        });
+      });
+    try {
+      await borg.turn({ userMessage: "Continue our work.", stakes: "low" });
+      const events = readTraceEvents(tracePath).filter(
+        (event) => event.event === "turn.terminal" || event.turnId === "concurrent-turn",
+      );
+      expect(events.map((event) => event.event)).toEqual(["turn.terminal", "llm_call.completed"]);
+    } finally {
+      coordinator.mockRestore();
+      await borg.close();
+    }
+  });
+
   it("does not include the evidence ledger prompt block when the flag is disabled", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
@@ -3380,6 +3522,10 @@ describe("TurnOrchestrator evidence ledger", () => {
       const agentEntry = borg.stream.tail(20).find((entry) => entry.kind === "agent_msg");
 
       expect(result.response).toBe(finalText);
+      expect(result).toMatchObject({
+        finalizer_rounds: 1,
+        stall_retries: 0,
+      });
       expect(result.emitted).toBe(true);
       expect(agentEntry?.content).toBe(finalText);
       expect(finalizerRequest?.tool_choice).toEqual({ type: "any" });
@@ -6845,6 +6991,16 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       expect(budgets).toContain("corrective-preference-extractor");
       expect(budgets).toContain("action-state-extractor");
       expect(budgets).toContain("goal-promotion-extractor");
+      expect(llm.requests).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            budget: "corrective-preference-extractor",
+            model: "test-corrective-preference",
+          }),
+          expect.objectContaining({ budget: "action-state-extractor", model: "test-recall" }),
+          expect.objectContaining({ budget: "goal-promotion-extractor", model: "test-recall" }),
+        ]),
+      );
       expect(extractSpy).toHaveBeenCalled();
       expect(anomalyEvent).toBeUndefined();
       expect(quarantineEvent).toBeUndefined();

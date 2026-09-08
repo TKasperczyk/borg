@@ -87,6 +87,7 @@ export type ExecuteToolLoopOptions = {
   provenance?: unknown;
   budget: string;
   maxTokens?: number;
+  timeoutMs?: number;
   temperature?: number;
   thinking?: LLMConverseOptions["thinking"];
   effort?: LLMConverseOptions["effort"];
@@ -389,6 +390,7 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
           }
         : {}),
       max_tokens: options.maxTokens,
+      ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
       ...(options.temperature === undefined ? {} : { temperature: options.temperature }),
       ...(options.thinking === undefined ? {} : { thinking: options.thinking }),
       ...(options.effort === undefined ? {} : { effort: options.effort }),

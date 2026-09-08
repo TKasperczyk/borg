@@ -36,6 +36,10 @@ import { DEFAULT_SESSION_ID } from "../util/ids.js";
 import type { BorgStreamWriterFactory } from "./types.js";
 
 export type BuildAutonomySchedulerOptions = {
+  entryIndex?: Pick<
+    import("../stream/index.js").StreamEntryIndexRepository,
+    "describeAnsweredWindow"
+  >;
   config: Config;
   commitmentRepository: CommitmentRepository;
   sourceStreamAudienceDisclosureResolver: SourceStreamAudienceDisclosureResolver;
@@ -216,6 +220,12 @@ export function buildAutonomyScheduler(options: BuildAutonomySchedulerOptions): 
   ];
 
   return new AutonomyScheduler({
+    describeAnsweredWindow:
+      options.entryIndex === undefined
+        ? undefined
+        : (sessionId, observedAt) =>
+            options.entryIndex!.describeAnsweredWindow(sessionId, observedAt),
+    beforeTick: () => options.goalsRepository.reconcileBlocks(),
     enabled: options.config.autonomy.enabled,
     intervalMs: options.config.autonomy.intervalMs,
     prepToolTimeoutMs: options.config.autonomy.prepToolTimeoutMs,

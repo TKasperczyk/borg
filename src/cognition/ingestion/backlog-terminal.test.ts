@@ -113,14 +113,36 @@ describe("BacklogTerminalService", () => {
     }
   });
 
-  it("rejects a second terminal stamp for an already covered batch", async () => {
+  it("records the observed terminal's answered edge and rejects a second stamp for its batch", async () => {
     const harness = openHarness();
     try {
       const entry = await appendUser(harness, DEFAULT_SESSION_ID, 10);
-      await harness.service.appendBacklogTerminal({
+      const result = await harness.service.appendBacklogTerminal({
         sessionId: DEFAULT_SESSION_ID,
         sourceEntryIds: [entry.id],
         terminal: { kind: "agent_observed", reason: "silent" },
+      });
+      expect(harness.ingest).toHaveBeenCalledWith(DEFAULT_SESSION_ID, {
+        answeredWindow: {
+          responseTo: result.terminalEntry.response_to,
+          terminalCursor: {
+            ts: result.terminalEntry.timestamp,
+            entryId: result.terminalEntry.id,
+          },
+        },
+      });
+      expect(
+        harness.entryIndex.describeAnsweredWindow(DEFAULT_SESSION_ID, harness.clock.now()),
+      ).toMatchObject({
+        state: "recorded",
+        basis: {
+          response_entry_id: result.terminalEntry.id,
+          response_kind: "agent_observed",
+          last_answered_entry_id: entry.id,
+          last_answered_at: entry.timestamp,
+          answered_entry_count: 1,
+        },
+        outside: { state: "none", arrived_after_edge: 0, without_edge: null },
       });
       await expect(
         harness.service.appendBacklogTerminal({

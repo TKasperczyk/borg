@@ -36,6 +36,12 @@ const autonomyWakeSourceNameSchema = z.enum(AUTONOMY_WAKE_SOURCE_NAMES);
 const autonomyConditionNameSchema = z.enum(AUTONOMY_CONDITION_NAMES);
 const autonomyWakeOutcomeSchema = z.enum(AUTONOMY_WAKE_OUTCOMES);
 const autonomyWakeHeadwayBasesSchema = z.array(z.string().min(1)).min(1);
+const autonomyWakeExecutionCountsSchema = z
+  .object({
+    finalizer_rounds: z.number().int().nonnegative(),
+    stall_retries: z.number().int().nonnegative(),
+  })
+  .strict();
 
 const autonomyWakeInputSchema = z.object({
   trigger_name: autonomyWakeSourceNameSchema,
@@ -80,6 +86,8 @@ const autonomyWakeRowSchema = z.object({
   outcome: autonomyWakeOutcomeSchema.nullable(),
   outcome_detail: z.string().nullable(),
   headway_bases: autonomyWakeHeadwayBasesSchema.nullable(),
+  finalizer_rounds: z.number().int().nonnegative().nullable(),
+  stall_retries: z.number().int().nonnegative().nullable(),
   selected_goal_id: z
     .string()
     .refine((value) => goalIdHelpers.is(value), { message: "Invalid goal id" })
@@ -135,8 +143,14 @@ export type AutonomyWakeRecord = {
    * row is not headway or predates structural basis storage.
    */
   headway_bases: string[] | null;
+  /** Number of finalizer LLM rounds run by this wake's turn. */
+  finalizer_rounds: number | null;
+  /** Number of stall-class transport retries paid by this wake's turn. */
+  stall_retries: number | null;
   selected_goal_id: GoalId | null;
 };
+
+export type AutonomyWakeExecutionCounts = z.infer<typeof autonomyWakeExecutionCountsSchema>;
 
 export type AutonomyWakeRecordInput = {
   trigger_name: AutonomyWakeSourceName;
@@ -174,6 +188,14 @@ function mapWakeRow(row: Record<string, unknown>): AutonomyWakeRecord {
     outcome: row.outcome ?? null,
     outcome_detail: row.outcome_detail === undefined ? null : (row.outcome_detail ?? null),
     headway_bases: headwayBases,
+    finalizer_rounds:
+      row.finalizer_rounds === null || row.finalizer_rounds === undefined
+        ? null
+        : Number(row.finalizer_rounds),
+    stall_retries:
+      row.stall_retries === null || row.stall_retries === undefined
+        ? null
+        : Number(row.stall_retries),
     selected_goal_id: row.selected_goal_id === undefined ? null : (row.selected_goal_id ?? null),
   });
 
@@ -211,6 +233,8 @@ export class AutonomyWakesRepository {
       outcome: null,
       outcome_detail: null,
       headway_bases: null,
+      finalizer_rounds: null,
+      stall_retries: null,
       selected_goal_id: parsed.selected_goal_id ?? null,
     };
 
@@ -272,7 +296,8 @@ export class AutonomyWakesRepository {
       .prepare(
         `
           SELECT id, ts, trigger_name, condition_name, session_id, wake_source_type, source_category,
-                 outcome, outcome_detail, headway_bases_json, selected_goal_id
+                 outcome, outcome_detail, headway_bases_json, finalizer_rounds, stall_retries,
+                 selected_goal_id
           FROM autonomy_wakes
           WHERE ts >= ?
           ORDER BY ts DESC, id DESC
@@ -289,6 +314,7 @@ export class AutonomyWakesRepository {
     outcome: AutonomyWakeOutcome,
     detail?: string | null,
     headwayBases?: readonly string[] | null,
+    executionCounts?: AutonomyWakeExecutionCounts,
   ): void {
     const storedHeadwayBases =
       outcome === "headway" && headwayBases !== null && headwayBases !== undefined
@@ -296,17 +322,24 @@ export class AutonomyWakesRepository {
         : null;
     const storedDetail =
       storedHeadwayBases === null ? clampOutcomeDetail(detail) : storedHeadwayBases.join("; ");
+    const storedExecutionCounts =
+      executionCounts === undefined
+        ? null
+        : autonomyWakeExecutionCountsSchema.parse(executionCounts);
 
     this.db
       .prepare(
         `UPDATE autonomy_wakes
-         SET outcome = ?, outcome_detail = ?, headway_bases_json = ?
+         SET outcome = ?, outcome_detail = ?, headway_bases_json = ?,
+             finalizer_rounds = ?, stall_retries = ?
          WHERE id = ? AND outcome IS NULL`,
       )
       .run(
         outcome,
         storedDetail,
         storedHeadwayBases === null ? null : JSON.stringify(storedHeadwayBases),
+        storedExecutionCounts?.finalizer_rounds ?? null,
+        storedExecutionCounts?.stall_retries ?? null,
         id,
       );
   }

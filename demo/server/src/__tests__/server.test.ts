@@ -1084,6 +1084,62 @@ describe("demo server", () => {
     expect(await idleAfter.json()).toEqual({ inflight: null });
   });
 
+  it("accepts only attention envelopes and makes reposts idempotent", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-attention-"));
+    tempDirs.push(tempDir);
+    const { borg, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+    const record = {
+      record_key: "cclink:api-test",
+      filed_at: 1_700_000_000_000,
+      filer_entity_id: borg.entities.resolve("Counterpart"),
+      subject: "件名",
+    };
+    const posted = await requestJson(app, "/api/operator-attention", "POST", record);
+    expect(posted.status).toBe(200);
+    expect(await posted.json()).toEqual({ inserted: true });
+    const resent = await requestJson(app, "/api/operator-attention", "POST", {
+      ...record,
+      subject: null,
+    });
+    expect(await resent.json()).toEqual({ inserted: false });
+    expect(borg.operatorAttention.snapshot()).toEqual({
+      total: 1,
+      records: [
+        {
+          ...record,
+          disclosure_label: {
+            disclosureClass: "operator_private",
+            originAudienceEntityIds: [record.filer_entity_id],
+            privateToEntityIds: [],
+            publicToEntityIds: [],
+          },
+        },
+      ],
+    });
+    const legacy = await requestJson(app, "/api/operator-attention", "POST", {
+      ...record,
+      record_key: "cclink:legacy",
+      filed_at: record.filed_at - 1,
+      subject: null,
+    });
+    expect(legacy.status).toBe(200);
+    for (const bad of [
+      { ...record, body: "NEVER STORE THIS BODY" },
+      { ...record, reason: "NEVER STORE THIS BODY" },
+      { ...record, filed_at: "yesterday" },
+      { ...record, filer_entity_id: "not-an-entity" },
+      { ...record, subject: "first line\nbody" },
+      { ...record, subject: "x".repeat(241) },
+    ]) {
+      const response = await requestJson(app, "/api/operator-attention", "POST", bad);
+      expect(response.status).toBe(400);
+    }
+    expect(borg.operatorAttention.snapshot().total).toBe(2);
+    expect(JSON.stringify(borg.operatorAttention.snapshot())).not.toContain("NEVER STORE");
+  });
+
   it("serves creator and operator session endpoints", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-creator-"));
     tempDirs.push(tempDir);
@@ -2172,6 +2228,7 @@ describe("demo server", () => {
     const valueAddSpy = vi.spyOn(borg.self.values, "add");
     const goalAddSpy = vi.spyOn(borg.self.goals, "add");
     const goalStatusSpy = vi.spyOn(borg.self.goals, "updateStatus");
+    const goalBlockSpy = vi.spyOn(borg.self.goals, "block");
     const goalProgressSpy = vi.spyOn(borg.self.goals, "updateProgress");
     const growthAddSpy = vi.spyOn(borg.self.growthMarkers, "add");
     const questionResolveSpy = vi.spyOn(borg.self.openQuestions, "resolve");
@@ -2264,9 +2321,16 @@ describe("demo server", () => {
       priority: 1,
       provenance: { kind: "manual" },
     });
+    const bareBlock = await requestJson(app, `/api/identity/goals/${blockedGoal.id}`, "PATCH", {
+      action: "block",
+      note: "bare block",
+    });
+    expect(bareBlock.status).toBe(400);
     const block = await requestJson(app, `/api/identity/goals/${blockedGoal.id}`, "PATCH", {
       action: "block",
       note: "blocked by test fixture",
+      attempt_status: "attempted_unavailable",
+      blocker: { kind: "until", until: blockedGoal.created_at + 60_000 },
     });
     expect(block.status).toBe(200);
     expect(await block.json()).toMatchObject({ id: blockedGoal.id, status: "blocked" });
@@ -2292,11 +2356,14 @@ describe("demo server", () => {
       { kind: "manual" },
       expect.objectContaining({ throughReview: true }),
     );
-    expect(goalStatusSpy).toHaveBeenCalledWith(
+    expect(goalBlockSpy).toHaveBeenCalledWith(
       blockedGoal.id,
-      "blocked",
+      expect.objectContaining({
+        attempt_status: "attempted_unavailable",
+        reason: "blocked by test fixture",
+        blocker: { kind: "until", until: expect.any(Number) },
+      }),
       { kind: "manual" },
-      expect.objectContaining({ throughReview: true }),
     );
     expect(goalProgressSpy).toHaveBeenCalledWith(
       progressGoal.id,
@@ -4608,7 +4675,7 @@ describe("demo server", () => {
     });
   });
 
-  it("broadcasts token frames between finalizer phase start and completion", async () => {
+  it("broadcasts the buffered unary finalizer text between phase start and completion", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
     tempDirs.push(tempDir);
     const llm = new FakeLLMClient({
@@ -4641,6 +4708,7 @@ describe("demo server", () => {
         (frame.data as { phase?: unknown } | undefined)?.phase === "final",
     );
     const tokenFrame = frames.findIndex((frame) => frame.type === "turn:token");
+    const flushFrame = frames.findIndex((frame) => frame.type === "turn:token:flush");
     const finalComplete = frames.findIndex(
       (frame) =>
         frame.type === "turn:phase:completed" &&
@@ -4649,12 +4717,18 @@ describe("demo server", () => {
 
     expect(finalStart).toBeGreaterThanOrEqual(0);
     expect(tokenFrame).toBeGreaterThan(finalStart);
-    expect(finalComplete).toBeGreaterThan(tokenFrame);
+    expect(flushFrame).toBeGreaterThan(tokenFrame);
+    expect(finalComplete).toBeGreaterThan(flushFrame);
     expect(frames[tokenFrame]).toMatchObject({
       type: "turn:token",
       phase: "final",
-      chunk_text: "ws ",
+      chunk_text: "ws token ok",
       sequence: 1,
+    });
+    expect(frames[flushFrame]).toMatchObject({
+      type: "turn:token:flush",
+      phase: "final",
+      full_text: "ws token ok",
     });
   });
 

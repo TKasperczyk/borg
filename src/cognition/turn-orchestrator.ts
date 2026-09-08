@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 
+import type { OperatorAttentionRepository } from "../memory/operator-attention/index.js";
 import type {
   AttachmentRepository,
   AttachmentService,
@@ -94,6 +95,13 @@ import { TurnSelfContextBuilder } from "./self/turn-self-context.js";
 import { NOOP_TRACER, type TurnTerminalOutcome, type TurnTracer } from "../tracing/tracer.js";
 import type { TurnOrchestratorInput } from "./turn-input.js";
 import { isAutonomousLikeTurnOrigin, type CognitiveMode, type IntentRecord } from "./types.js";
+import {
+  associateTurnExecutionMetricsWithError,
+  createTurnExecutionMetrics,
+  observeTurnLlmClient,
+  snapshotTurnExecutionMetrics,
+  turnExecutionMetricsStorage,
+} from "./turn-execution-metrics.js";
 
 export type TurnResult = {
   turn_id: string;
@@ -114,6 +122,8 @@ export type TurnResult = {
   referencedEpisodeIds: string[];
   intents: IntentRecord[];
   toolCalls: ToolLoopCallRecord[];
+  finalizer_rounds: number;
+  stall_retries: number;
   reflectionRetiredGoalIds?: GoalId[];
   agentMessageId?: string;
   outboundDelivery?: OutboundDeliveryReceipt;
@@ -185,6 +195,7 @@ export type TurnOrchestratorOptions = {
   chatResponseWatermarkCoordinator?: ChatResponseWatermarkCoordinator;
   outboundDelivery?: Pick<OutboundDelivery, "deliver">;
   autonomousOutboundPolicy?: Pick<AutonomousOutboundPolicy, "promptContext">;
+  operatorAttentionRepository?: Pick<OperatorAttentionRepository, "snapshot">;
   autonomySchedulerStateProvider?: () => Promise<AutonomySchedulerDescription | null>;
   outboundSourceTypes?: readonly SessionSourceType[];
   affectiveSignalDetector?: typeof detectAffectiveSignal;
@@ -215,6 +226,7 @@ export class TurnOrchestrator {
       new SessionLock({
         dataDir: options.config.dataDir,
       });
+    const createObservedLlmClient = () => observeTurnLlmClient(options.llmFactory());
     const createStreamReader =
       options.createStreamReader ??
       ((sessionId: SessionId) =>
@@ -225,7 +237,7 @@ export class TurnOrchestrator {
         }));
     const perceptionGateway = new PerceptionGateway({
       config: options.config,
-      llmFactory: () => options.llmFactory(),
+      llmFactory: createObservedLlmClient,
       clock: this.clock,
       tracer: this.tracer,
       getAffectiveSignalDetector: () => options.affectiveSignalDetector,
@@ -282,7 +294,7 @@ export class TurnOrchestrator {
       goalFollowupStaleMs: options.config.autonomy.triggers.goalFollowupDue.staleMs,
     });
     const correctivePreferenceTurnService = new CorrectivePreferenceTurnService({
-      model: options.config.anthropic.models.recallExpansion,
+      model: options.config.anthropic.models.correctivePreference,
       commitmentRepository: options.commitmentRepository,
       sourceStreamAudienceDisclosureResolver: options.sourceStreamAudienceDisclosureResolver,
       identityService: options.identityService,
@@ -408,9 +420,10 @@ export class TurnOrchestrator {
       chatResponseWatermarkCoordinator: options.chatResponseWatermarkCoordinator,
       outboundDelivery: options.outboundDelivery,
       autonomousOutboundPolicy: options.autonomousOutboundPolicy,
+      operatorAttentionRepository: options.operatorAttentionRepository,
       autonomySchedulerStateProvider: options.autonomySchedulerStateProvider,
       outboundSourceTypes: options.outboundSourceTypes,
-      llmFactory: () => options.llmFactory(),
+      llmFactory: createObservedLlmClient,
       perceptionGateway,
       turnOpeningPersistence,
       attributionLifecycleService,
@@ -546,6 +559,7 @@ export class TurnOrchestrator {
     const streamWriter = this.options.createStreamWriter(sessionId);
     const terminalStartedWallMs = performance.now();
     let terminalOutcome: TurnTerminalOutcome = "error";
+    const executionMetrics = createTurnExecutionMetrics();
     const lifecycleTracker = new TurnLifecycleTracker({
       workingMemoryStore: this.options.workingMemoryStore,
       actionRepository: this.options.actionRepository,
@@ -559,38 +573,50 @@ export class TurnOrchestrator {
 
     try {
       try {
-        const result = await this.turnPhaseCoordinator.run({
-          input: phaseInput,
-          globalTurnCounter,
-          sessionId,
-          turnId,
-          streamWriter,
-          lifecycleTracker,
-        });
-        lifecycleTracker.commitTurnState();
-        terminalOutcome =
-          result.terminalOutcome ??
-          (result.path === "suppressed" ? "suppressed_action" : "reflected");
-        return result;
-      } catch (error) {
-        const rollbackFailures = await lifecycleTracker.cleanupAbortedTurnState({
-          turnId,
-          sessionId,
-        });
-        await this.appendFailureEvent(streamWriter, error, sessionId, turnId, rollbackFailures);
-        terminalOutcome = "aborted";
-        throw error;
+        try {
+          const result = await turnExecutionMetricsStorage.run(
+            executionMetrics,
+            () =>
+              this.turnPhaseCoordinator.run({
+                input: phaseInput,
+                globalTurnCounter,
+                sessionId,
+                turnId,
+                streamWriter,
+                lifecycleTracker,
+              }),
+          );
+          lifecycleTracker.commitTurnState();
+          terminalOutcome =
+            result.terminalOutcome ??
+            (result.path === "suppressed" ? "suppressed_action" : "reflected");
+          return {
+            ...result,
+            ...snapshotTurnExecutionMetrics(executionMetrics),
+          };
+        } catch (error) {
+          const rollbackFailures = await lifecycleTracker.cleanupAbortedTurnState({
+            turnId,
+            sessionId,
+          });
+          await this.appendFailureEvent(streamWriter, error, sessionId, turnId, rollbackFailures);
+          terminalOutcome = "aborted";
+          throw error;
+        } finally {
+          this.emitTerminalTurn({
+            turnId,
+            sessionId,
+            outcome: terminalOutcome,
+            startedWallMs: terminalStartedWallMs,
+          });
+        }
       } finally {
-        this.emitTerminalTurn({
-          turnId,
-          sessionId,
-          outcome: terminalOutcome,
-          startedWallMs: terminalStartedWallMs,
-        });
+        streamWriter.close();
+        await lease.release();
       }
-    } finally {
-      streamWriter.close();
-      await lease.release();
+    } catch (error) {
+      associateTurnExecutionMetricsWithError(error, executionMetrics);
+      throw error;
     }
   }
 }

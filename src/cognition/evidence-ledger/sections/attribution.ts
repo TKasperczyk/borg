@@ -163,7 +163,7 @@ function participantGoals(
 ): GoalRecord[] {
   return uniqueById(
     context.repos.goals?.list({
-      status: "active",
+      statuses: ["active", "blocked"],
       ownerEntityId: participant.entityId,
     }) ?? [],
   )
@@ -253,7 +253,7 @@ function groupRecordIds(context: BuilderSectionContext): string[] {
     .map((commitment) => commitment.id);
   const goals = scopedGoalsForEntity(
     context.repos.goals?.list({
-      status: "active",
+      statuses: ["active", "blocked"],
       visibleToAudienceEntityId: audienceEntityId,
     }) ?? [],
     audienceEntityId,

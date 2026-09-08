@@ -822,6 +822,7 @@ export async function runRetrievalPhase(input: {
           intervalArmedAt: description.interval_armed_at,
           nextTickAt: description.next_tick_at,
           scheduledTickAt: description.scheduled_tick_at,
+          windowWakes: description.window_wakes,
           budget: description.budget,
           fleetBrake: description.fleet_brake,
           sources: description.sources,
@@ -841,7 +842,26 @@ export async function runRetrievalPhase(input: {
       }
     }
   }
+  if (
+    autonomySchedulerState !== undefined &&
+    input.options.operatorAttentionRepository !== undefined
+  ) {
+    try {
+      autonomySchedulerState.operatorAttentionIndex =
+        input.options.operatorAttentionRepository.snapshot();
+    } catch (error) {
+      input.options.tracer.emit("retrieval.degraded", {
+        turnId: input.turnId,
+        component: "operator_attention_index",
+        reason: "attention_index_unavailable",
+        ...(input.options.tracer.includePayloads
+          ? { error: error instanceof Error ? error.message : String(error) }
+          : {}),
+      });
+    }
+  }
   const turnMechanismEvidence = await hydrateTurnMechanismEvidence({
+    nowMs: input.options.clock.now(),
     dataDir: input.options.config.dataDir,
     sessionId: input.sessionId,
     workingMemory: input.workingMemory,
@@ -2212,7 +2232,7 @@ async function compileSharedStateArtifactForEvidenceLedgerResultInternal(input: 
 
   const compileResult = await compileSharedStateArtifact({
     llmClient: sharedStateLlmClient,
-    model: input.options.config.anthropic.models.recallExpansion,
+    model: input.options.config.anthropic.models.sharedStateCompiler,
     repository: input.options.sharedStateRepository,
     audienceEntityId,
     currentAudience: {

@@ -95,6 +95,14 @@ describe("buildToolDispatcher", () => {
       "unknown",
     ]);
 
+    for (const name of ["tool.goals.block", "tool.goals.unblock"]) {
+      expect(dispatcher.getDefinition(name)).toMatchObject({
+        name,
+        allowedOrigins: ["autonomous", "deliberator"],
+        writeScope: "write",
+      });
+    }
+
     const goalsRetire = dispatcher.getDefinition("tool.goals.retire");
 
     expect(goalsRetire).toMatchObject({

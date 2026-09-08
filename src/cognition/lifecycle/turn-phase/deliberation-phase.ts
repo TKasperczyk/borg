@@ -104,6 +104,7 @@ export async function runDeliberationPhase(input: {
     promptBlocks,
     finalizerDynamicPromptCacheEnabled:
       input.options.config.deliberation.finalizerDynamicPromptCacheEnabled,
+    finalizerTransport: input.options.config.deliberation.finalizerTransport,
     finalizerSurfaceVariant: input.options.config.deliberation.finalizerSurfaceVariant,
     planRequestedVerificationMembershipTokenBudget:
       input.options.config.deliberation.planRequestedVerificationMembershipTokenBudget,

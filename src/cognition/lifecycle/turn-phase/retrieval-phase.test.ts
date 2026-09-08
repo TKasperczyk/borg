@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { operatorAttentionPromptRow } from "../../../memory/operator-attention/disclosure.js";
 import { DEFAULT_CONFIG } from "../../../config/index.js";
 import { FakeLLMClient } from "../../../llm/test-support/fake-client.js";
 import { sharedStateMigrations } from "../../../memory/shared-state/index.js";
@@ -234,6 +235,50 @@ function runMinimalRetrievalPhase(options: TurnPhaseCoordinatorOptions, turnId: 
 }
 
 describe("autonomy scheduler mechanism-evidence provider", () => {
+  it.each([false, true])(
+    "carries attention metadata and keeps scheduler evidence when the index fails=%s",
+    async (fail) => {
+      const db = openDatabase(":memory:", { migrations: creatorDirectiveMigrations });
+      const repository = new CreatorDirectiveRepository({ db, clock: new FixedClock(2_000) });
+      const options = minimalRetrievalPhaseOptions(repository);
+      // Only the scheduler fields consumed by this phase matter for this fixture.
+      options.autonomySchedulerStateProvider = async () =>
+        ({ observed_at: 2_000, window_wakes: [] }) as never;
+      const index = {
+        total: 1,
+        records: [
+          operatorAttentionPromptRow({
+            record_key: "attention",
+            filed_at: 1_000,
+            filer_entity_id: createEntityId(),
+            subject: null,
+          }),
+        ],
+      };
+      options.operatorAttentionRepository = {
+        snapshot: () => {
+          if (fail) throw new Error("index unavailable");
+          return index;
+        },
+      };
+      options.tracer = { enabled: true, includePayloads: false, emit: vi.fn() };
+      try {
+        const result = await runMinimalRetrievalPhase(options, "turn-attention-index");
+        expect(result.turnMechanismEvidence.autonomySchedulerState?.observedAt).toBe(2_000);
+        expect(result.turnMechanismEvidence.autonomySchedulerState?.operatorAttentionIndex).toEqual(
+          fail ? undefined : index,
+        );
+        if (fail)
+          expect(options.tracer.emit).toHaveBeenCalledWith(
+            "retrieval.degraded",
+            expect.objectContaining({ component: "operator_attention_index" }),
+          );
+      } finally {
+        db.close();
+      }
+    },
+  );
+
   it("continues without a scheduler section when the provider is absent", async () => {
     const db = openDatabase(":memory:", { migrations: creatorDirectiveMigrations });
     const repository = new CreatorDirectiveRepository({ db, clock: new FixedClock(2_000) });
@@ -2998,7 +3043,7 @@ describe("compileSharedStateArtifactForEvidenceLedgerResult", () => {
     }
   });
 
-  it("uses the global turn counter for shared-state action canonicalization", async () => {
+  it.each(["pre_answer", "post_response"] as const)("uses compiler model in %s", async (pass) => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-retrieval-phase-"));
     cleanup.push(() => rmSync(tempDir, { recursive: true, force: true }));
     const db = openDatabase(join(tempDir, "borg.db"), {
@@ -3131,6 +3176,14 @@ describe("compileSharedStateArtifactForEvidenceLedgerResult", () => {
     const options = {
       config: {
         ...DEFAULT_CONFIG,
+        anthropic: {
+          ...DEFAULT_CONFIG.anthropic,
+          models: {
+            ...DEFAULT_CONFIG.anthropic.models,
+            recallExpansion: "test-recall-model",
+            sharedStateCompiler: "test-shared-state-compiler-model",
+          },
+        },
         dataDir: tempDir,
         generation: {
           ...DEFAULT_CONFIG.generation,
@@ -3183,6 +3236,7 @@ describe("compileSharedStateArtifactForEvidenceLedgerResult", () => {
 
     await compileSharedStateArtifactForEvidenceLedgerResult({
       options,
+      compilePass: pass,
       input: {
         sessionId: DEFAULT_SESSION_ID,
         turnId: "turn-global-canonicalization",
@@ -3247,6 +3301,7 @@ describe("compileSharedStateArtifactForEvidenceLedgerResult", () => {
       },
       promptVisibleLedger: "Action candidate: Follow up with the clinic.",
     });
+    expect(llmClient.requests[0]?.model).toBe("test-shared-state-compiler-model");
     const requestPayload = JSON.parse(
       String(llmClient.requests[0]?.messages[0]?.content ?? "{}"),
     ) as {

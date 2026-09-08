@@ -32,8 +32,8 @@ export {
 /**
  * Memory disclosure label classes for recalled records. These are metadata for render/emission
  * judgment after global cognition recall; they are not predicates for hiding records from the being.
- * `operator_private` and `sensitive` are reserved classes for future per-record disclosure
- * policies and may appear in persisted review/tool metadata.
+ * `operator_private` labels operator-side filing metadata. `sensitive` is reserved for
+ * per-record disclosure policies and may appear in persisted review/tool metadata.
  */
 /**
  * Label attached to recalled memory so render/disclosure can decide what may be said after recall.
