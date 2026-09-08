@@ -52,7 +52,6 @@ export {
 } from "./types.js";
 export {
   buildInboxReplyActivityProjection,
-  isEnsurableSessionRecord,
   sessionEnsureInputFromRecord,
   type InboxReplyActivityProjection,
   type InboxReplyActivityProjectionInput,

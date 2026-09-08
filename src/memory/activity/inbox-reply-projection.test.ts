@@ -1,9 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { SessionRecord } from "../../sessions/index.js";
+import { sessionEnsureInputSchema, type SessionRecord } from "../../sessions/index.js";
 import { createEntityId, createSessionId, createStreamEntryId } from "../../util/ids.js";
 import {
   buildInboxReplyActivityProjection,
-  isEnsurableSessionRecord,
   sessionEnsureInputFromRecord,
 } from "./inbox-reply-projection.js";
 
@@ -82,7 +81,7 @@ describe("buildInboxReplyActivityProjection", () => {
     }
   });
 
-  it("skips with a reason instead of building an invalid projection", () => {
+  it("skips when the session, self entity or audience is missing", () => {
     const terminal = { id: createStreamEntryId(), sessionId: createSessionId(), timestamp: 5 };
     const self = createEntityId();
     expect(
@@ -109,23 +108,27 @@ describe("buildInboxReplyActivityProjection", () => {
         senderEntityIds: [],
       }),
     ).toEqual({ kind: "skip", reason: "audience_missing" });
-    expect(
-      buildInboxReplyActivityProjection({
-        session: sessionRecord({ label: "" }),
-        selfEntityId: self,
-        terminal,
-        senderEntityIds: [],
-      }),
-    ).toEqual({ kind: "skip", reason: "session_record_incomplete" });
   });
 
-  it("treats legacy empty strings as unensurable and explicit nulls as fine", () => {
-    expect(isEnsurableSessionRecord(sessionRecord())).toBe(true);
-    expect(isEnsurableSessionRecord(sessionRecord({ source_url: null, last_turn_id: null }))).toBe(
-      true,
-    );
-    expect(isEnsurableSessionRecord(sessionRecord({ source_external_id: "" }))).toBe(false);
-    expect(isEnsurableSessionRecord(sessionRecord({ audience_label: "" }))).toBe(false);
-    expect(isEnsurableSessionRecord(sessionRecord({ last_turn_id: "" }))).toBe(false);
+  it("preserves valid nullable session fields for ensure", () => {
+    const session = sessionRecord({
+      source_external_id: null,
+      source_url: null,
+      last_turn_id: null,
+    });
+    const projection = buildInboxReplyActivityProjection({
+      session,
+      selfEntityId: createEntityId(),
+      terminal: { id: createStreamEntryId(), sessionId: session.session_id, timestamp: 5 },
+      senderEntityIds: [],
+    });
+    expect(projection.kind).toBe("project");
+    if (projection.kind === "project") {
+      expect(sessionEnsureInputSchema.parse(projection.input.session)).toMatchObject({
+        source_external_id: null,
+        source_url: null,
+        last_turn_id: null,
+      });
+    }
   });
 });

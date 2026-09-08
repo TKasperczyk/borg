@@ -50,12 +50,18 @@ not merely labelled - team-agent's model is not trusted to withhold them. The sa
 recent_activity: a person hears about activity in their groups and in their own other chats, never
 about other people's private chats; a group hears only about its own past.
 
-## Write path: POST /memory/append-turn (extended, backward compatible)
+## Write path: POST /memory/append-turn
 
-Existing body: tenant, session, user, assistant, sender{external_id, display_name},
-conversation{type, name}. New optional fields: conversation.external_id, sender.operator (boolean).
+Required identity: `tenant`, non-empty `session`, structured
+`sender{external_id, display_name, operator}`, and `conversation{type, name, external_id}`.
+Sender handles and display names and conversation external ids must be non-empty strings;
+`sender.operator` must be a boolean. Conversation type is `personal`, `groupChat`, or `channel`,
+and its name must be a string. This contract applies to full turns, observations and reply-only
+appends, as well as `/memory/context` and `/memory/remember`. Missing or invalid identity returns
+400 with a field-specific message before any tenant state is accessed.
 
-New behaviour when sender and conversation are present:
+Every append:
+
 - ensure a sessions row for the session (source_type for team-agent, label, audience_label,
   audience_entity_id = audience entity, conversation_kind, audience_role) and touch it every append;
 - stream entries carry `audience` = the audience entity so the extractor derives origin_audience
@@ -63,7 +69,10 @@ New behaviour when sender and conversation are present:
 - record activity events: `user_contact` for the user entry (speaker = sender) and `borg_replied`
   for the assistant entry (speaker = self), with audienceEntityId and participant ids, so
   listRecentOtherActiveSessionEvents works for the read path.
-Requests without sender/conversation keep today's behaviour exactly.
+
+`POST /memory/remember` also requires `content` and accepts optional `author`. It ensures the
+identified session, appends the user entry with sender, audience and conversation attribution,
+then extracts within that session under the tenant's exclusive chain.
 
 ## Read path: POST /memory/context  (x-borg-token)
 
@@ -169,8 +178,8 @@ ignored, semantic scores were compressed, and autonomous OUTCOME rollups occupie
 - `POST /memory/append-turn` with `assistant` but no `user` is a REPLY-ONLY record: append only the
   agent stream entry (conversation and audience exactly as for a full turn), record a
   `borg_replied` activity event with the self entity as speaker and actor, touch the session
-  (message count +1), and schedule ingestion as usual. `sender` may be absent; a complete
-  conversation identity is still required for the enhanced path. Requests with neither `user` nor
+  (message count +1), and schedule ingestion as usual. The same complete sender and conversation
+  identity is required, including for group/channel replies. Requests with neither `user` nor
   `assistant` return 400.
 
 ### Group participant set on context requests
@@ -223,13 +232,9 @@ returns HTTP 400 and must be corrected by the caller.
   handle. The episodic extractor uses that entity directly, retains label resolution for every
   other audience string, and uses the resolved entity's canonical name in prompts.
 - People use external-id source `team-agent.sender`; group/channel conversations use the separate
-  source `team-agent.conversation`. Enhanced append requires `conversation.external_id` for
-  `groupChat` and `channel`. If it is absent, append uses the exact legacy path (no session,
-  audience or activity enrichment) so old team-agent builds remain compatible. A group is never
-  keyed by its display name. The new `/memory/context` route has no legacy mode and returns 400
-  when a group/channel request omits this external id. The legacy append parser ignores
-  `sender.operator`, including a non-boolean value, whenever identity is incomplete; a complete
-  enhanced identity validates it strictly and returns 400 unless it is boolean or absent.
+  source `team-agent.conversation`. All conversation types require `conversation.external_id` at
+  the HTTP boundary. A group is never keyed by its display name. `sender.operator` is required
+  and validated as a boolean regardless of other identity fields.
 - Session mapping is `personal -> dm`, `groupChat -> thread`, `channel -> channel` with source type
   `team_agent`, source external id equal to the raw caller session string, and
   `sender.operator -> audience_role=operator`. A `borg_replied` event records the Borg self entity
@@ -284,15 +289,14 @@ returns HTTP 400 and must be corrected by the caller.
   indexed SQLite and the final in-memory visibility check. The current audience remains separate
   for social ranking. The implementation never uses unrestricted `crossAudience` recall followed
   by filtering, and cognition recall receives no audience-set option.
-- Request-level idempotency is unchanged from the legacy append-turn: a client retry after a lost
+- Append has no request-level idempotency: a client retry after a lost
   response appends a second turn to the stream and, consistently, a second awareness projection
   (team-agent retries only on transport failures, never on a received response). Replays of the
   same stream entry ids are idempotent and do not double-count; there is no crash-repair pass that
   re-derives projections from the stream.
-- An append without `assistant` is an observation. With complete Teams identity it uses the same
-  sender, audience, conversation and best-effort atomic awareness projection as a full turn, but
-  records only `user_contact` and increments the session message count once. Incomplete identity
-  keeps the corresponding legacy behavior (one user entry and no awareness projection). The stream
+- An append without `assistant` is an observation. It requires the same complete identity and uses
+  the same sender, audience, conversation and best-effort atomic awareness projection as a full turn, but
+  records only `user_contact` and increments the session message count once. The stream
   entry always retains the writer's append-time `timestamp`, preserving cursor order;
   `observed_at` is optional entry metadata and must be no earlier than five minutes before and no
   later than one minute after server receipt time or the sidecar returns 400. Extraction uses it as the
@@ -300,11 +304,9 @@ returns HTTP 400 and must be corrected by the caller.
   two-entry turns keep their existing writer timestamps and serialized shape.
 - A reply-only append has `assistant` but no `user`. It appends one `agent_msg`, records only a
   `borg_replied` activity whose speaker and actor are the Borg self entity, and increments the
-  session message count once through the same best-effort atomic projection. A group/channel
-  reply-only append can use `conversation.external_id` as its enhanced audience identity without a
-  sender; a personal enhanced append still requires the person handle in `sender`. Otherwise it
-  keeps the corresponding legacy one-entry behavior without awareness projection. A request with
-  neither message field returns 400.
+  session message count once through the same best-effort atomic projection. Reply-only appends
+  require the same sender and conversation identity as full turns. A request with neither message
+  field returns 400.
 - `/memory/context` accepts up to 32 strict participant objects. It collapses duplicate external
   ids in first-seen order, resolves each remaining person through `team-agent.sender` during the
   exclusive identity phase, and merges the resulting entity ids into directive recipients and
@@ -340,11 +342,9 @@ returns HTTP 400 and must be corrected by the caller.
 
 ## Implementation notes (team-agent)
 
-- A `/memory/context` request is made only when tenant, session, sender external id and operator
-  boolean, and conversation type and external id are all present. Legacy/OpenWebUI requests with
-  incomplete Teams identity call the corresponding legacy endpoint directly, unless assistant
-  policy has suppressed commitments and recent activity for that turn; the binding legacy endpoint
-  has no other section to return, so it is skipped in that case.
+- Team-agent requires complete transport identity from every caller and forwards it to the
+  sidecar for context, full-turn, observation and reply-only requests. An incomplete identity is
+  a caller error and cannot select a bare append path.
 - Each context fetch sends one request and raises on transport errors, malformed responses, or
   HTTP errors, including 400 and 404. The caller renders the section-specific unavailable marker.
   There is no field-stripping retry or endpoint redirect; 400 identifies a caller contract bug.

@@ -3,14 +3,14 @@ import { EmbeddingBankError } from "../embeddings/bank-profile.js";
 // HTTP request handler for the borg memory sidecar: a thin, tenant-routed wrapper
 // over BorgPool that exposes long-term memory to an external (e.g. Python) service.
 //
-//   POST /memory/remember    { tenant, content, author? }          -> append + extract episode(s)
+//   POST /memory/remember    { tenant, session, sender, conversation, content, author? }
+//                                                            -> append + extract episode(s)
 //   POST /memory/enqueue     { tenant, session, conversation, sender, text, ... } -> durable inbox
 //   POST /memory/await-response { tenant, sidecar_session_id, entry_id, timeout_ms? } -> long poll
 //   POST /memory/inbox-progress { tenant, sidecar_session_id, entry_ids, phase } -> interim status
-//   POST /memory/append-turn { tenant, session, user?, assistant?, observed_at?, sender?, conversation? }
-//        sender.operator? and conversation.external_id? enrich sessions/audience/activity;
-//        absent assistant records an observation; absent user records a reply-only turn;
-//        incomplete identity keeps legacy append behavior
+//   POST /memory/append-turn { tenant, session, sender, conversation, user?, assistant?, observed_at? }
+//        structured identity includes sender.operator and conversation.external_id;
+//        absent assistant records an observation; absent user records a reply-only turn
 //   POST /memory/context { tenant, session, sender, conversation, focus, context_turns,
 //                          limit?, sections?,
 //                          participants?, entity_terms?, time_range?, exclude?, venue_since?,
@@ -99,11 +99,7 @@ import {
   MAX_RECALL_QUERY_HANDLE_CHARS,
   MIN_RECALL_EXPANSION_SEMANTIC_VARIANTS,
 } from "../retrieval/recall-expansion.js";
-import {
-  isNarrativeStreamEntry,
-  type StreamEntry,
-  type StreamEntryInput,
-} from "../stream/index.js";
+import { isNarrativeStreamEntry, type StreamEntry } from "../stream/index.js";
 import { sessionIdSchema, streamEntryIdSchema } from "../util/id-schemas.js";
 import { dedupePreservingOrder } from "../util/collections.js";
 import { ConfigError, EmbeddingError } from "../util/errors.js";
@@ -133,8 +129,6 @@ import {
   sidecarConversationSchema,
   TEAM_AGENT_CONVERSATION_EXTERNAL_ID_SOURCE,
   TEAM_AGENT_SENDER_EXTERNAL_ID_SOURCE,
-  type SidecarConversation,
-  type TeamAgentIdentity,
 } from "./team-agent-identity.js";
 import { MAX_INBOX_REPLY_ACTIVITY_RECONCILE_LIMIT } from "../cognition/ingestion/index.js";
 import { taskEventSchema } from "../stream/types.js";
@@ -307,15 +301,23 @@ const SIDECAR_ADMIN_EXTERNAL_ID_SOURCE = "memory-sidecar.admin";
 const SIDECAR_ADMIN_EXTERNAL_ID = "operator-api";
 const SIDECAR_ADMIN_SESSION_EXTERNAL_ID = "memory-sidecar::admin-api";
 
-const contextConversationSchema = sidecarConversationSchema.strict();
+const contextConversationSchema = sidecarConversationSchema
+  .extend({ external_id: z.string().trim().min(1) })
+  .strict();
 
 const contextSenderSchema = z
   .object({
     external_id: z.string().trim().min(1),
     display_name: z.string().trim().min(1),
-    operator: z.boolean().optional().default(false),
+    operator: z.boolean(),
   })
   .strict();
+
+const memoryTransportIdentitySchema = z.object({
+  session: z.string().trim().min(1),
+  sender: contextSenderSchema.strip(),
+  conversation: contextConversationSchema.strip(),
+});
 
 const contextTurnSchema = z
   .object({
@@ -365,7 +367,10 @@ const memoryContextBodySchema = z
     session: z.string().trim().min(1),
     sender: contextSenderSchema,
     conversation: contextConversationSchema,
-    participants: z.array(contextSenderSchema).max(MAX_CONTEXT_PARTICIPANTS).optional(),
+    participants: z
+      .array(contextSenderSchema.extend({ operator: z.boolean().optional().default(false) }))
+      .max(MAX_CONTEXT_PARTICIPANTS)
+      .optional(),
     entity_terms: z
       .array(z.string().trim().min(1).max(MAX_CONTEXT_ENTITY_TERM_CHARS))
       .max(MAX_CONTEXT_ENTITY_TERMS)
@@ -413,14 +418,6 @@ const memoryContextBodySchema = z
         code: "custom",
         path: ["sections"],
         message: "autobiographical requires episodes (its period comes from the recall plan)",
-      });
-    }
-
-    if (value.conversation.type !== "personal" && value.conversation.external_id === undefined) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["conversation", "external_id"],
-        message: "groupChat and channel context requires conversation.external_id",
       });
     }
 
@@ -674,48 +671,6 @@ function asString(value: unknown): string {
 
 function asContentString(value: unknown): string {
   return typeof value === "string" ? value : "";
-}
-
-type AppendTurnSender = {
-  externalId: string;
-  displayName: string;
-  operator: unknown;
-};
-
-type EnhancedAppendTurnSender = {
-  externalId: string;
-  displayName: string;
-  operator: boolean;
-};
-
-function parseAppendTurnSender(
-  value: unknown,
-): { valid: true; sender: AppendTurnSender | null } | { valid: false } {
-  if (value === undefined) {
-    return { valid: true, sender: null };
-  }
-
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return { valid: false };
-  }
-
-  const sender = value as Record<string, unknown>;
-  const externalId = asString(sender.external_id);
-  const displayName = asString(sender.display_name);
-  const operator = sender.operator;
-
-  if (externalId.length === 0 || displayName.length === 0) {
-    return { valid: false };
-  }
-
-  return {
-    valid: true,
-    sender: {
-      externalId,
-      displayName,
-      operator,
-    },
-  };
 }
 
 function parseRawRequestTarget(rawUrl: string): {
@@ -3252,36 +3207,64 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
         return;
       }
 
-      if (rawPath === "/memory/remember") {
-        const content = asString(body.content);
-        if (content === "") {
-          send(res, 400, { error: "missing 'content'" });
+      if (rawPath === "/memory/remember" || rawPath === "/memory/append-turn") {
+        const parsedIdentity = memoryTransportIdentitySchema.safeParse(body);
+        if (!parsedIdentity.success) {
+          send(res, 400, {
+            error: `invalid transport identity: ${parsedIdentity.error.issues
+              .map((issue) => `${issue.path.join(".")}: ${issue.message}`)
+              .join("; ")}`,
+          });
           return;
         }
-        const author = asString(body.author);
-        const text = author === "" ? content : `[${author}] ${content}`;
-        // Exclusive: append + extract must run serialized per tenant, else two
-        // concurrent remembers for one tenant interleave and each extract (with an
-        // open-ended sinceTs) sweeps the other's just-appended entry -> duplicates.
-        const extracted = await pool.withTenant(
-          tenant,
-          async (borg) => {
-            const entry = await borg.stream.append({ kind: "user_msg", content: text });
-            return borg.episodic.extract({
-              sinceTs: entry.timestamp,
-              bypassSalienceGate: true,
-            });
-          },
-          { exclusive: true },
-        );
-        send(res, 200, { ok: true, extracted });
-        return;
-      }
+        const sessionRaw = parsedIdentity.data.session;
+        const session = sessionFromCaller(sessionRaw);
+        const sender = {
+          externalId: parsedIdentity.data.sender.external_id,
+          displayName: parsedIdentity.data.sender.display_name,
+          operator: parsedIdentity.data.sender.operator,
+        };
+        const conversation = parsedIdentity.data.conversation;
 
-      if (rawPath === "/memory/append-turn") {
-        const sessionRaw = asString(body.session);
-        if (sessionRaw === "") {
-          send(res, 400, { error: "missing 'session'" });
+        if (rawPath === "/memory/remember") {
+          const content = asString(body.content);
+          if (content === "") {
+            send(res, 400, { error: "missing 'content'" });
+            return;
+          }
+          const author = asString(body.author);
+          const text = author === "" ? content : `[${author}] ${content}`;
+          // Exclusive: keep the session's identity, append and extraction serialized per tenant.
+          const extracted = await pool.withTenant(
+            tenant,
+            async (borg) => {
+              const identity = resolveTeamAgentIdentity({
+                borg,
+                session,
+                rawSession: sessionRaw,
+                sender,
+                conversation,
+              });
+              borg.sessions.ensure(identity.sessionEnsureInput);
+              const entry = await borg.stream.append(
+                {
+                  kind: "user_msg",
+                  content: text,
+                  sender_entity_id: identity.senderEntityId,
+                  audience: identity.audienceEntity.id,
+                  conversation: identity.conversation,
+                },
+                { session },
+              );
+              return borg.episodic.extract({
+                session,
+                sinceTs: entry.timestamp,
+                bypassSalienceGate: true,
+              });
+            },
+            { exclusive: true },
+          );
+          send(res, 200, { ok: true, extracted });
           return;
         }
         const userProvided = body.user !== undefined;
@@ -3323,138 +3306,149 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
             return;
           }
         }
-        const parsedSender = parseAppendTurnSender(body.sender);
-        if (!parsedSender.valid) {
-          send(res, 400, {
-            error: "invalid 'sender'; expected non-empty 'external_id' and 'display_name'",
-          });
-          return;
-        }
-        let conversation: SidecarConversation | undefined;
-        if (body.conversation !== undefined) {
-          const parsedConversation = sidecarConversationSchema.safeParse(body.conversation);
-
-          if (!parsedConversation.success) {
-            send(res, 400, {
-              error:
-                "invalid 'conversation'; expected type 'personal', 'groupChat', or 'channel' and string 'name'",
-            });
-            return;
-          }
-
-          conversation = parsedConversation.data;
-        }
-
-        const session = sessionFromCaller(sessionRaw);
-        const conversationIdentityAvailable =
-          conversation !== undefined &&
-          (conversation.type === "personal" || conversation.external_id !== undefined);
-        const enhancedIdentityAvailable =
-          conversationIdentityAvailable &&
-          (parsedSender.sender !== null ||
-            (replyOnly && conversation !== undefined && conversation.type !== "personal"));
-        let enhancedSender: EnhancedAppendTurnSender | null = null;
-
-        if (enhancedIdentityAvailable && parsedSender.sender !== null) {
-          if (
-            parsedSender.sender.operator !== undefined &&
-            typeof parsedSender.sender.operator !== "boolean"
-          ) {
-            send(res, 400, { error: "invalid 'sender.operator'; expected boolean" });
-            return;
-          }
-
-          enhancedSender = {
-            externalId: parsedSender.sender.externalId,
-            displayName: parsedSender.sender.displayName,
-            operator: parsedSender.sender.operator === true,
-          };
-        }
         const entries = await pool.withTenant(
           tenant,
           async (borg) => {
-            if (enhancedIdentityAvailable && conversation !== undefined) {
-              const identity: TeamAgentIdentity = resolveTeamAgentIdentity({
-                borg,
-                session,
-                rawSession: sessionRaw,
-                sender: enhancedSender,
-                conversation,
-              });
-              const userEntryInput =
-                userProvided && identity.senderEntityId !== null
-                  ? {
-                      kind: "user_msg" as const,
-                      content: user,
-                      audience: identity.audienceEntity.id,
-                      sender_entity_id: identity.senderEntityId,
-                      conversation: identity.conversation,
-                      ...(observation && parsedObservedAt.data !== undefined
-                        ? { observed_at: parsedObservedAt.data }
-                        : {}),
-                    }
-                  : undefined;
-              const assistantEntryInput = assistantProvided
+            const identity = resolveTeamAgentIdentity({
+              borg,
+              session,
+              rawSession: sessionRaw,
+              sender,
+              conversation,
+            });
+            const userEntryInput =
+              userProvided && identity.senderEntityId !== null
                 ? {
-                    kind: "agent_msg" as const,
-                    content: assistant,
+                    kind: "user_msg" as const,
+                    content: user,
                     audience: identity.audienceEntity.id,
+                    sender_entity_id: identity.senderEntityId,
                     conversation: identity.conversation,
+                    ...(observation && parsedObservedAt.data !== undefined
+                      ? { observed_at: parsedObservedAt.data }
+                      : {}),
                   }
                 : undefined;
-              let enrichedEntries: StreamEntry[];
+            const assistantEntryInput = assistantProvided
+              ? {
+                  kind: "agent_msg" as const,
+                  content: assistant,
+                  audience: identity.audienceEntity.id,
+                  conversation: identity.conversation,
+                }
+              : undefined;
+            let enrichedEntries: StreamEntry[];
+
+            if (observation) {
+              if (userEntryInput === undefined) {
+                throw new Error("observation did not produce a user entry input");
+              }
+              enrichedEntries = [await borg.stream.append(userEntryInput, { session })];
+            } else if (replyOnly) {
+              if (assistantEntryInput === undefined) {
+                throw new Error("reply-only append did not produce an agent entry input");
+              }
+              enrichedEntries = [await borg.stream.append(assistantEntryInput, { session })];
+            } else {
+              if (userEntryInput === undefined || assistantEntryInput === undefined) {
+                throw new Error("completed turn did not produce both entry inputs");
+              }
+              enrichedEntries = await borg.stream.appendMany(
+                [userEntryInput, assistantEntryInput],
+                { session },
+              );
+            }
+
+            const userEntry = replyOnly ? undefined : enrichedEntries[0];
+            const assistantEntry = observation ? undefined : enrichedEntries[replyOnly ? 0 : 1];
+
+            if (
+              (userProvided && userEntry === undefined) ||
+              (assistantProvided && assistantEntry === undefined)
+            ) {
+              throw new Error("append did not produce the requested entries");
+            }
+
+            try {
+              const firstEntry = enrichedEntries[0];
+
+              if (firstEntry === undefined) {
+                throw new Error("append did not produce a projection source entry");
+              }
+
+              const sessionProjection = {
+                ...identity.sessionEnsureInput,
+                created_at: firstEntry.timestamp,
+                last_activity_at: firstEntry.timestamp,
+              };
 
               if (observation) {
-                if (userEntryInput === undefined) {
-                  throw new Error("enhanced observation did not produce a user entry input");
+                if (userEntry === undefined || identity.senderEntityId === null) {
+                  throw new Error("observation requires a sender entry");
                 }
-                enrichedEntries = [await borg.stream.append(userEntryInput, { session })];
-              } else if (replyOnly) {
-                if (assistantEntryInput === undefined) {
-                  throw new Error(
-                    "enhanced reply-only append did not produce an agent entry input",
-                  );
-                }
-                enrichedEntries = [await borg.stream.append(assistantEntryInput, { session })];
+
+                borg.activity.projectObservedTurn({
+                  session: sessionProjection,
+                  userContact: {
+                    kind: "user_contact",
+                    occurredAt: userEntry.timestamp,
+                    sessionId: userEntry.session_id,
+                    speakerEntityId: identity.senderEntityId,
+                    actorEntityId: identity.senderEntityId,
+                    audienceEntityId: identity.audienceEntity.id,
+                    participantEntityIds: dedupePreservingOrder([
+                      identity.senderEntityId,
+                      identity.audienceEntity.id,
+                    ]),
+                    sourceStreamEntryIds: [userEntry.id],
+                  },
+                  touch: {
+                    at: userEntry.timestamp,
+                    messageCountDelta: 1,
+                  },
+                });
               } else {
-                if (userEntryInput === undefined || assistantEntryInput === undefined) {
-                  throw new Error("enhanced completed turn did not produce both entry inputs");
-                }
-                enrichedEntries = await borg.stream.appendMany(
-                  [userEntryInput, assistantEntryInput],
-                  { session },
-                );
-              }
-
-              const userEntry = replyOnly ? undefined : enrichedEntries[0];
-              const assistantEntry = observation ? undefined : enrichedEntries[replyOnly ? 0 : 1];
-
-              if (
-                (userProvided && userEntry === undefined) ||
-                (assistantProvided && assistantEntry === undefined)
-              ) {
-                throw new Error("enhanced append did not produce the requested entries");
-              }
-
-              try {
-                const firstEntry = enrichedEntries[0];
-
-                if (firstEntry === undefined) {
-                  throw new Error("enhanced append did not produce a projection source entry");
+                if (assistantEntry === undefined) {
+                  throw new Error("append did not produce an assistant entry");
                 }
 
-                const sessionProjection = {
-                  ...identity.sessionEnsureInput,
-                  created_at: firstEntry.timestamp,
-                  last_activity_at: firstEntry.timestamp,
+                const selfEntity = borg.entities.getSelf();
+
+                if (selfEntity === null) {
+                  throw new Error("append awareness projection requires a self entity");
+                }
+
+                const borgReplied = {
+                  kind: "borg_replied" as const,
+                  occurredAt: assistantEntry.timestamp,
+                  sessionId: assistantEntry.session_id,
+                  speakerEntityId: selfEntity.id,
+                  actorEntityId: selfEntity.id,
+                  audienceEntityId: identity.audienceEntity.id,
+                  participantEntityIds: dedupePreservingOrder([
+                    selfEntity.id,
+                    ...(identity.senderEntityId === null ? [] : [identity.senderEntityId]),
+                    identity.audienceEntity.id,
+                  ]),
+                  sourceStreamEntryIds: [assistantEntry.id],
+                };
+                const touch = {
+                  at: assistantEntry.timestamp,
+                  messageCountDelta: 1,
                 };
 
-                if (observation) {
+                if (replyOnly) {
+                  borg.activity.projectRepliedTurn({
+                    session: sessionProjection,
+                    borgReplied,
+                    touch,
+                  });
+                } else {
                   if (userEntry === undefined || identity.senderEntityId === null) {
-                    throw new Error("enhanced observation requires a sender entry");
+                    throw new Error("completed turn requires a sender entry");
                   }
 
-                  borg.activity.projectObservedTurn({
+                  borg.activity.projectCompletedTurn({
                     session: sessionProjection,
                     userContact: {
                       kind: "user_contact",
@@ -3469,149 +3463,35 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
                       ]),
                       sourceStreamEntryIds: [userEntry.id],
                     },
-                    touch: {
-                      at: userEntry.timestamp,
-                      messageCountDelta: 1,
-                    },
+                    borgReplied,
+                    touch,
                   });
-                } else {
-                  if (assistantEntry === undefined) {
-                    throw new Error("enhanced append did not produce an assistant entry");
-                  }
-
-                  const selfEntity = borg.entities.getSelf();
-
-                  if (selfEntity === null) {
-                    throw new Error("enhanced append awareness projection requires a self entity");
-                  }
-
-                  const borgReplied = {
-                    kind: "borg_replied" as const,
-                    occurredAt: assistantEntry.timestamp,
-                    sessionId: assistantEntry.session_id,
-                    speakerEntityId: selfEntity.id,
-                    actorEntityId: selfEntity.id,
-                    audienceEntityId: identity.audienceEntity.id,
-                    participantEntityIds: dedupePreservingOrder([
-                      selfEntity.id,
-                      ...(identity.senderEntityId === null ? [] : [identity.senderEntityId]),
-                      identity.audienceEntity.id,
-                    ]),
-                    sourceStreamEntryIds: [assistantEntry.id],
-                  };
-                  const touch = {
-                    at: assistantEntry.timestamp,
-                    messageCountDelta: 1,
-                  };
-
-                  if (replyOnly) {
-                    borg.activity.projectRepliedTurn({
-                      session: sessionProjection,
-                      borgReplied,
-                      touch,
-                    });
-                  } else {
-                    if (userEntry === undefined || identity.senderEntityId === null) {
-                      throw new Error("enhanced completed turn requires a sender entry");
-                    }
-
-                    borg.activity.projectCompletedTurn({
-                      session: sessionProjection,
-                      userContact: {
-                        kind: "user_contact",
-                        occurredAt: userEntry.timestamp,
-                        sessionId: userEntry.session_id,
-                        speakerEntityId: identity.senderEntityId,
-                        actorEntityId: identity.senderEntityId,
-                        audienceEntityId: identity.audienceEntity.id,
-                        participantEntityIds: dedupePreservingOrder([
-                          identity.senderEntityId,
-                          identity.audienceEntity.id,
-                        ]),
-                        sourceStreamEntryIds: [userEntry.id],
-                      },
-                      borgReplied,
-                      touch,
-                    });
-                  }
                 }
-              } catch (error) {
-                const projectionEntries = enrichedEntries.map((entry) => entry.id);
-                const lastProjectionEntryId = projectionEntries.at(-1);
+              }
+            } catch (error) {
+              const projectionEntries = enrichedEntries.map((entry) => entry.id);
+              const lastProjectionEntryId = projectionEntries.at(-1);
 
-                if (lastProjectionEntryId === undefined) {
-                  throw error;
-                }
-
-                console.error(
-                  `memory-sidecar: append-turn awareness projection failed for tenant "${tenant}"`,
-                  error,
-                );
-                const projectionErrorCode = errorCode(error);
-                traceRegistry?.tracerFor(tenant).emit("sidecar.append_projection.degraded", {
-                  turnId: `sidecar_append:${lastProjectionEntryId}`,
-                  session_id: session,
-                  reason: "awareness_projection_failed",
-                  error_code:
-                    typeof projectionErrorCode === "string" ? projectionErrorCode : undefined,
-                  source_stream_entry_ids: projectionEntries,
-                });
+              if (lastProjectionEntryId === undefined) {
+                throw error;
               }
 
-              return enrichedEntries;
-            }
-
-            const senderEntityId =
-              parsedSender.sender === null
-                ? undefined
-                : borg.entities.resolveExternal({
-                    source: TEAM_AGENT_SENDER_EXTERNAL_ID_SOURCE,
-                    externalId: parsedSender.sender.externalId,
-                    canonicalName: parsedSender.sender.displayName,
-                    kind: "person",
-                    provenance: "transport_sender",
-                  });
-            const persistedConversation =
-              conversation === undefined
-                ? undefined
-                : { type: conversation.type, name: conversation.name };
-            const inputs: StreamEntryInput[] = [];
-
-            if (userProvided) {
-              inputs.push({
-                kind: "user_msg",
-                content: user,
-                ...(observation && parsedObservedAt.data !== undefined
-                  ? { observed_at: parsedObservedAt.data }
-                  : {}),
-                ...(senderEntityId === undefined ? {} : { sender_entity_id: senderEntityId }),
-                ...(persistedConversation === undefined
-                  ? {}
-                  : { conversation: persistedConversation }),
+              console.error(
+                `memory-sidecar: append-turn awareness projection failed for tenant "${tenant}"`,
+                error,
+              );
+              const projectionErrorCode = errorCode(error);
+              traceRegistry?.tracerFor(tenant).emit("sidecar.append_projection.degraded", {
+                turnId: `sidecar_append:${lastProjectionEntryId}`,
+                session_id: session,
+                reason: "awareness_projection_failed",
+                error_code:
+                  typeof projectionErrorCode === "string" ? projectionErrorCode : undefined,
+                source_stream_entry_ids: projectionEntries,
               });
             }
 
-            if (assistantProvided) {
-              inputs.push({
-                kind: "agent_msg",
-                content: assistant,
-                ...(persistedConversation === undefined
-                  ? {}
-                  : { conversation: persistedConversation }),
-              });
-            }
-
-            if (inputs.length === 1) {
-              const singleEntry = inputs[0];
-
-              if (singleEntry === undefined) {
-                throw new Error("single-entry append did not produce an input");
-              }
-
-              return [await borg.stream.append(singleEntry, { session })];
-            }
-
-            return borg.stream.appendMany(inputs, { session });
+            return enrichedEntries;
           },
           { exclusive: true },
         );

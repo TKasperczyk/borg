@@ -58,6 +58,10 @@ import {
 } from "../util/ids.js";
 
 const TOKEN = "secret-token";
+const TRANSPORT_IDENTITY = {
+  sender: { external_id: "sender", display_name: "Sender", operator: false },
+  conversation: { type: "personal", name: "Personal chat", external_id: "conversation" },
+};
 // Default discovery for stub pools: the tenant these tests exercise. Only the
 // fan-out tests override it.
 const STUB_TENANTS = ["acme"];
@@ -1940,8 +1944,8 @@ describe("memory sidecar handler", () => {
               context_turns: [],
               session: "chat",
               sections: ["episodes"],
-              sender: { external_id: "alice", display_name: "Alice" },
-              conversation: { type: "personal", name: "Alice" },
+              sender: { external_id: "alice", display_name: "Alice", operator: false },
+              conversation: { type: "personal", name: "Alice", external_id: "personal-a" },
             }
           : { query: "who leads" }),
       };
@@ -2896,7 +2900,14 @@ describe("memory sidecar handler", () => {
     const res = await post(
       base,
       "/memory/remember",
-      { tenant: "acme", content: "fact", author: "Bob" },
+      {
+        sender: TRANSPORT_IDENTITY.sender,
+        conversation: TRANSPORT_IDENTITY.conversation,
+        tenant: "acme",
+        session: "remember",
+        content: "fact",
+        author: "Author",
+      },
       TOKEN,
     );
     expect(res.status).toBe(200);
@@ -2905,15 +2916,176 @@ describe("memory sidecar handler", () => {
       extracted: { inserted: 1, updated: 0, skipped: 0 },
     });
     expect(rec.tenants).toEqual(["acme"]);
+    expect(rec.exclusives).toEqual([true]);
+    const senderId = rec.externalSenderIds.get("sender");
+    expect(senderId).toBeDefined();
+    expect(rec.appendCalls).toEqual([
+      {
+        session: expect.stringMatching(/^sess_/),
+        input: {
+          kind: "user_msg",
+          content: "[Author] fact",
+          sender_entity_id: senderId,
+          audience: senderId,
+          conversation: { type: "personal", name: "Personal chat" },
+        },
+      },
+    ]);
+    expect(rec.sessionEnsures).toEqual([
+      expect.objectContaining({
+        session_id: rec.appendCalls[0]?.session,
+        audience_entity_id: senderId,
+      }),
+    ]);
     expect(rec.extractOptions).toEqual([
       {
+        session: rec.appendCalls[0]?.session,
         sinceTs: 1000,
         bypassSalienceGate: true,
       },
     ]);
   });
 
-  it("appends a raw turn and schedules background ingestion", async () => {
+  describe.each([
+    {
+      mode: "completed append",
+      path: "/memory/append-turn",
+      fields: { user: "hello", assistant: "hi" },
+    },
+    { mode: "observation", path: "/memory/append-turn", fields: { user: "hello" } },
+    { mode: "reply-only append", path: "/memory/append-turn", fields: { assistant: "hi" } },
+    { mode: "remember", path: "/memory/remember", fields: { content: "fact" } },
+    { mode: "context", path: "/memory/context", fields: { sections: ["audience"] } },
+  ])("$mode transport identity", ({ path, fields }) => {
+    it.each([
+      { invalid: "missing session", overrides: { session: undefined }, field: "session" },
+      { invalid: "empty session", overrides: { session: "" }, field: "session" },
+      { invalid: "blank session", overrides: { session: "   " }, field: "session" },
+      { invalid: "non-string session", overrides: { session: 42 }, field: "session" },
+      { invalid: "missing sender", overrides: { sender: undefined }, field: "sender" },
+      { invalid: "null sender", overrides: { sender: null }, field: "sender" },
+      { invalid: "array sender", overrides: { sender: [] }, field: "sender" },
+      { invalid: "string sender", overrides: { sender: "sender" }, field: "sender" },
+      {
+        invalid: "missing sender external id",
+        overrides: { sender: { ...TRANSPORT_IDENTITY.sender, external_id: undefined } },
+        field: "sender.external_id",
+      },
+      {
+        invalid: "blank sender external id",
+        overrides: { sender: { ...TRANSPORT_IDENTITY.sender, external_id: " " } },
+        field: "sender.external_id",
+      },
+      {
+        invalid: "missing sender display name",
+        overrides: { sender: { ...TRANSPORT_IDENTITY.sender, display_name: undefined } },
+        field: "sender.display_name",
+      },
+      {
+        invalid: "empty sender display name",
+        overrides: { sender: { ...TRANSPORT_IDENTITY.sender, display_name: "" } },
+        field: "sender.display_name",
+      },
+      {
+        invalid: "missing operator",
+        overrides: { sender: { external_id: "sender", display_name: "Sender" } },
+        field: "sender.operator",
+      },
+      {
+        invalid: "string operator",
+        overrides: { sender: { ...TRANSPORT_IDENTITY.sender, operator: "false" } },
+        field: "sender.operator",
+      },
+      {
+        invalid: "numeric operator",
+        overrides: { sender: { ...TRANSPORT_IDENTITY.sender, operator: 0 } },
+        field: "sender.operator",
+      },
+      {
+        invalid: "null operator",
+        overrides: { sender: { ...TRANSPORT_IDENTITY.sender, operator: null } },
+        field: "sender.operator",
+      },
+      {
+        invalid: "missing conversation",
+        overrides: { conversation: undefined },
+        field: "conversation",
+      },
+      { invalid: "null conversation", overrides: { conversation: null }, field: "conversation" },
+      { invalid: "array conversation", overrides: { conversation: [] }, field: "conversation" },
+      {
+        invalid: "string conversation",
+        overrides: { conversation: "personal" },
+        field: "conversation",
+      },
+      {
+        invalid: "missing conversation type",
+        overrides: { conversation: { ...TRANSPORT_IDENTITY.conversation, type: undefined } },
+        field: "conversation.type",
+      },
+      {
+        invalid: "unknown conversation type",
+        overrides: { conversation: { ...TRANSPORT_IDENTITY.conversation, type: "directMessage" } },
+        field: "conversation.type",
+      },
+      {
+        invalid: "missing conversation name",
+        overrides: { conversation: { ...TRANSPORT_IDENTITY.conversation, name: undefined } },
+        field: "conversation.name",
+      },
+      {
+        invalid: "non-string conversation name",
+        overrides: { conversation: { ...TRANSPORT_IDENTITY.conversation, name: 42 } },
+        field: "conversation.name",
+      },
+      ...["personal", "groupChat", "channel"].map((type) => ({
+        invalid: `missing ${type} conversation external id`,
+        overrides: { conversation: { type, name: "Conversation" } },
+        field: "conversation.external_id",
+      })),
+      {
+        invalid: "blank conversation external id",
+        overrides: { conversation: { ...TRANSPORT_IDENTITY.conversation, external_id: " " } },
+        field: "conversation.external_id",
+      },
+      {
+        invalid: "bare request",
+        overrides: { sender: undefined, conversation: undefined },
+        field: "sender",
+      },
+      {
+        invalid: "non-boolean operator with incomplete conversation",
+        overrides: {
+          sender: { ...TRANSPORT_IDENTITY.sender, operator: "false" },
+          conversation: { type: "groupChat", name: "Room" },
+        },
+        field: "sender.operator",
+      },
+    ])("rejects $invalid before opening a tenant", async ({ overrides, field }) => {
+      const { pool, rec } = recordingPool();
+      const base = await start(pool);
+      const response = await post(
+        base,
+        path,
+        {
+          tenant: "acme",
+          session: "identity-validation",
+          ...TRANSPORT_IDENTITY,
+          ...fields,
+          ...overrides,
+        },
+        TOKEN,
+      );
+
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({ error: expect.stringContaining(`${field}:`) });
+      expect(rec.tenants).toEqual([]);
+      expect(rec.appendCalls).toEqual([]);
+      expect(rec.appendManyCalls).toEqual([]);
+    });
+  });
+
+  it("appends an attributed turn and schedules background ingestion", async () => {
     const { pool, rec } = recordingPool();
     const base = await start(pool);
     const rawSession = "tenant::user::conversation";
@@ -2922,6 +3094,8 @@ describe("memory sidecar handler", () => {
       base,
       "/memory/append-turn",
       {
+        sender: TRANSPORT_IDENTITY.sender,
+        conversation: TRANSPORT_IDENTITY.conversation,
         tenant: "acme",
         session: rawSession,
         user: "hello",
@@ -2942,13 +3116,21 @@ describe("memory sidecar handler", () => {
     expect(rec.appendMany).toEqual({
       session: expectedSession,
       inputs: [
-        { kind: "user_msg", content: "hello" },
-        { kind: "agent_msg", content: "hi there" },
+        {
+          kind: "user_msg",
+          content: "hello",
+          sender_entity_id: rec.externalSenderIds.get("sender"),
+          audience: rec.externalSenderIds.get("sender"),
+          conversation: { type: "personal", name: "Personal chat" },
+        },
+        {
+          kind: "agent_msg",
+          content: "hi there",
+          audience: rec.externalSenderIds.get("sender"),
+          conversation: { type: "personal", name: "Personal chat" },
+        },
       ],
     });
-    expect(JSON.stringify(rec.appendMany?.inputs)).toBe(
-      '[{"kind":"user_msg","content":"hello"},{"kind":"agent_msg","content":"hi there"}]',
-    );
     expect(rec.tenants).toEqual(["acme", "acme"]);
     expect(rec.exclusives).toEqual([true, undefined]);
     expect(rec.ingestSessions).toEqual([expectedSession]);
@@ -2960,7 +3142,12 @@ describe("memory sidecar handler", () => {
     const response = await post(
       base,
       "/memory/append-turn",
-      { tenant: "acme", session: "empty-turn" },
+      {
+        sender: TRANSPORT_IDENTITY.sender,
+        conversation: TRANSPORT_IDENTITY.conversation,
+        tenant: "acme",
+        session: "empty-turn",
+      },
       TOKEN,
     );
 
@@ -2989,11 +3176,12 @@ describe("memory sidecar handler", () => {
       base,
       "/memory/append-turn",
       {
+        sender: TRANSPORT_IDENTITY.sender,
         tenant: "acme",
         session: "room",
         user: "hello",
         assistant: "hi",
-        conversation: testCase.conversation,
+        conversation: { ...testCase.conversation, external_id: "conversation" },
       },
       TOKEN,
     );
@@ -3001,12 +3189,23 @@ describe("memory sidecar handler", () => {
     expect(response.status).toBe(200);
     await response.json();
     expect(rec.appendMany?.inputs).toEqual([
-      { kind: "user_msg", content: "hello", conversation: testCase.persisted },
-      { kind: "agent_msg", content: "hi", conversation: testCase.persisted },
+      expect.objectContaining({
+        kind: "user_msg",
+        content: "hello",
+        sender_entity_id: rec.externalSenderIds.get("sender"),
+        audience: expect.any(String),
+        conversation: testCase.persisted,
+      }),
+      expect.objectContaining({
+        kind: "agent_msg",
+        content: "hi",
+        audience: expect.any(String),
+        conversation: testCase.persisted,
+      }),
     ]);
   });
 
-  it("resolves optional sender identities and stamps only their user stream entries", async () => {
+  it("resolves structured sender identities and stamps only their user stream entries", async () => {
     const { pool, rec } = recordingPool();
     const base = await start(pool);
 
@@ -3018,11 +3217,12 @@ describe("memory sidecar handler", () => {
         base,
         "/memory/append-turn",
         {
+          conversation: TRANSPORT_IDENTITY.conversation,
           tenant: "acme",
           session: "shared-room",
           user: `message from ${sender.display_name}`,
           assistant: "acknowledged",
-          sender,
+          sender: { ...sender, operator: false },
         },
         TOKEN,
       );
@@ -3055,12 +3255,34 @@ describe("memory sidecar handler", () => {
     ]);
     expect(rec.appendManyCalls).toHaveLength(2);
     expect(rec.appendManyCalls[0]?.inputs).toEqual([
-      { kind: "user_msg", content: "message from Alice Nowak", sender_entity_id: aliceId },
-      { kind: "agent_msg", content: "acknowledged" },
+      {
+        kind: "user_msg",
+        content: "message from Alice Nowak",
+        sender_entity_id: aliceId,
+        audience: aliceId,
+        conversation: { type: "personal", name: "Personal chat" },
+      },
+      {
+        kind: "agent_msg",
+        content: "acknowledged",
+        audience: aliceId,
+        conversation: { type: "personal", name: "Personal chat" },
+      },
     ]);
     expect(rec.appendManyCalls[1]?.inputs).toEqual([
-      { kind: "user_msg", content: "message from Bob Chen", sender_entity_id: bobId },
-      { kind: "agent_msg", content: "acknowledged" },
+      {
+        kind: "user_msg",
+        content: "message from Bob Chen",
+        sender_entity_id: bobId,
+        audience: bobId,
+        conversation: { type: "personal", name: "Personal chat" },
+      },
+      {
+        kind: "agent_msg",
+        content: "acknowledged",
+        audience: bobId,
+        conversation: { type: "personal", name: "Personal chat" },
+      },
     ]);
   });
 
@@ -3080,7 +3302,7 @@ describe("memory sidecar handler", () => {
           display_name: "Alice",
           operator: true,
         },
-        conversation: { type: "personal", name: "Alice" },
+        conversation: { external_id: "conversation", type: "personal", name: "Alice" },
       },
       TOKEN,
     );
@@ -3153,7 +3375,7 @@ describe("memory sidecar handler", () => {
         session: "tenant::group::observed",
         user: "Alice told Bob about the launch.",
         observed_at: observedAt,
-        sender: { external_id: "alice", display_name: "Alice" },
+        sender: { operator: false, external_id: "alice", display_name: "Alice" },
         conversation: {
           type: "groupChat",
           name: "AI Ninjas",
@@ -3214,6 +3436,7 @@ describe("memory sidecar handler", () => {
       base,
       "/memory/append-turn",
       {
+        sender: TRANSPORT_IDENTITY.sender,
         tenant: "acme",
         session: "tenant::group::reply-only",
         assistant: "A proactive update from the agent.",
@@ -3266,7 +3489,7 @@ describe("memory sidecar handler", () => {
           speakerEntityId: selfEntityId,
           actorEntityId: selfEntityId,
           audienceEntityId: group,
-          participantEntityIds: [selfEntityId, group],
+          participantEntityIds: [selfEntityId, rec.externalSenderIds.get("sender"), group],
           sourceStreamEntryIds: ["strm_bbbbbbbbbbbbbbbb"],
         },
         touch: { at: 1000, messageCountDelta: 1 },
@@ -3288,7 +3511,7 @@ describe("memory sidecar handler", () => {
     expect(rec.ingestSessions).toEqual([payload.session]);
   });
 
-  it("returns a durable enhanced append when the awareness projection fails atomically", async () => {
+  it("returns a durable append when the awareness projection fails atomically", async () => {
     const { pool, rec } = recordingPool();
     const traceRegistry = new MemoryTraceRegistry();
     rec.activityProjectionError = Object.assign(new Error("injected projection failure"), {
@@ -3306,8 +3529,8 @@ describe("memory sidecar handler", () => {
           session: "tenant::alice::projection-failure",
           user: "durable user message",
           assistant: "durable assistant message",
-          sender: { external_id: "alice", display_name: "Alice" },
-          conversation: { type: "personal", name: "Alice" },
+          sender: { operator: false, external_id: "alice", display_name: "Alice" },
+          conversation: { external_id: "conversation", type: "personal", name: "Alice" },
         },
         TOKEN,
       );
@@ -3342,7 +3565,7 @@ describe("memory sidecar handler", () => {
     }
   });
 
-  it("uses a separate stable group identity for enhanced group and channel appends", async () => {
+  it("uses a separate stable group identity for group and channel appends", async () => {
     const { pool, rec } = recordingPool();
     const base = await start(pool);
 
@@ -3358,7 +3581,7 @@ describe("memory sidecar handler", () => {
           session: `session-${conversation.external_id}`,
           user: "hello",
           assistant: "hi",
-          sender: { external_id: "alice", display_name: "Alice" },
+          sender: { operator: false, external_id: "alice", display_name: "Alice" },
           conversation,
         },
         TOKEN,
@@ -3384,73 +3607,6 @@ describe("memory sidecar handler", () => {
       expect.objectContaining({ conversation_kind: "thread", audience_entity_id: group }),
       expect.objectContaining({ conversation_kind: "channel", audience_entity_id: channel }),
     ]);
-  });
-
-  it("keeps the exact legacy append path when a group sender lacks conversation.external_id", async () => {
-    const { pool, rec } = recordingPool();
-    const base = await start(pool);
-    const response = await post(
-      base,
-      "/memory/append-turn",
-      {
-        tenant: "acme",
-        session: "legacy-group",
-        user: "hello",
-        assistant: "hi",
-        sender: { external_id: "alice", display_name: "Alice", operator: "legacy-value" },
-        conversation: { type: "groupChat", name: "AI Ninjas" },
-      },
-      TOKEN,
-    );
-
-    expect(response.status).toBe(200);
-    await response.json();
-    const alice = rec.externalSenderIds.get("alice");
-    expect(rec.appendMany?.inputs).toEqual([
-      {
-        kind: "user_msg",
-        content: "hello",
-        sender_entity_id: alice,
-        conversation: { type: "groupChat", name: "AI Ninjas" },
-      },
-      {
-        kind: "agent_msg",
-        content: "hi",
-        conversation: { type: "groupChat", name: "AI Ninjas" },
-      },
-    ]);
-    expect(rec.sessionEnsures).toEqual([]);
-    expect(rec.activityRecords).toEqual([]);
-    expect(
-      rec.resolvedExternalEntities.some(
-        (input) => (input as { source?: string }).source === "team-agent.conversation",
-      ),
-    ).toBe(false);
-  });
-
-  it("validates sender.operator only when complete enhanced identity is available", async () => {
-    const { pool, rec } = recordingPool();
-    const base = await start(pool);
-    const response = await post(
-      base,
-      "/memory/append-turn",
-      {
-        tenant: "acme",
-        session: "personal",
-        user: "hello",
-        assistant: "hi",
-        sender: { external_id: "alice", display_name: "Alice", operator: "not-boolean" },
-        conversation: { type: "personal", name: "Alice" },
-      },
-      TOKEN,
-    );
-
-    expect(response.status).toBe(400);
-    expect(await response.json()).toEqual({
-      error: "invalid 'sender.operator'; expected boolean",
-    });
-    expect(rec.tenants).toEqual([]);
-    expect(rec.appendManyCalls).toEqual([]);
   });
 
   it.each([
@@ -3538,8 +3694,8 @@ describe("memory sidecar handler", () => {
       {
         tenant: "acme",
         session: "structured-context",
-        sender: { external_id: "alice", display_name: "Alice" },
-        conversation: { type: "personal", name: "Alice" },
+        sender: { operator: false, external_id: "alice", display_name: "Alice" },
+        conversation: { external_id: "conversation", type: "personal", name: "Alice" },
         sections: ["episodes"],
         ...fields,
       },
@@ -3559,8 +3715,8 @@ describe("memory sidecar handler", () => {
       {
         tenant: "acme",
         session: "structured-context",
-        sender: { external_id: "alice", display_name: "Alice" },
-        conversation: { type: "personal", name: "Alice" },
+        sender: { operator: false, external_id: "alice", display_name: "Alice" },
+        conversation: { external_id: "conversation", type: "personal", name: "Alice" },
         focus: "What happened?",
         context_turns: [],
         sections: ["episodes"],
@@ -3808,7 +3964,7 @@ describe("memory sidecar handler", () => {
         tenant: "acme",
         session: "tenant::alice::personal",
         sender: { external_id: "alice", display_name: "Alice", operator: true },
-        conversation: { type: "personal", name: "Alice" },
+        conversation: { external_id: "conversation", type: "personal", name: "Alice" },
         focus: "What matters now?",
       },
       TOKEN,
@@ -3878,8 +4034,8 @@ describe("memory sidecar handler", () => {
     const request = {
       tenant: "acme",
       session: "entity-context",
-      sender: { external_id: "alice", display_name: "Alice" },
-      conversation: { type: "personal", name: "Alice" },
+      sender: { external_id: "alice", display_name: "Alice", operator: false },
+      conversation: { type: "personal", name: "Alice", external_id: "conversation" },
       focus: "What did Alex say about team-agent?",
       context_turns: [],
       sections: ["episodes"],
@@ -3941,7 +4097,7 @@ describe("memory sidecar handler", () => {
       {
         tenant: "acme",
         session: "tenant::example-group::thread",
-        sender: { external_id: "alex", display_name: "Alex Example" },
+        sender: { operator: false, external_id: "alex", display_name: "Alex Example" },
         conversation: {
           type: "groupChat",
           name: "Example Group",
@@ -4051,8 +4207,8 @@ describe("memory sidecar handler", () => {
         context_turns: [],
         tenant: "acme",
         session: "source-context",
-        sender: { external_id: "alice", display_name: "Alice" },
-        conversation: { type: "personal", name: "Alice" },
+        sender: { operator: false, external_id: "alice", display_name: "Alice" },
+        conversation: { external_id: "conversation", type: "personal", name: "Alice" },
         focus: "What was said?",
         sections: ["episodes"],
       },
@@ -4127,15 +4283,15 @@ describe("memory sidecar handler", () => {
           session: "teams::personal::activity-alice",
           user: "Alice private source",
           assistant: "Alice private reply",
-          sender: { external_id: "alice", display_name: "Alice" },
-          conversation: { type: "personal" as const, name: "Alice" },
+          sender: { external_id: "alice", display_name: "Alice", operator: false },
+          conversation: { type: "personal" as const, name: "Alice", external_id: "personal-a" },
         },
         {
           key: "shared-group",
           session: "teams::group::activity-shared",
           user: "Shared group source",
           assistant: "Shared group reply",
-          sender: { external_id: "alice", display_name: "Alice" },
+          sender: { external_id: "alice", display_name: "Alice", operator: false },
           conversation: {
             type: "groupChat" as const,
             name: "AI Ninjas",
@@ -4147,8 +4303,8 @@ describe("memory sidecar handler", () => {
           session: "teams::personal::activity-bob",
           user: "Bob private source",
           assistant: "Bob private reply",
-          sender: { external_id: "bob", display_name: "Bob" },
-          conversation: { type: "personal" as const, name: "Bob" },
+          sender: { external_id: "bob", display_name: "Bob", operator: false },
+          conversation: { type: "personal" as const, name: "Bob", external_id: "personal-b" },
         },
       ] as const;
       const appended = new Map<
@@ -4273,8 +4429,8 @@ describe("memory sidecar handler", () => {
             context_turns: [],
             tenant: "acme",
             session: "teams::personal::activity-alice",
-            sender: { external_id: "alice", display_name: "Alice" },
-            conversation: { type: "personal", name: "Alice" },
+            sender: { operator: false, external_id: "alice", display_name: "Alice" },
+            conversation: { external_id: "conversation", type: "personal", name: "Alice" },
             sections: ["recent_activity"],
           },
           TOKEN,
@@ -4475,8 +4631,8 @@ describe("memory sidecar handler", () => {
         context_turns: [],
         tenant: "acme",
         session: "activity-planner-context",
-        sender: { external_id: "alice", display_name: "Alice" },
-        conversation: { type: "personal", name: "Alice" },
+        sender: { operator: false, external_id: "alice", display_name: "Alice" },
+        conversation: { external_id: "conversation", type: "personal", name: "Alice" },
         focus: "O które role chodziło?",
         sections: ["episodes"],
       },
@@ -4532,8 +4688,8 @@ describe("memory sidecar handler", () => {
         context_turns: [],
         tenant: "acme",
         session: "lived-experience-planner",
-        sender: { external_id: "alice", display_name: "Alice" },
-        conversation: { type: "personal", name: "Alice" },
+        sender: { operator: false, external_id: "alice", display_name: "Alice" },
+        conversation: { external_id: "conversation", type: "personal", name: "Alice" },
         focus: "O które role chodziło?",
         sections: ["episodes"],
       },
@@ -4571,8 +4727,8 @@ describe("memory sidecar handler", () => {
         context_turns: [],
         tenant: "acme",
         session: "lived-experience-planner",
-        sender: { external_id: "alice", display_name: "Alice" },
-        conversation: { type: "personal", name: "Alice" },
+        sender: { operator: false, external_id: "alice", display_name: "Alice" },
+        conversation: { external_id: "conversation", type: "personal", name: "Alice" },
         sections: ["recent_activity"],
       },
       TOKEN,
@@ -4633,8 +4789,8 @@ describe("memory sidecar handler", () => {
         context_turns: [],
         tenant: "acme",
         session: "activity-planner-starved",
-        sender: { external_id: "alice", display_name: "Alice" },
-        conversation: { type: "personal", name: "Alice" },
+        sender: { operator: false, external_id: "alice", display_name: "Alice" },
+        conversation: { external_id: "conversation", type: "personal", name: "Alice" },
         focus: "O które role chodziło?",
         sections: ["episodes", "recent_activity"],
       },
@@ -4675,8 +4831,8 @@ describe("memory sidecar handler", () => {
         context_turns: [],
         tenant: "acme",
         session: "activity-planner-starved",
-        sender: { external_id: "alice", display_name: "Alice" },
-        conversation: { type: "personal", name: "Alice" },
+        sender: { operator: false, external_id: "alice", display_name: "Alice" },
+        conversation: { external_id: "conversation", type: "personal", name: "Alice" },
         focus: "O które role chodziło?",
         sections: ["episodes"],
       },
@@ -4721,8 +4877,8 @@ describe("memory sidecar handler", () => {
           context_turns: [],
           tenant: "acme",
           session: "activity-context",
-          sender: { external_id: "alice", display_name: "Alice" },
-          conversation: { type: "personal", name: "Alice" },
+          sender: { operator: false, external_id: "alice", display_name: "Alice" },
+          conversation: { external_id: "conversation", type: "personal", name: "Alice" },
           focus: "activity context",
           sections: ["episodes", "recent_activity"],
         },
@@ -4814,7 +4970,7 @@ describe("memory sidecar handler", () => {
         context_turns: [],
         tenant: "acme",
         session: "group-session",
-        sender: { external_id: "alice", display_name: "Alice" },
+        sender: { operator: false, external_id: "alice", display_name: "Alice" },
         conversation: {
           type: "groupChat",
           name: "Current Group",
@@ -4865,8 +5021,8 @@ describe("memory sidecar handler", () => {
         context_turns: [],
         tenant: "acme",
         session: "personal-time-range",
-        sender: { external_id: "alice", display_name: "Alice" },
-        conversation: { type: "personal", name: "Alice" },
+        sender: { operator: false, external_id: "alice", display_name: "Alice" },
+        conversation: { external_id: "conversation", type: "personal", name: "Alice" },
         focus: "today's discussion",
         limit: 2,
         sections: ["episodes"],
@@ -4997,8 +5153,8 @@ describe("memory sidecar handler", () => {
         context_turns: [],
         tenant: "acme",
         session: "personal-planner-cue",
-        sender: { external_id: "alice", display_name: "Alice" },
-        conversation: { type: "personal", name: "Alice" },
+        sender: { operator: false, external_id: "alice", display_name: "Alice" },
+        conversation: { external_id: "conversation", type: "personal", name: "Alice" },
         focus: "Co wczoraj ustaliliśmy?",
         limit: 2,
         sections: ["episodes", "autobiographical"],
@@ -5063,8 +5219,8 @@ describe("memory sidecar handler", () => {
         context_turns: [],
         tenant: "acme",
         session: "personal-no-budget",
-        sender: { external_id: "alice", display_name: "Alice" },
-        conversation: { type: "personal", name: "Alice" },
+        sender: { operator: false, external_id: "alice", display_name: "Alice" },
+        conversation: { external_id: "conversation", type: "personal", name: "Alice" },
         focus: "Co wczoraj?",
         sections: ["episodes", "autobiographical"],
       },
@@ -5094,8 +5250,8 @@ describe("memory sidecar handler", () => {
         context_turns: [],
         tenant: "acme",
         session: "personal-no-cue",
-        sender: { external_id: "alice", display_name: "Alice" },
-        conversation: { type: "personal", name: "Alice" },
+        sender: { operator: false, external_id: "alice", display_name: "Alice" },
+        conversation: { external_id: "conversation", type: "personal", name: "Alice" },
         focus: "Jaki był plan?",
         sections: ["episodes", "autobiographical"],
       },
@@ -5120,8 +5276,8 @@ describe("memory sidecar handler", () => {
         context_turns: [],
         tenant: "acme",
         session: "personal-failed-cue",
-        sender: { external_id: "alice", display_name: "Alice" },
-        conversation: { type: "personal", name: "Alice" },
+        sender: { operator: false, external_id: "alice", display_name: "Alice" },
+        conversation: { external_id: "conversation", type: "personal", name: "Alice" },
         focus: "Co wczoraj?",
         sections: ["episodes", "autobiographical"],
       },
@@ -5142,8 +5298,8 @@ describe("memory sidecar handler", () => {
         context_turns: [],
         tenant: "acme",
         session: "personal-rejected",
-        sender: { external_id: "alice", display_name: "Alice" },
-        conversation: { type: "personal", name: "Alice" },
+        sender: { operator: false, external_id: "alice", display_name: "Alice" },
+        conversation: { external_id: "conversation", type: "personal", name: "Alice" },
         sections: ["audience", "autobiographical"],
       },
       TOKEN,
@@ -5218,8 +5374,8 @@ describe("memory sidecar handler", () => {
         context_turns: [],
         tenant: "acme",
         session: "personal-exclusions",
-        sender: { external_id: "alice", display_name: "Alice" },
-        conversation: { type: "personal", name: "Alice" },
+        sender: { operator: false, external_id: "alice", display_name: "Alice" },
+        conversation: { external_id: "conversation", type: "personal", name: "Alice" },
         focus: "technology",
         limit: 2,
         sections: ["episodes"],
@@ -5346,7 +5502,14 @@ describe("memory sidecar handler", () => {
         await post(
           base,
           "/memory/append-turn",
-          { tenant: "acme", session: "observed", user: "message", observed_at: "now" },
+          {
+            sender: TRANSPORT_IDENTITY.sender,
+            conversation: TRANSPORT_IDENTITY.conversation,
+            tenant: "acme",
+            session: "observed",
+            user: "message",
+            observed_at: "now",
+          },
           TOKEN,
         )
       ).status,
@@ -5358,6 +5521,8 @@ describe("memory sidecar handler", () => {
           base,
           "/memory/append-turn",
           {
+            sender: TRANSPORT_IDENTITY.sender,
+            conversation: TRANSPORT_IDENTITY.conversation,
             tenant: "acme",
             session: "observed",
             user: "message",
@@ -5373,6 +5538,8 @@ describe("memory sidecar handler", () => {
           base,
           "/memory/append-turn",
           {
+            sender: TRANSPORT_IDENTITY.sender,
+            conversation: TRANSPORT_IDENTITY.conversation,
             tenant: "acme",
             session: "observed",
             user: "message",
@@ -5416,8 +5583,8 @@ describe("memory sidecar handler", () => {
             context_turns: [],
             tenant: "acme",
             session: "venue",
-            sender: { external_id: "alice", display_name: "Alice" },
-            conversation: { type: "personal", name: "Alice" },
+            sender: { operator: false, external_id: "alice", display_name: "Alice" },
+            conversation: { external_id: "conversation", type: "personal", name: "Alice" },
             sections: ["venue_recent"],
             venue_since: 100,
             venue_limit: 51,
@@ -5436,8 +5603,8 @@ describe("memory sidecar handler", () => {
             context_turns: [],
             tenant: "acme",
             session: "participants",
-            sender: { external_id: "alice", display_name: "Alice" },
-            conversation: { type: "personal", name: "Alice" },
+            sender: { operator: false, external_id: "alice", display_name: "Alice" },
+            conversation: { external_id: "conversation", type: "personal", name: "Alice" },
             participants: [{ external_id: "bob", display_name: "Bob", operator: "not-a-boolean" }],
             sections: ["audience"],
           },
@@ -5455,8 +5622,8 @@ describe("memory sidecar handler", () => {
             context_turns: [],
             tenant: "acme",
             session: "participants",
-            sender: { external_id: "alice", display_name: "Alice" },
-            conversation: { type: "personal", name: "Alice" },
+            sender: { operator: false, external_id: "alice", display_name: "Alice" },
+            conversation: { external_id: "conversation", type: "personal", name: "Alice" },
             participants: Array.from({ length: 33 }, (_, index) => ({
               external_id: `person-${index}`,
               display_name: `Person ${index}`,
@@ -5485,8 +5652,8 @@ describe("memory sidecar handler", () => {
             context_turns: [],
             tenant: "acme",
             session: "personal",
-            sender: { external_id: "alice", display_name: "Alice" },
-            conversation: { type: "personal", name: "Alice" },
+            sender: { operator: false, external_id: "alice", display_name: "Alice" },
+            conversation: { external_id: "conversation", type: "personal", name: "Alice" },
           },
           TOKEN,
         )
@@ -5502,8 +5669,8 @@ describe("memory sidecar handler", () => {
             context_turns: [],
             tenant: "acme",
             session: "personal",
-            sender: { external_id: "alice", display_name: "Alice" },
-            conversation: { type: "personal", name: "Alice" },
+            sender: { operator: false, external_id: "alice", display_name: "Alice" },
+            conversation: { external_id: "conversation", type: "personal", name: "Alice" },
             sections: ["unknown"],
           },
           TOKEN,
@@ -5519,7 +5686,7 @@ describe("memory sidecar handler", () => {
             context_turns: [],
             tenant: "acme",
             session: "group",
-            sender: { external_id: "alice", display_name: "Alice" },
+            sender: { operator: false, external_id: "alice", display_name: "Alice" },
             conversation: { type: "channel", name: "General" },
             focus: "context",
           },
@@ -5536,8 +5703,8 @@ describe("memory sidecar handler", () => {
         context_turns: [],
         tenant: "acme",
         session: "personal",
-        sender: { external_id: "alice", display_name: "Alice" },
-        conversation: { type: "personal", name: "Alice" },
+        sender: { operator: false, external_id: "alice", display_name: "Alice" },
+        conversation: { external_id: "conversation", type: "personal", name: "Alice" },
         focus: "context",
         sections: ["audience", "episodes"],
       },
@@ -5563,8 +5730,8 @@ describe("memory sidecar handler", () => {
         context_turns: [],
         tenant: "acme",
         session: "personal",
-        sender: { external_id: "alice", display_name: "Alice" },
-        conversation: { type: "personal", name: "Alice" },
+        sender: { operator: false, external_id: "alice", display_name: "Alice" },
+        conversation: { external_id: "conversation", type: "personal", name: "Alice" },
         focus: "context",
         sections: ["audience", "episodes"],
       },
@@ -5580,88 +5747,18 @@ describe("memory sidecar handler", () => {
     expect(payload.degraded_reason).toContain("deadline");
   });
 
-  it("rejects malformed optional sender objects before touching the tenant", async () => {
-    const { pool, rec } = recordingPool();
-    const base = await start(pool);
-    const response = await post(
-      base,
-      "/memory/append-turn",
-      {
-        tenant: "acme",
-        session: "room",
-        user: "hello",
-        assistant: "hi",
-        sender: { external_id: "platform-alice", display_name: "" },
-      },
-      TOKEN,
-    );
-
-    expect(response.status).toBe(400);
-    expect(await response.json()).toEqual({
-      error: "invalid 'sender'; expected non-empty 'external_id' and 'display_name'",
-    });
-    expect(rec.tenants).toEqual([]);
-  });
-
-  it.each([
-    null,
-    [],
-    "personal",
-    { type: "directMessage", name: "Alice" },
-    { type: "personal", name: 42 },
-    { type: 42, name: "Alice" },
-    { type: "channel" },
-  ])(
-    "rejects malformed optional conversation %# before touching the tenant",
-    async (conversation) => {
-      const { pool, rec } = recordingPool();
-      const base = await start(pool);
-      const response = await post(
-        base,
-        "/memory/append-turn",
-        {
-          tenant: "acme",
-          session: "room",
-          user: "hello",
-          assistant: "hi",
-          conversation,
-        },
-        TOKEN,
-      );
-
-      expect(response.status).toBe(400);
-      expect(await response.json()).toEqual({
-        error:
-          "invalid 'conversation'; expected type 'personal', 'groupChat', or 'channel' and string 'name'",
-      });
-      expect(rec.tenants).toEqual([]);
-    },
-  );
-
   it("does not serialize later append-turn requests behind pending ingestion", async () => {
-    const appendSessions: string[] = [];
+    const { rec } = recordingPool();
     let ingestionStarted = false;
     let releaseIngestion!: () => void;
     const ingestion = new Promise<{ ran: boolean; processedEntries: number }>((resolve) => {
       releaseIngestion = () => resolve({ ran: true, processedEntries: 2 });
     });
-    const borg = {
-      stream: {
-        appendMany: async (_inputs: unknown[], options?: { session?: string }) => {
-          appendSessions.push(options?.session ?? "");
-          return [
-            { id: "strm_aaaaaaaaaaaaaaaa", kind: "user_msg" },
-            { id: "strm_bbbbbbbbbbbbbbbb", kind: "agent_msg" },
-          ];
-        },
-      },
-      episodic: {
-        ingest: async () => {
-          ingestionStarted = true;
-          return ingestion;
-        },
-      },
-    } as unknown as Borg;
+    const borg = stubBorg(rec);
+    borg.episodic.ingest = async () => {
+      ingestionStarted = true;
+      return ingestion;
+    };
     let exclusiveTail: Promise<unknown> = Promise.resolve();
     const pool: MemoryPool = {
       listTenantIds: () => Promise.resolve([...STUB_TENANTS]),
@@ -5686,7 +5783,14 @@ describe("memory sidecar handler", () => {
     const first = await post(
       base,
       "/memory/append-turn",
-      { tenant: "acme", session: "first", user: "u1", assistant: "a1" },
+      {
+        sender: TRANSPORT_IDENTITY.sender,
+        conversation: TRANSPORT_IDENTITY.conversation,
+        tenant: "acme",
+        session: "first",
+        user: "u1",
+        assistant: "a1",
+      },
       TOKEN,
     );
     expect(first.status).toBe(200);
@@ -5697,7 +5801,14 @@ describe("memory sidecar handler", () => {
       post(
         base,
         "/memory/append-turn",
-        { tenant: "acme", session: "second", user: "u2", assistant: "a2" },
+        {
+          sender: TRANSPORT_IDENTITY.sender,
+          conversation: TRANSPORT_IDENTITY.conversation,
+          tenant: "acme",
+          session: "second",
+          user: "u2",
+          assistant: "a2",
+        },
         TOKEN,
       ).then(async (res) => {
         await res.json();
@@ -5710,7 +5821,8 @@ describe("memory sidecar handler", () => {
     releaseIngestion();
 
     expect(secondStatus).toBe(200);
-    expect(appendSessions).toHaveLength(2);
+    expect(rec.appendManyCalls).toHaveLength(2);
+    expect(rec.activityProjectionInputs).toHaveLength(2);
   });
 
   it("accepts an already-valid borg session id for append-turn", async () => {
@@ -5720,7 +5832,14 @@ describe("memory sidecar handler", () => {
     const res = await post(
       base,
       "/memory/append-turn",
-      { tenant: "acme", session, user: "u", assistant: "a" },
+      {
+        sender: TRANSPORT_IDENTITY.sender,
+        conversation: TRANSPORT_IDENTITY.conversation,
+        tenant: "acme",
+        session,
+        user: "u",
+        assistant: "a",
+      },
       TOKEN,
     );
 
@@ -5733,13 +5852,33 @@ describe("memory sidecar handler", () => {
     const base = await start(pool);
     expect((await post(base, "/memory/recall", { query: "q" }, TOKEN)).status).toBe(400); // no tenant
     expect((await post(base, "/memory/recall", { tenant: "acme" }, TOKEN)).status).toBe(400); // no query
-    expect((await post(base, "/memory/remember", { tenant: "acme" }, TOKEN)).status).toBe(400); // no content
+    expect(
+      (
+        await post(
+          base,
+          "/memory/remember",
+          {
+            sender: TRANSPORT_IDENTITY.sender,
+            conversation: TRANSPORT_IDENTITY.conversation,
+            session: "remember",
+            tenant: "acme",
+          },
+          TOKEN,
+        )
+      ).status,
+    ).toBe(400); // no content
     expect(
       (
         await post(
           base,
           "/memory/append-turn",
-          { tenant: "acme", user: "u", assistant: "a" },
+          {
+            sender: TRANSPORT_IDENTITY.sender,
+            conversation: TRANSPORT_IDENTITY.conversation,
+            tenant: "acme",
+            user: "u",
+            assistant: "a",
+          },
           TOKEN,
         )
       ).status,
@@ -5749,14 +5888,32 @@ describe("memory sidecar handler", () => {
         await post(
           base,
           "/memory/append-turn",
-          { tenant: "acme", session: "s", assistant: "a" },
+          {
+            sender: TRANSPORT_IDENTITY.sender,
+            conversation: TRANSPORT_IDENTITY.conversation,
+            tenant: "acme",
+            session: "s",
+            assistant: "a",
+          },
           TOKEN,
         )
       ).status,
     ).toBe(200);
     expect(
-      (await post(base, "/memory/append-turn", { tenant: "acme", session: "s", user: "u" }, TOKEN))
-        .status,
+      (
+        await post(
+          base,
+          "/memory/append-turn",
+          {
+            sender: TRANSPORT_IDENTITY.sender,
+            conversation: TRANSPORT_IDENTITY.conversation,
+            tenant: "acme",
+            session: "s",
+            user: "u",
+          },
+          TOKEN,
+        )
+      ).status,
     ).toBe(200);
   });
 
@@ -5866,8 +6023,8 @@ describe("memory sidecar handler", () => {
           session: "teams::personal::projection-rollback",
           user: "Durable input",
           assistant: "Durable reply",
-          sender: { external_id: "alice", display_name: "Alice" },
-          conversation: { type: "personal", name: "Alice" },
+          sender: { operator: false, external_id: "alice", display_name: "Alice" },
+          conversation: { external_id: "conversation", type: "personal", name: "Alice" },
         },
         TOKEN,
       );
@@ -6008,7 +6165,7 @@ describe("memory sidecar handler", () => {
           session: "teams::group::observation",
           user: "An observed room message",
           observed_at: observedAt,
-          sender: { external_id: "alice", display_name: "Alice" },
+          sender: { operator: false, external_id: "alice", display_name: "Alice" },
           conversation: {
             type: "groupChat",
             name: "Observation Room",
@@ -6134,6 +6291,7 @@ describe("memory sidecar handler", () => {
         base,
         "/memory/append-turn",
         {
+          sender: TRANSPORT_IDENTITY.sender,
           tenant: "acme",
           session: "teams::group::reply-only",
           assistant: "A proactive update from Sol.",
@@ -6240,7 +6398,7 @@ describe("memory sidecar handler", () => {
           session: "teams::group::directive-room",
           user: "Hello room",
           assistant: "Hello Alice",
-          sender: { external_id: "alice", display_name: "Alice" },
+          sender: { operator: false, external_id: "alice", display_name: "Alice" },
           conversation: {
             type: "groupChat",
             name: "Directive Room",
@@ -6260,7 +6418,7 @@ describe("memory sidecar handler", () => {
           context_turns: [],
           tenant: "acme",
           session: "teams::group::directive-room",
-          sender: { external_id: "alice", display_name: "Alice" },
+          sender: { operator: false, external_id: "alice", display_name: "Alice" },
           conversation: {
             type: "groupChat",
             name: "Directive Room",
@@ -6341,7 +6499,7 @@ describe("memory sidecar handler", () => {
           context_turns: [],
           tenant: "acme",
           session: "teams::group::directive-room",
-          sender: { external_id: "alice", display_name: "Alice" },
+          sender: { operator: false, external_id: "alice", display_name: "Alice" },
           conversation: {
             type: "groupChat",
             name: "Directive Room",
@@ -6393,12 +6551,12 @@ describe("memory sidecar handler", () => {
           key: "alice-personal",
           session: "teams::personal::alice",
           sender: { external_id: "alice", display_name: "Alice", operator: true },
-          conversation: { type: "personal", name: "Alice" },
+          conversation: { type: "personal", name: "Alice", external_id: "personal-a" },
         },
         {
           key: "alice-group",
           session: "teams::group::ai-ninjas",
-          sender: { external_id: "alice", display_name: "Alice" },
+          sender: { external_id: "alice", display_name: "Alice", operator: false },
           conversation: {
             type: "groupChat",
             name: "AI Ninjas",
@@ -6408,8 +6566,8 @@ describe("memory sidecar handler", () => {
         {
           key: "bob-personal",
           session: "teams::personal::bob",
-          sender: { external_id: "bob", display_name: "Bob" },
-          conversation: { type: "personal", name: "Bob" },
+          sender: { external_id: "bob", display_name: "Bob", operator: false },
+          conversation: { type: "personal", name: "Bob", external_id: "personal-b" },
         },
       ] as const;
       const sessions = new Map<string, SessionId>();
@@ -6639,7 +6797,7 @@ describe("memory sidecar handler", () => {
           tenant: "acme",
           session: "teams::personal::alice",
           sender: { external_id: "alice", display_name: "Alice", operator: true },
-          conversation: { type: "personal", name: "Alice" },
+          conversation: { external_id: "conversation", type: "personal", name: "Alice" },
           participants: [{ external_id: "bob", display_name: "Bob", operator: true }],
           focus: "situational awareness",
           sections: ["audience", "episodes", "recent_activity", "commitments", "directives"],
@@ -6711,7 +6869,7 @@ describe("memory sidecar handler", () => {
           context_turns: [],
           tenant: "acme",
           session: "teams::group::ai-ninjas",
-          sender: { external_id: "alice", display_name: "Alice" },
+          sender: { operator: false, external_id: "alice", display_name: "Alice" },
           conversation: {
             type: "groupChat",
             name: "AI Ninjas",
@@ -6756,7 +6914,7 @@ describe("memory sidecar handler", () => {
           tenant: "acme",
           session: "teams::personal::alice",
           sender: { external_id: "alice", display_name: "Alice", operator: true },
-          conversation: { type: "personal", name: "Alice" },
+          conversation: { external_id: "conversation", type: "personal", name: "Alice" },
           focus: "situational awareness",
           limit: 1,
           sections: ["episodes"],

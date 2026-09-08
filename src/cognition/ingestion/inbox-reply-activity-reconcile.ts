@@ -91,7 +91,6 @@ export function reconcileInboxReplyActivity(
       session_missing: 0,
       self_missing: 0,
       audience_missing: 0,
-      session_record_incomplete: 0,
       malformed_stamp: 0,
       projection_failed: 0,
     },

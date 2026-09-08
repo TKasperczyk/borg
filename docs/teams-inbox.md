@@ -48,6 +48,10 @@ as `/memory/append-turn`'s reply-only mode does; an `agent_observed` terminal re
 missing session, self entity or audience, or a projection error, leaves the committed terminal
 intact and logs a redacted warning. Until 2026-09-05 the inbox path skipped this projection, so
 Teams replies never reached `recent_activity` or the recall planner's owner rows.
+Every stored session used for reply activity must satisfy the current `sessions.ensure`
+constraints: non-empty labels and non-empty non-null source external id, source URL and last
+turn id. Validation failures follow the normal `projection_failed` reporting path; no historical
+session record is exempt from those constraints.
 Terminals written before that fix are repaired by `POST /memory/maintenance/inbox-reply-activity`
 (`{ tenant, dry_run?: true, since?: ISO-8601, until?: ISO-8601, limit?: <=5000 }`, token-protected,
 runs under the tenant's exclusive chain, so it is bounded: at most 1000 sessions per pass, a scan
@@ -70,6 +74,12 @@ Teams arrival order; the long await runs outside the FIFO so waits overlap and j
 
 ## Identity and sessions
 
+- `/memory/enqueue`, `/memory/append-turn`, `/memory/remember` and `/memory/context` require a
+  non-empty `session`, a structured sender with non-empty `external_id` and `display_name` and a
+  boolean `operator`, and a conversation with `type`, string `name` and non-empty `external_id`.
+  This includes personal chats, observations and reply-only appends. Missing or malformed identity
+  returns 400; append, remember and context identify the invalid field in the response. Team-agent
+  requires this identity from all of its callers.
 - `thread_id`: the raw team-agent thread key (`<tenant>::shared::<type>::<conversation>`
   for groups and channels, `<tenant>::<user>::<conversation>` for personal chats; see
   `team_agent/conversations.py`). It is what the append-turn path already sends as

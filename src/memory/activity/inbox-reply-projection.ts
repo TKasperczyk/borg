@@ -8,11 +8,7 @@ import type { ActivityEventRecordInput } from "./types.js";
 // is the audience, the batch senders are the other participants, the terminal entry is the source.
 // Shared by the live inbox runner and the reconcile/backfill pass so the two cannot drift.
 
-export type InboxReplyActivitySkipReason =
-  | "session_missing"
-  | "self_missing"
-  | "audience_missing"
-  | "session_record_incomplete";
+export type InboxReplyActivitySkipReason = "session_missing" | "self_missing" | "audience_missing";
 
 export type InboxReplyActivityProjectionInput = {
   session: SessionEnsureInput;
@@ -40,9 +36,6 @@ export function buildInboxReplyActivityProjection(input: {
   if (audienceEntityId === null) {
     return { kind: "skip", reason: "audience_missing" };
   }
-  if (!isEnsurableSessionRecord(input.session)) {
-    return { kind: "skip", reason: "session_record_incomplete" };
-  }
   return {
     kind: "project",
     input: {
@@ -64,20 +57,6 @@ export function buildInboxReplyActivityProjection(input: {
       touch: { at: input.terminal.timestamp, messageCountDelta: 1 },
     },
   };
-}
-
-// sessionEnsureInputSchema requires non-empty strings where a stored record may still hold
-// legacy empty values; such a record is left alone instead of failing inside the projection.
-export function isEnsurableSessionRecord(record: SessionRecord): boolean {
-  const optionalNonEmpty = (value: string | null | undefined) =>
-    value === null || value === undefined || value.length > 0;
-  return (
-    record.label.length > 0 &&
-    record.audience_label.length > 0 &&
-    optionalNonEmpty(record.source_external_id) &&
-    optionalNonEmpty(record.source_url) &&
-    optionalNonEmpty(record.last_turn_id)
-  );
 }
 
 export function sessionEnsureInputFromRecord(record: SessionRecord): SessionEnsureInput {
