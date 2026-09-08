@@ -21,6 +21,7 @@ import { IdentityEventRepository, type IdentityEvent } from "../src/memory/ident
 import { goalIdSchema, goalStatusSchema, type GoalStatus } from "../src/memory/self/index.js";
 import { SqliteDatabase, SqliteRawDatabase } from "../src/storage/sqlite/index.js";
 import type { GoalId } from "../src/util/ids.js";
+import type { JsonValue } from "../src/util/json-value.js";
 
 export const GOAL_ROLLBACK_AUDIT_REPAIR_REASON =
   "operator repair: backfilled terminal delete for a goal create event stranded by turn rollback";
@@ -335,7 +336,8 @@ export function applyGoalRollbackAuditRepairPlan(
           record_type: "goal",
           record_id: candidate.goalId,
           action: "delete",
-          old_value: candidate.latestSnapshotEvent.new_value,
+          // Planning snapshots originate from parsed old_value_json/new_value_json.
+          old_value: candidate.latestSnapshotEvent.new_value as JsonValue,
           new_value: null,
           reason: GOAL_ROLLBACK_AUDIT_REPAIR_REASON,
           provenance: GOAL_ROLLBACK_AUDIT_REPAIR_PROVENANCE,
