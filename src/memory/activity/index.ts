@@ -48,7 +48,6 @@ export {
   type ActivityEventRecordInput,
   type ActivityEventKind,
   type ActivityEventStatus,
-  type ActivityVisibleSessionEvent,
 } from "./types.js";
 export {
   buildInboxReplyActivityProjection,

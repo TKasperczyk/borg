@@ -179,6 +179,7 @@ export type TurnTraceEventName =
   | "commitment_guard.regeneration_failed"
   | "commitment_check.completed"
   | "closure_response_guard.completed"
+  | "sidecar.guard_reply.completed"
   | "internal_identifier_guard.completed"
   | "closure_pressure_audit.degraded"
   | "reflection.completed"

@@ -488,9 +488,8 @@ describe("agent event and delivery routes", () => {
       participantEntityIds: [selfId, audienceId],
       sourceStreamEntryIds: [terminal.id],
     });
-    const activities = h.borg.activity.listRecentVisibleOtherSessionEvents({
+    const activities = h.borg.activity.listRecentOtherActiveSessionEvents({
       currentSessionId: createSessionId(),
-      audienceEntityIds: [audienceId],
       sinceMs: 0,
       limit: 10,
       kinds: ["borg_replied"],

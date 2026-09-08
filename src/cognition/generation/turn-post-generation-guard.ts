@@ -55,8 +55,8 @@ export type TurnPostGenerationGuardRunnerOptions = {
   tracer: TurnTracer;
 };
 
-export type RunTurnPostGenerationGuardInput = {
-  llmClient: LLMClient;
+type PostGenerationGuardInput = {
+  currentTurnUserTexts?: readonly string[];
   turnId: string;
   response: string;
   sessionId: SessionId;
@@ -74,6 +74,14 @@ export type RunTurnPostGenerationGuardInput = {
   audienceEntityId: EntityId | null;
   knownInternalIdentifiers?: readonly string[];
 };
+
+export type RunTurnPostGenerationGuardInput = PostGenerationGuardInput &
+  (
+    | { executionMode?: "full"; llmClient: LLMClient }
+    | { executionMode: "identifiers-only"; llmClient?: never }
+  );
+
+export type IdentifierOnlyGuardInput = Omit<PostGenerationGuardInput, "closureLoop">;
 
 function addInternalIdentifier(identifiers: Set<string>, value: string | null | undefined): void {
   if (value !== undefined && value !== null && INTERNAL_IDENTIFIER_EXACT_PATTERN.test(value)) {
@@ -302,26 +310,30 @@ export class TurnPostGenerationGuardRunner {
   constructor(private readonly options: TurnPostGenerationGuardRunnerOptions) {}
 
   async run(input: RunTurnPostGenerationGuardInput): Promise<TurnPostGenerationGuardEmission> {
-    const closureGuard = new ClosurePressureGuard({
-      llmClient: input.llmClient,
-      auditModel: this.options.auditModel,
-      mode: this.options.closurePressureMode,
-      tracer: this.options.tracer,
-    });
-    const closureResult = await closureGuard.run({
-      turnId: input.turnId,
-      sessionId: input.sessionId,
-      response: input.response,
-      activeCommitments: input.activeCommitments,
-      closureLoop: input.closureLoop,
-      closurePressureHistory: input.closurePressureHistory,
-      currentUserClosureKind: input.currentUserClosureKind,
-      currentTurn: input.currentTurn,
-      nowMs: this.options.clock.now(),
-    });
-
-    if (closureResult.emission.kind === "suppressed") {
-      return closureResult.emission;
+    let emission: TurnPostGenerationGuardEmission = { kind: "message", content: input.response };
+    if (input.executionMode !== "identifiers-only") {
+      const closureGuard = new ClosurePressureGuard({
+        llmClient: input.llmClient,
+        auditModel: this.options.auditModel,
+        mode: this.options.closurePressureMode,
+        tracer: this.options.tracer,
+      });
+      emission = (
+        await closureGuard.run({
+          turnId: input.turnId,
+          sessionId: input.sessionId,
+          response: input.response,
+          activeCommitments: input.activeCommitments,
+          closureLoop: input.closureLoop,
+          closurePressureHistory: input.closurePressureHistory,
+          currentUserClosureKind: input.currentUserClosureKind,
+          currentTurn: input.currentTurn,
+          nowMs: this.options.clock.now(),
+        })
+      ).emission;
+    }
+    if (emission.kind === "suppressed") {
+      return emission;
     }
 
     // An operator-audience session is the channel where internal identifiers ARE the
@@ -343,7 +355,7 @@ export class TurnPostGenerationGuardRunner {
         });
       }
 
-      return closureResult.emission;
+      return emission;
     }
 
     if (
@@ -361,7 +373,7 @@ export class TurnPostGenerationGuardRunner {
         });
       }
 
-      return closureResult.emission;
+      return emission;
     }
 
     const currentSessionStreamEntries = await this.loadStreamEntries(input.sessionId);
@@ -378,7 +390,7 @@ export class TurnPostGenerationGuardRunner {
       turnId: input.turnId,
       sessionId: input.sessionId,
       sessionSourceType: input.sessionSourceType,
-      emission: closureResult.emission,
+      emission,
       knownIdentifiers: collectInternalIdentifiers({
         turnId: input.turnId,
         sessionId: input.sessionId,
@@ -394,10 +406,13 @@ export class TurnPostGenerationGuardRunner {
         audienceEntityId: input.audienceEntityId,
         knownInternalIdentifiers: input.knownInternalIdentifiers ?? [],
       }),
-      currentTurnAudienceContent: currentTurnAudienceAuthoredContent({
-        persistedUserEntry: input.persistedUserEntry,
-        persistedUserEntries: input.persistedUserEntries,
-      }),
+      currentTurnAudienceContent: [
+        ...currentTurnAudienceAuthoredContent({
+          persistedUserEntry: input.persistedUserEntry,
+          persistedUserEntries: input.persistedUserEntries,
+        }),
+        ...(input.currentTurnUserTexts ?? []),
+      ],
       tracer: this.options.tracer,
     });
   }

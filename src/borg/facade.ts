@@ -36,7 +36,7 @@ import {
   runStorageOptimization,
 } from "../offline/index.js";
 import type { MaintenancePlan, OfflineProcessName, OrchestratorResult } from "../offline/index.js";
-import type { DisclosureRetrievalOptions } from "../retrieval/index.js";
+import type { DisclosureRetrievalOptions, RetrievalSharedOptions } from "../retrieval/pipeline.js";
 import {
   mapWithDisclosureConcurrency,
   memoryDisclosureLabelForEpisodeIds,
@@ -305,8 +305,8 @@ export function createActivityFacade(
     },
     listObservedGroupAudienceEntityIdsForSpeaker: (...args) =>
       deps.activityRepository.listObservedGroupAudienceEntityIdsForSpeaker(...args),
-    listRecentVisibleOtherSessionEvents: (...args) =>
-      deps.activityRepository.listRecentVisibleOtherSessionEvents(...args),
+    listRecentOtherActiveSessionEvents: (...args) =>
+      deps.activityRepository.listRecentOtherActiveSessionEvents(...args),
   };
 }
 
@@ -479,7 +479,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
   };
 
   const resolveEpisodeAudienceTerms = (
-    options: BorgEpisodeSearchOptions | undefined,
+    options: Pick<BorgEpisodeSearchOptions, "audience" | "audienceTerms"> | undefined,
     audienceEntityId: EntityId | null | undefined,
   ): readonly string[] | undefined => {
     if (options?.audienceTerms !== undefined) {
@@ -503,10 +503,10 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
     ];
   };
 
-  const resolveEpisodeSearchOptions = (
-    options: BorgEpisodeSearchOptions | undefined,
-  ): DisclosureRetrievalOptions => {
-    const audienceEntityId = resolveEpisodeAudienceEntityId(options);
+  const resolveEpisodeRankingOptions = (
+    options: (RetrievalSharedOptions & { audience?: string | null }) | undefined,
+    audienceEntityId: EntityId | null | undefined,
+  ): RetrievalSharedOptions => {
     const audienceProfile =
       options?.audienceProfile !== undefined
         ? options.audienceProfile
@@ -521,7 +521,6 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
 
     return {
       ...options,
-      audienceEntityId,
       audienceProfile,
       audienceTerms,
       strictTimeRange: options?.strictTimeRange ?? options?.timeRange !== undefined,
@@ -557,6 +556,17 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
               heat: configuredAttentionWeights.heat,
               suppression_penalty: configuredAttentionWeights.suppression_penalty,
             }),
+    };
+  };
+
+  const resolveEpisodeSearchOptions = (
+    options: BorgEpisodeSearchOptions | undefined,
+  ): DisclosureRetrievalOptions => {
+    const audienceEntityId = resolveEpisodeAudienceEntityId(options);
+    return {
+      ...options,
+      ...resolveEpisodeRankingOptions(options, audienceEntityId),
+      audienceEntityId,
     };
   };
 
@@ -689,6 +699,15 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
         }),
     },
     episodic: {
+      recallForCognition: (query, options) => {
+        const rankingAudienceEntityId =
+          options.rankingAudienceEntityId ?? options.recallContext.currentAudienceEntityId;
+        return deps.retrievalPipeline.recallEpisodeHitsForCognition(query, {
+          ...options,
+          ...resolveEpisodeRankingOptions(options, rankingAudienceEntityId),
+          rankingAudienceEntityId,
+        });
+      },
       get: (id, options = {}) =>
         deps.retrievalPipeline.getEpisode(id, {
           audienceEntityId: resolveEpisodeAudienceEntityId(options),

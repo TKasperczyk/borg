@@ -503,6 +503,20 @@ export class RetrievalPipeline {
     return this.searchWithContextInternal(query, options, "cognition");
   }
 
+  // External cognition consumes only episodes; keep Sol's full-context entry above unchanged.
+  async recallEpisodeHitsForCognition(
+    query: string,
+    options: CognitionRetrievalOptions,
+  ): Promise<RetrievedEpisode[]> {
+    const result = await this.searchWithContextInternal(
+      query,
+      options,
+      "cognition",
+      "episodes-only",
+    );
+    return result.episodes;
+  }
+
   // Episodes-only contract: callers get RetrievedEpisode[] and nothing else,
   // so the context lanes are skipped wholesale — see RetrievalProjection for
   // the proof and the accepted observable differences. This is the memory

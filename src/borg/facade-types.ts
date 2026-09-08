@@ -68,7 +68,7 @@ import type {
 import type { MemoryDisclosureLabel } from "../retrieval/index.js";
 import type { PromptKey } from "../cognition/prompts/registry.js";
 import type { OfflineProcessName } from "../offline/index.js";
-import type { RetrievedEpisode } from "../retrieval/index.js";
+import type { CognitionRetrievalOptions, RetrievedEpisode } from "../retrieval/index.js";
 import type {
   SessionEnsureInput,
   SessionListOptions,
@@ -127,6 +127,10 @@ export type BorgStreamFacade = {
 };
 
 export type BorgEpisodicFacade = {
+  recallForCognition: (
+    query: string,
+    options: CognitionRetrievalOptions,
+  ) => Promise<RetrievedEpisode[]>;
   get: (id: EpisodeId, options?: BorgEpisodeGetOptions) => Promise<RetrievedEpisode | null>;
   inspect: (id: EpisodeId) => ReturnType<EpisodicRepository["get"]>;
   search: (query: string, options?: BorgEpisodeSearchOptions) => Promise<RetrievedEpisode[]>;
@@ -500,7 +504,7 @@ export type BorgCommitmentsFacade = {
 
 export type BorgActivityFacade = Pick<
   ActivityRepository,
-  "record" | "listObservedGroupAudienceEntityIdsForSpeaker" | "listRecentVisibleOtherSessionEvents"
+  "record" | "listObservedGroupAudienceEntityIdsForSpeaker" | "listRecentOtherActiveSessionEvents"
 > & {
   projectObservedTurn(input: BorgActivityObservedTurnProjectionInput): {
     userContact: ReturnType<ActivityRepository["record"]>;

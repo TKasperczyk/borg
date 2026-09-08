@@ -6,19 +6,16 @@ other sections can omit them. Clients make one request and report failures witho
 ## Purpose
 
 Give team-agent, on every Teams turn, the situational awareness that borg's own retrieval phase
-gives Sol's deliberation - without any new LLM call and without borg's deliberation, reflection,
-closure or guard phases (those cost minutes; team-agent keeps generating with its own model):
+gives Sol's deliberation. Episodic recall reuses cognition's episodes-only projection; team-agent
+keeps generating with its own model. A separate identifier-only reply guard makes no LLM call:
 
-1. recalled episodes scoped to what the current audience is allowed to know,
+1. globally recalled tenant episodes carrying disclosure labels for audience-aware reasoning,
 2. recent activity in the agent's other conversations ("recent life elsewhere"),
 3. binding commitments applicable to the audience,
 4. operator directives (rules the tenant's operators gave the agent) applicable to the audience.
 
-Everything above already exists in borg as tables and repository reads (sessions, activity_events,
-episode audience/origin_audience, commitments, creator_directives, listApplicable). What is
-missing is (a) the sidecar write path does not populate sessions, audiences or activity events, so
-every episode is stored as public within the tenant and recall is tenant-wide, and (b) there is no
-read endpoint that assembles these sections for a caller.
+The sidecar populates sessions, audiences and activity events on the write path and assembles
+these sections through `/memory/context`. Sol's full turn pipeline keeps its existing behavior.
 
 ## Identity model (borg concepts -> Microsoft Teams)
 
@@ -36,19 +33,40 @@ read endpoint that assembles these sections for a caller.
   (`sender.operator: true`), else `participant`. Operators are team-agent's tenant admins. Do not use
   borg's single-creator `borg_role`; authority for creating directives comes from the admin API token.
 
-## Who may see what (hard rule, enforced by the sidecar)
+## Who may see what
 
-visible-audience-set(caller) =
-  { current audience entity }
-  UNION, when the current audience is a person: every group entity in which that person has been
-  observed as a speaker in this tenant (activity_events already records speaker + audience per event,
-  so membership-by-observation is a single query).
+Episodes and recent activity use **labels instead of audience-based dropping**. Cognition recall
+is global within the current tenant. Every returned episode and activity row carries a disclosure
+class, origin audience names and private-to names. The booleans `private_to_current_sender` and
+`private_to_current_audience` report membership in the private-to set, resolved by Borg against
+entity IDs for this request. Display names never determine membership, so two people with identical
+names remain distinguishable. Only names and booleans enter the model's disclosure annotations;
+entity IDs do not. These membership flags do not themselves authorize disclosure.
+A private-chat memory can inform a group turn; recall itself does not authorize
+sharing its contents or revealing that a private memory exists. The model uses the labels, current
+audience authorization, and creator/operator context to decide what it may disclose and whether
+information is already common ground.
 
-An episode is visible iff it is `shared` (no origin audience; all pre-existing episodes are like
-this) OR its origin_audience intersects the visible-audience-set. Non-visible episodes are dropped,
-not merely labelled - team-agent's model is not trusted to withhold them. The same set scopes
-recent_activity: a person hears about activity in their groups and in their own other chats, never
-about other people's private chats; a group hears only about its own past.
+When `episodes` is requested, `disclosure_guidance` contains Borg's canonical
+`MEMORY_DISCLOSURE_GUIDANCE_FOR_MODEL` verbatim. Team-agent renders it above the episodes, including
+in cached prompts, while preserving partial-degradation markers. It keeps the older recalled-memory
+preface only when a sidecar omits the guidance. `hidden_episode_count` remains for compatibility and
+is always zero for episodes; exclusions, ranking, limits and abstention still apply.
+
+`recent_activity` uses Sol's `listRecentOtherActiveSessionEvents`: other active sessions, a time
+window and a row limit, without an audience predicate. Sol's `recentLivedExperienceDisclosureLabel`
+labels each row `self_private`, with its origin audience in the private-to set. The sidecar reuses
+the episode disclosure projector, and team-agent reuses the episode annotation formatter. Old
+sidecars that omit activity disclosure fields still render normally.
+`venue_recent` means "what happened recently in this venue": it is venue-scoped by definition,
+not an audience-based privacy filter over cross-session recall. Its existing query and provenance
+checks are unchanged. Commitments and directives retain their existing applicability rules.
+
+Before emitting an inbox reply or a non-streaming completion, team-agent calls `/memory/guard-reply`
+with the returned `context_id`. The shared Borg runner checks internal identifiers without a closure
+audit or an LLM call. This structural check does not decide semantic disclosure authorization; that
+remains the model's responsibility under the supplied guidance. Streaming completions are outside
+this guard integration.
 
 ## Write path: POST /memory/append-turn
 
@@ -93,11 +111,18 @@ Response:
   "ok": true,
   "audience": {"entity_id": "...", "kind": "person|group", "name": "...", "role": "participant|operator"},
   "episodes": [ <same per-hit projection as /memory/recall, plus
-                 "disclosure": {"class": "public|relationship_private|...", "origin_audience_names": [...]}> ],
+                 "disclosure": {"class": "public|relationship_private|...",
+                                "origin_audience_names": [...], "private_to_names": [...],
+                                "private_to_current_sender": false, "private_to_current_audience": false}> ],
   "hidden_episode_count": 0,
-  "recent_activity": [ {"kind": "user_contact|borg_replied", "occurred_at": <epoch ms>,
+  "disclosure_guidance": "<canonical Borg disclosure guidance, verbatim>",
+  "context_id": "<opaque served-context id>",
+  "recent_activity": [ {"kind": "user_contact|borg_replied|turn_completed", "occurred_at": <epoch ms>,
                         "occurred_at_iso": "...", "relative_age": "12m ago",
                         "session": "<sidecar session id>", "conversation": {"type": "...", "name": "..."},
+                        "disclosure": {"class": "self_private", "origin_audience_names": [...],
+                                       "private_to_names": [...], "private_to_current_sender": false,
+                                       "private_to_current_audience": false},
                         "participant_name": "...", "text": "Alex Example contacted the agent 12m ago in group chat \"Example Group\"."} ],
   "commitments": [ <same projection as GET /memory/commitments, filtered for this audience> ],
   "directives": [ {"id": "...", "kind": "response_policy|routing_instruction|disclosure_boundary|subject_fact|self_identity",
@@ -105,11 +130,15 @@ Response:
   "degraded": false, "degraded_reason": ""
 }
 
-- episodes use the existing recall pipeline (audience-scoped via its audienceEntityId visibility gate
-  where possible, plus the membership widening above), same deadline/degradation semantics as
-  /memory/recall, no new embedding work.
+- episodes use `episodic.recallForCognition`, the global cognition recall pipeline with an
+  episodes-only projection, disclosure labels, and the facade's existing social/attention ranking
+  defaults. Other context lanes are skipped; recall keeps its deadline/degradation semantics.
+- `disclosure_guidance` and `context_id` are present whenever episodes are requested, including an
+  empty or degraded result. They are omitted on binding-only and venue-only requests.
 - recent_activity: events from OTHER active sessions within a recency window (default 24 h,
-  configurable), scoped by the visible-audience-set, newest first, capped (default 12).
+  configurable), across audiences, capped (default 12). Sol's ordering prioritizes user contacts,
+  then replies, then completed turns, newest first within each kind. Completed turns require an
+  active contact or reply in their session on the same UTC day. Every row has a disclosure label.
 - commitments: active commitments applicable to the audience (same rules as the existing GET).
 - directives: creatorDirectives.listApplicable({currentAudienceEntityId, sessionRole,
   participantEntityIds}); render_mode "omit" entries are excluded; text = operational_directive /
@@ -125,6 +154,44 @@ Response:
   a validation message identifying the field. A 400 is a caller bug; fix the request contract.
   The client sends one request, raises on failure, and never strips fields or changes endpoints
   to downgrade the request.
+
+## Reply check: POST /memory/guard-reply (x-borg-token)
+
+```json
+{
+  "tenant": "acme",
+  "session": "<same thread key as context>",
+  "sender": {"external_id": "...", "display_name": "...", "operator": false},
+  "conversation": {"type": "groupChat", "name": "Team", "external_id": "..."},
+  "context_id": "<id returned by /memory/context>",
+  "response": "<draft reply>",
+  "current_turn_user_texts": ["<optional original user text for this turn>"]
+}
+```
+
+Returns `{ "ok": true, "verdict": "pass" | "blocked", "reasons": [...] }`; the runner suppresses
+rather than redacts. It preserves the existing operator-audience and current-turn identifier-echo
+exemptions. Supply only current-turn user texts for that exemption, never arbitrary older history.
+
+An episodes request snapshots the full returned episode records/citations and the applicable
+commitments selected by the same rules as the binding context section, even when that section was
+requested separately. Snapshots contain no Borg references. Each response has an independent opaque
+ID, bound to tenant, session, sender and audience, so late completions cannot overwrite another
+response's context. Storage is bounded to 16 contexts per tenant and 64 tenants with a 30-minute TTL;
+process restarts, expiry and eviction lose snapshots. The guard still scans available session and
+repository identifiers on a miss and includes `context_snapshot_miss` in `reasons`.
+
+Team-agent makes one async call with its own `memory.guard_timeout` setting (environment
+`BORG_MEMORY_GUARD_TIMEOUT`, default 2 seconds), using the existing sidecar URL, token and TLS settings.
+Transport errors, timeouts, 404s from older sidecars and malformed replies fail open, emitting
+`memory_guard_skipped` with the reason and `memory.guard.skipped` / `memory.guard.reason` span
+attributes. Successful checks emit `memory_guard_completed`. Borg's memory trace registry retains
+`internal_identifier_guard.completed` and `sidecar.guard_reply.completed`.
+
+A blocked observe turn removes the final draft from the graph checkpoint and stores the existing
+silent receipt with reason `memory_guard_blocked`; it does not append another turn. A blocked
+non-streaming completion replaces the draft in the checkpoint and delivered/append history with a
+short neutral withholding notice. Streaming completions are not guarded by this route.
 
 ## Operator rules: /memory/directives (admin surface, x-borg-token)
 
@@ -188,7 +255,7 @@ ignored, semantic scores were compressed, and autonomous OUTCOME rollups occupie
 An unsolicited group reply may add `participants` to `POST /memory/context` as an ordered array of
 `{"external_id": "...", "display_name": "...", "operator": false}`. Duplicate external ids are
 removed by team-agent. The sidecar resolves these people as the current group recipient set for
-directive applicability and visibility/exclusion checks; the group conversation remains the sole
+directive applicability and disclosure context; the group conversation remains the sole
 audience, and participant entries cannot confer operator authority. Invalid participant metadata
 returns HTTP 400 and must be corrected by the caller.
 
@@ -241,10 +308,8 @@ returns HTTP 400 and must be corrected by the caller.
   `sender.operator -> audience_role=operator`. A `borg_replied` event records the Borg self entity
   as both speaker and actor.
 - `relative_age` uses Borg's compact formatter (`12m ago`). The activity `text` field is the
-  complete line team-agent renders verbatim.
-- `hidden_episode_count` counts results removed by the final in-memory defense check after the
-  repository visibility gate. It is normally zero; it is not a count of all hidden matching
-  episodes in the tenant bank.
+  complete event description; team-agent prefixes the same disclosure annotation used for episodes.
+- `hidden_episode_count` is always zero for context episodes, which use labeled global recall.
 - `/memory/context` may create/update the sender and group entities and ensure the session on a
   first turn. It performs this in a short exclusive identity phase, then releases the writer queue
   before shared repository reads and recall.
@@ -255,8 +320,9 @@ returns HTTP 400 and must be corrected by the caller.
   the source of truth; a projection failure can temporarily reduce situational awareness until an
   operational repair/backfill. Reapplying a projection with the same source stream ids is
   idempotent and does not increment the session message count again.
-- Membership widening applies only to episodes and recent activity. Commitments remain scoped to
-  the current audience with the existing `GET /memory/commitments` semantics.
+- Observed-group audience widening remains only for the autobiographical response section: a
+  personal chat can receive evidence private to a group where its sender was observed speaking.
+  Commitments remain scoped to the current audience with the existing `GET /memory/commitments` semantics.
 - The token-authenticated sidecar passes an explicit trusted-tenant-operator capability to creator
   directive applicability. This capability is not inferred from or written to `borg_role` and is
   not used by cognition callers. Context includes only activation-active evaluations whose render
@@ -286,10 +352,8 @@ returns HTTP 400 and must be corrected by the caller.
 - Recent activity defaults to a 24-hour window and 12 rows. They are configurable through
   `BORG_MEMORY_RECENT_ACTIVITY_WINDOW_MS` and `BORG_MEMORY_RECENT_ACTIVITY_LIMIT`, respectively,
   as well as handler options.
-- Membership widening is a disclosure-only audience-set capability propagated through Lance,
-  indexed SQLite and the final in-memory visibility check. The current audience remains separate
-  for social ranking. The implementation never uses unrestricted `crossAudience` recall followed
-  by filtering, and cognition recall receives no audience-set option.
+- Episodes and recent activity receive no visibility capability; the current audience supplies
+  episodic social ranking and disclosure context, without dropping cross-audience evidence.
 - Append has no request-level idempotency: a client retry after a lost
   response appends a second turn to the stream and, consistently, a second awareness projection
   (team-agent retries only on transport failures, never on a received response). Replays of the
@@ -311,12 +375,12 @@ returns HTTP 400 and must be corrected by the caller.
 - `/memory/context` accepts up to 32 strict participant objects. It collapses duplicate external
   ids in first-seen order, resolves each remaining person through `team-agent.sender` during the
   exclusive identity phase, and merges the resulting entity ids into directive recipients and
-  allow-list authorization candidates. These ids never enter episode or recent-activity audience
-  capabilities, so personal participants cannot widen memory visibility and the group remains the
-  sole group/channel audience. Participant `operator` values are validated as booleans but ignored;
+  allow-list authorization candidates, and into the cognition recall/disclosure contexts. They do
+  not gate recent activity, which is recalled across audiences with disclosure labels.
+  Participant `operator` values are validated as booleans but ignored;
   only `sender.operator` can confer the trusted-operator/session-role authority.
 - `time_range` and `venue_since` accept integer epoch milliseconds; a time range is inclusive and
-  requires `start <= end`. Strict episode scoping uses the public `occurred_at` value
+  requires `start <= end`. For `/memory/recall`, strict episode scoping uses `occurred_at`
   (`episode.start_time`). If no visible strict hit survives, the retrieval pipeline reuses the same
   prepared recall expansion for one unscoped pass, so fallback does not add an LLM call and retains
   the original disclosure audience capability. The `episodes_time_range_fallback` key is emitted
@@ -328,8 +392,7 @@ returns HTTP 400 and must be corrected by the caller.
   planner cue ordering and exclusions, then take the requested limit. Candidates are read
   without accounting mutations, and only the
   final non-excluded, non-overflow episodes actually returned are recorded in `retrieval_log`,
-  episode stats, and heat inputs. Exclusion drops are not included in `hidden_episode_count`, which
-  retains its disclosure-defense meaning above.
+  episode stats, and heat inputs. `hidden_episode_count` remains zero; exclusions are not counted.
 - `venue_recent` is opt-in and therefore is not added to the default context sections, preserving
   existing requests that omit `sections`; it requires `venue_since`, defaults `venue_limit` to 12,
   and caps it at 50. The SQLite episode index stores source stream ids and joins them to
@@ -365,9 +428,12 @@ returns HTTP 400 and must be corrected by the caller.
 - Directive ids accepted by team-agent's DELETE proxy and sidecar client are limited to
   `[A-Za-z0-9_-]+`; unsafe path segments (including encoded dot segments) are rejected before a
   sidecar request.
-- A non-public episode without usable `origin_audience_names` is labelled `private`; with names it is
-  labelled `private to <names>`. Recent activity consumes the sidecar-provided `text` field. Unknown
-  response fields are ignored.
+- A `relationship_private` episode renders `private to <private_to_names>` plus explicit
+  current-speaker and current-audience membership markers. Origin audiences render separately.
+  `operator_private`, `self_private`, `sensitive` and `unknown` each have their own annotation.
+  Older or malformed responses without recipient names or boolean flags render those facts as
+  unknown; team-agent never infers private recipients from origin names or display-name equality.
+  Recent activity consumes the sidecar-provided `text` field. Unknown response fields are ignored.
 - A successful no-content sidecar response (HTTP 204) is normalized to `{}` by the shared HTTP client.
 - Upstream HTTP error logs contain only the request path, status, response size, and available request
   correlation headers; response bodies are never logged.
@@ -449,17 +515,17 @@ their citation-chain order. At most three entries are emitted per episode and ea
 or append an ellipsis. `speaker_name` is optional; `occurred_at` uses `observed_at` when present and
 otherwise the stream timestamp.
 
-The sidecar projects source messages only after the episode passes the final visible-audience-set
-gate. A source message inherits its episode's visibility and disclosure; invisible episode content is
-dropped and is never returned with a label. Source entries are reused from the retrieval pipeline's
-already-resolved citation chain, so this extension adds no source DB read, embedding, or LLM call.
+Source messages inherit their episode's disclosure label and may cross audiences in cognition
+recall. They are projected only for returned episodes after ordering and exclusions. Source entries
+reuse the retrieval pipeline's already-resolved citation chain, adding no source DB read, embedding,
+or LLM call. Their identifiers are included in the served-context guard snapshot.
 
 ### Recent-activity excerpts
 
 Each `recent_activity` event may have an additive `excerpt` string containing the original prefix of
 the event's source `user_msg` or `agent_msg`, capped at 180 characters without whitespace rewriting or
-an ellipsis. Source IDs are hydrated only after `listRecentVisibleOtherSessionEvents` has applied the
-same exact visible-audience-set and current-session exclusion as the event list. Hydration is indexed
+an ellipsis. Source IDs are hydrated after `listRecentOtherActiveSessionEvents` applies its active
+session, current-session exclusion, recency and row bounds, without an audience filter. Hydration is indexed
 only, runs once per request over the union of the capped event lists (the planner's owner-only rows
 first, then the `recent_activity` rows, so at most two row caps of source IDs) under one 50 ms
 sub-budget, and never falls back to a stream scan. A missing, malformed, mismatched, failed, or
@@ -469,7 +535,7 @@ over-budget lookup silently leaves the event without `excerpt`.
 
 For `POST /memory/context`, a supplied `time_range` is an ordering preference, not a membership gate.
 The sidecar performs one overfetched search with that range and `strictTimeRange: false`, then applies
-the existing episode visibility gate and caller exclusions. It marks every returned episode with
+caller exclusions, retaining the pipeline disclosure labels. It marks every returned episode with
 `in_time_range: true|false` using the inclusive public `occurred_at` value (`episode.start_time`),
 stable-partitions in-window results before out-of-window results while preserving relevance order
 inside both partitions, and finally slices to the requested limit. Out-of-window results therefore
@@ -551,7 +617,7 @@ temporal/entity processing, and HTTP dispatch; it never promotes an earlier assi
 
 Borg performs one forced `EmitRecallQueryPlan` structured completion in the existing
 `recallExpansion` model slot. The planner receives FOCUS, separately labelled CONTEXT turns,
-memory-owner/sender/audience/venue/entity handles, and optional visible excerpts of the owner's own
+memory-owner/sender/audience/venue/entity handles, and optional hydrated excerpts of the owner's own
 recent activity. It first resolves pronouns, ellipses, omitted subjects, and cross-venue references,
 then emits a trace-only `resolved_query`, exactly N semantic variants, exact-lookup `named_terms`,
 and optional `commitment` or `open_question` typed queries. Supplied conversation text and excerpts
@@ -574,14 +640,14 @@ from `BORG_MEMORY_RECALL_SEMANTIC_VARIANT_COUNT`, default 1 and likewise bounded
 request cannot override it. The former `BORG_MEMORY_RECALL_REFORMULATION_ENABLED` gate has been
 removed: structured planning is now the single recall-expansion path.
 
-When episodes are requested, `/memory/context` performs an owner-only pass of the visibility-gated
-activity read (same visible audience set, window and 12-row bound as `recent_activity`) restricted to
+When episodes are requested, `/memory/context` performs an owner-only pass of Sol's unfiltered
+activity read (same window and 12-row bound as `recent_activity`) restricted to
 memory-owner-authored `borg_replied` events, whether or not the `recent_activity` response section was
 requested; the shared `recent_activity` read runs only when that section is requested. Deriving
-planner rows from the shared list starved the planner on busy group days, because the 12 newest
-visible rows were all `user_contact` messages. Only owner rows with successfully hydrated `agent_msg`
+planner rows from the shared list starved the planner on busy group days, because the 12 selected
+rows were all `user_contact` messages. Only owner rows with successfully hydrated `agent_msg`
 excerpts (180 characters) enter planner context, with their venue and time labels. Both reads share
-one excerpt hydration pass with the owner rows hydrated first, and neither widens group visibility. Legacy `/memory/recall` supplies only the owner
+one excerpt hydration pass with the owner rows hydrated first; both reads span audiences. Legacy `/memory/recall` supplies only the owner
 handle and preserves its one-planner-completion property across the strict time-range fallback.
 
 ### Extension 5 (2026-09-05): planner temporal cue, owner lived experience, recency prior stand-down

@@ -16,7 +16,7 @@ import type { MoodHistoryEntry, MoodState } from "../memory/affective/types.js";
 import type {
   ActivityEvent,
   ActivityEventRecordInput,
-  ActivityVisibleSessionEvent,
+  ActivityProjectionSourceEvent,
 } from "../memory/activity/types.js";
 import type {
   ActionActor,
@@ -148,6 +148,7 @@ import type {
   ValueId,
 } from "../util/ids.js";
 import type { BorgDreamOptions, BorgEpisodeGetOptions, BorgEpisodeSearchOptions } from "./types.js";
+import type { CognitionRetrievalOptions } from "../retrieval/index.js";
 import type {
   AutobiographicalRecallInput,
   AutobiographicalRecallResult,
@@ -192,6 +193,7 @@ export type BorgExtractFromStreamResult = {
 
 export type BorgRetrievedEpisode = {
   episode: Episode;
+  disclosureLabel?: MemoryDisclosureLabel;
   score: number;
   // Pre-clamp fused score — the operative relevance value used for MMR
   // selection and result ordering; `score` is its clamped [0,1] form.
@@ -249,6 +251,10 @@ export type BorgStreamFacade = {
 };
 
 export type BorgEpisodicFacade = {
+  recallForCognition(
+    query: string,
+    options: CognitionRetrievalOptions,
+  ): Promise<BorgRetrievedEpisode[]>;
   get(id: EpisodeId, options?: BorgEpisodeGetOptions): Promise<BorgRetrievedEpisode | null>;
   inspect(id: Episode["id"]): Promise<Episode | null>;
   search(query: string, options?: BorgEpisodeSearchOptions): Promise<BorgRetrievedEpisode[]>;
@@ -897,13 +903,12 @@ export type BorgActivityFacade = {
     session: SessionRecord;
   };
   listObservedGroupAudienceEntityIdsForSpeaker(speakerEntityId: EntityId): EntityId[];
-  listRecentVisibleOtherSessionEvents(input: {
+  listRecentOtherActiveSessionEvents(input: {
     currentSessionId: SessionId;
-    audienceEntityIds: readonly EntityId[];
     sinceMs: number;
     limit: number;
-    kinds?: readonly ActivityVisibleSessionEvent["kind"][];
-  }): ActivityVisibleSessionEvent[];
+    kinds?: readonly ActivityProjectionSourceEvent["kind"][];
+  }): ActivityProjectionSourceEvent[];
 };
 
 export type BorgActivityObservedTurnProjectionInput = {

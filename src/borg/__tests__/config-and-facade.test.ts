@@ -33,6 +33,7 @@ import { createEpisodeFixture, createSemanticNodeFixture } from "../../offline/t
 import { resolveMemoryDisclosureLabelForEpisodeIds } from "../../retrieval/index.js";
 import { createBorgFacades } from "../facade.js";
 import type { BorgDependencies } from "../types.js";
+import { createEntityId } from "../../util/ids.js";
 import type { StreamEntryIndexRepository } from "../../stream/index.js";
 
 type DisclosureBatchingInternals = {
@@ -841,6 +842,43 @@ describe("Borg", () => {
         },
       }),
     );
+  });
+
+  it("keeps facade social and attention defaults in cognition episodic recall", async () => {
+    const audience = createEntityId();
+    const searchEpisodesForDisclosure = vi.fn(async (_query: string, _options: unknown) => []);
+    const recallEpisodeHitsForCognition = vi.fn(async (_query: string, _options: unknown) => []);
+    const profile = { entity_id: audience };
+    const facades = createBorgFacades({
+      actionRepository: {},
+      config: DEFAULT_CONFIG,
+      entityRepository: { get: () => ({ canonical_name: "Alice", aliases: ["A"] }) },
+      socialRepository: { getProfile: () => profile },
+      retrievalPipeline: { searchEpisodesForDisclosure, recallEpisodeHitsForCognition },
+    } as unknown as BorgDependencies);
+    await facades.episodic.search("recall", { audienceEntityId: audience });
+    await facades.episodic.recallForCognition("recall", {
+      recallContext: {
+        reader: "self",
+        currentSessionId: createSessionId(),
+        currentAudienceEntityId: audience,
+        currentParticipantEntityIds: [audience],
+      },
+    });
+    const disclosureOptions = searchEpisodesForDisclosure.mock.calls[0]![1] as Record<
+      string,
+      unknown
+    >;
+    const cognitionOptions = recallEpisodeHitsForCognition.mock.calls[0]![1];
+    expect(cognitionOptions).toMatchObject({
+      audienceProfile: profile,
+      audienceTerms: ["Alice", "A"],
+      attentionWeights: disclosureOptions.attentionWeights,
+      rankingAudienceEntityId: audience,
+      strictTimeRange: disclosureOptions.strictTimeRange,
+    });
+    expect(cognitionOptions).not.toHaveProperty("audienceEntityId");
+    expect(cognitionOptions).not.toHaveProperty("visibleAudienceEntityIds");
   });
 
   it("lets a deployment override the attention weights from config", async () => {

@@ -27,6 +27,7 @@ import { CommitmentGuardRunner } from "../commitments/guard-runner.js";
 import type { TurnTracer } from "../../tracing/tracer.js";
 import {
   CLOSURE_RESPONSE_AUDIT_TOOL_NAME,
+  ClosurePressureGuard,
   type ClosureResponseAudit,
 } from "./closure-pressure-guard.js";
 import { TurnPostGenerationGuardRunner } from "./turn-post-generation-guard.js";
@@ -181,6 +182,53 @@ async function runInternalIdentifierGuardFixture(input: {
 }
 
 describe("post-generation guard shadow chain", () => {
+  it("runs identifiers-only without constructing a closure audit or requiring an LLM", async () => {
+    const audit = vi.spyOn(ClosurePressureGuard.prototype, "run");
+    const runner = new TurnPostGenerationGuardRunner({
+      auditModel: "audit",
+      closurePressureMode: "enforce",
+      createStreamReader: () => emptyStreamReader(),
+      actionRepository: { list: () => [] },
+      relationalSlotRepository: { list: () => [] },
+      clock: new FixedClock(2_000),
+      tracer: { enabled: false, includePayloads: false, emit: () => {} },
+    });
+    const identifier = createEpisodeId();
+    const input = {
+      executionMode: "identifiers-only" as const,
+      turnId: "guard-only",
+      sessionId: DEFAULT_SESSION_ID,
+      audienceEntityId: null,
+      retrievedEpisodes: [],
+      activeCommitments: [makeCommitment()],
+      closureLoop: null,
+      response: `Here is ${identifier}.`,
+      knownInternalIdentifiers: [identifier],
+    };
+    try {
+      expect(await runner.run(input)).toEqual({
+        kind: "suppressed",
+        reason: "internal_identifier_leak",
+      });
+      expect(await runner.run({ ...input, sessionAudienceRole: "operator" })).toEqual({
+        kind: "message",
+        content: input.response,
+      });
+      expect(
+        await runner.run({ ...input, currentTurnUserTexts: [`Explain ${identifier}`] }),
+      ).toEqual({
+        kind: "message",
+        content: input.response,
+      });
+      expect(await runner.run({ ...input, response: "A normal reply." })).toEqual({
+        kind: "message",
+        content: "A normal reply.",
+      });
+      expect(audit).not.toHaveBeenCalled();
+    } finally {
+      audit.mockRestore();
+    }
+  });
   it("keeps the original candidate through commitment and closure shadow guards", async () => {
     const original =
       "Launch is tomorrow. You mentioned Marta earlier. The shelf test is the right move. Go read.";

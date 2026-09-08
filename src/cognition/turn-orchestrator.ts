@@ -211,6 +211,7 @@ function stripTurnLockMode(input: TurnOrchestratorInput): TurnPhaseCoordinatorIn
 }
 
 export class TurnOrchestrator {
+  readonly postGenerationGuardRunner: TurnPostGenerationGuardRunner;
   private readonly clock: Clock;
   private readonly sessionLock: SessionLock;
   private readonly tracer: TurnTracer;
@@ -344,6 +345,7 @@ export class TurnOrchestrator {
       clock: this.clock,
       tracer: this.tracer,
     });
+    this.postGenerationGuardRunner = postGenerationGuardRunner;
     const plannerContextCapture =
       options.config.deliberation.plannerContextCaptureSampleRate === 0
         ? undefined

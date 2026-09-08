@@ -14,7 +14,9 @@ import { EmbeddingBankError } from "../embeddings/bank-profile.js";
 //                          limit?, sections?,
 //                          participants?, entity_terms?, time_range?, exclude?, venue_since?,
 //                          venue_limit? }
-//                                                            -> audience-scoped turn context
+//                                                            -> labeled episodic turn context
+//   POST /memory/guard-reply { tenant, session, sender, conversation, context_id, response,
+//                              current_turn_user_texts? }     -> identifier-only reply check
 //   POST /memory/recall      { tenant, query, limit?, time_range?, exclude? }
 //                                                            -> semantic episodic search
 //   GET  /memory/commitments?tenant=<id>&audience=<entity_id>      -> active commitments
@@ -38,9 +40,10 @@ import { EmbeddingBankError } from "../embeddings/bank-profile.js";
 //   POST /memory/maintenance/revert?tenant=<id>&audit_id=<id>
 //   GET  /healthz                                           -> liveness (no auth)
 //
-// Cognition recall remains global within each tenant being. These HTTP routes are
-// disclosure/export surfaces: /memory/context applies audience visibility before
-// returning episodes or activity. All authenticated routes require x-borg-token.
+// Cognition recall remains global within each tenant being.
+// /memory/context supplies global, labeled episodes and recent activity for external
+// cognition; venue recency stays scoped to the current venue. All authenticated routes
+// require x-borg-token.
 
 import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -49,7 +52,10 @@ import { z } from "zod";
 
 import type { Borg } from "../borg.js";
 import { normalizeCommitmentClassification } from "../cognition/commitments/classification-normalizer.js";
-import type { ActivityVisibleSessionEvent } from "../memory/activity/index.js";
+import {
+  recentLivedExperienceDisclosureLabel,
+  type ActivityProjectionSourceEvent,
+} from "../memory/activity/index.js";
 import {
   commitmentCriticalDomainSchema,
   commitmentEnforcementClassSchema,
@@ -78,6 +84,8 @@ import type { TemporalCue } from "../contracts/cognitive-contracts.js";
 import {
   isMemoryDisclosureLabelVisibleToAnyAudience,
   memoryDisclosureLabelFromEpisodeAccess,
+  memoryDisclosureLabelMetadata,
+  type MemoryDisclosureLabel,
 } from "../memory/common/index.js";
 import {
   isEpisodeAccessVisibleToAnyAudience,
@@ -88,7 +96,13 @@ import {
   clipRecalledEvidenceText,
   MAX_RECALLED_SOURCE_MESSAGES_PER_EPISODE,
 } from "../retrieval/evidence-bounds.js";
-import type { EpisodeRecencyPrior, RetrievedEpisode } from "../retrieval/index.js";
+import { MEMORY_DISCLOSURE_GUIDANCE_FOR_MODEL, SELF_RECALL_SCOPE } from "../retrieval/index.js";
+import { ServedMemoryContextRegistry } from "./served-memory-context.js";
+import type {
+  DisclosureContext,
+  EpisodeRecencyPrior,
+  RetrievedEpisode,
+} from "../retrieval/index.js";
 import type { RecallPlanOutcome, RetrievalDegradation } from "../retrieval/pipeline.js";
 import {
   MAX_RECALL_EXPANSION_SEMANTIC_VARIANTS,
@@ -178,6 +192,7 @@ export type MemoryHandlerOptions = {
   recencyPrior?: EpisodeRecencyPrior;
   recallSemanticVariantCount?: number;
   traceRegistry?: MemoryTraceRegistry;
+  servedContexts?: ServedMemoryContextRegistry;
   maintenanceCoordinator?: Pick<
     MemoryMaintenanceCoordinator,
     "cancelReservation" | "getStatus" | "hasReservation" | "startReserved" | "tryReserve"
@@ -317,6 +332,15 @@ const memoryTransportIdentitySchema = z.object({
   sender: contextSenderSchema.strip(),
   conversation: contextConversationSchema.strip(),
 });
+
+const guardReplyBodySchema = memoryTransportIdentitySchema
+  .extend({
+    tenant: z.string().trim().regex(TENANT_ID_RE),
+    context_id: z.string().max(128),
+    response: z.string().min(1),
+    current_turn_user_texts: z.array(z.string()).max(32).optional(),
+  })
+  .strict();
 
 const contextTurnSchema = z
   .object({
@@ -889,7 +913,7 @@ function createPublicEpisodeMetadataProjector(
 
 type EpisodeExclusions = z.infer<typeof episodeExclusionsSchema>;
 type SidecarEpisodeHit = Pick<RetrievedEpisode, "episode" | "score" | "rawScore"> &
-  Partial<Pick<RetrievedEpisode, "citationChain">>;
+  Partial<Pick<RetrievedEpisode, "citationChain" | "disclosureLabel">>;
 
 // The period a planner cue names, in the same shape as an explicit time_range, so the response can
 // prefer in-period episodes and flag them whichever way the period arrived. Open ends fall back to
@@ -959,10 +983,43 @@ function episodeMatchesExclusions(episode: Episode, exclusions?: EpisodeExclusio
   );
 }
 
+function createPublicDisclosureProjector(
+  entities: Pick<Borg["entities"], "get">,
+  context: Pick<DisclosureContext, "senderEntityId" | "currentAudienceEntityId">,
+) {
+  const names = new Map<EntityId, string | null>();
+  return (label: MemoryDisclosureLabel) => {
+    const disclosure = memoryDisclosureLabelMetadata(label);
+    for (const entityId of [
+      ...disclosure.origin_audience_entity_ids,
+      ...disclosure.private_to_entity_ids,
+    ]) {
+      if (!names.has(entityId)) {
+        names.set(entityId, entities.get(entityId)?.canonical_name ?? null);
+      }
+    }
+    return {
+      class: disclosure.disclosure_class,
+      origin_audience_names: disclosure.origin_audience_entity_ids.flatMap(
+        (entityId) => names.get(entityId) ?? [],
+      ),
+      private_to_names: disclosure.private_to_entity_ids.flatMap(
+        (entityId) => names.get(entityId) ?? [],
+      ),
+      private_to_current_sender: disclosure.private_to_entity_ids.some(
+        (entityId) => entityId === context.senderEntityId,
+      ),
+      private_to_current_audience: disclosure.private_to_entity_ids.some(
+        (entityId) => entityId === context.currentAudienceEntityId,
+      ),
+    };
+  };
+}
+
 function projectEpisodeHitsForResponse(
   hits: readonly SidecarEpisodeHit[],
   entities: Pick<Borg["entities"], "get" | "getSelf">,
-  includeDisclosure: boolean,
+  disclosureContext: Pick<DisclosureContext, "senderEntityId" | "currentAudienceEntityId"> | null,
   options: {
     includeSourceMessages?: boolean;
     timeRange?: { start: number; end: number };
@@ -976,21 +1033,10 @@ function projectEpisodeHitsForResponse(
     hits.map((hit) => hit.episode),
     entities,
   );
-  const originAudienceEntityIds = includeDisclosure
-    ? dedupePreservingOrder(
-        hits.flatMap(
-          (hit) => memoryDisclosureLabelFromEpisodeAccess(hit.episode).originAudienceEntityIds,
-        ),
-      )
-    : [];
-  const originAudienceNames = new Map<EntityId, string>();
-
-  for (const entityId of originAudienceEntityIds) {
-    const entity = entities.get(entityId);
-    if (entity !== null) {
-      originAudienceNames.set(entityId, entity.canonical_name);
-    }
-  }
+  const projectDisclosure =
+    disclosureContext === null
+      ? null
+      : createPublicDisclosureProjector(entities, disclosureContext);
 
   return hits.map((hit) => {
     const sourceMessages = options.includeSourceMessages
@@ -1031,20 +1077,15 @@ function projectEpisodeHitsForResponse(
       ...(sourceMessages === undefined ? {} : { source_messages: sourceMessages }),
     };
 
-    if (!includeDisclosure) {
+    if (projectDisclosure === null) {
       return base;
     }
 
-    const disclosure = memoryDisclosureLabelFromEpisodeAccess(hit.episode);
     return {
       ...base,
-      disclosure: {
-        class: disclosure.disclosureClass,
-        origin_audience_names: disclosure.originAudienceEntityIds.flatMap((entityId) => {
-          const name = originAudienceNames.get(entityId);
-          return name === undefined ? [] : [name];
-        }),
-      },
+      disclosure: projectDisclosure(
+        hit.disclosureLabel ?? memoryDisclosureLabelFromEpisodeAccess(hit.episode),
+      ),
     };
   });
 }
@@ -1164,10 +1205,20 @@ function isInvalidEpisodeCursorError(error: unknown): boolean {
 }
 
 function projectRecentActivity(
-  event: ActivityVisibleSessionEvent,
+  event: ActivityProjectionSourceEvent,
   nowMs: number,
   sourceEntries: ReadonlyMap<StreamEntryId, StreamEntry>,
+  projectDisclosure: ReturnType<typeof createPublicDisclosureProjector>,
 ) {
+  const disclosure = projectDisclosure(
+    recentLivedExperienceDisclosureLabel({
+      originAudienceEntityIds: event.audienceEntityId === null ? [] : [event.audienceEntityId],
+    }),
+  );
+  const participantName =
+    event.kind === "borg_replied"
+      ? (disclosure.origin_audience_names[0] ?? event.conversationName)
+      : event.participantLabel;
   const relativeAge = formatRelativeAge(event.occurredAt, nowMs);
   const conversation =
     event.conversationKind === "dm"
@@ -1183,9 +1234,12 @@ function projectRecentActivity(
         : `channel "${conversation.name}"`;
   const text =
     event.kind === "user_contact"
-      ? `${event.participantLabel} contacted the agent ${relativeAge} in ${location}.`
-      : `The agent replied to ${event.participantLabel} ${relativeAge} in ${location}.`;
-  const expectedSourceKind = event.kind === "user_contact" ? "user_msg" : "agent_msg";
+      ? `${participantName} contacted the agent ${relativeAge} in ${location}.`
+      : event.kind === "borg_replied"
+        ? `The agent replied to ${participantName} ${relativeAge} in ${location}.`
+        : `The agent completed a turn with ${participantName} ${relativeAge} in ${location}.`;
+  const expectedSourceKind =
+    event.kind === "user_contact" ? "user_msg" : event.kind === "borg_replied" ? "agent_msg" : null;
   const sourceEntry = event.sourceStreamEntryIds
     .map((entryId) => sourceEntries.get(entryId))
     .find(
@@ -1206,8 +1260,9 @@ function projectRecentActivity(
     relative_age: relativeAge,
     session: event.sessionId,
     conversation,
-    participant_name: event.participantLabel,
+    participant_name: participantName,
     text,
+    disclosure,
     ...(excerpt === null ? {} : { excerpt }),
   };
 }
@@ -1380,6 +1435,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
       Math.floor(options.recallSemanticVariantCount ?? 1),
     ),
   );
+  const servedContexts = options.servedContexts ?? new ServedMemoryContextRegistry();
   let recallTraceSequence = 0;
 
   const nextRecallTraceTurnId = (tenant: string): string => {
@@ -2494,6 +2550,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
         rawPath !== "/memory/append-turn" &&
         rawPath !== "/memory/commitments" &&
         rawPath !== "/memory/context" &&
+        rawPath !== "/memory/guard-reply" &&
         rawPath !== "/memory/directives")
     ) {
       send(res, 404, { error: "not found" });
@@ -2511,6 +2568,69 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
     }
 
     try {
+      if (rawPath === "/memory/guard-reply") {
+        const parsed = guardReplyBodySchema.safeParse(body);
+        if (!parsed.success) {
+          send(res, 400, { error: "invalid guard reply body" });
+          return;
+        }
+        const session = sessionFromCaller(parsed.data.session);
+        const identity = await pool.withTenant(
+          tenant,
+          (borg) =>
+            resolveTeamAgentIdentity({
+              borg,
+              session,
+              rawSession: parsed.data.session,
+              sender: {
+                externalId: parsed.data.sender.external_id,
+                displayName: parsed.data.sender.display_name,
+                operator: parsed.data.sender.operator,
+              },
+              conversation: parsed.data.conversation,
+            }),
+          { exclusive: true },
+        );
+        const result = await pool.withTenant(tenant, async (borg) => {
+          const candidate = servedContexts.get(tenant, session, parsed.data.context_id);
+          const snapshot =
+            candidate?.audienceEntityId === identity.audienceEntity.id &&
+            candidate?.senderEntityId === identity.senderEntityId
+              ? candidate
+              : undefined;
+          const reasons: string[] = snapshot === undefined ? ["context_snapshot_miss"] : [];
+          const turnId = parsed.data.context_id || nextRecallTraceTurnId(tenant);
+          const emission = await borg.guardReply({
+            turnId,
+            sessionId: session,
+            sessionSourceType: identity.sessionEnsureInput.source_type,
+            sessionAudienceRole: identity.audienceRole,
+            audienceEntityId: identity.audienceEntity.id,
+            response: parsed.data.response,
+            currentTurnUserTexts: parsed.data.current_turn_user_texts,
+            retrievedEpisodes: snapshot?.episodes ?? [],
+            activeCommitments:
+              snapshot?.commitments ??
+              borg.commitments.list({
+                activeOnly: true,
+                audienceEntityId: identity.audienceEntity.id,
+              }),
+            knownInternalIdentifiers: [parsed.data.context_id, identity.senderEntityId ?? ""],
+          });
+          const verdict = emission.kind === "suppressed" ? "blocked" : "pass";
+          if (emission.kind === "suppressed") reasons.push(emission.reason);
+          traceRegistry?.tracerFor(tenant).emit("sidecar.guard_reply.completed", {
+            turnId,
+            session_id: session,
+            verdict,
+            reasons,
+          });
+          return { ok: true, verdict, reasons };
+        });
+        send(res, 200, result);
+        return;
+      }
+
       if (rawPath === "/memory/context") {
         const parsed = memoryContextBodySchema.safeParse(body);
 
@@ -2596,7 +2716,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
         const context = await pool.withTenant(tenant, async (borg) => {
           const observedGroupAudienceEntityIds =
             parsed.data.conversation.type === "personal" &&
-            (requestedSections.has("episodes") || requestedSections.has("recent_activity"))
+            requestedSections.has("autobiographical")
               ? borg.activity.listObservedGroupAudienceEntityIdsForSpeaker(identity.senderEntityId)
               : [];
           const visibleAudienceEntityIds = dedupePreservingOrder([
@@ -2604,21 +2724,19 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
             ...observedGroupAudienceEntityIds,
           ]);
           const recentActivityEvents = requestedSections.has("recent_activity")
-            ? borg.activity.listRecentVisibleOtherSessionEvents({
+            ? borg.activity.listRecentOtherActiveSessionEvents({
                 currentSessionId: session,
-                audienceEntityIds: visibleAudienceEntityIds,
                 sinceMs: nowMs - recentActivityWindowMs,
                 limit: recentActivityLimit,
               })
             : [];
           // Planner context reads the memory owner's own recent replies elsewhere through an
-          // owner-only pass of the same visibility-gated query. Deriving them from the shared
-          // response list starved the planner on busy group days: the 12 newest visible rows
+          // owner-only pass of the same cognition query. Deriving them from the shared
+          // response list starved the planner on busy group days: the 12 selected rows
           // were all user_contact messages, so zero owner rows reached the planner.
           const plannerOwnerActivityEvents = requestedSections.has("episodes")
-            ? borg.activity.listRecentVisibleOtherSessionEvents({
+            ? borg.activity.listRecentOtherActiveSessionEvents({
                 currentSessionId: session,
-                audienceEntityIds: visibleAudienceEntityIds,
                 sinceMs: nowMs - recentActivityWindowMs,
                 limit: recentActivityLimit,
                 kinds: ["borg_replied"],
@@ -2649,11 +2767,20 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
               });
             }
           }
+          const projectDisclosure = createPublicDisclosureProjector(borg.entities, {
+            senderEntityId: identity.senderEntityId,
+            currentAudienceEntityId: identity.audienceEntity.id,
+          });
           const recentActivity = recentActivityEvents.map((event) =>
-            projectRecentActivity(event, nowMs, recentActivitySourceEntries),
+            projectRecentActivity(event, nowMs, recentActivitySourceEntries, projectDisclosure),
           );
           const plannerOwnerActivity = plannerOwnerActivityEvents.flatMap((event) => {
-            const projected = projectRecentActivity(event, nowMs, recentActivitySourceEntries);
+            const projected = projectRecentActivity(
+              event,
+              nowMs,
+              recentActivitySourceEntries,
+              projectDisclosure,
+            );
             if (event.kind !== "borg_replied" || projected.excerpt === undefined) {
               return [];
             }
@@ -2663,20 +2790,20 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
                 excerpt: projected.excerpt,
                 occurredAt: event.occurredAt,
                 venue: projected.conversation,
-                counterpartyName: event.participantLabel,
+                counterpartyName: projected.participant_name,
               },
             ];
           });
-          const commitments = requestedSections.has("commitments")
-            ? borg.commitments
-                .list({
-                  activeOnly: true,
-                  audienceEntityId: identity.audienceEntity.id,
-                })
-                .sort(compareCommitmentsForResponse)
-                .slice(0, MAX_COMMITMENT_RESPONSE_ITEMS)
-                .map(projectCommitment)
-            : [];
+          const applicableCommitments =
+            requestedSections.has("commitments") || requestedSections.has("episodes")
+              ? borg.commitments
+                  .list({
+                    activeOnly: true,
+                    audienceEntityId: identity.audienceEntity.id,
+                  })
+                  .sort(compareCommitmentsForResponse)
+                  .slice(0, MAX_COMMITMENT_RESPONSE_ITEMS)
+              : [];
           const participantEntityIds = dedupePreservingOrder([
             identity.senderEntityId,
             ...identity.participantEntityIds,
@@ -2719,7 +2846,10 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
                 rawScore: 0,
               })),
             borg.entities,
-            true,
+            {
+              senderEntityId: identity.senderEntityId,
+              currentAudienceEntityId: identity.audienceEntity.id,
+            },
           );
 
           const plannerOwnerLivedExperience = requestedSections.has("episodes")
@@ -2750,14 +2880,15 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
             plannerOwnerActivity,
             plannerOwnerLivedExperience,
             memoryOwnerName: borg.entities.getSelf()?.canonical_name,
-            commitments,
+            commitments: applicableCommitments.map(projectCommitment),
+            applicableCommitments,
             directives,
             venueRecent,
           };
         });
         const degradations: RetrievalDegradation[] = [];
         let episodes: Array<Record<string, unknown>> = [];
-        let hiddenEpisodeCount = 0;
+        let servedEpisodes: readonly RetrievedEpisode[] = [];
         let degraded = false;
         let degradedReason = "";
         let abstained = false;
@@ -2780,8 +2911,29 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
                 let recallPlan: RecallPlanOutcome | null = null;
                 const recallOptions = {
                   limit: episodeSearchLimit,
-                  audienceEntityId: identity.audienceEntity.id,
-                  visibleAudienceEntityIds: context.visibleAudienceEntityIds,
+                  recallContext: {
+                    reader: SELF_RECALL_SCOPE,
+                    currentSessionId: session,
+                    currentAudienceEntityId: identity.audienceEntity.id,
+                    currentParticipantEntityIds: dedupePreservingOrder([
+                      identity.senderEntityId,
+                      ...identity.participantEntityIds,
+                      identity.audienceEntity.id,
+                    ]),
+                  },
+                  disclosureContext: {
+                    currentSessionId: session,
+                    currentAudienceEntityId: identity.audienceEntity.id,
+                    audienceRole: identity.audienceRole,
+                    senderEntityId: identity.senderEntityId,
+                    senderRole: null,
+                    participantEntityIds: dedupePreservingOrder([
+                      identity.senderEntityId,
+                      ...identity.participantEntityIds,
+                      identity.audienceEntity.id,
+                    ]),
+                    isPrivateSelfCognition: false,
+                  },
                   onDegraded: (degradation: RetrievalDegradation) => degradations.push(degradation),
                   onRecallPlan: (plan: RecallPlanOutcome) => {
                     recallPlan = plan;
@@ -2813,7 +2965,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
                   recordRetrieval: false,
                   ...(traceTurnId === undefined ? {} : { traceTurnId }),
                 };
-                const recalled = await borg.episodic.search(recallFocus, {
+                const recalled = await borg.episodic.recallForCognition(recallFocus, {
                   ...recallOptions,
                   ...(parsed.data.time_range === undefined
                     ? {}
@@ -2822,13 +2974,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
                         strictTimeRange: false,
                       }),
                 });
-                const visible = recalled.filter((hit) =>
-                  isEpisodeAccessVisibleToAnyAudience(
-                    hit.episode,
-                    context.visibleAudienceEntityIds,
-                  ),
-                );
-                const eligible = visible.filter(
+                const eligible = recalled.filter(
                   (hit) => !episodeMatchesExclusions(hit.episode, parsed.data.exclude),
                 );
                 // The period to prefer: an explicit time_range, else the cue the planner resolved
@@ -2866,19 +3012,24 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
 
                 return {
                   shouldAbstain,
-                  hiddenEpisodeCount: recalled.length - visible.length,
+                  servedEpisodes: shouldAbstain ? [] : included,
                   topRawScore,
                   plannerTemporalCue: parsed.data.time_range === undefined ? actedCue : null,
-                  episodes: projectEpisodeHitsForResponse(included, borg.entities, true, {
-                    includeSourceMessages: true,
-                    ...(preferredRange === undefined ? {} : { timeRange: preferredRange }),
-                  }),
+                  episodes: projectEpisodeHitsForResponse(
+                    included,
+                    borg.entities,
+                    recallOptions.disclosureContext,
+                    {
+                      includeSourceMessages: true,
+                      ...(preferredRange === undefined ? {} : { timeRange: preferredRange }),
+                    },
+                  ),
                 };
               }),
               recallDeadlineMs,
             );
 
-            hiddenEpisodeCount = recallResult.hiddenEpisodeCount;
+            servedEpisodes = recallResult.servedEpisodes;
             plannerTemporalCue = recallResult.plannerTemporalCue;
             if (recallResult.shouldAbstain) {
               abstained = true;
@@ -2976,7 +3127,16 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
         }
         if (requestedSections.has("episodes")) {
           response.episodes = episodes;
-          response.hidden_episode_count = hiddenEpisodeCount;
+          response.hidden_episode_count = 0;
+          response.disclosure_guidance = MEMORY_DISCLOSURE_GUIDANCE_FOR_MODEL;
+          // Store only after the deadline has resolved, so abandoned recall cannot publish later.
+          response.context_id = servedContexts.put(tenant, {
+            sessionId: session,
+            audienceEntityId: identity.audienceEntity.id,
+            senderEntityId: identity.senderEntityId,
+            episodes: servedEpisodes,
+            commitments: context.applicableCommitments,
+          });
           if (abstained) {
             response.abstained = true;
             response.abstain_reason = "low_relevance";
@@ -3559,7 +3719,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
             return {
               shouldAbstain,
               episodes: included,
-              projected: projectEpisodeHitsForResponse(included, borg.entities, false),
+              projected: projectEpisodeHitsForResponse(included, borg.entities, null),
               topRawScore,
               timeRangeFallback: recalledResult.timeRangeFallback,
             };

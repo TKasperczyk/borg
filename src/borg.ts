@@ -1,3 +1,4 @@
+import type { IdentifierOnlyGuardInput } from "./cognition/generation/turn-post-generation-guard.js";
 import { similarityThresholds, type SimilarityThresholds } from "./config/similarity.js";
 // Borg public facade: exposes stable APIs while setup details live in focused modules.
 
@@ -103,6 +104,15 @@ export class Borg {
    */
   turn(input: TurnInput): Promise<TurnResult> {
     return this.deps.turnOrchestrator.run(input);
+  }
+
+  /** Check an external cognition reply using the shared structural guard, without LLM work. */
+  guardReply(input: IdentifierOnlyGuardInput) {
+    return this.deps.turnOrchestrator.postGenerationGuardRunner.run({
+      ...input,
+      executionMode: "identifiers-only",
+      closureLoop: null,
+    });
   }
 
   /**

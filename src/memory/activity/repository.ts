@@ -18,22 +18,15 @@ import {
   type ActivityEvent,
   type ActivityEventRecordInput,
   type ActivityEventKind,
-  type ActivityVisibleSessionEvent,
+  type ActivityProjectionSourceEvent,
 } from "./types.js";
+
+export type { ActivityProjectionSourceEvent } from "./types.js";
 
 const ACTIVITY_JSON_ARRAY_CODEC = {
   errorCode: "ACTIVITY_EVENT_ROW_INVALID",
   errorMessage: (label: string) => `Failed to parse activity event ${label}`,
 } satisfies JsonArrayCodecOptions;
-
-export type ActivityProjectionSourceEvent = {
-  kind: ActivityEventKind;
-  occurredAt: number;
-  sessionId: SessionId;
-  participantLabel: string;
-  audienceEntityId: EntityId | null;
-  sourceStreamEntryIds: readonly StreamEntryId[];
-};
 
 export type ActivityAutobiographicalSourceEvent = {
   id: ActivityEventId;
@@ -150,6 +143,8 @@ function mapProjectionRow(row: Record<string, unknown>): ActivityProjectionSourc
     kind: row.kind as ActivityEventKind,
     occurredAt: Number(row.occurred_at),
     sessionId: row.session_id as SessionId,
+    conversationKind: row.conversation_kind as ActivityProjectionSourceEvent["conversationKind"],
+    conversationName: String(row.conversation_name ?? ""),
     participantLabel: String(row.participant_label ?? "A participant"),
     audienceEntityId:
       row.audience_entity_id === null || row.audience_entity_id === undefined
@@ -180,22 +175,6 @@ function mapAutobiographicalRow(row: Record<string, unknown>): ActivityAutobiogr
       String(row.participant_entity_ids ?? "[]"),
       "participant_entity_ids",
     ),
-    sourceStreamEntryIds: parseStreamEntryIds(
-      String(row.source_stream_entry_ids ?? "[]"),
-      "source_stream_entry_ids",
-    ),
-  };
-}
-
-function mapVisibleSessionEventRow(row: Record<string, unknown>): ActivityVisibleSessionEvent {
-  return {
-    kind: row.kind as ActivityVisibleSessionEvent["kind"],
-    occurredAt: Number(row.occurred_at),
-    sessionId: row.session_id as SessionId,
-    audienceEntityId: row.audience_entity_id as EntityId,
-    conversationKind: row.conversation_kind as ActivityVisibleSessionEvent["conversationKind"],
-    conversationName: String(row.conversation_name ?? ""),
-    participantLabel: String(row.participant_label ?? "A participant"),
     sourceStreamEntryIds: parseStreamEntryIds(
       String(row.source_stream_entry_ids ?? "[]"),
       "source_stream_entry_ids",
@@ -368,7 +347,12 @@ export class ActivityRepository {
     currentSessionId: SessionId;
     sinceMs: number;
     limit: number;
+    kinds?: readonly ActivityEventKind[];
   }): ActivityProjectionSourceEvent[] {
+    const kinds = input.kinds === undefined ? undefined : dedupePreservingOrder(input.kinds);
+    if (kinds?.length === 0) {
+      return [];
+    }
     const rows = this.db
       .prepare(
         `
@@ -378,6 +362,8 @@ export class ActivityRepository {
             e.session_id,
             e.audience_entity_id,
             e.source_stream_entry_ids,
+            s.conversation_kind,
+            s.audience_label AS conversation_name,
             COALESCE(speaker.canonical_name, audience.canonical_name, s.audience_label)
               AS participant_label
           FROM activity_events e
@@ -389,6 +375,7 @@ export class ActivityRepository {
             AND s.status = 'active'
             AND e.session_id <> ?
             AND e.occurred_at >= ?
+            ${kinds === undefined ? "" : `AND e.kind IN (${kinds.map(() => "?").join(", ")})`}
             AND (
               e.kind IN ('user_contact', 'borg_replied')
               OR EXISTS (
@@ -413,7 +400,10 @@ export class ActivityRepository {
           LIMIT ?
         `,
       )
-      .all(input.currentSessionId, input.sinceMs, input.limit) as Record<string, unknown>[];
+      .all(input.currentSessionId, input.sinceMs, ...(kinds ?? []), input.limit) as Record<
+      string,
+      unknown
+    >[];
 
     return rows.map(mapProjectionRow);
   }
@@ -436,73 +426,6 @@ export class ActivityRepository {
       .all(speakerEntityId) as Array<{ audience_entity_id: EntityId }>;
 
     return rows.map((row) => row.audience_entity_id);
-  }
-
-  listRecentVisibleOtherSessionEvents(input: {
-    currentSessionId: SessionId;
-    audienceEntityIds: readonly EntityId[];
-    sinceMs: number;
-    limit: number;
-    kinds?: readonly ActivityVisibleSessionEvent["kind"][];
-  }): ActivityVisibleSessionEvent[] {
-    const audienceEntityIds = uniqueEntityIds(input.audienceEntityIds);
-
-    if (audienceEntityIds.length === 0) {
-      return [];
-    }
-
-    const kinds: ActivityVisibleSessionEvent["kind"][] =
-      input.kinds === undefined
-        ? ["user_contact", "borg_replied"]
-        : dedupePreservingOrder(input.kinds);
-
-    if (kinds.length === 0) {
-      return [];
-    }
-
-    const kindPlaceholders = kinds.map(() => "?").join(", ");
-    const audiencePlaceholders = audienceEntityIds.map(() => "?").join(", ");
-    const rows = this.db
-      .prepare(
-        `
-          SELECT
-            e.kind,
-            e.occurred_at,
-            e.session_id,
-            e.audience_entity_id,
-            e.source_stream_entry_ids,
-            s.conversation_kind,
-            s.audience_label AS conversation_name,
-            CASE e.kind
-              WHEN 'borg_replied' THEN
-                COALESCE(audience.canonical_name, s.audience_label)
-              ELSE
-                COALESCE(speaker.canonical_name, audience.canonical_name, s.audience_label)
-            END AS participant_label
-          FROM activity_events e
-          INNER JOIN sessions s ON s.session_id = e.session_id
-          LEFT JOIN entities speaker ON speaker.id = e.speaker_entity_id
-          LEFT JOIN entities audience ON audience.id = e.audience_entity_id
-          WHERE
-            e.status = 'active'
-            AND s.status = 'active'
-            AND e.session_id <> ?
-            AND e.occurred_at >= ?
-            AND e.kind IN (${kindPlaceholders})
-            AND e.audience_entity_id IN (${audiencePlaceholders})
-          ORDER BY e.occurred_at DESC, e.id ASC
-          LIMIT ?
-        `,
-      )
-      .all(
-        input.currentSessionId,
-        input.sinceMs,
-        ...kinds,
-        ...audienceEntityIds,
-        Math.max(1, Math.floor(input.limit)),
-      ) as Record<string, unknown>[];
-
-    return rows.map(mapVisibleSessionEventRow);
   }
 
   getMostRecentOtherActiveSessionEventOccurredAt(input: {
