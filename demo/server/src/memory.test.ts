@@ -21,6 +21,7 @@ function harness(input: { historyLimit?: number; tableIntervalMs?: number } = {}
     storageTableStats: vi.fn(async (): Promise<LanceDbTableStats[]> => [table]),
   };
   const log = vi.fn();
+  const logger = { error: vi.fn() };
   const tracer = { enabled: true, includePayloads: false, emit: vi.fn() };
   const sampler = new MemorySampler({
     config: {
@@ -33,9 +34,10 @@ function harness(input: { historyLimit?: number; tableIntervalMs?: number } = {}
     memoryUsage: () => usage,
     uptime: () => 123,
     log,
+    logger,
     tracer,
   });
-  return { sampler, provider, log, tracer };
+  return { sampler, provider, log, tracer, logger };
 }
 
 afterEach(() => {
@@ -112,23 +114,32 @@ describe("demo memory sampler", () => {
     await sampler.stop();
   });
 
-  it("uses the slower cadence, exposes metadata errors, and GET-style snapshots do no work", async () => {
+  it("uses the slower cadence, sanitizes metadata errors, and GET-style snapshots do no work", async () => {
     vi.useFakeTimers();
-    const { sampler, provider } = harness();
-    provider.storageTableStats.mockRejectedValueOnce(new Error("metadata unavailable"));
+    const { sampler, provider, logger, log, tracer } = harness();
+    const cause = new Error("native metadata unavailable at /private/lance/_versions/123.manifest");
+    provider.storageTableStats.mockRejectedValueOnce(cause);
     sampler.start();
     await vi.advanceTimersByTimeAsync(4000);
     expect(provider.storageTableStats).toHaveBeenCalledOnce();
     expect(sampler.snapshot().latest?.lanceTables).toMatchObject({
-      error: "metadata unavailable",
+      errorCode: "LANCEDB_TABLE_STATS_FAILED",
       tables: [],
     });
+    expect(logger.error).toHaveBeenCalledExactlyOnceWith("LanceDB table metadata refresh failed", {
+      code: "LANCEDB_TABLE_STATS_FAILED",
+      cause,
+    });
+    expect(JSON.stringify(sampler.snapshot())).not.toContain(cause.message);
+    expect(JSON.stringify(log.mock.calls)).not.toContain("/private/lance");
+    expect(JSON.stringify(tracer.emit.mock.calls)).not.toContain("/private/lance");
     const calls = provider.storageMemoryStats.mock.calls.length;
     for (let i = 0; i < 100; i++) sampler.snapshot();
     expect(provider.storageMemoryStats).toHaveBeenCalledTimes(calls);
     await vi.advanceTimersByTimeAsync(2000);
     expect(provider.storageTableStats).toHaveBeenCalledTimes(2);
     expect(sampler.snapshot().latest?.lanceTables?.tables).toEqual([table]);
+    expect(sampler.snapshot().latest?.lanceTables).not.toHaveProperty("errorCode");
     await sampler.stop();
   });
 
@@ -166,9 +177,10 @@ describe("demo memory sampler", () => {
 
   it("keeps process samples when storage stats fail and waits for metadata on stop", async () => {
     vi.useFakeTimers();
-    const { sampler, provider } = harness();
+    const { sampler, provider, logger, log, tracer } = harness();
+    const cause = new Error("native store closing at /private/lance/table");
     provider.storageMemoryStats.mockImplementation(() => {
-      throw new Error("store closing");
+      throw cause;
     });
     let resolve!: (value: LanceDbTableStats[]) => void;
     provider.storageTableStats.mockImplementation(
@@ -181,8 +193,15 @@ describe("demo memory sampler", () => {
     expect(sampler.snapshot().latest).toMatchObject({
       ...usage,
       lance: null,
-      storageError: "store closing",
+      storageErrorCode: "LANCEDB_MEMORY_STATS_FAILED",
     });
+    expect(logger.error).toHaveBeenCalledExactlyOnceWith("LanceDB memory diagnostics failed", {
+      code: "LANCEDB_MEMORY_STATS_FAILED",
+      cause,
+    });
+    expect(JSON.stringify(sampler.snapshot())).not.toContain(cause.message);
+    expect(JSON.stringify(log.mock.calls)).not.toContain("/private/lance");
+    expect(JSON.stringify(tracer.emit.mock.calls)).not.toContain("/private/lance");
     let stopped = false;
     const stop = (async () => {
       await sampler.stop();

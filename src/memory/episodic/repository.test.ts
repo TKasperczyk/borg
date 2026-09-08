@@ -125,6 +125,18 @@ describe("episodic repository", () => {
     }
   });
 
+  it("hydrates scan embeddings without copying their detached float32 buffers", async () => {
+    const harness = await createHarness();
+    closers.push(harness.close);
+    await harness.repo.createEpisode(createEpisode("ep_aaaaaaaaaaaaaaaa", harness.clock.now()));
+    const rows = await harness.table.list();
+    expect(rows[0]!.embedding).toBeInstanceOf(Float32Array);
+    vi.spyOn(harness.table, "list").mockResolvedValueOnce(rows);
+    const episodes = await harness.repo.listAll();
+    expect(episodes).toHaveLength(1);
+    expect(episodes[0]!.embedding).toBe(rows[0]!.embedding);
+  });
+
   it("inserts, retrieves, updates, lists, searches, and deletes episodes", async () => {
     const harness = await createHarness();
     closers.push(harness.close);

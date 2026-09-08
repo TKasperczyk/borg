@@ -46,6 +46,8 @@ export function quoteSqlString(value: string): string {
 
 export function toFloat32Array(vector: unknown, options: Float32ArrayCodecOptions): Float32Array {
   if (vector instanceof Float32Array) {
+    // Lance row materialization already owns this detached buffer. Preserve
+    // its identity during hydration rather than copying every embedding again.
     return vector;
   }
 

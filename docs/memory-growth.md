@@ -24,18 +24,18 @@ the operator's restart is still required to verify the growth rate is fixed.
 
 | Rank | Suspect and evidence | Lifetime / growth | Disposition |
 | --- | --- | --- | --- |
-| 1 | Oversized native Lance caches. The old `LanceDbStore` constructor called `connect(uri)` without session/cache settings. The installed SDK documents **6 GiB index + 1 GiB metadata** defaults (`node_modules/@lancedb/lancedb/dist/native.d.ts:116`). Connection and table handles live for the Borg runtime. | Native caches fill with reads/writes across turns and versions. These are capacity defaults, not a measurement of the live cache's occupancy. No per-turn byte slope can be established statically. | [Constructor and cache telemetry](../src/storage/lancedb/index.ts): explicitly share one Session across every table, with **256 MiB index + 64 MiB metadata**. Expose `sizeBytes()` and `approxNumItems()`. |
+| 1 | Oversized native Lance caches. The old `LanceDbStore` constructor called `connect(uri)` without session/cache settings. The installed SDK documents **6 GiB index + 1 GiB metadata** defaults (`node_modules/@lancedb/lancedb/dist/native.d.ts:116`). Connection and table handles live for the Borg runtime. | Native caches fill with reads/writes across turns and versions. These are capacity defaults, not a measurement of the live cache's occupancy. The independent reviewer found no `_indices` directory in the live tables: there is currently no vector index, so the index cache budget is not the current constraint. Metadata cache occupancy remains measurable; no per-turn byte slope can be established statically. | [Constructor and cache telemetry](../src/storage/lancedb/index.ts): explicitly share one Session across every table, with **256 MiB index + 64 MiB metadata**. Expose `sizeBytes()` and `approxNumItems()`. |
 | 2 | glibc arena fragmentation/high-water retention. Operator observed many anonymous 64/128 MB mappings, a large main heap, 12 Tokio workers and four libuv workers, while V8/external stayed small. | Repeated native allocation bursts can leave resident free pages across arenas. Mapping sizes are suggestive, not an allocator allocation/free census; a mapping is not necessarily one arena. | Restart trial with `MALLOC_ARENA_MAX=2`, described below. Caches and allocator retention can coexist. |
-| 3 | Fragment/version churn increases native scan and write work. [Upsert](../src/storage/lancedb/index.ts) performs a merge insert per call. [Curator](../src/offline/curator/index.ts:605) loads effectively visible episodes and applies significance updates individually; [consolidator](../src/offline/consolidator/index.ts:579) loads visible episodes and family members. | Each pass reads O(episodes), including embeddings; consolidation holds candidates across awaited LLM calls. Each write creates a table version and can add fragments. At 4096 dimensions, each detached embedding costs 16 KiB; 1,000 embeddings alone cost 15.6 MiB. This is pass-scoped allocation pressure, not a proven ever-growing JS collection. | Query/upsert/returned-row counters and slow table metadata samples make this measurable. Preserve existing maintenance/cognition behavior. Optimization is working; see the trace evidence below. |
-| 4 | Arrow row ownership at the wrapper boundary. SDK `dist/query.js:165` collects all batches, and `toArray()` returns Arrow StructRows. `apache-arrow/row/struct.mjs:24` stores the parent batch. The old `normalizeRows()` only cast each row. | Retaining one raw row pins the batch; nested vector cells also retain Arrow data. Repository hydration usually already copies vectors (`src/storage/codecs.ts:47`, `src/memory/episodic/repository.ts:517`), so this is not evidence of 4 GB retained across turns. JS-visible buffers normally affect `external`/`arrayBuffers`. | [Materialization](../src/storage/lancedb/materialize.ts) consumes the async batch iterator to completion and copies rows, nested structures and vectors. No batches or vector views escape. Mutation tests verify independence from source buffers. There is no public query-result `dispose()` API to call in this SDK. |
+| 3 | Fragment/version churn increases native scan and write work. [Upsert](../src/storage/lancedb/index.ts) performs a merge insert per call. [Curator](../src/offline/curator/index.ts:605) loads effectively visible episodes and applies significance updates individually; [consolidator](../src/offline/consolidator/index.ts:579) loads visible episodes and family members. | Each pass reads O(episodes), including embeddings; consolidation holds candidates across awaited LLM calls. Each write creates a table version and can add fragments. At 4096 dimensions, each final Float32Array owns 16 KiB of buffer payload; 3,000 own 46.875 MiB, plus JS wrappers and the current Arrow batch. The initial materializer also allocated boxed arrays, substantially increasing transient heap use; see the correction below. This is pass-scoped allocation pressure, not a proven ever-growing JS collection. | Query/upsert/returned-row counters and slow table metadata samples make this measurable. Dense float vectors now copy directly into their final hydration buffers. Preserve existing maintenance/cognition behavior. Optimization is working; see the trace evidence below. |
+| 4 | Arrow row ownership at the wrapper boundary. SDK `dist/query.js:165` collects all batches, and `toArray()` returns Arrow StructRows. `apache-arrow/row/struct.mjs:24` stores the parent batch. The old `normalizeRows()` only cast each row. | Retaining one raw row pins the batch; nested vector cells also retain Arrow data. Previously, repository hydration usually copied vectors (`src/storage/codecs.ts:47`, `src/memory/episodic/repository.ts:517`), so this is not evidence of 4 GB retained across turns. JS-visible buffers normally affect `external`/`arrayBuffers`. | [Materialization](../src/storage/lancedb/materialize.ts) consumes the async batch iterator to completion and copies rows, nested structures and vectors. Dense float vectors become independently owned Float32Arrays, which hydration reuses by identity. No batches or vector views escape. Mutation tests verify independence from source buffers. There is no public query-result `dispose()` API to call in this SDK. |
 | 5 | Demo diagnostic retention. [Live bridge](../demo/server/src/live.ts) stored a full ledger under every turn ID until reset. Its frame buffers limited each session to 64 frames, but never removed inactive sessions globally. | One ledger per turn indefinitely; up to 64 final frames per historical session indefinitely. These are mostly JS text/objects, so they do not fit the dominant native gap, but they are real growth paths. | Keep the latest **64 ledgers**; cap frame-buffer sessions at **128**, prune frames older than 60 seconds on activity/sampling. Evicted historical ledger requests use the existing unavailable/404 behavior. |
 | 6 | Native handle cleanup on reset/open failure. The old store `close()` closed only the connection; repositories and `openTablesByName` still held native table handles. Schema/refresh failure paths also lacked cleanup. | Seven runtime handles, not one new handle per turn. Old Borg instances or partial opens can retain them until GC, especially around reset; this does not explain steady growth in a runtime without resets by itself. | Close every registered table before the connection, clear the registry and release the Session reference; release temporary handles on failed schema/checkout. Tests retain JS references and verify the underlying tables are closed. |
 
 The SDK's Session API is documented [here](https://lancedb.github.io/lancedb/js/classes/Session/).
-Code anchors for the ranked findings: `src/storage/lancedb/index.ts:462`
+Code anchors for the ranked findings: `src/storage/lancedb/index.ts:467`
 (Session construction), `:292` (merge-insert writes), `:344` / `:381`
-(query materialization), `:632` (startup handles), `:740` (shutdown);
-`src/storage/lancedb/materialize.ts:31` (batch ownership), and
+(query materialization), `:634` (startup handles), `:745` (shutdown);
+`src/storage/lancedb/materialize.ts` (`materializeRows`, batch ownership), and
 `demo/server/src/live.ts:234` / `:571` (frame and ledger retention).
 The 0.27.2 JS implementation does not forward the positional `connect(uri,
 options, session)` argument. Use **`connect({ uri, session })`**, as the wrapper
@@ -43,6 +43,36 @@ now does. The native integration test checks that queries populate the observed
 Session, rather than merely checking a configured but unused object. Cache
 capacities are eviction budgets, not a hard process RSS limit: query scratch
 space, allocator overhead and non-Lance allocations remain outside them.
+
+The current **256 MiB index / 64 MiB metadata** defaults remain unchanged.
+Because the reviewer found no vector indices, lowering the index budget
+cannot explain an improvement on the current data. If vector indices are added,
+use **512 MiB for the index cache as a benchmark starting point**, then measure
+cache occupancy, query latency, RSS and maintenance duration under representative
+concurrency before choosing a production budget.
+
+### Review correction: scan vector allocation
+
+The first materializer in `420c3334` detached vectors through `number[]`, and
+repository hydration then copied them to Float32Array. The reviewer measured
+about **133 MiB of additional JS heap before hydration** for 3,000 × 4,096
+vectors, and conversion plus hydration rose from **856 ms to 1,006 ms** in that
+probe. The earlier 16 KiB-per-row estimate described only the final float32
+payload and understated peak allocation in that implementation.
+
+Fixed-size lists of float32/float64 whose numeric elements contain no nulls
+now copy their Arrow numeric view directly into a **fresh Float32Array**. This
+does not alias the Arrow buffer, and hydration accepts that same owned array
+without a second copy. LanceDB query schemas mark even dense vectors' elements
+nullable, so eligibility uses each vector's actual null count. Lists containing
+nulls and nested lists retain recursive conversion so nulls and structure survive.
+The regression scan covers **3,000 × 4,096** float32 vectors across sliced
+batches, verifies 3,000 distinct owned buffers
+totalling **49,152,000 bytes (46.875 MiB)**, and verifies hydration identity.
+Separate tests cover float64 conversion, nulls, nested lists and actual episodic
+repository hydration. This payload count excludes JS wrappers, other row fields,
+the live Arrow batch and native scanner/cache/allocator memory; it is not a
+peak-RSS claim or a fresh wall-clock benchmark.
 
 ### Other long-lived objects examined
 
@@ -165,8 +195,12 @@ These independent metadata calls are not a transactional snapshot of concurrent 
 The first sample normally has `lanceTables: null`; subsequent samples include
 the last completed refresh with its own timestamp. `tableStatsPending` marks
 an outstanding refresh. Only one refresh can run: even a stalled read cannot
-stop process sampling or accumulate queued reads. Errors appear in `storageError`,
-`lanceTables.error`, or the affected table's `error` with null counts. Reset
+stop process sampling or accumulate queued reads. Errors appear only as stable
+codes: `storageErrorCode: "LANCEDB_MEMORY_STATS_FAILED"`,
+`lanceTables.errorCode: "LANCEDB_TABLE_STATS_FAILED"`, or the affected table's
+`errorCode: "LANCEDB_TABLE_STATS_FAILED"` with null counts. Detailed causes,
+including native messages and filesystem paths, go to the server's error log;
+they are excluded from API history, structured sample lines and sample traces. Reset
 discards old-handle metadata; shutdown clears the timer and awaits its sole read.
 
 | Environment variable | Default | Meaning |
@@ -241,12 +275,13 @@ lower idle RSS as proof that native allocations no longer grow.
 
 Tests exercise actual Lance reads/writes, compaction and version pruning,
 native Session wiring, closing live table references, detached Arrow rows and
-nested lists, bounded demo buffers, sampler timing/history/error/reset behavior,
+nested lists, the 3,000-vector scan and hydration ownership, bounded demo buffers,
+sampler timing/history/reset behavior, diagnostic error sanitization and logging,
 and the HTTP/startup integration. Anthropic and embedding calls are mocked;
 Lance fixtures use disposable directories. Live data was never opened through
 LanceDB or a write-capable SQLite connection.
 
-Final checks on Node **v25.3.0**:
+Review follow-up checks on Node **v25.3.0**:
 
 ```sh
 choom -n 800 -- pnpm typecheck
@@ -255,18 +290,14 @@ choom -n 800 -- pnpm exec tsc --noEmit -p demo/server/tsconfig.dev.json
 choom -n 800 -- pnpm vitest run \
   src/storage/lancedb/index.test.ts \
   src/storage/lancedb/materialize.test.ts \
+  src/storage/codecs.test.ts \
+  src/memory/episodic/repository.test.ts \
   demo/server/src/memory.test.ts \
   demo/server/src/live.test.ts \
   demo/server/src/__tests__/server.test.ts \
-  src/offline/scheduler.test.ts \
-  src/borg/lifecycle.test.ts \
-  src/tracing/tracer.test.ts \
-  src/tracing/taxonomy.test.ts \
-  src/memory/episodic/repository.test.ts \
-  src/memory/semantic/repository.test.ts \
   --maxWorkers=2 --cache=false --configLoader=runner
 git diff --check
 ```
 
-All passed; Vitest reported **11 files, 218 tests passed**. Dependencies were
+All passed; Vitest reported **7 files, 157 tests passed**. Dependencies were
 symlinked from the existing installation as instructed; nothing was installed.

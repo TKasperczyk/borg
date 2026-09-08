@@ -9,6 +9,11 @@ const VECTOR_CODEC = {
 } satisfies Float32ArrayCodecOptions;
 
 describe("toFloat32Array", () => {
+  it("preserves the identity of an already owned float32 hydration buffer", () => {
+    const vector = new Float32Array([1, 2]);
+    expect(toFloat32Array(vector, VECTOR_CODEC)).toBe(vector);
+  });
+
   it("coerces arrays, typed arrays, and array-like objects", () => {
     expect(Array.from(toFloat32Array([1, 2], VECTOR_CODEC))).toEqual([1, 2]);
     expect(Array.from(toFloat32Array(new Uint8Array([3, 4]), VECTOR_CODEC))).toEqual([3, 4]);

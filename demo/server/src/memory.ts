@@ -36,7 +36,7 @@ type TableSample = {
   sampledAt: number;
   durationMs: number;
   tables: LanceDbTableStats[];
-  error?: string;
+  errorCode?: "LANCEDB_TABLE_STATS_FAILED";
 };
 
 export type MemorySample = {
@@ -56,7 +56,7 @@ export type MemorySample = {
   lance: LanceDbMemoryStats | null;
   lanceTables: TableSample | null;
   tableStatsPending: boolean;
-  storageError?: string;
+  storageErrorCode?: "LANCEDB_MEMORY_STATS_FAILED";
 };
 
 export type MemorySamplerOptions = {
@@ -73,10 +73,6 @@ export type MemorySamplerOptions = {
   uptime?: () => number;
   now?: () => number;
 };
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
 
 export class MemorySampler {
   readonly config: MemorySamplerConfig;
@@ -141,11 +137,15 @@ export class MemorySampler {
       this.lastTableAttempt = undefined;
     }
     let lance: LanceDbMemoryStats | null = null;
-    let storageError: string | undefined;
+    let storageErrorCode: MemorySample["storageErrorCode"];
     try {
       lance = source?.storageMemoryStats() ?? null;
     } catch (error) {
-      storageError = errorMessage(error);
+      storageErrorCode = "LANCEDB_MEMORY_STATS_FAILED";
+      (this.options.logger ?? console).error("LanceDB memory diagnostics failed", {
+        code: storageErrorCode,
+        cause: error,
+      });
     }
 
     if (
@@ -171,7 +171,7 @@ export class MemorySampler {
       lance,
       lanceTables: this.tableSample,
       tableStatsPending: this.tableRead !== undefined,
-      ...(storageError === undefined ? {} : { storageError }),
+      ...(storageErrorCode === undefined ? {} : { storageErrorCode }),
     };
     if (this.samples.length < this.config.historyLimit) this.samples.push(sample);
     else this.samples[this.nextSample] = sample;
@@ -190,11 +190,15 @@ export class MemorySampler {
 
   private async readTables(source: StorageProvider, startedAt: number): Promise<void> {
     let tables: LanceDbTableStats[] = [];
-    let error: string | undefined;
+    let errorCode: TableSample["errorCode"];
     try {
       tables = await source.storageTableStats();
     } catch (cause) {
-      error = errorMessage(cause);
+      errorCode = "LANCEDB_TABLE_STATS_FAILED";
+      (this.options.logger ?? console).error("LanceDB table metadata refresh failed", {
+        code: errorCode,
+        cause,
+      });
     }
     // Reset may swap the Borg handle while an old metadata read is finishing.
     if (this.options.getStorage() !== source) return;
@@ -202,7 +206,7 @@ export class MemorySampler {
       sampledAt: this.now(),
       durationMs: this.now() - startedAt,
       tables,
-      ...(error === undefined ? {} : { error }),
+      ...(errorCode === undefined ? {} : { errorCode }),
     };
   }
 }

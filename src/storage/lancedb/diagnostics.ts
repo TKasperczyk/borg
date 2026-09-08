@@ -31,5 +31,5 @@ export type LanceDbTableStats = {
   version: number | null;
   versions: number | null;
   durationMs: number;
-  error?: string;
+  errorCode?: "LANCEDB_TABLE_STATS_FAILED";
 };

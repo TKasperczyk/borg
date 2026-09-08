@@ -1246,6 +1246,56 @@ describe("demo server", () => {
     resetLease.release();
   });
 
+  it("exposes stable memory diagnostic codes while keeping native errors in server logs", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-memory-errors-"));
+    tempDirs.push(tempDir);
+    const { borg, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const cause = new Error("native diagnostic details at /private/lance/table/_versions");
+    vi.spyOn(borg.maintenance, "storageMemoryStats").mockImplementation(() => {
+      throw cause;
+    });
+    vi.spyOn(borg.maintenance, "storageTableStats").mockRejectedValue(cause);
+    const logger = { error: vi.fn() };
+    const sampler = new MemorySampler({
+      config: { intervalMs: 300000, tableIntervalMs: 1800000, historyLimit: 2 },
+      getStorage: () => borg.maintenance,
+      getActivity: () => ({
+        ...live.broadcaster.memoryStats(),
+        ledgerCacheEntries: live.ledgerCache.size,
+      }),
+      log: vi.fn(),
+      logger,
+    });
+    sampler.sample();
+    await sampler.stop(); // Wait for the one metadata refresh before the next sample.
+    sampler.sample();
+    const { app } = createDemoServerApp({
+      borgHandle: { current: borg },
+      live,
+      memorySampler: sampler,
+    });
+    const response = await app.request("/api/admin/memory");
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    expect(body).not.toContain("/private/lance");
+    expect(body).not.toContain("native diagnostic details");
+    expect(JSON.parse(body)).toMatchObject({
+      latest: {
+        storageErrorCode: "LANCEDB_MEMORY_STATS_FAILED",
+        lanceTables: { errorCode: "LANCEDB_TABLE_STATS_FAILED", tables: [] },
+      },
+    });
+    expect(logger.error).toHaveBeenCalledWith("LanceDB memory diagnostics failed", {
+      code: "LANCEDB_MEMORY_STATS_FAILED",
+      cause,
+    });
+    expect(logger.error).toHaveBeenCalledWith("LanceDB table metadata refresh failed", {
+      code: "LANCEDB_TABLE_STATS_FAILED",
+      cause,
+    });
+  });
+
   it("serves REST endpoint contract shapes", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
     tempDirs.push(tempDir);

@@ -9,6 +9,7 @@ import {
   LANCEDB_INDEX_CACHE_BYTES,
   LANCEDB_METADATA_CACHE_BYTES,
   LanceDbStore,
+  LanceDbTable,
   schema,
   utf8Field,
   vectorField,
@@ -18,6 +19,7 @@ describe("lancedb storage", () => {
   const tempDirs: string[] = [];
 
   afterEach(() => {
+    vi.restoreAllMocks();
     while (tempDirs.length > 0) {
       rmSync(tempDirs.pop() as string, { recursive: true, force: true });
     }
@@ -59,7 +61,7 @@ describe("lancedb storage", () => {
       expect(listed.find((row) => row.id === "a")?.label).toBe("updated");
       expect(searched[0]?.id).toBe("a");
       expect(Object.getPrototypeOf(listed[0])).toBe(Object.prototype);
-      expect(searched[0]?.vector).toEqual([1, 0, 0]);
+      expect(searched[0]?.vector).toEqual(new Float32Array([1, 0, 0]));
       expect(store.memoryStats()).toMatchObject({
         cache: {
           indexMaxBytes: LANCEDB_INDEX_CACHE_BYTES,
@@ -100,6 +102,38 @@ describe("lancedb storage", () => {
       await store.close();
     }
   });
+
+  it.each(["stats", "version", "listVersions"] as const)(
+    "reports a stable diagnostic code and logs the cause when %s fails",
+    async (method) => {
+      const cause = new Error("native details at /private/lance/table/_versions/123.manifest");
+      const logger = vi.spyOn(console, "error").mockImplementation(() => {});
+      const native = {
+        name: "episodes",
+        stats: vi.fn(async () => ({ fragmentStats: { numFragments: 2, numSmallFragments: 2 } })),
+        version: vi.fn(async () => 3),
+        listVersions: vi.fn(async () => [1, 2, 3]),
+      };
+      native[method].mockRejectedValueOnce(cause);
+      const table = new LanceDbTable(native as never);
+      const result = await table.diagnosticStats();
+      expect(result).toEqual({
+        table: "episodes",
+        fragments: null,
+        smallFragments: null,
+        version: null,
+        versions: null,
+        durationMs: expect.any(Number),
+        errorCode: "LANCEDB_TABLE_STATS_FAILED",
+      });
+      expect(JSON.stringify(result)).not.toContain(cause.message);
+      expect(logger).toHaveBeenCalledOnce();
+      const details = logger.mock.calls[0]![1];
+      expect(details).toMatchObject({ table: "episodes", code: "LANCEDB_TABLE_STATS_FAILED" });
+      // stats() wraps storage errors; version()/listVersions() pass them through.
+      expect(method === "stats" ? details.cause.cause : details.cause).toBe(cause);
+    },
+  );
 
   it("optimizes all LanceDB tables and preserves rows while reducing fragments", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));

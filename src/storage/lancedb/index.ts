@@ -415,6 +415,11 @@ export class LanceDbTable {
         durationMs: durationSince(startedAt),
       };
     } catch (error) {
+      console.error("LanceDB table diagnostics failed", {
+        table: this.name,
+        code: "LANCEDB_TABLE_STATS_FAILED",
+        cause: error,
+      });
       return {
         table: this.name,
         fragments: null,
@@ -422,7 +427,7 @@ export class LanceDbTable {
         version: null,
         versions: null,
         durationMs: durationSince(startedAt),
-        error: error instanceof Error ? error.message : String(error),
+        errorCode: "LANCEDB_TABLE_STATS_FAILED",
       };
     }
   }
