@@ -2,10 +2,12 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   LANCEDB_OPTIMIZE_CLEANUP_GRACE_MS,
+  LANCEDB_INDEX_CACHE_BYTES,
+  LANCEDB_METADATA_CACHE_BYTES,
   LanceDbStore,
   schema,
   utf8Field,
@@ -56,6 +58,39 @@ describe("lancedb storage", () => {
       expect(listed).toHaveLength(2);
       expect(listed.find((row) => row.id === "a")?.label).toBe("updated");
       expect(searched[0]?.id).toBe("a");
+      expect(Object.getPrototypeOf(listed[0])).toBe(Object.prototype);
+      expect(searched[0]?.vector).toEqual([1, 0, 0]);
+      expect(store.memoryStats()).toMatchObject({
+        cache: {
+          indexMaxBytes: LANCEDB_INDEX_CACHE_BYTES,
+          metadataMaxBytes: LANCEDB_METADATA_CACHE_BYTES,
+          sizeBytes: expect.any(Number),
+          approxItems: expect.any(Number),
+        },
+        tables: [
+          {
+            table: "items",
+            openHandles: 1,
+            listQueries: 1,
+            searchQueries: 1,
+            upserts: 2,
+            rowsRead: 3,
+          },
+        ],
+      });
+      // This observes the actual native session used by the connection, not an
+      // unused JS Session object created alongside an unconfigured connection.
+      expect(store.memoryStats().cache!.sizeBytes).toBeGreaterThan(0);
+      const counters = store.memoryStats().tables;
+      expect(await store.tableStats()).toEqual([
+        expect.objectContaining({
+          table: "items",
+          fragments: expect.any(Number),
+          version: expect.any(Number),
+          versions: expect.any(Number),
+        }),
+      ]);
+      expect(store.memoryStats().tables).toEqual(counters);
 
       await table.remove("id = 'b'");
       expect((await table.list()).map((row) => row.id)).toEqual(["a"]);
@@ -154,6 +189,11 @@ describe("lancedb storage", () => {
       }
 
       expect(prunedItemResult.versionsPruned).toBeGreaterThan(0);
+      expect(store.memoryStats().lastOptimization).toMatchObject({
+        errors: 0,
+        versionsPruned: expect.any(Number),
+        completedAt: expect.any(Number),
+      });
 
       items.close();
       cachedItems.close();
@@ -261,5 +301,50 @@ describe("lancedb storage", () => {
 
     expect(addColumnsCalled).toBe(true);
     table.close();
+  });
+
+  it("closes all table handles on store shutdown even while JS references survive", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-close-"));
+    tempDirs.push(tempDir);
+    const store = new LanceDbStore({
+      uri: join(tempDir, "lancedb"),
+      indexCacheBytes: 1024 * 1024,
+      metadataCacheBytes: 1024 * 1024,
+    });
+    const options = { name: "items", schema: schema([utf8Field("id")]) };
+    const first = await store.openTable(options);
+    const second = await store.openTable(options);
+    expect(store.memoryStats().tables[0]?.openHandles).toBe(2);
+    await store.close();
+    expect(first.isOpen()).toBe(false);
+    expect(second.isOpen()).toBe(false);
+    expect(store.memoryStats()).toMatchObject({ cache: null, tables: [] });
+    await store.close();
+  });
+
+  it("closes a temporary handle when schema validation fails", async () => {
+    const close = vi.fn();
+    const connection = {
+      tableNames: async () => ["items"],
+      openTable: async () => ({
+        name: "items",
+        schema: async () => schema([vectorField("id", 3)]),
+        close,
+      }),
+      close: vi.fn(),
+    };
+    const store = new LanceDbStore({ uri: "unused", connection: connection as never });
+    await expect(
+      store.openTable({ name: "items", schema: schema([utf8Field("id")]) }),
+    ).rejects.toMatchObject({ code: "LANCEDB_SCHEMA_MISMATCH" });
+    expect(close).toHaveBeenCalledOnce();
+    expect(store.memoryStats().tables).toEqual([]);
+    await store.close();
+  });
+
+  it("rejects invalid native cache capacities before opening a connection", () => {
+    for (const indexCacheBytes of [-1, 0.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(() => new LanceDbStore({ uri: "unused", indexCacheBytes })).toThrow("cache sizes");
+    }
   });
 });

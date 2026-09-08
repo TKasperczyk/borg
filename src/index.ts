@@ -3,6 +3,7 @@
 // behind internal paths.
 
 export const VERSION = "0.1.0";
+export type { LanceDbMemoryStats, LanceDbTableStats } from "./storage/lancedb/diagnostics.js";
 
 export {
   Borg,

@@ -73,6 +73,8 @@ type StreamEntrySerializer = (
 ) => readonly Record<string, unknown>[];
 
 const RING_BUFFER_MAX = 64;
+const SESSION_BUFFER_MAX = 128;
+export const LEDGER_CACHE_MAX = 64;
 const RING_BUFFER_MAX_AGE_MS = 60_000;
 const TRACE_DETAIL_SKIP_KEYS = new Set([
   "turnId",
@@ -218,6 +220,24 @@ export class LiveBroadcaster {
 
   inflightSnapshot(sessionId: string): InflightTurnSnapshot | null {
     return this.inflightBySession.get(sessionId) ?? null;
+  }
+
+  memoryStats(): { activeTurns: number; bufferedSessions: number; clients: number } {
+    this.pruneSessionBuffers();
+    return {
+      activeTurns: this.inflightBySession.size,
+      bufferedSessions: this.sessionBuffers.size,
+      clients: this.clients.size,
+    };
+  }
+
+  private pruneSessionBuffers(): void {
+    const cutoff = Date.now() - RING_BUFFER_MAX_AGE_MS;
+    for (const [id, frames] of this.sessionBuffers) {
+      const recent = frames.filter((entry) => entry.ts >= cutoff);
+      if (recent.length === 0) this.sessionBuffers.delete(id);
+      else this.sessionBuffers.set(id, recent);
+    }
   }
 
   private trackInflightTurn(frame: LiveFrame): void {
@@ -384,6 +404,13 @@ export class LiveBroadcaster {
   }
 
   private bufferSessionFrame(sessionId: SessionId, frame: LiveFrame): void {
+    this.pruneSessionBuffers();
+    // An inactive session's final frames used to live forever. Bound session
+    // cardinality too, in addition to the existing per-session frame limit.
+    if (!this.sessionBuffers.has(sessionId) && this.sessionBuffers.size >= SESSION_BUFFER_MAX) {
+      const oldest = this.sessionBuffers.keys().next().value;
+      if (oldest !== undefined) this.sessionBuffers.delete(oldest);
+    }
     const now = Date.now();
     const frames = this.sessionBuffers.get(sessionId) ?? [];
     frames.push({ frame, ts: typeof frame.ts === "number" ? frame.ts : now });
@@ -396,7 +423,8 @@ export class LiveBroadcaster {
     const now = Date.now();
     const cutoff = now - RING_BUFFER_MAX_AGE_MS;
     const frames = (this.sessionBuffers.get(sessionId) ?? []).filter((entry) => entry.ts >= cutoff);
-    this.sessionBuffers.set(sessionId, frames);
+    if (frames.length === 0) this.sessionBuffers.delete(sessionId);
+    else this.sessionBuffers.set(sessionId, frames);
 
     for (const entry of frames) {
       try {
@@ -539,7 +567,12 @@ export class WsBridgeTracer implements TurnTracer {
 
     if (event === "evidence_ledger.built" && turnId !== null) {
       const ledger = data.ledger ?? null;
+      this.ledgerCache.delete(turnId);
       this.ledgerCache.set(turnId, ledger);
+      while (this.ledgerCache.size > LEDGER_CACHE_MAX) {
+        const oldest = this.ledgerCache.keys().next().value;
+        if (oldest !== undefined) this.ledgerCache.delete(oldest);
+      }
       this.broadcaster.broadcast({
         type: "evidence_ledger:built",
         ts: Date.now(),

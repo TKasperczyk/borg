@@ -2,6 +2,7 @@
 // repository/service/scheduler classes so generated declarations stay light.
 
 import type { BorgOperatorAttentionFacade } from "../memory/operator-attention/types.js";
+import type { LanceDbMemoryStats, LanceDbTableStats } from "../storage/lancedb/diagnostics.js";
 
 import type {
   AutonomyConditionName,
@@ -1342,6 +1343,8 @@ export type BorgMaintenanceScheduler = {
 };
 
 export type BorgMaintenanceFacade = {
+  storageMemoryStats(): LanceDbMemoryStats;
+  storageTableStats(): Promise<LanceDbTableStats[]>;
   scheduler: BorgMaintenanceScheduler;
   optimizeStorage(options?: { runId?: MaintenanceRunId }): Promise<BorgStorageOptimizationResult>;
   countPendingSemanticExtractionEpisodes(): Promise<number>;

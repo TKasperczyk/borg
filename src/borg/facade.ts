@@ -1263,6 +1263,8 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
     },
     maintenance: {
       scheduler: deps.maintenanceScheduler,
+      storageMemoryStats: () => deps.lance.memoryStats(),
+      storageTableStats: () => deps.lance.tableStats(),
       config: maintenanceConfigSnapshot,
       // Manual heavy maintenance always optimizes. The config flag gates only
       // automatic scheduler ticks; callers decide whether a manual run is dry.

@@ -3018,6 +3018,7 @@ export function wireMaintenanceSchedulerLiveObserver(borg: Borg, live: LiveBridg
 }
 
 export type DemoServerAppInput = {
+  memorySampler?: Pick<import("./memory.js").MemorySampler, "snapshot">;
   borgHandle: BorgHandle;
   live: LiveBridge;
   corsOrigins?: readonly string[];
@@ -3165,7 +3166,11 @@ export function createDemoServerApp(args: DemoServerAppInput) {
 
   app.use("/api/*", async (c, next) => {
     const pathname = new URL(c.req.url).pathname;
-    if (pathname === "/api/live" || pathname === "/api/admin/reset") {
+    if (
+      pathname === "/api/live" ||
+      pathname === "/api/admin/reset" ||
+      pathname === "/api/admin/memory"
+    ) {
       return next();
     }
 
@@ -3175,6 +3180,11 @@ export function createDemoServerApp(args: DemoServerAppInput) {
     } finally {
       lease.release();
     }
+  });
+
+  app.get("/api/admin/memory", (c) => {
+    c.header("Cache-Control", "no-store");
+    return c.json(args.memorySampler?.snapshot() ?? { latest: null, history: [] });
   });
 
   app.get(

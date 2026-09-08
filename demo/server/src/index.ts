@@ -1,7 +1,14 @@
 import { pathToFileURL } from "node:url";
 
 import { serve } from "@hono/node-server";
-import { Borg, DemoMessageConnector, loadConfig, type MessageConnector } from "borg";
+import {
+  Borg,
+  DemoMessageConnector,
+  compositeTracer,
+  createTurnTracer,
+  loadConfig,
+  type MessageConnector,
+} from "borg";
 
 import {
   createDemoServerApp,
@@ -11,6 +18,7 @@ import {
   wireMaintenanceSchedulerLiveObserver,
 } from "./app.js";
 import { createLiveBridge } from "./live.js";
+import { MemorySampler, readMemorySamplerConfig } from "./memory.js";
 import { createResetBorgController, type BorgHandle } from "./reset.js";
 
 // Generic hook: load an external connector plugin (e.g. a chat bridge living outside this
@@ -70,6 +78,7 @@ const dataDir = demoConfig.dataDir;
 const demoCreatorEntityName = process.env.DEMO_CREATOR_ENTITY_NAME ?? undefined;
 const port = readPort();
 const live = createLiveBridge();
+const memorySamplerConfig = readMemorySamplerConfig();
 const connectorPlugin = await loadExternalConnectorPlugin();
 
 async function openDemoBorg(): Promise<Borg> {
@@ -114,7 +123,21 @@ if (connectorPlugin) {
 
 const resetBorg = createResetBorgController({ dataDir, live, borgHandle, openBorg: openDemoBorg });
 
+const memorySampler = new MemorySampler({
+  config: memorySamplerConfig,
+  getStorage: () =>
+    borgHandle.state === "closing" || borgHandle.state === "dead"
+      ? null
+      : borgHandle.current.maintenance,
+  getActivity: () => ({
+    ...live.broadcaster.memoryStats(),
+    ledgerCacheEntries: live.ledgerCache.size,
+  }),
+  tracer: compositeTracer([createTurnTracer({ env: process.env }), live.tracer]),
+});
+
 const { app, injectWebSocket } = createDemoServerApp({
+  memorySampler,
   borgHandle,
   live,
   corsOrigins: readCorsOrigins(),
@@ -128,6 +151,7 @@ const server = serve({
 });
 
 injectWebSocket(server);
+memorySampler.start();
 
 console.log(`Borg demo server listening on http://localhost:${port}`);
 
@@ -139,6 +163,7 @@ const shutdown = async (signal: NodeJS.Signals) => {
 
   shuttingDown = true;
   console.log(`Received ${signal}; shutting down`);
+  await memorySampler.stop();
 
   live.broadcaster.closeAll();
   const serverWithConnectionCloser = server as typeof server & {

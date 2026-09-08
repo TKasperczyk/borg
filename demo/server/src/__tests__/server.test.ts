@@ -45,6 +45,7 @@ import type { AuditLog } from "../../../../src/offline/audit-log.js";
 import type { LanceDbTable } from "../../../../src/storage/lancedb/index.js";
 import type { StreamWriter } from "../../../../src/stream/index.js";
 import {
+  BorgRequestGate,
   broadcastMaintenanceTick,
   createDemoServerApp,
   ensureDemoDefaultSession,
@@ -53,6 +54,7 @@ import {
 } from "../app.js";
 import { LiveBroadcaster, createLiveBridge, type LiveFrame } from "../live.js";
 import { createResetBorgController, type BorgHandle } from "../reset.js";
+import { MemorySampler } from "../memory.js";
 
 const PNG_1X1 = Uint8Array.from([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
@@ -1206,6 +1208,42 @@ describe("demo server", () => {
         message: "Mark a creator first",
       },
     });
+  });
+
+  it("serves cached memory samples during reset without reading storage on GET", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-memory-"));
+    tempDirs.push(tempDir);
+    const { borg, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const handle: BorgHandle = { current: borg };
+    const getStorage = vi.fn(() => borg.maintenance);
+    const requestGate = new BorgRequestGate();
+    const sampler = new MemorySampler({
+      config: { intervalMs: 300000, tableIntervalMs: 0, historyLimit: 2 },
+      getStorage,
+      getActivity: () => ({
+        ...live.broadcaster.memoryStats(),
+        ledgerCacheEntries: live.ledgerCache.size,
+      }),
+      log: vi.fn(),
+    });
+    sampler.sample();
+    const { app } = createDemoServerApp({
+      borgHandle: handle,
+      live,
+      memorySampler: sampler,
+      requestGate,
+    });
+    const resetLease = requestGate.beginReset();
+    handle.state = "closing";
+    for (let i = 0; i < 2; i++) {
+      const response = await app.request("/api/admin/memory");
+      expect(response.status).toBe(200);
+      expect(response.headers.get("Cache-Control")).toBe("no-store");
+      expect(await response.json()).toEqual(sampler.snapshot());
+    }
+    expect(getStorage).toHaveBeenCalledOnce();
+    resetLease.release();
   });
 
   it("serves REST endpoint contract shapes", async () => {
@@ -5068,9 +5106,13 @@ describe("demo server", () => {
       injectWebSocket: vi.fn(),
     }));
     const wireMaintenanceSchedulerLiveObserverMock = vi.fn();
+    const memoryStart = vi.fn();
+    const memoryStop = vi.fn(async () => {});
 
     vi.doMock("borg", () => ({
       Borg: { open },
+      compositeTracer: vi.fn(() => ({})),
+      createTurnTracer: vi.fn(() => ({})),
       DemoMessageConnector: class DemoMessageConnector {},
       loadConfig: vi.fn(() => ({
         dataDir: ".borg-data/test-entry",
@@ -5095,6 +5137,13 @@ describe("demo server", () => {
     vi.doMock("../reset.js", () => ({
       createResetBorgController: vi.fn(() => vi.fn()),
     }));
+    vi.doMock("../memory.js", () => ({
+      readMemorySamplerConfig: vi.fn(() => ({})),
+      MemorySampler: class {
+        start = memoryStart;
+        stop = memoryStop;
+      },
+    }));
     vi.spyOn(console, "log").mockImplementation(() => {});
 
     try {
@@ -5103,6 +5152,7 @@ describe("demo server", () => {
       expect(start).toHaveBeenCalledTimes(1);
       expect(wireMaintenanceSchedulerLiveObserverMock).toHaveBeenCalledWith(borg, liveBridgeMock);
       expect(serveMock).toHaveBeenCalledTimes(1);
+      expect(memoryStart).toHaveBeenCalledOnce();
     } finally {
       if (previousPort === undefined) {
         delete process.env.PORT;
@@ -5114,6 +5164,7 @@ describe("demo server", () => {
       vi.doUnmock("../app.js");
       vi.doUnmock("../live.js");
       vi.doUnmock("../reset.js");
+      vi.doUnmock("../memory.js");
       vi.resetModules();
     }
   });

@@ -3,6 +3,7 @@ import { performance } from "node:perf_hooks";
 import {
   connect,
   makeArrowTable,
+  Session,
   type AddColumnsSql,
   type Connection,
   type IntoVector,
@@ -26,12 +27,18 @@ import {
 } from "apache-arrow";
 
 import { BorgError, StorageError } from "../../util/errors.js";
+import type { LanceDbMemoryStats, LanceDbQueryCounters, LanceDbTableStats } from "./diagnostics.js";
+import { materializeRows } from "./materialize.js";
 
 export type LanceDbRow = Record<string, unknown>;
 
 // Keep recent versions available for in-flight same-process readers that began
 // before compaction. Fragment compaction still runs; only version pruning waits.
 export const LANCEDB_OPTIMIZE_CLEANUP_GRACE_MS = 15 * 60 * 1_000;
+// Shared across all tables in one Borg runtime. SDK defaults (6 GiB index +
+// 1 GiB metadata) are too large for an embedded service sharing a Node process.
+export const LANCEDB_INDEX_CACHE_BYTES = 256 * 1024 * 1024;
+export const LANCEDB_METADATA_CACHE_BYTES = 64 * 1024 * 1024;
 
 export type LanceDbOpenTableOptions = {
   name: string;
@@ -59,6 +66,8 @@ export type LanceDbListOptions = {
 export type LanceDbStoreOptions = {
   uri: string;
   connection?: Connection | Promise<Connection>;
+  indexCacheBytes?: number;
+  metadataCacheBytes?: number;
 };
 
 export type LanceDbOptimizeStorageOptions = {
@@ -96,20 +105,6 @@ export type LanceDbOptimizeStorageResult = {
   tables: LanceDbOptimizeTableResult[];
   error?: LanceDbOptimizeErrorDetails;
 };
-
-function normalizeRows(rows: unknown): LanceDbRow[] {
-  if (!Array.isArray(rows)) {
-    throw new StorageError("LanceDB returned a non-array result");
-  }
-
-  return rows.map((row) => {
-    if (row === null || typeof row !== "object" || Array.isArray(row)) {
-      throw new StorageError("LanceDB returned a non-object row");
-    }
-
-    return row as LanceDbRow;
-  });
-}
 
 function normalizeSchemaLike(schemaLike: SchemaLike): Schema {
   if (schemaLike instanceof Schema) {
@@ -239,6 +234,13 @@ function resolveOptimizeNowMs(now: number | Date | undefined): number {
 }
 
 export class LanceDbTable {
+  private readonly counters: LanceDbQueryCounters = {
+    listQueries: 0,
+    searchQueries: 0,
+    upserts: 0,
+    rowsRead: 0,
+  };
+
   constructor(
     private readonly table: Table,
     private readonly onClose?: () => void,
@@ -246,6 +248,10 @@ export class LanceDbTable {
 
   get name(): string {
     return this.table.name;
+  }
+
+  queryCounters(): LanceDbQueryCounters {
+    return { ...this.counters };
   }
 
   isOpen(): boolean {
@@ -289,6 +295,7 @@ export class LanceDbTable {
     }
 
     try {
+      this.counters.upserts += 1;
       await this.table.checkoutLatest();
       const arrowTable = makeArrowTable([...rows], {
         schema: await this.table.schema(),
@@ -307,6 +314,7 @@ export class LanceDbTable {
 
   async search(vector: IntoVector, options: LanceDbSearchOptions = {}): Promise<LanceDbRow[]> {
     try {
+      this.counters.searchQueries += 1;
       let query = this.table.search(vector) as VectorQuery;
 
       if (options.vectorColumn !== undefined) {
@@ -333,7 +341,9 @@ export class LanceDbTable {
         query = query.limit(options.limit);
       }
 
-      return normalizeRows((await query.toArray()) as unknown);
+      const rows = await materializeRows(query);
+      this.counters.rowsRead += rows.length;
+      return rows;
     } catch (error) {
       throw new StorageError(`Failed to search LanceDB table ${this.table.name}`, {
         cause: error,
@@ -353,6 +363,7 @@ export class LanceDbTable {
 
   async list(options: LanceDbListOptions = {}): Promise<LanceDbRow[]> {
     try {
+      this.counters.listQueries += 1;
       let query = this.table.query();
 
       if (options.where !== undefined) {
@@ -367,7 +378,9 @@ export class LanceDbTable {
         query = query.limit(options.limit);
       }
 
-      return normalizeRows((await query.toArray()) as unknown);
+      const rows = await materializeRows(query);
+      this.counters.rowsRead += rows.length;
+      return rows;
     } catch (error) {
       throw new StorageError(`Failed to list rows from LanceDB table ${this.table.name}`, {
         cause: error,
@@ -382,6 +395,35 @@ export class LanceDbTable {
       throw new StorageError(`Failed to read LanceDB stats for table ${this.table.name}`, {
         cause: error,
       });
+    }
+  }
+
+  async diagnosticStats(): Promise<LanceDbTableStats> {
+    const startedAt = performance.now();
+    try {
+      const stats = await this.stats();
+      const version = await this.table.version();
+      // Metadata only, but proportional to retained versions. The demo calls
+      // this on its slow cadence, never per request or per memory sample.
+      const versions = (await this.table.listVersions()).length;
+      return {
+        table: this.name,
+        fragments: stats.fragmentStats.numFragments,
+        smallFragments: stats.fragmentStats.numSmallFragments,
+        version,
+        versions,
+        durationMs: durationSince(startedAt),
+      };
+    } catch (error) {
+      return {
+        table: this.name,
+        fragments: null,
+        smallFragments: null,
+        version: null,
+        versions: null,
+        durationMs: durationSince(startedAt),
+        error: error instanceof Error ? error.message : String(error),
+      };
     }
   }
 
@@ -412,10 +454,74 @@ export class LanceDbTable {
 export class LanceDbStore {
   private readonly connectionPromise: Promise<Connection>;
   private readonly openTablesByName = new Map<string, Set<LanceDbTable>>();
+  private session: Session | undefined;
+  private readonly indexCacheBytes: number;
+  private readonly metadataCacheBytes: number;
+  private lastOptimization: LanceDbMemoryStats["lastOptimization"] = null;
 
   constructor(options: LanceDbStoreOptions) {
-    this.connectionPromise =
-      options.connection !== undefined ? Promise.resolve(options.connection) : connect(options.uri);
+    this.indexCacheBytes = options.indexCacheBytes ?? LANCEDB_INDEX_CACHE_BYTES;
+    this.metadataCacheBytes = options.metadataCacheBytes ?? LANCEDB_METADATA_CACHE_BYTES;
+    for (const bytes of [this.indexCacheBytes, this.metadataCacheBytes]) {
+      if (!Number.isSafeInteger(bytes) || bytes < 0) {
+        throw new StorageError("LanceDB cache sizes must be non-negative safe integers");
+      }
+    }
+    if (options.connection !== undefined) {
+      this.connectionPromise = Promise.resolve(options.connection);
+    } else {
+      this.session = new Session(BigInt(this.indexCacheBytes), BigInt(this.metadataCacheBytes));
+      // Use the options-object overload: 0.27.2's positional session overload
+      // does not forward its session argument to the native connection.
+      this.connectionPromise = connect({ uri: options.uri, session: this.session });
+    }
+  }
+
+  memoryStats(): LanceDbMemoryStats {
+    return {
+      cache:
+        this.session === undefined
+          ? null
+          : {
+              sizeBytes: Number(this.session.sizeBytes()),
+              approxItems: this.session.approxNumItems(),
+              indexMaxBytes: this.indexCacheBytes,
+              metadataMaxBytes: this.metadataCacheBytes,
+            },
+      tables: [...this.openTablesByName.keys()].map((name) => {
+        const tables = this.openTablesFor(name);
+        return tables.reduce(
+          (sum, table) => {
+            const counters = table.queryCounters();
+            sum.listQueries += counters.listQueries;
+            sum.searchQueries += counters.searchQueries;
+            sum.upserts += counters.upserts;
+            sum.rowsRead += counters.rowsRead;
+            return sum;
+          },
+          {
+            table: name,
+            openHandles: tables.length,
+            listQueries: 0,
+            searchQueries: 0,
+            upserts: 0,
+            rowsRead: 0,
+          },
+        );
+      }),
+      lastOptimization: this.lastOptimization === null ? null : { ...this.lastOptimization },
+    };
+  }
+
+  async tableStats(): Promise<LanceDbTableStats[]> {
+    const result: LanceDbTableStats[] = [];
+    // Reuse existing handles and visit tables sequentially. Never open a new
+    // connection/table or scan rows just to collect operational telemetry.
+    for (const name of this.openTablesByName.keys()) {
+      const table = this.openTablesFor(name)[0];
+      if (table !== undefined) result.push(await table.diagnosticStats());
+    }
+    return result;
   }
 
   private async getConnection(): Promise<Connection> {
@@ -524,14 +630,18 @@ export class LanceDbStore {
     const connection = await this.getConnection();
 
     const verifyAndReopenTable = async (table: Table): Promise<LanceDbTable> => {
+      let reopenedTable: Table | undefined;
+      let verificationClosed = false;
       try {
         await ensureSchemaCompatibility(table, options.schema, options.name);
         await table.checkoutLatest();
         table.close();
-        const reopenedTable = await connection.openTable(options.name);
+        verificationClosed = true;
+        reopenedTable = await connection.openTable(options.name);
         await reopenedTable.checkoutLatest();
         return this.wrapTable(reopenedTable);
       } catch (error) {
+        reopenedTable?.close();
         if (error instanceof StorageError) {
           throw error;
         }
@@ -539,6 +649,9 @@ export class LanceDbStore {
         throw new StorageError(`Failed to open LanceDB table ${options.name}`, {
           cause: error,
         });
+      } finally {
+        // Schema validation/checkout failures must release native handles too.
+        if (!verificationClosed) table.close();
       }
     };
 
@@ -600,6 +713,23 @@ export class LanceDbStore {
       tables.push(await this.optimizeTable(connection, tableName, cleanupOlderThan));
     }
 
+    this.lastOptimization = {
+      completedAt: Date.now(),
+      durationMs: durationSince(startedAt),
+      fragmentsRemoved: 0,
+      fragmentsAdded: 0,
+      versionsPruned: 0,
+      errors: 0,
+    };
+    for (const table of tables) {
+      if (table.status === "error") this.lastOptimization.errors += 1;
+      else {
+        this.lastOptimization.fragmentsRemoved += table.fragmentsRemoved;
+        this.lastOptimization.fragmentsAdded += table.fragmentsAdded;
+        this.lastOptimization.versionsPruned += table.versionsPruned;
+      }
+    }
+
     return {
       cleanupOlderThan: cleanupOlderThan.getTime(),
       durationMs: durationSince(startedAt),
@@ -609,7 +739,24 @@ export class LanceDbStore {
 
   async close(): Promise<void> {
     const connection = await this.getConnection();
-    connection.close();
+    const errors: unknown[] = [];
+    for (const tables of [...this.openTablesByName.values()]) {
+      for (const table of [...tables]) {
+        try {
+          table.close();
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+    }
+    this.openTablesByName.clear();
+    try {
+      connection.close();
+    } catch (error) {
+      errors.push(error);
+    }
+    this.session = undefined;
+    if (errors.length > 0) throw new AggregateError(errors, "Failed to close LanceDB resources");
   }
 }
 

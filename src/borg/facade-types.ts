@@ -52,6 +52,7 @@ import type {
 import type { SemanticExtractor } from "../memory/semantic/index.js";
 import type { SocialRepository } from "../memory/social/index.js";
 import type { LanceDbOptimizeStorageResult } from "../storage/lancedb/index.js";
+import type { LanceDbMemoryStats, LanceDbTableStats } from "../storage/lancedb/diagnostics.js";
 import type { TrainOfThoughtRepository } from "../memory/train-of-thought/index.js";
 import type { WorkingMemory, WorkingMemoryStore } from "../memory/working/index.js";
 import type {
@@ -646,6 +647,8 @@ export type BorgAutonomyFacade = {
 
 export type BorgMaintenanceFacade = {
   scheduler: MaintenanceScheduler;
+  storageMemoryStats(): LanceDbMemoryStats;
+  storageTableStats(): Promise<LanceDbTableStats[]>;
   optimizeStorage: (options?: {
     runId?: MaintenanceRunId;
   }) => Promise<LanceDbOptimizeStorageResult>;

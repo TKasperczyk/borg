@@ -7,6 +7,7 @@ import { serializeJsonValue, type JsonValue } from "../util/json-value.js";
 import type { SessionId } from "../util/ids.js";
 
 export type TurnTraceEventName =
+  | "process.memory.sample"
   | "attachment.write"
   | "attachment.quarantined"
   | "attachment.fetch_for_ledger"
