@@ -74,12 +74,14 @@ Teams arrival order; the long await runs outside the FIFO so waits overlap and j
 
 ## Identity and sessions
 
-- `/memory/enqueue`, `/memory/append-turn`, `/memory/remember` and `/memory/context` require a
+- `/memory/enqueue`, `/memory/append-turn` and `/memory/context` require a
   non-empty `session`, a structured sender with non-empty `external_id` and `display_name` and a
   boolean `operator`, and a conversation with `type`, string `name` and non-empty `external_id`.
   This includes personal chats, observations and reply-only appends. Missing or malformed identity
-  returns 400; append, remember and context identify the invalid field in the response. Team-agent
-  requires this identity from all of its callers.
+  returns 400; append and context identify the invalid field in the response. Team-agent
+  requires this identity from all of its callers. `/memory/remember` (autonomous role-run
+  outcomes) is the one write without a Teams identity and takes only `tenant`, `content` and
+  optional `author`.
 - `thread_id`: the raw team-agent thread key (`<tenant>::shared::<type>::<conversation>`
   for groups and channels, `<tenant>::<user>::<conversation>` for personal chats; see
   `team_agent/conversations.py`). It is what the append-turn path already sends as

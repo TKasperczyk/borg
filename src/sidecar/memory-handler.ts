@@ -3,8 +3,7 @@ import { EmbeddingBankError } from "../embeddings/bank-profile.js";
 // HTTP request handler for the borg memory sidecar: a thin, tenant-routed wrapper
 // over BorgPool that exposes long-term memory to an external (e.g. Python) service.
 //
-//   POST /memory/remember    { tenant, session, sender, conversation, content, author? }
-//                                                            -> append + extract episode(s)
+//   POST /memory/remember    { tenant, content, author? }          -> append + extract episode(s)
 //   POST /memory/enqueue     { tenant, session, conversation, sender, text, ... } -> durable inbox
 //   POST /memory/await-response { tenant, sidecar_session_id, entry_id, timeout_ms? } -> long poll
 //   POST /memory/inbox-progress { tenant, sidecar_session_id, entry_ids, phase } -> interim status
@@ -3207,7 +3206,33 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
         return;
       }
 
-      if (rawPath === "/memory/remember" || rawPath === "/memory/append-turn") {
+      if (rawPath === "/memory/remember") {
+        const content = asString(body.content);
+        if (content === "") {
+          send(res, 400, { error: "missing 'content'" });
+          return;
+        }
+        const author = asString(body.author);
+        const text = author === "" ? content : `[${author}] ${content}`;
+        // Exclusive: append + extract must run serialized per tenant, else two
+        // concurrent remembers for one tenant interleave and each extract (with an
+        // open-ended sinceTs) sweeps the other's just-appended entry -> duplicates.
+        const extracted = await pool.withTenant(
+          tenant,
+          async (borg) => {
+            const entry = await borg.stream.append({ kind: "user_msg", content: text });
+            return borg.episodic.extract({
+              sinceTs: entry.timestamp,
+              bypassSalienceGate: true,
+            });
+          },
+          { exclusive: true },
+        );
+        send(res, 200, { ok: true, extracted });
+        return;
+      }
+
+      if (rawPath === "/memory/append-turn") {
         const parsedIdentity = memoryTransportIdentitySchema.safeParse(body);
         if (!parsedIdentity.success) {
           send(res, 400, {
@@ -3225,48 +3250,6 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
           operator: parsedIdentity.data.sender.operator,
         };
         const conversation = parsedIdentity.data.conversation;
-
-        if (rawPath === "/memory/remember") {
-          const content = asString(body.content);
-          if (content === "") {
-            send(res, 400, { error: "missing 'content'" });
-            return;
-          }
-          const author = asString(body.author);
-          const text = author === "" ? content : `[${author}] ${content}`;
-          // Exclusive: keep the session's identity, append and extraction serialized per tenant.
-          const extracted = await pool.withTenant(
-            tenant,
-            async (borg) => {
-              const identity = resolveTeamAgentIdentity({
-                borg,
-                session,
-                rawSession: sessionRaw,
-                sender,
-                conversation,
-              });
-              borg.sessions.ensure(identity.sessionEnsureInput);
-              const entry = await borg.stream.append(
-                {
-                  kind: "user_msg",
-                  content: text,
-                  sender_entity_id: identity.senderEntityId,
-                  audience: identity.audienceEntity.id,
-                  conversation: identity.conversation,
-                },
-                { session },
-              );
-              return borg.episodic.extract({
-                session,
-                sinceTs: entry.timestamp,
-                bypassSalienceGate: true,
-              });
-            },
-            { exclusive: true },
-          );
-          send(res, 200, { ok: true, extracted });
-          return;
-        }
         const userProvided = body.user !== undefined;
         const assistantProvided = body.assistant !== undefined;
         if (!userProvided && !assistantProvided) {

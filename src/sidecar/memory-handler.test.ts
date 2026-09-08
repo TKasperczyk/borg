@@ -2900,14 +2900,7 @@ describe("memory sidecar handler", () => {
     const res = await post(
       base,
       "/memory/remember",
-      {
-        sender: TRANSPORT_IDENTITY.sender,
-        conversation: TRANSPORT_IDENTITY.conversation,
-        tenant: "acme",
-        session: "remember",
-        content: "fact",
-        author: "Author",
-      },
+      { tenant: "acme", content: "fact", author: "Author" },
       TOKEN,
     );
     expect(res.status).toBe(200);
@@ -2917,33 +2910,11 @@ describe("memory sidecar handler", () => {
     });
     expect(rec.tenants).toEqual(["acme"]);
     expect(rec.exclusives).toEqual([true]);
-    const senderId = rec.externalSenderIds.get("sender");
-    expect(senderId).toBeDefined();
     expect(rec.appendCalls).toEqual([
-      {
-        session: expect.stringMatching(/^sess_/),
-        input: {
-          kind: "user_msg",
-          content: "[Author] fact",
-          sender_entity_id: senderId,
-          audience: senderId,
-          conversation: { type: "personal", name: "Personal chat" },
-        },
-      },
+      { session: undefined, input: { kind: "user_msg", content: "[Author] fact" } },
     ]);
-    expect(rec.sessionEnsures).toEqual([
-      expect.objectContaining({
-        session_id: rec.appendCalls[0]?.session,
-        audience_entity_id: senderId,
-      }),
-    ]);
-    expect(rec.extractOptions).toEqual([
-      {
-        session: rec.appendCalls[0]?.session,
-        sinceTs: 1000,
-        bypassSalienceGate: true,
-      },
-    ]);
+    expect(rec.sessionEnsures).toEqual([]);
+    expect(rec.extractOptions).toEqual([{ sinceTs: 1000, bypassSalienceGate: true }]);
   });
 
   describe.each([
@@ -2954,7 +2925,6 @@ describe("memory sidecar handler", () => {
     },
     { mode: "observation", path: "/memory/append-turn", fields: { user: "hello" } },
     { mode: "reply-only append", path: "/memory/append-turn", fields: { assistant: "hi" } },
-    { mode: "remember", path: "/memory/remember", fields: { content: "fact" } },
     { mode: "context", path: "/memory/context", fields: { sections: ["audience"] } },
   ])("$mode transport identity", ({ path, fields }) => {
     it.each([
@@ -5852,21 +5822,7 @@ describe("memory sidecar handler", () => {
     const base = await start(pool);
     expect((await post(base, "/memory/recall", { query: "q" }, TOKEN)).status).toBe(400); // no tenant
     expect((await post(base, "/memory/recall", { tenant: "acme" }, TOKEN)).status).toBe(400); // no query
-    expect(
-      (
-        await post(
-          base,
-          "/memory/remember",
-          {
-            sender: TRANSPORT_IDENTITY.sender,
-            conversation: TRANSPORT_IDENTITY.conversation,
-            session: "remember",
-            tenant: "acme",
-          },
-          TOKEN,
-        )
-      ).status,
-    ).toBe(400); // no content
+    expect((await post(base, "/memory/remember", { tenant: "acme" }, TOKEN)).status).toBe(400); // no content
     expect(
       (
         await post(

@@ -57,8 +57,8 @@ Required identity: `tenant`, non-empty `session`, structured
 Sender handles and display names and conversation external ids must be non-empty strings;
 `sender.operator` must be a boolean. Conversation type is `personal`, `groupChat`, or `channel`,
 and its name must be a string. This contract applies to full turns, observations and reply-only
-appends, as well as `/memory/context` and `/memory/remember`. Missing or invalid identity returns
-400 with a field-specific message before any tenant state is accessed.
+appends, as well as `/memory/context`. Missing or invalid identity returns 400 with a
+field-specific message before any tenant state is accessed.
 
 Every append:
 
@@ -70,9 +70,10 @@ Every append:
   for the assistant entry (speaker = self), with audienceEntityId and participant ids, so
   listRecentOtherActiveSessionEvents works for the read path.
 
-`POST /memory/remember` also requires `content` and accepts optional `author`. It ensures the
-identified session, appends the user entry with sender, audience and conversation attribution,
-then extracts within that session under the tenant's exclusive chain.
+`POST /memory/remember` carries no transport identity: it is team-agent's autonomous role-run
+outcome writer, which has no Teams conversation. It requires `content`, accepts optional
+`author`, appends the entry to the tenant's default session and extracts under the tenant's
+exclusive chain.
 
 ## Read path: POST /memory/context  (x-borg-token)
 
