@@ -193,6 +193,20 @@ silent receipt with reason `memory_guard_blocked`; it does not append another tu
 non-streaming completion replaces the draft in the checkpoint and delivered/append history with a
 short neutral withholding notice. Streaming completions are not guarded by this route.
 
+## Administrative memory correction (x-borg-token)
+
+- `POST /memory/forget` with `{ "tenant": "acme", "id": "<episode or semantic node id>" }`
+  calls `borg.correction.forget` in the tenant's exclusive writer scope. It archives the record
+  and records a manual-provenance identity event through the existing correction service. Success
+  returns `200 { "ok": true, "id": "...", "target_type": "episode|semantic_node", "archived": true }`.
+  Archived episodes no longer appear in the episode list or subsequent memory-context recall.
+  List pages omit archived entries while retaining `nextCursor`; follow it even on an empty page.
+  Unknown targets return `404 { "error": "memory not found" }`; invalid bodies return 400.
+- `GET /memory/episodes/{id}/why?tenant=acme` exposes `borg.correction.why`, returning
+  `{ "ok": true, "target_type": "episode", "record": {...}, "source_stream_ids": [...],
+  "citation_chain": [...] }`. The correction service removes embeddings from this response.
+  Unknown episodes return `404 { "error": "episode not found" }`; invalid episode IDs return 400.
+
 ## Operator rules: /memory/directives (admin surface, x-borg-token)
 
 - POST /memory/directives  body {tenant, kind, text, content_scope ("public"|"operator_only"|

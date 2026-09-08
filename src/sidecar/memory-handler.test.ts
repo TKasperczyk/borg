@@ -36,6 +36,7 @@ import { BorgPool } from "../borg/pool.js";
 import type { BorgDependencies } from "../borg/types.js";
 import { FakeEmbeddingClient } from "../embeddings/index.js";
 import { FakeLLMClient } from "../llm/test-support/fake-client.js";
+import { createSemanticNodeFixture } from "../offline/test-support.js";
 import {
   commitmentSchema,
   type CommitmentRecord,
@@ -54,7 +55,7 @@ import type {
 } from "../memory/activity/index.js";
 import { episodeParticipantEntityIdTerm, type Episode } from "../memory/episodic/index.js";
 import { QUARANTINED_USER_ENTRY_EVENT, StreamReader, type StreamEntry } from "../stream/index.js";
-import { EmbeddingError } from "../util/errors.js";
+import { EmbeddingError, StorageError } from "../util/errors.js";
 import {
   createCommitmentId,
   createCreatorDirectiveId,
@@ -62,6 +63,7 @@ import {
   createSessionId,
   createStreamEntryId,
   createEpisodeId,
+  createSemanticNodeId,
   createMaintenanceRunId,
   parseSessionId,
   parseStreamEntryId,
@@ -756,6 +758,7 @@ function stubBorg(rec: Recorder): Borg {
           similarity: 0,
         }));
       },
+      getStats: () => null,
       list: async (options?: { limit?: number; cursor?: string }) => {
         rec.lastListOptions = options;
         return {
@@ -2437,6 +2440,23 @@ describe("memory sidecar handler", () => {
     expect(rec.lastListOptions).toEqual({ limit: 20 });
   });
 
+  it("preserves the next cursor when a list page contains only archived episodes", async () => {
+    const base = await start({
+      listTenantIds: async () => ["acme"],
+      async withTenant(_tenant, fn) {
+        return fn({
+          episodic: {
+            list: async () => ({ items: [testEpisode()], nextCursor: "next-page" }),
+            getStats: () => ({ archived: true }),
+          },
+        } as unknown as Borg);
+      },
+    });
+    const response = await get(base, "/memory/episodes?tenant=acme", TOKEN);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true, episodes: [], nextCursor: "next-page" });
+  });
+
   it("maps malformed list cursors to 400 client errors", async () => {
     const calls: string[] = [];
     const pool: MemoryPool = {
@@ -2621,6 +2641,217 @@ describe("memory sidecar handler", () => {
       (await get(invalidBase, "/memory/episodes/not-an-episode?tenant=acme", TOKEN)).status,
     ).toBe(400);
     expect(invalidCalls).toEqual([]);
+  });
+
+  it("forgets through correction, records manual provenance, and removes the episode from list and context recall", async () => {
+    const root = mkdtempSync(join(tmpdir(), "borg-memory-forget-"));
+    const embeddingClient = new FakeEmbeddingClient(4);
+    const llmClient = new FakeLLMClient();
+    const pool = new BorgPool({
+      root,
+      openOptions: {
+        embeddingDimensions: 4,
+        embeddingClient,
+        llmClient,
+        liveExtraction: false,
+        liveCommitmentExtraction: false,
+      },
+    });
+    try {
+      const focus = "Noisy memory";
+      const episode = testEpisode(createEpisodeId(), {
+        title: focus,
+        narrative: "This fact was recorded incorrectly.",
+        embedding: await embeddingClient.embed(focus),
+        start_time: Date.now(),
+        end_time: Date.now(),
+        shared: true,
+      });
+      const node = createSemanticNodeFixture({ source_episode_ids: [episode.id] });
+      const source = await pool.withTenant(
+        "acme",
+        async (borg) => {
+          const deps = (borg as unknown as { deps: BorgDependencies }).deps;
+          const entry = await borg.stream.append({ kind: "user_msg", content: episode.narrative });
+          episode.source_stream_ids = [entry.id];
+          await deps.episodicRepository.createEpisode(episode);
+          await deps.semanticNodeRepository.insert(node);
+          return entry;
+        },
+        { exclusive: true },
+      );
+      const base = await start(pool);
+      const whyResponse = await get(base, `/memory/episodes/${episode.id}/why?tenant=acme`, TOKEN);
+      expect(whyResponse.status).toBe(200);
+      const why = (await whyResponse.json()) as Record<string, unknown>;
+      expect(why).toMatchObject({
+        ok: true,
+        target_type: "episode",
+        record: { id: episode.id },
+        source_stream_ids: [source.id],
+        citation_chain: [expect.objectContaining({ id: source.id })],
+      });
+      expect(why.record).not.toHaveProperty("embedding");
+
+      for (const archived of [false, true]) {
+        if (archived) {
+          const forget = await post(
+            base,
+            "/memory/forget",
+            { tenant: "acme", id: episode.id },
+            TOKEN,
+          );
+          expect(forget.status).toBe(200);
+          expect(await forget.json()).toEqual({
+            ok: true,
+            id: episode.id,
+            target_type: "episode",
+            archived: true,
+          });
+        }
+        const listed = await get(base, "/memory/episodes?tenant=acme", TOKEN);
+        expect(listed.status).toBe(200);
+        expect(await listed.json()).toMatchObject({
+          episodes: archived ? [] : [expect.objectContaining({ id: episode.id })],
+        });
+        llmClient.pushResponse({
+          text: "",
+          input_tokens: 0,
+          output_tokens: 0,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_forget_context",
+              name: "EmitRecallQueryPlan",
+              input: {
+                resolved_query: focus,
+                semantic_variants: [{ strategy: "combined", query: focus }],
+                named_terms: [],
+                typed_queries: [],
+              },
+            },
+          ],
+        });
+        const context = await post(
+          base,
+          "/memory/context",
+          {
+            tenant: "acme",
+            session: "forget-context",
+            ...TRANSPORT_IDENTITY,
+            focus,
+            context_turns: [],
+            sections: ["episodes"],
+          },
+          TOKEN,
+        );
+        expect(context.status).toBe(200);
+        expect(await context.json()).toMatchObject({
+          degraded: false,
+          episodes: archived ? [] : [expect.objectContaining({ id: episode.id })],
+        });
+      }
+      await pool.withTenant("acme", async (borg) => {
+        expect(borg.episodic.getStats(episode.id)?.archived).toBe(true);
+        expect(await borg.episodic.inspect(episode.id)).not.toBeNull();
+        expect(borg.correction.listIdentityEvents({ recordId: episode.id })).toEqual([
+          expect.objectContaining({
+            record_type: "episode",
+            record_id: episode.id,
+            action: "forget",
+            reason: "forgotten manually",
+            provenance: { kind: "manual" },
+          }),
+        ]);
+      });
+      const forgetNode = await post(base, "/memory/forget", { tenant: "acme", id: node.id }, TOKEN);
+      expect(forgetNode.status).toBe(200);
+      expect(await forgetNode.json()).toEqual({
+        ok: true,
+        id: node.id,
+        target_type: "semantic_node",
+        archived: true,
+      });
+      await pool.withTenant("acme", async (borg) => {
+        expect((await borg.semantic.nodes.get(node.id))?.archived).toBe(true);
+        expect(borg.correction.listIdentityEvents({ recordId: node.id })).toEqual([
+          expect.objectContaining({
+            record_type: "semantic_node",
+            action: "forget",
+            provenance: { kind: "manual" },
+          }),
+        ]);
+      });
+    } finally {
+      await pool.closeAll();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("maps missing correction targets to 404 and serializes forget through the tenant writer scope", async () => {
+    const forget = vi.fn(async () => {
+      throw new StorageError("private storage detail", { code: "EPISODE_NOT_FOUND" });
+    });
+    const why = vi.fn(async () => {
+      throw new StorageError("private storage detail", { code: "EPISODE_NOT_FOUND" });
+    });
+    const scopes: unknown[] = [];
+    const base = await start({
+      listTenantIds: async () => ["acme"],
+      async withTenant(tenant, fn, options) {
+        scopes.push({ tenant, options });
+        return fn({ correction: { forget, why } } as unknown as Borg);
+      },
+    });
+    const episodeId = createEpisodeId();
+    const nodeId = createSemanticNodeId();
+    for (const id of [episodeId, nodeId]) {
+      if (id === nodeId)
+        forget.mockRejectedValueOnce(
+          new StorageError("private storage detail", { code: "SEMANTIC_NODE_NOT_FOUND" }),
+        );
+      const response = await post(base, "/memory/forget", { tenant: "acme", id }, TOKEN);
+      expect(response.status).toBe(404);
+      expect(await response.json()).toEqual({ error: "memory not found" });
+      expect(forget).toHaveBeenLastCalledWith(id);
+    }
+    const response = await get(base, `/memory/episodes/${episodeId}/why?tenant=acme`, TOKEN);
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: "episode not found" });
+    expect(why).toHaveBeenCalledWith(episodeId);
+    expect(scopes).toEqual([
+      { tenant: "acme", options: { exclusive: true } },
+      { tenant: "acme", options: { exclusive: true } },
+      { tenant: "acme", options: undefined },
+    ]);
+  });
+
+  it("validates forget bodies and why ids before opening a tenant, after token authentication", async () => {
+    const { pool, rec } = recordingPool();
+    const base = await start(pool);
+    for (const body of [
+      {},
+      { tenant: "acme" },
+      { tenant: "../other", id: createEpisodeId() },
+      { tenant: "acme", id: 123 },
+      { tenant: "acme", id: "invalid" },
+      { tenant: "acme", id: createCommitmentId() },
+      { tenant: "acme", id: createEpisodeId(), extra: true },
+    ]) {
+      const response = await post(base, "/memory/forget", body, TOKEN);
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({ error: expect.any(String) });
+    }
+    expect((await post(base, "/memory/forget", {}, TOKEN, "{bad json")).status).toBe(400);
+    expect((await post(base, "/memory/forget", {}, TOKEN, "[]")).status).toBe(400);
+    expect(
+      (await post(base, "/memory/forget", { tenant: "acme", id: createEpisodeId() })).status,
+    ).toBe(401);
+    expect((await get(base, "/memory/episodes/invalid/why?tenant=acme", TOKEN)).status).toBe(400);
+    expect((await get(base, `/memory/episodes/${createEpisodeId()}/why?tenant=acme`)).status).toBe(
+      401,
+    );
+    expect(rec.tenants).toEqual([]);
   });
 
   it("lists applicable active commitments with critical-first ordering and a bounded response", async () => {

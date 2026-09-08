@@ -4,6 +4,7 @@ import { EmbeddingBankError } from "../embeddings/bank-profile.js";
 // over BorgPool that exposes long-term memory to an external (e.g. Python) service.
 //
 //   POST /memory/remember    { tenant, content, author? }          -> append + extract episode(s)
+//   POST /memory/forget      { tenant, id }                       -> archive episode or semantic node
 //   POST /memory/enqueue     { tenant, session, conversation, sender, text, ... } -> durable inbox
 //   POST /memory/await-response { tenant, sidecar_session_id, entry_id, timeout_ms? } -> long poll
 //   POST /memory/inbox-progress { tenant, sidecar_session_id, entry_ids, phase } -> interim status
@@ -31,6 +32,7 @@ import { EmbeddingBankError } from "../embeddings/bank-profile.js";
 //   GET  /memory/semantic?tenant=<id>&limit=<n>  -> semantic nodes (no embeddings)
 //   GET  /memory/review?tenant=<id>&openOnly=<0|1>&kind=<k>&limit=<n> -> review queue
 //   GET  /memory/episodes/{id}?tenant=<id>                  -> inspect one raw episode
+//   GET  /memory/episodes/{id}/why?tenant=<id>              -> correction provenance and citations
 //   GET  /memory/trace?tenant=<id>&since=<ts>                -> inspect recall trace buffer
 //   POST /memory/maintenance?tenant=<id|*>&mode=<light|heavy>&dryRun=<0|1>
 //        tenant is optional; absent or "*" fans out across every tenant with a
@@ -88,10 +90,12 @@ import {
   type MemoryDisclosureLabel,
 } from "../memory/common/index.js";
 import {
+  episodeIdSchema,
   isEpisodeAccessVisibleToAnyAudience,
   parseEpisodeParticipantEntityIdTerm,
   type Episode,
 } from "../memory/episodic/index.js";
+import { semanticNodeIdSchema } from "../memory/semantic/index.js";
 import {
   clipRecalledEvidenceText,
   MAX_RECALLED_SOURCE_MESSAGES_PER_EPISODE,
@@ -581,6 +585,13 @@ const directiveAdminBodySchema = z
 const directiveRevokeBodySchema = z
   .object({
     reason: z.string().trim().min(1),
+  })
+  .strict();
+
+const forgetBodySchema = z
+  .object({
+    tenant: z.string().trim().regex(TENANT_ID_RE),
+    id: z.union([episodeIdSchema, semanticNodeIdSchema]),
   })
   .strict();
 
@@ -2244,6 +2255,10 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
     }
 
     if (method === "GET") {
+      const whyEpisodeId = rawPath.endsWith("/why")
+        ? parseEpisodeIdFromPath(rawPath.slice(0, -"/why".length))
+        : undefined;
+      const isEpisodeWhyPath = whyEpisodeId !== undefined;
       const isTracePath = rawPath === "/memory/trace";
       const isEpisodeListPath = rawPath === "/memory/episodes";
       const isCommitmentListPath = rawPath === "/memory/commitments";
@@ -2272,7 +2287,11 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
         isSelfPath ||
         isSemanticPath ||
         isReviewPath;
-      const episodeId = nonEpisodePath ? undefined : parseEpisodeIdFromPath(rawPath);
+      const episodeId = nonEpisodePath
+        ? undefined
+        : isEpisodeWhyPath
+          ? whyEpisodeId
+          : parseEpisodeIdFromPath(rawPath);
       if (!nonEpisodePath && episodeId === undefined) {
         send(res, 404, { error: "not found" });
         return;
@@ -2474,18 +2493,18 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
               limit,
               ...(cursor === undefined ? {} : { cursor }),
             });
-            if (listed.items.length === 0) {
-              return listed;
+            const active = listed.items.filter(
+              (episode) => borg.episodic.getStats(episode.id)?.archived !== true,
+            );
+            if (active.length === 0) {
+              return { ...listed, items: active };
             }
 
-            const projectMetadata = createPublicEpisodeMetadataProjector(
-              listed.items,
-              borg.entities,
-            );
+            const projectMetadata = createPublicEpisodeMetadataProjector(active, borg.entities);
 
             return {
               ...listed,
-              items: listed.items.map((episode) =>
+              items: active.map((episode) =>
                 projectEpisodeForList(episode, projectMetadata(episode)),
               ),
             };
@@ -2504,6 +2523,11 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
           return;
         }
         if (episodeId !== undefined) {
+          if (isEpisodeWhyPath) {
+            const why = await pool.withTenant(tenant, (borg) => borg.correction.why(episodeId));
+            send(res, 200, { ok: true, ...why });
+            return;
+          }
           const episode = await pool.withTenant(tenant, async (borg) => {
             const inspected = await borg.episodic.inspect(episodeId);
 
@@ -2532,6 +2556,10 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
         send(res, 404, { error: "not found" });
       } catch (error) {
         if (sendEmbeddingBankUnavailable(res, error)) return;
+        if (isEpisodeWhyPath && errorCode(error) === "EPISODE_NOT_FOUND") {
+          send(res, 404, { error: "episode not found" });
+          return;
+        }
         if (isInvalidEpisodeCursorError(error)) {
           send(res, 400, { error: "invalid 'cursor'" });
           return;
@@ -2546,6 +2574,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
     if (
       method !== "POST" ||
       (rawPath !== "/memory/remember" &&
+        rawPath !== "/memory/forget" &&
         rawPath !== "/memory/recall" &&
         rawPath !== "/memory/append-turn" &&
         rawPath !== "/memory/commitments" &&
@@ -2568,6 +2597,25 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
     }
 
     try {
+      if (rawPath === "/memory/forget") {
+        const parsed = forgetBodySchema.safeParse(body);
+        if (!parsed.success) {
+          send(res, 400, { error: "invalid forget body" });
+          return;
+        }
+        const result = await pool.withTenant(
+          tenant,
+          (borg) => borg.correction.forget(parsed.data.id),
+          { exclusive: true },
+        );
+        send(res, 200, {
+          ok: true,
+          id: result.id,
+          target_type: result.target_type,
+          archived: result.archived,
+        });
+        return;
+      }
       if (rawPath === "/memory/guard-reply") {
         const parsed = guardReplyBodySchema.safeParse(body);
         if (!parsed.success) {
@@ -3776,6 +3824,13 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
       });
     } catch (error) {
       if (sendEmbeddingBankUnavailable(res, error)) return;
+      if (
+        rawPath === "/memory/forget" &&
+        (errorCode(error) === "EPISODE_NOT_FOUND" || errorCode(error) === "SEMANTIC_NODE_NOT_FOUND")
+      ) {
+        send(res, 404, { error: "memory not found" });
+        return;
+      }
       // Tenant id is validated above, so anything thrown here is an internal
       // failure (open / storage / provider) that may carry sensitive detail —
       // log server-side, return a generic error.
