@@ -891,21 +891,12 @@ bridge claim/ack polling. End-to-end delivery requires that separate rollout.
 
 ### Migration band remap for banks created before the 2026-09-08 upstream merge
 
-Composed migration ids are positional (`band * 1_000_000 + id`). Banks that ran the
-sidecar builds between 2026-09-06 and that merge recorded the agent-delivery
-tables in band 27 and the stream response-lane index as entry-index id 4; the
-merged tree places `operatorAttentionMigrations` in band 27, `agentDeliveryMigrations`
-in band 28 and the response-lane index at entry-index id 6. Before starting a
-merged build against such a bank, remap its `_migrations` rows once:
-
-```sql
-UPDATE _migrations SET id = 28000001 WHERE id = 27000001 AND name = 'agent_deliveries';
-UPDATE _migrations SET id = 28000002 WHERE id = 27000002 AND name = 'agent_delivery_ack_receipts';
-UPDATE _migrations SET id = 16000006 WHERE id = 16000004 AND name = 'stream_entry_response_lane';
-```
-
-Without the remap the operator-attention and blocker-index migrations are skipped
-as "already applied" and the observed-edge migration fails on its `DROP INDEX`.
+The migration runner reconciles applied migrations by name at startup, updating
+their recorded ids in one transaction while preserving `applied_at`. Band moves
+and source-id renumbering need no operator action. If a target id is occupied by
+a different migration name absent from the current build, startup fails closed
+with a `StorageError` naming both migrations. That error indicates an ambiguous
+migration history that needs investigation before the bank can be opened.
 
 1. borg (sidecar): routes and runner ship inert; no session has `source_type: "teams_inbox"`
    until something enqueues.
