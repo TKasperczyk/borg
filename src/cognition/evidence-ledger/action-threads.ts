@@ -347,6 +347,25 @@ function renderActionStateDisposition(state: ActionState): string {
 // disagreeing with itself. Nothing on the page distinguished that from a bad write. The origin stamp
 // is rendered only when the origin is not also the current record, matching the `current_intent`
 // line: on a single-record thread there is no second write for the reader to date it against.
+//
+// Dating the two writes made the gap legible and, on its own, made the link between them look
+// better sourced than it is. `buildActionThreads` has exactly one union road -- description-embedding
+// pairs at or above the similarity threshold, guarded on equal actor and equal non-null `goal_id` --
+// so every thread holding more than one record was grouped by resemblance and none by a stored link.
+// Neither guard narrows that much: `goal_id` is the turn's executive-focus selection, stamped
+// identically onto every record that turn mints rather than chosen per record, so equal `goal_id`
+// means "extracted while the same goal held focus". A fact that simply recurs -- phrased alike each
+// time because it is the same fact -- therefore threads exactly as readily as two records of one
+// undertaking, and `originating_intent` then states a causal claim the store never made. The clause
+// that dates the origin now also names how it was attached, so the inference is visible at the one
+// place a reader would otherwise read it as record.
+//
+// The two counts follow the same rule. `transitions` named the record count after the designed case,
+// where successive states of one undertaking merge; on a resemblance-grouped thread it asserts a
+// lifecycle nobody observed, and a record's own transitions are its state stamps, not its
+// thread-mates. It is the number of records, and says so. And on a single-record thread nothing was
+// attached and nothing originated: the description is the record's own, so it is rendered under a
+// name that does not claim otherwise.
 export function renderActionThreadText(
   thread: ActionThread,
   entityRepository: Pick<EntityRepository, "get"> | undefined,
@@ -356,11 +375,13 @@ export function renderActionThreadText(
   const originIsCurrent = thread.current.id === thread.origin.id;
   const originAt = originIsCurrent
     ? ""
-    : `; originating_intent recorded ${new Date(thread.origin.created_at).toISOString()}`;
+    : `; originating_intent is a separate record created ${new Date(
+        thread.origin.created_at,
+      ).toISOString()}, grouped with this one by description similarity rather than by any recorded link`;
   const lines = [
     `actor: ${actor}`,
-    `originating_intent: ${thread.origin.description}`,
-    `transitions: ${thread.records.length}, current: ${thread.current.state} (${renderActionStateDisposition(
+    `${originIsCurrent ? "action" : "originating_intent"}: ${thread.origin.description}`,
+    `records: ${thread.records.length}, current: ${thread.current.state} (${renderActionStateDisposition(
       thread.current.state,
     )}) at ${currentAt}${originAt}`,
   ];
@@ -378,7 +399,7 @@ export function actionThreadStateMetadata(
 ): Record<string, unknown> {
   return {
     record_ids: thread.records.map((record) => record.id),
-    transitions: thread.records.length,
+    records: thread.records.length,
     current_action_id: thread.current.id,
     current_updated_at: thread.current.updated_at,
     current_actor: actionActorDisplay(thread.current.actor, entityRepository),

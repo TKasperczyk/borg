@@ -3672,7 +3672,7 @@ describe("EvidenceLedgerBuilder", () => {
       id: expect.stringMatching(/^action_thread:/),
       state: expect.stringContaining("completed"),
       state_metadata: expect.objectContaining({
-        transitions: 3,
+        records: 3,
         current_action_id: completed.id,
         goal_id: goalId,
       }),
@@ -3681,14 +3681,16 @@ describe("EvidenceLedgerBuilder", () => {
     expect(actionEntries[0]?.text).toContain(
       "originating_intent: consider writing the harness presentation",
     );
-    expect(actionEntries[0]?.text).toContain("transitions: 3, current: completed");
+    expect(actionEntries[0]?.text).toContain("records: 3, current: completed");
     // The originating description is the oldest write in the thread; without its own stamp a reader
     // cannot tell whether it disagrees with `current_intent` because the world changed or because
-    // one of them is wrong.
+    // one of them is wrong. And the stamp alone dates a link that no row records: the only thing
+    // that put these three records in one thread is description similarity, so the clause says that
+    // where a reader would otherwise take the grouping for a stored fact.
     expect(actionEntries[0]?.text).toContain(
-      `at ${new Date(NOW_MS + 20).toISOString()}; originating_intent recorded ${new Date(
+      `at ${new Date(NOW_MS + 20).toISOString()}; originating_intent is a separate record created ${new Date(
         NOW_MS,
-      ).toISOString()}`,
+      ).toISOString()}, grouped with this one by description similarity rather than by any recorded link`,
     );
     expect(actionEntries[0]?.text).toContain(
       "current_intent: finished writing the harness presentation",
@@ -4474,7 +4476,14 @@ describe("EvidenceLedgerBuilder", () => {
       ledger.sections.find((section) => section.id === "action_states")?.entries ?? [];
 
     expect(actionEntries).toHaveLength(3);
-    expect(actionEntries.map((entry) => entry.state_metadata?.["transitions"])).toEqual([1, 1, 1]);
+    expect(actionEntries.map((entry) => entry.state_metadata?.["records"])).toEqual([1, 1, 1]);
+    // Nothing was grouped, so no row may carry the merge vocabulary: a single-record thread has no
+    // origin distinct from itself and no similarity link to disclose.
+    for (const entry of actionEntries) {
+      expect(entry.text).toContain("action: ");
+      expect(entry.text).not.toContain("originating_intent");
+      expect(entry.text).not.toContain("current_intent");
+    }
   });
 
   it("summarizes omitted null-goal action threads with state counts and bounded samples", async () => {
