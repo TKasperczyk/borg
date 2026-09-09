@@ -383,6 +383,42 @@ describe("semantic extractor", () => {
     expect(run.result).toMatchObject({ insertedNodes: 1, skippedNodes: 0 });
   });
 
+  it("resolves an id written where a name belongs and never keeps it as one", async () => {
+    const selfId = createEntityId();
+    const run = await runIdentityGuardExtraction({
+      cleanup,
+      records: [identityEntity(selfId, "team-agent", "self", ["self"])],
+      selfEntityId: selfId,
+      nodes: [
+        {
+          kind: "self",
+          label: selfId,
+          description: "I coordinate the release workflow.",
+          domain: "people",
+          aliases: [selfId, "release lead"],
+          observation_metadata: null,
+          relationship_claims: [],
+          identity_entity_id: null,
+          description_perspective: "first_person",
+          confidence: 0.7,
+          source_episode_ids: [IDENTITY_GUARD_EPISODE_ID],
+        },
+      ],
+    });
+
+    const nodes = await run.nodeRepository.list();
+
+    expect(nodes).toEqual([
+      expect.objectContaining({
+        label: "team-agent",
+        kind: "self",
+        aliases: expect.arrayContaining(["release lead"]),
+      }),
+    ]);
+    expect(nodes[0]?.aliases).not.toContain(selfId);
+    expect(run.result).toMatchObject({ insertedNodes: 1, skippedNodes: 0 });
+  });
+
   it("rejects a name-only identity candidate when two people share that display name", async () => {
     const selfId = createEntityId();
     const firstAlexId = createEntityId();

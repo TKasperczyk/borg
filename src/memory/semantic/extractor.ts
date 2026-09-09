@@ -27,7 +27,12 @@ import {
 } from "../../util/self-memory-voice.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { LLMError, SemanticError, StorageError } from "../../util/errors.js";
-import { createSemanticNodeId, type EntityId, type StreamEntryId } from "../../util/ids.js";
+import {
+  createSemanticNodeId,
+  entityIdHelpers,
+  type EntityId,
+  type StreamEntryId,
+} from "../../util/ids.js";
 import { cosineSimilarity } from "../../retrieval/embedding-similarity.js";
 import { memoryDisclosureLabelFromEpisodeAccess } from "../common/disclosure-label.js";
 import {
@@ -561,6 +566,18 @@ function identityAnchorNames(anchor: SemanticIdentityAnchor): string[] {
   return [anchor.canonical_name, ...anchor.aliases].map((name) => name.trim());
 }
 
+// The extraction prompt carries raw entity ids, so the model sometimes writes an
+// id where a name belongs. An id denotes its entity as surely as a name does, so
+// both forms resolve to the anchor here -- and the id is never kept as a name.
+// Same invariant as episodeParticipantEntityId, one layer over.
+function identityAnchorDenotations(anchor: SemanticIdentityAnchor): string[] {
+  return [...identityAnchorNames(anchor), anchor.id];
+}
+
+function withoutEntityIdNames(values: readonly string[]): string[] {
+  return values.filter((value) => !entityIdHelpers.is(value.trim()));
+}
+
 function identityAnchorForCandidate(
   candidate: ExtractorNode,
   anchors: readonly SemanticIdentityAnchor[],
@@ -571,7 +588,7 @@ function identityAnchorForCandidate(
 } {
   const label = candidate.label.trim();
   const labelMatches = anchors.filter((anchor) =>
-    identityAnchorNames(anchor).some((name) => name === label),
+    identityAnchorDenotations(anchor).some((denotation) => denotation === label),
   );
   const labelAnchor = labelMatches.length === 1 ? (labelMatches[0] ?? null) : null;
 
@@ -606,7 +623,7 @@ function identityAnchorForNode(
 ): SemanticIdentityAnchor | null {
   const nodeNames = new Set([node.label.trim(), ...node.aliases.map((alias) => alias.trim())]);
   const matches = anchors.filter((anchor) =>
-    identityAnchorNames(anchor).some((name) => nodeNames.has(name)),
+    identityAnchorDenotations(anchor).some((denotation) => nodeNames.has(denotation)),
   );
 
   return matches.length === 1 ? (matches[0] ?? null) : null;
@@ -823,13 +840,15 @@ export class SemanticExtractor {
     try {
       const candidateLabel = identityAnchor?.canonical_name ?? candidate.label.trim();
       const candidateDescription = candidate.description.trim();
-      const candidateAliases = mergeAliases(
-        candidate.aliases,
-        identityAnchor === null
-          ? []
-          : [candidate.label, ...identityAnchor.aliases].filter(
-              (alias) => alias.trim() !== candidateLabel,
-            ),
+      const candidateAliases = withoutEntityIdNames(
+        mergeAliases(
+          candidate.aliases,
+          identityAnchor === null
+            ? []
+            : [candidate.label, ...identityAnchor.aliases].filter(
+                (alias) => alias.trim() !== candidateLabel,
+              ),
+        ),
       );
       const candidateKind =
         identityAnchor?.kind === "person"
@@ -928,7 +947,9 @@ export class SemanticExtractor {
 
       const nextDescription =
         candidate.confidence >= existing.confidence ? candidateDescription : existing.description;
-      const nextAliases = mergeAliases(existing.aliases, [candidateLabel, ...candidate.aliases]);
+      const nextAliases = withoutEntityIdNames(
+        mergeAliases(existing.aliases, [candidateLabel, ...candidate.aliases]),
+      );
       const updatedEmbedding = await this.options.embeddingClient.embed(
         buildNodeEmbeddingText({
           label: existing.label,
