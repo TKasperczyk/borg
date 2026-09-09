@@ -398,6 +398,17 @@ describe("llm", () => {
       code: "LLM_STRUCTURED_OUTPUT_PARSE_FAILED",
       rawText: "I cannot comply.",
     });
+
+    // Callers keep the top-level message and drop the cause chain, so a reason
+    // that lives only on `cause` reaches `autonomy_wakes.outcome_detail` as the
+    // bare label -- the same shape that made an earlier wake-failure run
+    // undiagnosable from its own record. The reason must be in the message.
+    const parseErrorMessage = await promise.then(
+      () => "",
+      (error: unknown) => (error as Error).message,
+    );
+    expect(parseErrorMessage).not.toBe("Failed to parse Anthropic structured output");
+    expect(parseErrorMessage).toMatch(/^Failed to parse Anthropic structured output: \S/);
   });
 
   it("preserves discriminator and literal constraints in structured-output schemas", () => {

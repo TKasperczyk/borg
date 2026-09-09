@@ -128,7 +128,7 @@ export class LLMStructuredOutputParseError extends LLMError {
   readonly rawText: string;
 
   constructor(rawText: string, cause: unknown) {
-    super("Failed to parse Anthropic structured output", {
+    super(`Failed to parse Anthropic structured output: ${describeUpstreamError(cause)}`, {
       cause,
       code: "LLM_STRUCTURED_OUTPUT_PARSE_FAILED",
     });
@@ -657,6 +657,10 @@ function extractMessageBlocks(message: Message): LLMContentBlock[] {
  * it, so an OAuth failure and a request defect reached `autonomy_wakes.outcome_detail` as the
  * same 70-character string: the wake recorded that it failed and no surface anywhere recorded
  * why, which is the same outage this helper exists to prevent.
+ *
+ * The structured-output parse sites shipped without it for the same reason and are covered now:
+ * a schema rejection and an unparseable body reached that column as the same 43-character string,
+ * so the failure that is easiest to fix from its text was the one whose text said least.
  */
 function describeUpstreamError(error: unknown): string {
   const apiMessage = (error as { error?: { error?: { message?: unknown } } } | null)?.error?.error
@@ -2395,10 +2399,13 @@ export class AnthropicLLMClient implements LLMClient {
         throw error;
       }
 
-      throw new LLMError("Failed to parse Anthropic structured output", {
-        cause: error,
-        code: "LLM_STRUCTURED_OUTPUT_PARSE_FAILED",
-      });
+      throw new LLMError(
+        `Failed to parse Anthropic structured output: ${describeUpstreamError(error)}`,
+        {
+          cause: error,
+          code: "LLM_STRUCTURED_OUTPUT_PARSE_FAILED",
+        },
+      );
     }
 
     const result = {
@@ -2429,10 +2436,13 @@ export class AnthropicLLMClient implements LLMClient {
         throw error;
       }
 
-      throw new LLMError("Failed to parse Anthropic structured output", {
-        cause: error,
-        code: "LLM_STRUCTURED_OUTPUT_PARSE_FAILED",
-      });
+      throw new LLMError(
+        `Failed to parse Anthropic structured output: ${describeUpstreamError(error)}`,
+        {
+          cause: error,
+          code: "LLM_STRUCTURED_OUTPUT_PARSE_FAILED",
+        },
+      );
     }
 
     const result = {
@@ -2468,10 +2478,13 @@ export class AnthropicLLMClient implements LLMClient {
         throw error;
       }
 
-      throw new LLMError("Failed to parse Anthropic structured output", {
-        cause: error,
-        code: "LLM_STRUCTURED_OUTPUT_PARSE_FAILED",
-      });
+      throw new LLMError(
+        `Failed to parse Anthropic structured output: ${describeUpstreamError(error)}`,
+        {
+          cause: error,
+          code: "LLM_STRUCTURED_OUTPUT_PARSE_FAILED",
+        },
+      );
     }
 
     const result = {
@@ -2503,10 +2516,13 @@ export class AnthropicLLMClient implements LLMClient {
         throw error;
       }
 
-      throw new LLMError("Failed to parse Anthropic structured output", {
-        cause: error,
-        code: "LLM_STRUCTURED_OUTPUT_PARSE_FAILED",
-      });
+      throw new LLMError(
+        `Failed to parse Anthropic structured output: ${describeUpstreamError(error)}`,
+        {
+          cause: error,
+          code: "LLM_STRUCTURED_OUTPUT_PARSE_FAILED",
+        },
+      );
     }
 
     const result = {
