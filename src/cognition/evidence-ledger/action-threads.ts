@@ -366,6 +366,18 @@ function renderActionStateDisposition(state: ActionState): string {
 // thread-mates. It is the number of records, and says so. And on a single-record thread nothing was
 // attached and nothing originated: the description is the record's own, so it is rendered under a
 // name that does not claim otherwise.
+//
+// One state was printed for two descriptions. `current:` names the disposition of `thread.current`,
+// and on a merged thread the origin is a different record with its own independent state -- the
+// origin line sat above it carrying no disposition at all, so the only state on the page attached
+// itself to the nearest text. An action description states what was undertaken, not whether it
+// happened; the record's state is the field that settles that, and reading it off a thread-mate
+// makes an intent look discharged or a discharged act look pending, with nothing on the page to
+// catch it. So the origin's own state and disposition are rendered on the origin's own line, beside
+// the words they govern rather than beneath them: this section truncates from the tail, and a
+// disposition placed on the counts line can be cut while the description it qualifies survives.
+// A single-record thread keeps the bare `action:` name -- there is no second record for `current:`
+// to be mistaken for, so repeating the state there would only restate the line below it.
 export function renderActionThreadText(
   thread: ActionThread,
   entityRepository: Pick<EntityRepository, "get"> | undefined,
@@ -380,7 +392,13 @@ export function renderActionThreadText(
       ).toISOString()}, grouped with this one by description similarity rather than by any recorded link`;
   const lines = [
     `actor: ${actor}`,
-    `${originIsCurrent ? "action" : "originating_intent"}: ${thread.origin.description}`,
+    `${
+      originIsCurrent
+        ? "action"
+        : `originating_intent (${thread.origin.state}, ${renderActionStateDisposition(
+            thread.origin.state,
+          )})`
+    }: ${thread.origin.description}`,
     `records: ${thread.records.length}, current: ${thread.current.state} (${renderActionStateDisposition(
       thread.current.state,
     )}) at ${currentAt}${originAt}`,
@@ -397,9 +415,15 @@ export function actionThreadStateMetadata(
   thread: ActionThread,
   entityRepository: Pick<EntityRepository, "get"> | undefined,
 ): Record<string, unknown> {
+  // `record_ids` lists the thread's members in update order and `current_action_id` names one of
+  // them; the record whose description is rendered as `originating_intent` was identified by
+  // neither, so the one row a reader is actually shown could not be looked up. Named alongside its
+  // state for the same reason the render carries it: origin and current are independent records.
   return {
     record_ids: thread.records.map((record) => record.id),
     records: thread.records.length,
+    origin_action_id: thread.origin.id,
+    origin_state: thread.origin.state,
     current_action_id: thread.current.id,
     current_updated_at: thread.current.updated_at,
     current_actor: actionActorDisplay(thread.current.actor, entityRepository),

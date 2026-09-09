@@ -3678,10 +3678,18 @@ describe("EvidenceLedgerBuilder", () => {
       }),
     });
     expect(actionEntries[0]?.state).toContain("disclosure_class=unknown");
+    // The origin is a different record from the current one and holds its own state. `current:`
+    // below names only `completed`, so without a disposition on this line the description of a
+    // still-open intent renders under the one state on the page -- a thread-mate's. Asserted on the
+    // rendered line rather than on the metadata: the line is what a reader is handed.
     expect(actionEntries[0]?.text).toContain(
-      "originating_intent: consider writing the harness presentation",
+      "originating_intent (considering, open): consider writing the harness presentation",
     );
     expect(actionEntries[0]?.text).toContain("records: 3, current: completed");
+    expect(actionEntries[0]?.state_metadata).toMatchObject({
+      origin_action_id: considering.id,
+      origin_state: "considering",
+    });
     // The originating description is the oldest write in the thread; without its own stamp a reader
     // cannot tell whether it disagrees with `current_intent` because the world changed or because
     // one of them is wrong. And the stamp alone dates a link that no row records: the only thing
