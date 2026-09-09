@@ -53,10 +53,13 @@ describe("similarity profiles", () => {
       }),
     );
     expect(thresholds[inventoryKeys[gate.id]!]).toBe(gate.value);
-    expect(new Set(Object.values(inventoryKeys))).toEqual(new Set(Object.keys(thresholds)));
+    expect(new Set([...Object.values(inventoryKeys), "recallAuxiliaryScoreScale"])).toEqual(
+      new Set(Object.keys(thresholds)),
+    );
+    expect(thresholds.recallAuxiliaryScoreScale).toBe(1);
   });
 
-  it("changes exactly the seven measured BGE gates and returns frozen values", () => {
+  it("changes the measured BGE gates and recall calibration and returns frozen values", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const qwen = similarityThresholds({ embedding: { model: QWEN_SIMILARITY_MODEL } });
     const bge = similarityThresholds(
@@ -73,6 +76,7 @@ describe("similarity profiles", () => {
       semanticDuplicateReview: 0.87,
       semanticExtractionDuplicate: 0.84,
       reflectionInsightDuplicate: 0.84,
+      recallAuxiliaryScoreScale: 0.15,
     });
     expect(Object.isFrozen(bge)).toBe(true);
     expect(Reflect.set(bge, "consolidationSimilarity", 0.1)).toBe(false);
@@ -254,6 +258,8 @@ describe("similarity profiles", () => {
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn.mock.calls[0]?.[0]).toContain("borg memory sidecar: similarity");
     expect(stderr).toHaveBeenCalledTimes(1);
-    expect(stderr.mock.calls[0]?.[0]).toContain('borg open: similarity model="test/unknown-repeated"');
+    expect(stderr.mock.calls[0]?.[0]).toContain(
+      'borg open: similarity model="test/unknown-repeated"',
+    );
   });
 });

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { similarityThresholds, BGE_SIMILARITY_MODEL } from "../config/similarity.js";
 
 import { COGNITIVE_MODES, type AttentionWeights } from "../contracts/cognitive-contracts.js";
 import type { EpisodeSearchCandidate, EpisodeStats } from "../memory/episodic/types.js";
@@ -24,6 +25,64 @@ const BASE_ENTITY_RELEVANCE_WEIGHT = 0.15;
 const DEFAULTS: EpisodeScoreDefaults = {
   scoreWeights: { ...DEFAULT_EPISODE_SCORE_WEIGHTS },
 };
+
+describe("embedding-profile recall calibration", () => {
+  it("keeps a topical BGE hit ahead of a hot, socially relevant exact-name distractor", () => {
+    const defaults = {
+      ...DEFAULTS,
+      auxiliaryScoreScale: similarityThresholds({ embedding: { model: BGE_SIMILARITY_MODEL } })
+        .recallAuxiliaryScoreScale,
+    };
+    const topical = makeCandidate(0.55);
+    topical.episode.significance = 0;
+    const distractor = makeCandidate(0);
+    distractor.episode.significance = 1;
+    const weights = {
+      semantic: 0.65,
+      entity: 0.2,
+      social: 0.15,
+      heat: 0.15,
+      time: 0,
+      mood: 0,
+      goal_relevance: 0,
+      value_alignment: 0,
+      suppression_penalty: 0.5,
+    };
+    const topicScore = scoreCandidate(
+      topical,
+      { attentionWeights: weights },
+      NOW_MS,
+      null,
+      defaults,
+    );
+    const distractorScore = scoreCandidate(
+      distractor,
+      {
+        attentionWeights: weights,
+        audienceTerms: ["Alice"],
+        entityTerms: ["Atlas"],
+      },
+      NOW_MS,
+      null,
+      defaults,
+    );
+    // Even the maximum exact-lane + recency-prior contributions cannot bury the topic.
+    expect(topicScore.rawScore).toBeGreaterThan(
+      distractorScore.rawScore + (0.25 + 0.15) * defaults.auxiliaryScoreScale,
+    );
+    const suppressed = scoreCandidate(
+      topical,
+      {
+        attentionWeights: weights,
+        suppressionSet: { isSuppressed: () => true },
+      },
+      NOW_MS,
+      null,
+      defaults,
+    );
+    expect(topicScore.rawScore - suppressed.rawScore).toBeCloseTo(0.5);
+  });
+});
 
 const HIGH_TRUST_PROFILE: SocialProfile = {
   entity_id: AUDIENCE_ID,

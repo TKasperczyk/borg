@@ -93,3 +93,9 @@ export type ActivityProjectionSourceEvent = {
   participantLabel: string;
   sourceStreamEntryIds: readonly StreamEntryId[];
 };
+
+export type ActivityRelevanceInput = {
+  focus: string;
+  candidates: readonly { key: string; text: string; occurredAt: number }[];
+  nowMs: number;
+};

@@ -88,46 +88,158 @@ Every append:
   for the assistant entry (speaker = self), with audienceEntityId and participant ids, so
   listRecentOtherActiveSessionEvents works for the read path.
 
-`POST /memory/remember` carries no transport identity: it is team-agent's autonomous role-run
-outcome writer, which has no Teams conversation. It requires `content`, accepts optional
-`author`, appends the entry to the tenant's default session and extracts under the tenant's
-exclusive chain.
+`POST /memory/remember` supports two distinct request shapes. The existing role-run outcome
+writer accepts `{tenant, content, author?}` without transport identity and appends/extracts in the
+tenant's default session. The consent-backed `scope: "tenant"` shape below requires transport
+identity and source handles, and creates a separate authorized fact. Unscoped requests preserve the
+legacy parser: `author: null` is accepted, and extra fields such as `session` are ignored. Any
+request containing `scope` takes the strict consent parser; an invalid or null scope returns 400.
 
-## Read path: POST /memory/context  (x-borg-token)
+## Consent-backed write: POST /memory/remember (x-borg-token)
+
+```json
+{
+  "tenant": "acme",
+  "scope": "tenant",
+  "session": "<original Teams thread key or sidecar session id>",
+  "sender": { "external_id": "marcin", "display_name": "Marcin", "operator": false },
+  "conversation": { "type": "personal", "name": "Marcin", "external_id": "<conversation id>" },
+  "request_id": "<stable tool invocation id>",
+  "content": "Marcin będzie na urlopie od 14 do 18 września 2026.",
+  "source_episode_ids": ["ep_aaaaaaaaaaaaaaaa"],
+  "source_message_ids": ["strm_aaaaaaaaaaaaaaaa"],
+  "authorization_message_ids": ["strm_aaaaaaaaaaaaaaaa"]
+}
+```
+
+The authenticated caller supplies `tenant`, `sender`, `conversation`, `session` and the stable
+`request_id` from transport/tool context. Do not let the model impersonate another sender by
+choosing those fields. The sidecar token authenticates the integration; Borg resolves the supplied
+external sender handle against that tenant's entity registry. “The team” means **the entire tenant**,
+including other members' private chats, not just the current room and not other tenants.
+
+`content` is a proposed fact (1–4000 characters), not an assertion of consent. `request_id` is
+1–256 characters. `source_episode_ids` is optional (at most 16). `source_message_ids` and
+`authorization_message_ids` each require 1–32 Borg stream IDs; the latter must be a subset of the
+former. IDs are deduplicated. Use IDs returned by `/memory/append-turn` (`entries[].id`), inbox
+enqueue (`entry_id`), or recalled `source_messages[].id`; these are not Teams external message IDs.
+Persist/ingest the speaker's original message before invoking this operation. Do not synthesize
+a user message claiming consent to satisfy this contract.
+
+Borg requires active, available source records. Each designated authorization message must be a
+fully ingested `user_msg` by the resolved speaker in the specified session. A single message can
+contain both the fact and its consent; otherwise cite both. Existing episodes are optional context,
+not a substitute for the authorizing message. One structured extraction call on
+`BORG_MODEL_EXTRACTION` interprets the fact and explicit tenant-wide consent in the source language
+(one additional attempt on malformed structured output). Ordinary private disclosure, hearsay about
+consent, room-only permission, and the tool's own proposed content do not establish authorization.
+The model receives source timestamps and the configured `retrieval.recallPlannerTimeZone` so relative
+dates are anchored to the source, not the later remember call. It returns only the authorized fact,
+title, tags and confidence. A denial writes nothing.
+
+Success is HTTP 200:
+
+```json
+{
+  "ok": true,
+  "episode_id": "ep_bbbbbbbbbbbbbbbb",
+  "authorization_entry_id": "strm_bbbbbbbbbbbbbbbb",
+  "duplicate": false,
+  "disclosure": { "class": "public", "scope": "tenant" },
+  "guidance": "Team-public within this tenant by Marcin's explicit authorization. ...",
+  "authorization": {
+    "scope": "tenant",
+    "request_hash": "<SHA-256 of normalized input>",
+    "episode_id": "ep_bbbbbbbbbbbbbbbb",
+    "speaker_entity_id": "<resolved Borg entity id>",
+    "speaker_name": "Marcin",
+    "source_episode_ids": ["ep_aaaaaaaaaaaaaaaa"],
+    "source_message_ids": ["strm_aaaaaaaaaaaaaaaa"],
+    "authorization_message_ids": ["strm_aaaaaaaaaaaaaaaa"],
+    "fact": "Marcin będzie na urlopie od 14 do 18 września 2026.",
+    "title": "Urlop Marcina",
+    "tags": ["Marcin", "urlop"],
+    "confidence": 1,
+    "authorized_at": 1788940800000
+  }
+}
+```
+
+The original private episode remains intact. Borg appends an indexed, fsync'd authorization receipt
+and creates a new episode with `shared: true` and no private audience. Private source episode IDs
+remain in lineage and receipt metadata; the new episode's citation chain points only to the receipt
+containing the authorized fact. It does not quote the original private conversation. Both Sol and
+the sidecar recall the new episode globally with disclosure class `public` and authorization guidance
+in its narrative. A consolidation with private material keeps its private label and leaves the
+public source fact independently recallable. This also applies to already-consolidated records;
+no re-extraction or rewrite of the private original is needed.
+
+Context responses add `sharing_authorizations: [{scope: "tenant", speaker_name, fact,
+disclosure: {class: "public", scope: "tenant"}, guidance}]` from hydrated receipts, including
+receipts inherited by a consolidation. For exactly one fact, `sharing_authorization` is an alias
+for that item. No authorization field is emitted without a valid hydrated receipt (the server
+does not explicitly emit `null`). Each authorization applies **only to its `fact`**, never to an
+entire merged narrative: the episode's own disclosure label remains authoritative for that
+narrative. Multiple receipts produce separate facts, not a combined permission.
+The private-memory existence restriction does not apply to this public fact; the original private
+conversation and unrelated details retain their restrictions. Public does not mean already known
+to the current audience.
+
+Library/tool integrations use `borg.episodic.rememberForTenant` directly with the equivalent
+camel-case input and resolved session/speaker IDs. It uses the same operation and extraction slot
+as this HTTP route; an option-A tool integration does not need a second consent implementation.
+
+Retry the identical request with the same ID after a transport/storage failure. Idempotency is
+scoped to tenant bank, session and authorizing speaker. A retry returns the same IDs with
+`duplicate: true`; a stored receipt resumes materialization after an embedding/storage failure
+without another consent call. It never resurrects an archived episode. Existing `/memory/forget`
+can archive the public record; it does not retract replies already delivered. As with other stream
+writes, an index-update failure after a committed append triggers automatic session repair. If
+repair succeeds, the append succeeds normally. If repair fails, the writer marks the session
+poisoned and throws `STREAM_INDEX_POISONED`; the next append retries repair before writing.
+
+Errors: 400 for malformed identity/provenance or missing/inactive/wrong-speaker sources;
+422 `MEMORY_REMEMBER_NOT_AUTHORIZED` when the sources do not establish permission;
+409 `MEMORY_REMEMBER_CONFLICT` for a reused request ID with different input;
+500 for model/storage failures (503 for an unavailable embedding bank). Scoped requests never fall
+back to the legacy outcome writer. Do not fall back client-side after a denial. Render the fact and
+human-readable guidance to the model; retain receipt/source IDs as tool metadata, not reply text.
+
+## Read path: POST /memory/context (x-borg-token)
 
 Request:
 {
-  "tenant": "...", "session": "<thread key>",
-  "sender": {"external_id": "...", "display_name": "...", "operator": false},
-  "conversation": {"type": "personal|groupChat|channel", "name": "...", "external_id": "..."},
-  "focus": "<current message>",       // required for recall sections, nonempty
-  "context_turns": [],                // required for recall sections; up to three preceding turns
-  "limit": 8,                         // episodes cap, same bounds as /memory/recall
-  "sections": ["audience","episodes","recent_activity","commitments","directives"]  // default: these five
+"tenant": "...", "session": "<thread key>",
+"sender": {"external_id": "...", "display_name": "...", "operator": false},
+"conversation": {"type": "personal|groupChat|channel", "name": "...", "external_id": "..."},
+"focus": "<current message>", // required for recall sections, nonempty
+"context_turns": [], // required for recall sections; up to three preceding turns
+"limit": 8, // episodes cap, same bounds as /memory/recall
+"sections": ["audience","episodes","recent_activity","commitments","directives"] // default: these five
 }
 
 Response:
 {
-  "ok": true,
-  "audience": {"entity_id": "...", "kind": "person|group", "name": "...", "role": "participant|operator"},
-  "episodes": [ <same per-hit projection as /memory/recall, plus
-                 "disclosure": {"class": "public|relationship_private|...",
-                                "origin_audience_names": [...], "private_to_names": [...],
-                                "private_to_current_sender": false, "private_to_current_audience": false}> ],
-  "hidden_episode_count": 0,
-  "disclosure_guidance": "<canonical Borg disclosure guidance, verbatim>",
-  "context_id": "<opaque served-context id>",
-  "recent_activity": [ {"kind": "user_contact|borg_replied|turn_completed", "occurred_at": <epoch ms>,
-                        "occurred_at_iso": "...", "relative_age": "12m ago",
-                        "session": "<sidecar session id>", "conversation": {"type": "...", "name": "..."},
-                        "disclosure": {"class": "self_private", "origin_audience_names": [...],
-                                       "private_to_names": [...], "private_to_current_sender": false,
-                                       "private_to_current_audience": false},
-                        "participant_name": "...", "text": "Alex Example contacted the agent 12m ago in group chat \"Example Group\"."} ],
-  "commitments": [ <same projection as GET /memory/commitments, filtered for this audience> ],
-  "directives": [ {"id": "...", "kind": "response_policy|routing_instruction|disclosure_boundary|subject_fact|self_identity",
-                   "render_mode": "content|boundary", "text": "...", "content_scope": "...", "priority": 0, "topic_tags": []} ],
-  "degraded": false, "degraded_reason": ""
+"ok": true,
+"audience": {"entity_id": "...", "kind": "person|group", "name": "...", "role": "participant|operator"},
+"episodes": [ <same per-hit projection as /memory/recall, plus
+"disclosure": {"class": "public|relationship_private|...",
+"origin_audience_names": [...], "private_to_names": [...],
+"private_to_current_sender": false, "private_to_current_audience": false}> ],
+"hidden_episode_count": 0,
+"disclosure_guidance": "<canonical Borg disclosure guidance, verbatim>",
+"context_id": "<opaque served-context id>",
+"recent_activity": [ {"kind": "user_contact|borg_replied|turn_completed", "occurred_at": <epoch ms>,
+"occurred_at_iso": "...", "relative_age": "12m ago",
+"session": "<sidecar session id>", "conversation": {"type": "...", "name": "..."},
+"disclosure": {"class": "self_private", "origin_audience_names": [...],
+"private_to_names": [...], "private_to_current_sender": false,
+"private_to_current_audience": false},
+"participant_name": "...", "text": "Alex Example contacted the agent 12m ago in group chat \"Example Group\"."} ],
+"commitments": [ <same projection as GET /memory/commitments, filtered for this audience> ],
+"directives": [ {"id": "...", "kind": "response_policy|routing_instruction|disclosure_boundary|subject_fact|self_identity",
+"render_mode": "content|boundary", "text": "...", "content_scope": "...", "priority": 0, "topic_tags": []} ],
+"degraded": false, "degraded_reason": ""
 }
 
 - episodes use `episodic.recallForCognition`, the global cognition recall pipeline with an
@@ -135,10 +247,12 @@ Response:
   defaults. Other context lanes are skipped; recall keeps its deadline/degradation semantics.
 - `disclosure_guidance` and `context_id` are present whenever episodes are requested, including an
   empty or degraded result. They are omitted on binding-only and venue-only requests.
-- recent_activity: events from OTHER active sessions within a recency window (default 24 h,
-  configurable), across audiences, capped (default 12). Sol's ordering prioritizes user contacts,
-  then replies, then completed turns, newest first within each kind. Completed turns require an
-  active contact or reply in their session on the same UTC day. Every row has a disclosure label.
+- recent_activity: events from OTHER active sessions within a configurable window (default 7 days),
+  across audiences, capped after ranking (default 12). With `focus`, the sidecar fetches a bounded
+  candidate pool, hydrates excerpts and ranks by embedding similarity plus a smaller recency prior.
+  Candidate enumeration retains Sol's event-kind ordering; completed turns require an active contact
+  or reply in their session on the same UTC day. Every row retains its disclosure label. See the
+  durable retrieval settings below for candidate limits and observable fallback behavior.
 - commitments: active commitments applicable to the audience (same rules as the existing GET).
 - directives: creatorDirectives.listApplicable({currentAudienceEntityId, sessionRole,
   participantEntityIds}); render_mode "omit" entries are excluded; text = operational_directive /
@@ -155,14 +269,110 @@ Response:
   The client sends one request, raises on failure, and never strips fields or changes endpoints
   to downgrade the request.
 
+### Durable retrieval settings (2026-09-09)
+
+The shared scorer resolves `recallAuxiliaryScoreScale` through `similarityThresholds()`.
+For `scw/bge-m3` it is 0.15: entity/social/heat/salience/time bonuses, exact-term and recent-lane
+bonuses, and the optional recency prior are scaled; weighted vector similarity and suppression
+penalties retain their strength. Qwen's scale is 1, preserving its previous scoring arithmetic.
+The shared pipeline retains its explicit `audienceTerms` lookup lane, which can rescue old, cold
+memories outside the vector/recent/hot candidate pools. Both Qwen (including fallback) and BGE
+exercise this rescue with caller-supplied social weights in disclosure and cognition tests.
+There is no new global weight override to set. Custom profiles default to scale 1; the existing
+similarity profile/override mechanism can configure the field. The numeric production fixtures
+reproduce every recorded lane candidate for P and G, without copying private narratives. They put
+the target at ranks 1 and 2 respectively and inside eight rows under a maximum distractor recency
+advantage. They isolate fusion/projection using equal vectors; production-vector MMR remains a
+separate live replay check.
+
+Planner hygiene is LLM interpretation: content-bearing exact terms, explicit attention to the
+actual subject rather than sender metadata, and a fact/answer-shaped semantic variant without
+inventing facts or dates. No language-specific stopword or name-removal code is used. A temporal
+cue needs at least one finite endpoint and a non-inverted range; a label-only cue is discarded and
+cannot silently disable the recency prior. The prompt distinguishes dates of the subject matter
+from dates when the memory was recorded. These prompt changes require model-quality replay checks,
+not just mocked unit tests.
+
+Recommended initial sidecar settings, subject to the production latency replay:
+
+| Configmap key                                   | Value                                           | Effect                                                                                                  |
+| ----------------------------------------------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `BORG_MODEL_RECALL_EXPANSION`                   | `generative-apis/qwen3-235b-a22b-instruct-2507` | Move the planner off mistral-small, using the already configured P4 model.                              |
+| `BORG_MEMORY_RECALL_SEMANTIC_VARIANT_COUNT`     | `3`                                             | Three strategies in one structured planner completion; extra distinct query embeddings/retrieval lanes. |
+| `BORG_MEMORY_RECENT_ACTIVITY_WINDOW_MS`         | `604800000`                                     | Seven-day candidate window.                                                                             |
+| `BORG_MEMORY_RECENT_ACTIVITY_CANDIDATE_LIMIT`   | `96`                                            | Candidate cap per activity read; clamped between the return cap and 256.                                |
+| `BORG_MEMORY_RECENT_ACTIVITY_RANKING_BUDGET_MS` | `1000`                                          | Additional embedding-ranking budget before observable fallback.                                         |
+
+Keep `BORG_MEMORY_RECENT_ACTIVITY_LIMIT=12`, `EMBEDDING_MODEL=scw/bge-m3` and `LLM_MODEL` unchanged.
+`BORG_MODEL_CORRECTIVE_PREFERENCE` is unaffected. The consent operation uses `BORG_MODEL_EXTRACTION`,
+which already defaults to `LLM_MODEL` in the sidecar; set it explicitly to the same Qwen ID only if
+production overrides it. Model IDs and N remain configuration, never hardcoded planner choices.
+No P4 model-quality or timing claim is established by the offline tests. Validate the existing
+`BORG_RETRIEVAL_RECALL_EXPANSION_TIMEOUT_MS`, `BORG_RECALL_DEADLINE_MS` and upstream client timeout
+together when replaying the stronger planner. Any deadline increase must retain the accepted
+median ≤20 s / p95 ≤30 s for the complete Teams turn.
+
+With `focus`, the sidecar ranks the candidate pool by cosine similarity to stable hydrated excerpt
+text plus a recency prior of `0.15 * recallAuxiliaryScoreScale`, with a 36-hour half-life. One cached
+embedding batch serves the activity response and the planner's separate owner-reply pool. The
+focus uses an independent single-query embedding, with the query stall guard. A query never joins
+a pending batch cache entry, so an abandoned activity batch cannot hold up subsequent recall. This adds
+no LLM call. The existing excerpt hydration budget and 180-character excerpt bound still apply.
+Bounded candidate enumeration can still miss records outside the pool/window. `venue_recent`
+continues to use the venue-scoped query and is not reranked by this feature.
+
+When `recent_activity` is requested, `recent_activity_selection` is `relevance`,
+`recency_without_focus`, or `recency_fallback`. Missing focus keeps the old ordering; an embedding
+failure or ranking timeout falls back to that ordering and sets `degraded: true` with a
+`recent_activity_relevance` reason. Send `focus` on binding/activity-only calls too. The same
+failure marker applies when only planner owner activity was requested through `episodes`.
+
+`BORG_RECALL_DEADLINE_MS` (default 5000 ms, 0 disables) is one absolute request budget,
+starting before body parsing and identity resolution. Activity ranking, including the owner-only
+pool on episode-only requests, and episode recall spend that same budget. Response headroom of
+10% (capped at 700 ms; 500 ms by default) is reserved inside it. Ranking also retains its own
+smaller ceiling. Thus 1 s of ranking leaves about 3.5 s for recall under defaults, not a fresh 5 s.
+An episode timeout returns the available context with `degraded: true`; a deadline during identity
+or context preparation returns 503 with a deadline reason. These bounded asynchronous stages fit
+inside the 6 s caller timeout; event-loop stalls or slow response transport are not hard-bounded.
+
+Implementation reuse searches (run before creating the operation/ranking helpers):
+
+- `rg -n 'remember|consent|authorization|shared: true|origin_audience_entity_ids|publicToEntityIds' src/correction src/memory/common src/borg src/sidecar src/memory/episodic src/stream`:
+  reused episode access labels, `shared`, lineage, stream metadata and the existing remember route.
+  Correction review changes an existing record and commitments represent obligations; neither
+  records a separately authorized fact. Existing `correction.forget` remains the archive operation.
+- `rg -n 'lookup.*[Ss]ource|SourceMessage' src/stream`:
+  extended indexed source-message-key lookup to internal-event receipts (forward index migration);
+  reused indexed hydration and fsync'd stream appends rather than adding a consent table.
+- `rg -n 'calibrat.*[Ss]core|[Bb]onus.*[Ss]cale|[Aa]uxiliary|scoringDefaults|similarityConfig' src/retrieval src/config`:
+  extended the existing per-model profile and scorer, retaining the existing fusion/projection.
+- Searches for `listRecentOtherActiveSessionEvents`, `cosineSimilarity`, `halfLifeDecay` and embedding
+  caching reused the existing activity projection, numeric math and embedding client; no lexical
+  relevance helper was added. Public input/result shapes stay in the existing `types.ts` modules.
+
+Review-fix reuse searches:
+
+- Searched `pending`, `embedBatch`, `getOrCreate` and stall guards in `src/embeddings` before
+  extending cache-entry bookkeeping; reused the single-query embedding guard.
+- Searched `consolidation_members`, `buildEffectiveVisibilityWhereClause`, `indexedPublicOriginSql`
+  and citation hydration before changing visibility. Existing public-origin SQL protects public
+  sources beneath private summaries; receipt parsing supplies fact-level authorization metadata.
+- Searched `raceRecallDeadline`, `HEADROOM`, `recallDeadlineMs` and `buildEpisodeEmbeddingText`:
+  reused the deadline wrapper and the standard episode embedding builder.
+- Searched pipeline replay fixtures, `scoreCandidate`, intent candidate tracing, evidence projection,
+  decay and heat before replacing the helper-only replay. The recordings contain similarities and
+  fused lane scores, not the original component stats/vectors: tests reconstruct equivalent numeric
+  repository signals, mock external dependencies, and run real scoring and fusion for BGE and Qwen.
+
 ## Reply check: POST /memory/guard-reply (x-borg-token)
 
 ```json
 {
   "tenant": "acme",
   "session": "<same thread key as context>",
-  "sender": {"external_id": "...", "display_name": "...", "operator": false},
-  "conversation": {"type": "groupChat", "name": "Team", "external_id": "..."},
+  "sender": { "external_id": "...", "display_name": "...", "operator": false },
+  "conversation": { "type": "groupChat", "name": "Team", "external_id": "..." },
   "context_id": "<id returned by /memory/context>",
   "response": "<draft reply>",
   "current_turn_user_texts": ["<optional original user text for this turn>"]
@@ -204,19 +414,19 @@ short neutral withholding notice. Streaming completions are not guarded by this 
   Unknown targets return `404 { "error": "memory not found" }`; invalid bodies return 400.
 - `GET /memory/episodes/{id}/why?tenant=acme` exposes `borg.correction.why`, returning
   `{ "ok": true, "target_type": "episode", "record": {...}, "source_stream_ids": [...],
-  "citation_chain": [...] }`. The correction service removes embeddings from this response.
+"citation_chain": [...] }`. The correction service removes embeddings from this response.
   Unknown episodes return `404 { "error": "episode not found" }`; invalid episode IDs return 400.
 
 ## Operator rules: /memory/directives (admin surface, x-borg-token)
 
-- POST /memory/directives  body {tenant, kind, text, content_scope ("public"|"operator_only"|
+- POST /memory/directives body {tenant, kind, text, content_scope ("public"|"operator_only"|
   "allow_list"|"subject_only"|"all_except"), allowed_external_ids?, excluded_external_ids?,
   allowed_group_external_ids?, excluded_group_external_ids?, subject_external_id?, mention_policy?,
   priority?, topic_tags?} -> 201 {ok, directive}
-- GET /memory/directives?tenant=  -> {ok, directives:[...]} active directives
-- DELETE /memory/directives/<id>?tenant=  body {reason} -> revoke
-These are manual directives (provenance: admin API). Extracting directives from operator chat with
-an LLM is deliberately out of scope for this version.
+- GET /memory/directives?tenant= -> {ok, directives:[...]} active directives
+- DELETE /memory/directives/<id>?tenant= body {reason} -> revoke
+  These are manual directives (provenance: admin API). Extracting directives from operator chat with
+  an LLM is deliberately out of scope for this version.
 
 ## team-agent side
 
@@ -226,7 +436,8 @@ an LLM is deliberately out of scope for this version.
 - Per turn: ordinary chat calls /memory/context with sections [episodes, venue_recent,
   autobiographical], `focus`, and `context_turns`. Venue-only requests use [venue_recent] without
   recall input. The request-level binding-rules block uses [audience, recent_activity, commitments,
-  directives] without recall input. No context request includes `query`.
+  directives] should also carry `focus` to rank recent activity; `context_turns` remains optional
+  there. No context request includes `query`.
 - Rendering: episodes keep the current "[time; venue; participants] Title: narrative" line and gain
   the disclosure tag when private (e.g. "private to Alex Example"); directives render under the
   binding rules as operator rules; recent_activity renders as a short "Elsewhere right now" block.
@@ -363,7 +574,7 @@ returns HTTP 400 and must be corrected by the caller.
   `omit`, `boundary_prompt` equal to the submitted text, subject kind `borg_self` for
   `self_identity`, `entity` for `subject_fact` (which therefore requires `subject_external_id`),
   and `system` otherwise; mention policy defaults to `answer_if_asked`.
-- Recent activity defaults to a 24-hour window and 12 rows. They are configurable through
+- Recent activity defaults to a 7-day window and 12 returned rows. They are configurable through
   `BORG_MEMORY_RECENT_ACTIVITY_WINDOW_MS` and `BORG_MEMORY_RECENT_ACTIVITY_LIMIT`, respectively,
   as well as handler options.
 - Episodes and recent activity receive no visibility capability; the current audience supplies
@@ -493,16 +704,14 @@ disclosure path; Borg cognition retrieval does not opt in.
 
 ### Request extension
 
-`POST /memory/context` accepts optional `entity_terms: string[]`. The array contains at most 32
-trimmed, non-empty strings of at most 128 characters each. Team-agent sends bounded, case-insensitively
-deduplicated ranking hints in this order: matching canonical configured people and system names, the
-sender and observed participants, then raw names and identifiers found in the current message. The
-configured-match bucket contains at most eight terms, and each message token contributes at most two
-canonical people. Fuzzy person matching requires at least four letters when only three prefix
-characters are shared and ignores a token with more than four characters after its actual shared
-prefix. Entity terms activate Borg's existing configured entity attention weight. They do not create
-or widen an audience, prove identity, change visibility, or authorize disclosure. An omitted field
-preserves the previous retrieval behavior.
+`POST /memory/context` accepts optional `entity_terms: string[]`: at most 32 trimmed, non-empty
+strings of at most 128 characters. These are planner resolution hints. They no longer become exact
+lookup lanes directly: the planner selects content-bearing terms relevant to the focus. Sender,
+participant and venue handles do not become lookup terms merely by appearing in transport metadata.
+The sidecar sets the existing `audienceTerms: []` option to prevent facade-derived audience names
+from bypassing this planner selection. Sol retains its union of LLM perception terms, planner terms
+and explicit audience handles for cold-memory rescue. Hints never prove identity or authorize
+disclosure. A failed planner does not turn unvalidated sidecar hints into exact lookups.
 
 ### Episode source messages
 
@@ -608,13 +817,13 @@ alone, may omit both fields. Combinations of these non-recall sections may also 
 Any `query` field returns HTTP 400 with a field-specific validation message, even alongside
 otherwise valid structured input. Borg does not infer turns from role prefixes embedded in text.
 
-| Requested sections | Required recall input |
-| --- | --- |
-| `episodes`, optionally with `venue_recent` and `autobiographical` | Nonempty `focus` and `context_turns` (may be `[]`) |
-| Omitted `sections` (defaults include `episodes`) | Nonempty `focus` and `context_turns` (may be `[]`) |
-| `venue_recent` only | None; `venue_since` is still required |
-| `commitments` and `directives`, optionally with `audience` and `recent_activity` | None |
-| Any combination of the non-recall sections above | None; `venue_since` is required if `venue_recent` is included |
+| Requested sections                                                               | Required recall input                                         |
+| -------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| `episodes`, optionally with `venue_recent` and `autobiographical`                | Nonempty `focus` and `context_turns` (may be `[]`)            |
+| Omitted `sections` (defaults include `episodes`)                                 | Nonempty `focus` and `context_turns` (may be `[]`)            |
+| `venue_recent` only                                                              | None; `venue_since` is still required                         |
+| `commitments` and `directives`, optionally with `audience` and `recent_activity` | None                                                          |
+| Any combination of the non-recall sections above                                 | None; `venue_since` is required if `venue_recent` is included |
 
 The structured bundle participates in the client's per-turn memory cache key. `focus` supplies
 the entity-term collection input; time references are resolved by the sidecar's planner
@@ -655,7 +864,7 @@ request cannot override it. The former `BORG_MEMORY_RECALL_REFORMULATION_ENABLED
 removed: structured planning is now the single recall-expansion path.
 
 When episodes are requested, `/memory/context` performs an owner-only pass of Sol's unfiltered
-activity read (same window and 12-row bound as `recent_activity`) restricted to
+activity read (same window and candidate budget as `recent_activity`, ranked down to 12) restricted to
 memory-owner-authored `borg_replied` events, whether or not the `recent_activity` response section was
 requested; the shared `recent_activity` read runs only when that section is requested. Deriving
 planner rows from the shared list starved the planner on busy group days, because the 12 selected
@@ -732,12 +941,12 @@ retrieval pass); the sidecar uses it in two ways:
   never, otherwise only when one of the visible audience entities is among the entities the row is
   private to), capped at 12, and returned as
   `{ window: { since, until, label, source: "planner_temporal_cue" }, evidence: [ { id, kind, group,
-  occurred_at, relative_age, text, source_episode_ids, disclosure } ], hidden_count, truncated_count }`
+occurred_at, relative_age, text, source_episode_ids, disclosure } ], hidden_count, truncated_count }`
   (`hidden_count` counts rows of the returned kinds the audience may not see).
   The recall runs as a second pass after the episodes recall with a budget of at most 1.5 s and never
-  more than what the episodes pass left of the one recall deadline (default 5 s) minus 700 ms of
-  headroom, because the interactive client's own timeout sits at that deadline and a second pass that
-  ran it out would lose the episodes too; with less than 500 ms available it is skipped. A skip or
+  more than what the earlier stages left of the one request budget, whose response headroom is
+  reserved before any stage starts (500 ms at the default 5 s deadline). With less than 500 ms
+  available the pass is skipped. A skip or
   failure there sets `degraded` with reason prefix `autobiographical_recall:` and leaves the episodes
   intact; the scan itself is not cancelled on timeout, which is why the caps above are tight. Measured
   on 2026-09-05 in production the episodes pass alone took 3.5-5.3 s, so this section is frequently

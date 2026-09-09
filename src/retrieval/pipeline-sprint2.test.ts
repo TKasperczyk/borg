@@ -11,6 +11,11 @@ import { DEFAULT_SESSION_ID, type EntityId } from "../util/ids.js";
 import { summarizeRetrievedEvidence } from "../cognition/deliberation/prompt/retrieval.js";
 import { FakeLLMClient } from "../llm/test-support/fake-client.js";
 import { episodeToRawLanceRowForTest } from "../memory/episodic/test-support.js";
+import {
+  BGE_SIMILARITY_MODEL,
+  QWEN_SIMILARITY_MODEL,
+  similarityThresholds,
+} from "../config/similarity.js";
 
 import { mergeCandidates } from "../test-support/episodic-candidates.js";
 import type { CognitionRetrievalOptions, DisclosureRetrievalOptions } from "./pipeline.js";
@@ -68,15 +73,19 @@ const disclosureRetrievalAllowsPlannerContext: DisclosureRetrievalOptions = {
 void cognitionRetrievalAllowsPlannerContext;
 void disclosureRetrievalAllowsPlannerContext;
 
-async function createHarness(): Promise<OfflineTestHarness> {
+async function createHarness(model?: string): Promise<OfflineTestHarness> {
+  const embeddingClient = new TestEmbeddingClient(
+    new Map([
+      [QUERY, [1, 0, 0, 0]],
+      [MAYA_CORRECTION_QUERY, [0, 1, 0, 0]],
+    ]),
+  );
+  if (model !== undefined) {
+    vi.spyOn(embeddingClient, "profile", "get").mockReturnValue({ model, dimensions: 4 });
+  }
   return createOfflineTestHarness({
     clock: new FixedClock(NOW_MS),
-    embeddingClient: new TestEmbeddingClient(
-      new Map([
-        [QUERY, [1, 0, 0, 0]],
-        [MAYA_CORRECTION_QUERY, [0, 1, 0, 0]],
-      ]),
-    ),
+    embeddingClient,
   });
 }
 
@@ -402,49 +411,83 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
     expect(llmClient.requests).toHaveLength(1);
   });
 
-  it("rescues old cold audience-scoped episodes against hot public decoys", async () => {
-    harness = await createHarness();
-    const sam = harness.entityRepository.resolve("Sam");
-    harness.socialRepository.upsertProfile(sam);
-    harness.socialRepository.adjustTrust(sam, 0.3, { kind: "manual" });
-    await insertHotVectorDecoys(harness, 80);
+  it.each([
+    { model: "fake-embed", scale: 1 },
+    { model: QWEN_SIMILARITY_MODEL, scale: 1 },
+    { model: BGE_SIMILARITY_MODEL, scale: 0.15 },
+  ])(
+    "rescues old cold audience-scoped episodes against hot public decoys ($model)",
+    async ({ model, scale }) => {
+      harness = await createHarness(model);
+      const profile = similarityThresholds({ embedding: harness.embeddingClient.profile });
+      expect(profile.recallAuxiliaryScoreScale).toBe(scale);
+      if (model === "fake-embed") expect(profile).toEqual(similarityThresholds());
+      const sam = harness.entityRepository.resolve("Sam");
+      harness.socialRepository.upsertProfile(sam);
+      harness.socialRepository.adjustTrust(sam, 0.3, { kind: "manual" });
+      await insertHotVectorDecoys(harness, 80);
 
-    const rescued = createEpisodeFixture(
-      {
-        title: "Sam-only architecture decision",
-        participants: ["Sam"],
-        audience_entity_id: sam,
-        shared: false,
-        significance: 1,
-        created_at: 10,
-        updated_at: 10,
-      },
-      [0, 1, 0, 0],
-    );
-    await harness.episodicRepository.createEpisode(rescued);
+      const rescued = createEpisodeFixture(
+        {
+          title: "Sam-only architecture decision",
+          participants: ["Sam"],
+          audience_entity_id: sam,
+          shared: false,
+          significance: 1,
+          created_at: 10,
+          updated_at: 10,
+        },
+        [0, 1, 0, 0],
+      );
+      await harness.episodicRepository.createEpisode(rescued);
 
-    const queryVector = await harness.embeddingClient.embed(QUERY);
-    const vectorOnly = await harness.episodicRepository.searchByVector(queryVector, {
-      limit: 12,
-      audienceEntityId: sam,
-    });
-    const results = await harness.retrievalPipeline.searchEpisodesForDisclosure(QUERY, {
-      limit: 3,
-      audienceEntityId: sam,
-      audienceProfile: harness.socialRepository.getProfile(sam),
-      audienceTerms: ["Sam"],
-      attentionWeights: searchWeights({
-        semantic: 0.05,
-        social: 2.2,
-        heat: 0.02,
-        entity: 0,
-      }),
-    });
+      const queryVector = await harness.embeddingClient.embed(QUERY);
+      const vectorOnly = await harness.episodicRepository.searchByVector(queryVector, {
+        limit: 12,
+        audienceEntityId: sam,
+      });
+      const results = await harness.retrievalPipeline.searchEpisodesForDisclosure(QUERY, {
+        limit: 3,
+        audienceEntityId: sam,
+        recordRetrieval: false,
+        audienceProfile: harness.socialRepository.getProfile(sam),
+        audienceTerms: ["Sam"],
+        attentionWeights: searchWeights({
+          semantic: 0.05,
+          social: 2.2,
+          heat: 0.02,
+          entity: 0,
+        }),
+      });
 
-    expect(vectorOnly.map((item) => item.episode.id)).not.toContain(rescued.id);
-    expect(results[0]?.episode.id).toBe(rescued.id);
-    expect(results[0]?.scoreBreakdown.socialRelevance).toBeGreaterThan(0);
-  });
+      expect(vectorOnly.map((item) => item.episode.id)).not.toContain(rescued.id);
+      expect(results[0]?.episode.id).toBe(rescued.id);
+      expect(results[0]?.scoreBreakdown.socialRelevance).toBeGreaterThan(0);
+      const breakdown = results[0]!.scoreBreakdown;
+      // Preserve the caller's social/heat ratio and the HEAD additive arithmetic
+      // under Qwen (including the default/fallback profile).
+      const auxiliary =
+        0.95 * breakdown.decayedSalience +
+        2.2 * breakdown.socialRelevance +
+        0.02 * Math.min(breakdown.heat / 40, 1) +
+        0.25;
+      expect(results[0]!.rawScore).toBeCloseTo(0.05 * breakdown.similarity + scale * auxiliary, 12);
+      const cognitionResults = await harness.retrievalPipeline.recallEpisodeHitsForCognition(
+        QUERY,
+        {
+          ...cognitionRecallOptions(sam),
+          limit: 3,
+          recordRetrieval: false,
+          audienceProfile: harness.socialRepository.getProfile(sam),
+          audienceTerms: ["Sam"],
+          attentionWeights: searchWeights({ semantic: 0.05, social: 2.2, heat: 0.02, entity: 0 }),
+        },
+      );
+      expect(cognitionResults[0]?.episode.id).toBe(rescued.id);
+      expect(cognitionResults[0]?.scoreBreakdown.socialRelevance).toBeGreaterThan(0);
+      expect(cognitionResults[0]?.rawScore).toBe(results[0]?.rawScore);
+    },
+  );
 
   it("rescues old cold entity matches over hot recent semantic decoys", async () => {
     harness = await createHarness();

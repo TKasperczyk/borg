@@ -80,7 +80,7 @@ describe("stream entry index", () => {
       const indexes = upgradedDb.prepare("PRAGMA index_list('stream_entry_index')").all();
 
       expect(upgradedDb.listAppliedMigrations().map((migration) => migration.id)).toEqual([
-        1, 2, 3, 4, 5, 6,
+        1, 2, 3, 4, 5, 6, 7,
       ]);
       expect(indexes).toEqual(
         expect.arrayContaining([
@@ -524,6 +524,20 @@ describe("stream entry index", () => {
       });
 
       expect(entryIndex.lookupBySourceMessageKey(sourceMessageKey)?.entry_id).toBe(user.id);
+
+      const receipt = await writer.append({
+        kind: "internal_event",
+        content: "durable operation receipt",
+        source_message_key: sourceMessageKey,
+      });
+      expect(entryIndex.lookupBySourceMessageKey(sourceMessageKey)?.entry_id).toBe(user.id);
+      expect(
+        entryIndex.lookupBySourceMessageKey(sourceMessageKey, "internal_event")?.entry_id,
+      ).toBe(receipt.id);
+      await entryIndex.backfillSession(DEFAULT_SESSION_ID);
+      expect(
+        entryIndex.lookupBySourceMessageKey(sourceMessageKey, "internal_event")?.entry_id,
+      ).toBe(receipt.id);
     } finally {
       writer.close();
       db.close();

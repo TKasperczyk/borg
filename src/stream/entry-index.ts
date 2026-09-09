@@ -164,6 +164,14 @@ export const streamEntryIndexMigrations: Migration[] = [
       ON stream_entry_index(session_id, response_to_kind, byte_offset)
       WHERE response_to_kind IS NOT NULL;`,
   },
+  {
+    id: 7,
+    name: "stream_entry_internal_source_message_key",
+    up: `CREATE INDEX idx_stream_entry_internal_source_message_key
+      ON stream_entry_index(source_message_key_source_type,
+        source_message_key_source_external_id, source_message_key_external_message_id)
+      WHERE kind = 'internal_event';`,
+  },
 ];
 
 export type CorrectivePreferenceIngestionReceiptStatus = "processed" | "retryable" | "dead_letter";
@@ -891,7 +899,10 @@ export class StreamEntryIndexRepository {
     return row === undefined ? null : recordFromRow(row);
   }
 
-  lookupBySourceMessageKey(key: StreamSourceMessageKey): StreamEntryIndexRecord | null {
+  lookupBySourceMessageKey(
+    key: StreamSourceMessageKey,
+    kind: "user_msg" | "internal_event" = "user_msg",
+  ): StreamEntryIndexRecord | null {
     const row = this.db
       .prepare(
         `SELECT entry_id, session_id, byte_offset, timestamp
@@ -905,9 +916,9 @@ export class StreamEntryIndexRepository {
          WHERE source_message_key_source_type = ?
            AND source_message_key_source_external_id = ?
            AND source_message_key_external_message_id = ?
-           AND kind = 'user_msg'`,
+           AND kind = ?`,
       )
-      .get(key.source_type, key.source_external_id, key.external_message_id) as
+      .get(key.source_type, key.source_external_id, key.external_message_id, kind) as
       | StreamEntryIndexRow
       | undefined;
 
@@ -918,7 +929,7 @@ export class StreamEntryIndexRepository {
     const record = recordFromRow(row);
 
     if (
-      record.kind !== "user_msg" ||
+      record.kind !== kind ||
       record.source_message_key_source_type !== key.source_type ||
       record.source_message_key_source_external_id !== key.source_external_id ||
       record.source_message_key_external_message_id !== key.external_message_id

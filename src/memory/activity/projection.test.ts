@@ -2,7 +2,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { rankActivityByRelevance } from "./projection.js";
+import { BGE_SIMILARITY_MODEL } from "../../config/similarity.js";
 
 import { EntityRepository, commitmentMigrations } from "../commitments/index.js";
 import { SessionsRepository, sessionMigrations } from "../../sessions/index.js";
@@ -420,5 +422,44 @@ describe("selectCrossSessionSelfActivity", () => {
     ]);
 
     db.close();
+  });
+});
+describe("activity relevance", () => {
+  it("retains an older relevant activity ahead of twelve unrelated recent rows", async () => {
+    const embedBatch = vi.fn(async (_texts: readonly string[]) => [
+      ...Array.from({ length: 12 }, () => Float32Array.from([0, 1])),
+      Float32Array.from([1, 0]),
+    ]);
+    const nowMs = Date.now();
+    const keys = await rankActivityByRelevance(
+      {
+        focus: "next week's availability",
+        nowMs,
+        candidates: [
+          ...Array.from({ length: 12 }, (_, index) => ({
+            key: `noise-${index}`,
+            text: "channel transport test",
+            occurredAt: nowMs,
+          })),
+          { key: "relevant", text: "leave dates", occurredAt: nowMs - 3 * 24 * 60 * 60_000 },
+        ],
+      },
+      { embedBatch, embed: vi.fn(async () => Float32Array.from([1, 0])) },
+      { embedding: { model: BGE_SIMILARITY_MODEL } },
+    );
+    expect(keys[0]).toBe("relevant");
+    expect(embedBatch).toHaveBeenCalledTimes(1);
+    expect(embedBatch.mock.calls[0]).toEqual([
+      expect.not.arrayContaining(["next week's availability"]),
+    ]);
+  });
+
+  it("surfaces embedding failures instead of claiming a relevance-ranked list", async () => {
+    await expect(
+      rankActivityByRelevance(
+        { focus: "topic", nowMs: 1, candidates: [{ key: "one", text: "source", occurredAt: 1 }] },
+        { embedBatch: async () => [], embed: vi.fn(async () => Float32Array.from([1, 0])) },
+      ),
+    ).rejects.toThrow("incomplete");
   });
 });

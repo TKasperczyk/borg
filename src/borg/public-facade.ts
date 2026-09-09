@@ -251,6 +251,9 @@ export type BorgStreamFacade = {
 };
 
 export type BorgEpisodicFacade = {
+  rememberForTenant(
+    input: import("../memory/episodic/types.js").RememberTenantFactInput,
+  ): Promise<import("../memory/episodic/types.js").RememberTenantFactResult>;
   recallForCognition(
     query: string,
     options: CognitionRetrievalOptions,
@@ -888,6 +891,9 @@ export type BorgCommitmentsFacade = {
 };
 
 export type BorgActivityFacade = {
+  rankByRelevance(
+    input: import("../memory/activity/types.js").ActivityRelevanceInput,
+  ): Promise<string[]>;
   record(input: ActivityEventRecordInput): ActivityEvent;
   projectObservedTurn(input: BorgActivityObservedTurnProjectionInput): {
     userContact: ActivityEvent;

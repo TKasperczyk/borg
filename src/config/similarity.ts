@@ -29,6 +29,9 @@ export const similarityValuesSchema = z
     reflectionInsightDuplicate: cosine,
     // Fused rawScore, not cosine; nonpositive values disable abstention.
     recallAbstain: z.number().finite(),
+    // Scale every non-similarity recall bonus, including indexed-lane and recency bonuses.
+    // Old/custom profiles retain the original additive formula unless explicitly calibrated.
+    recallAuxiliaryScoreScale: cosine,
   })
   .strict();
 export type SimilarityThresholds = Readonly<z.infer<typeof similarityValuesSchema>>;
@@ -57,6 +60,7 @@ const qwen: SimilarityThresholds = Object.freeze({
   pendingActionMerge: 0.85,
   reflectionInsightDuplicate: 0.88,
   recallAbstain: 0,
+  recallAuxiliaryScoreScale: 1,
 });
 
 export const DEFAULT_SIMILARITY_PROFILES: Readonly<Record<string, SimilarityThresholds>> =
@@ -73,13 +77,19 @@ export const DEFAULT_SIMILARITY_PROFILES: Readonly<Record<string, SimilarityThre
       semanticDuplicateReview: 0.87,
       semanticExtractionDuplicate: 0.84,
       reflectionInsightDuplicate: 0.84,
+      // September 9 Teams lane recordings: zero-vector indexed candidates otherwise
+      // outrank the strongest topical BGE hits. Keep context as a small tie-breaker.
+      recallAuxiliaryScoreScale: 0.15,
     }),
   });
 
 export const similarityConfigSchema = z
   .object({
     profiles: z
-      .record(z.string().min(1), similarityValuesSchema)
+      .record(
+        z.string().min(1),
+        similarityValuesSchema.extend({ recallAuxiliaryScoreScale: cosine.default(1) }),
+      )
       .default({})
       .transform((profiles) => ({ ...DEFAULT_SIMILARITY_PROFILES, ...profiles })),
     overrides: similarityValuesSchema.partial().default({}),

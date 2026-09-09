@@ -1,4 +1,9 @@
 import { similarityThresholds } from "../config/similarity.js";
+import { rememberTenantFactInputSchema } from "../memory/episodic/types.js";
+import {
+  tenantFactAuthorizationFromEntry,
+  tenantFactSharingGuidance,
+} from "../memory/episodic/remember.js";
 import { EmbeddingBankError } from "../embeddings/bank-profile.js";
 // HTTP request handler for the borg memory sidecar: a thin, tenant-routed wrapper
 // over BorgPool that exposes long-term memory to an external (e.g. Python) service.
@@ -181,17 +186,15 @@ export type MemoryHandlerOptions = {
   // recalls, so the planned production mechanism is similarity-gated. Keep 0
   // (the default) until that exists.
   recallAbstainThreshold?: number;
-  // Hard ceiling on a single /memory/recall (ms), so the client never gives up
-  // first and turns a structured degradation into an opaque transport timeout.
-  // This is a BACKSTOP for a wedged call, not the operative limit: it must sit
-  // ABOVE borg's own worst-case graceful path (measured healthy prod recall
-  // 2.0-2.6s + a double-stalled query embedding 2x1000 = ~4.6s) so the partial
-  // results and degraded reason still get reported, and BELOW the caller's
-  // recall timeout. Set it too low and it pre-empts the very degradation it
-  // exists to deliver. 0 disables the ceiling.
+  // One /memory/context or /memory/recall budget, including identity, activity
+  // ranking and recall. Response headroom is reserved inside it. Keep this below
+  // the caller's timeout and allow for the query provider's own stall guards;
+  // exhausting it returns explicit degradation. 0 disables the ceiling.
   recallDeadlineMs?: number;
   recentActivityWindowMs?: number;
   recentActivityLimit?: number;
+  recentActivityCandidateLimit?: number;
+  recentActivityRankingBudgetMs?: number;
   activityExcerptHydrationBudgetMs?: number;
   recencyPrior?: EpisodeRecencyPrior;
   recallSemanticVariantCount?: number;
@@ -210,8 +213,10 @@ type RequestHandler = (req: IncomingMessage, res: ServerResponse) => void;
 const DEFAULT_MAX_BODY_BYTES = 64 * 1024;
 const DEFAULT_MAX_RECALL_LIMIT = 50;
 const DEFAULT_RECALL_DEADLINE_MS = 5000;
-export const DEFAULT_RECENT_ACTIVITY_WINDOW_MS = 24 * 60 * 60_000;
+export const DEFAULT_RECENT_ACTIVITY_WINDOW_MS = 7 * 24 * 60 * 60_000;
 export const DEFAULT_RECENT_ACTIVITY_LIMIT = 12;
+export const DEFAULT_RECENT_ACTIVITY_CANDIDATE_LIMIT = 96;
+export const DEFAULT_RECENT_ACTIVITY_RANKING_BUDGET_MS = 1_000;
 // The planner also sees the owner's closed-day summaries (lived-experience spine) for the last
 // week, so references to earlier days resolve even when the 24 h activity window has moved on.
 export const PLANNER_LIVED_EXPERIENCE_WINDOW_MS = 7 * 24 * 60 * 60_000;
@@ -228,14 +233,11 @@ const MAX_AUTOBIOGRAPHICAL_ROWS = 12;
 // bounds that scan below Sol's defaults because it runs inside an interactive request.
 const AUTOBIOGRAPHICAL_SESSION_CAP = 8;
 const AUTOBIOGRAPHICAL_TOTAL_CAP = 24;
-// The second pass only gets what the episodes pass left of the request deadline, minus headroom for
-// the rest of the handler, and never more than a short cap: the interactive client's own timeout
-// sits at the recall deadline, so a second pass that ran the deadline out would lose the episodes
-// too. Below the floor it is skipped rather than started. Measured 2026-09-05 in production: the
-// episodes pass alone takes 3.5-5.3 s of a 5 s deadline, so this pass often has little or no room.
+// The second pass gets only the remaining request budget, with response headroom
+// already reserved. Below the floor it is skipped rather than started.
 const MIN_AUTOBIOGRAPHICAL_BUDGET_MS = 500;
 const MAX_AUTOBIOGRAPHICAL_BUDGET_MS = 1500;
-const AUTOBIOGRAPHICAL_HEADROOM_MS = 700;
+const MEMORY_RESPONSE_HEADROOM_MS = 700;
 // Kinds whose disclosure label comes from exactly one source record, so "one visible audience is
 // among the entities it is private to" is the whole story. Open questions, goals, actions and
 // autobiographical periods carry labels combined across several sources (one visible source would
@@ -292,17 +294,18 @@ class RecallDeadlineExceeded extends Error {
 // Mirrors the pipeline's expansion guard: the abandoned search keeps running
 // and is left to settle on its own (its rejection swallowed) while the caller
 // gets an answer within the deadline.
-async function raceRecallDeadline<T>(search: Promise<T>, deadlineMs: number): Promise<T> {
-  if (deadlineMs <= 0) {
-    return search;
-  }
+async function raceRecallDeadline<T>(search: () => Promise<T>, deadlineAt: number): Promise<T> {
+  const deadlineMs = deadlineAt - Date.now();
+  if (deadlineMs <= 0) throw new RecallDeadlineExceeded(0);
+  if (!Number.isFinite(deadlineAt)) return search();
+  const pending = search();
 
   let timer: ReturnType<typeof setTimeout> | undefined;
-  search.catch(() => undefined);
+  pending.catch(() => undefined);
 
   try {
     return await Promise.race([
-      search,
+      pending,
       new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(new RecallDeadlineExceeded(deadlineMs)), deadlineMs);
         timer.unref?.();
@@ -336,6 +339,27 @@ const memoryTransportIdentitySchema = z.object({
   sender: contextSenderSchema.strip(),
   conversation: contextConversationSchema.strip(),
 });
+
+const memoryTenantRememberBodySchema = memoryTransportIdentitySchema
+  .extend({
+    tenant: z.string().trim().regex(TENANT_ID_RE),
+    scope: z.literal("tenant"),
+    request_id: rememberTenantFactInputSchema.shape.requestId,
+    content: rememberTenantFactInputSchema.shape.content,
+    source_episode_ids: rememberTenantFactInputSchema.shape.sourceEpisodeIds,
+    source_message_ids: rememberTenantFactInputSchema.shape.sourceMessageIds,
+    authorization_message_ids: rememberTenantFactInputSchema.shape.authorizationMessageIds,
+    sender: contextSenderSchema,
+    conversation: contextConversationSchema,
+  })
+  .strict()
+  .refine(
+    (value) => value.authorization_message_ids.every((id) => value.source_message_ids.includes(id)),
+    {
+      path: ["authorization_message_ids"],
+      message: "Authorization messages must occur in source_message_ids",
+    },
+  );
 
 const guardReplyBodySchema = memoryTransportIdentitySchema
   .extend({
@@ -1050,6 +1074,23 @@ function projectEpisodeHitsForResponse(
       : createPublicDisclosureProjector(entities, disclosureContext);
 
   return hits.map((hit) => {
+    const sharingAuthorizations = (hit.citationChain ?? [])
+      .map(tenantFactAuthorizationFromEntry)
+      .filter((authorization) => authorization !== null);
+    const sharingFacts = [
+      ...new Map(
+        sharingAuthorizations.map((authorization) => [
+          authorization.episode_id,
+          {
+            scope: authorization.scope,
+            speaker_name: authorization.speaker_name,
+            fact: authorization.fact,
+            guidance: tenantFactSharingGuidance(authorization.speaker_name),
+            disclosure: { class: "public", scope: "tenant" },
+          },
+        ]),
+      ).values(),
+    ];
     const sourceMessages = options.includeSourceMessages
       ? (hit.citationChain ?? [])
           .filter(isNarrativeStreamEntry)
@@ -1076,6 +1117,12 @@ function projectEpisodeHitsForResponse(
       narrative: hit.episode.narrative,
       score: hit.score,
       raw_score: hit.rawScore,
+      ...(sharingFacts.length === 0
+        ? {}
+        : {
+            sharing_authorizations: sharingFacts,
+            ...(sharingFacts.length === 1 ? { sharing_authorization: sharingFacts[0] } : {}),
+          }),
       location: hit.episode.location,
       ...projectMetadata(hit.episode),
       ...(options.timeRange === undefined
@@ -1438,6 +1485,25 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
       options.activityExcerptHydrationBudgetMs ?? DEFAULT_ACTIVITY_EXCERPT_HYDRATION_BUDGET_MS,
     ),
   );
+  const recentActivityCandidateLimit = Math.max(
+    recentActivityLimit,
+    Math.min(
+      256,
+      Math.floor(
+        Number.isFinite(options.recentActivityCandidateLimit)
+          ? options.recentActivityCandidateLimit!
+          : DEFAULT_RECENT_ACTIVITY_CANDIDATE_LIMIT,
+      ),
+    ),
+  );
+  const recentActivityRankingBudgetMs = Math.max(
+    1,
+    Math.floor(
+      Number.isFinite(options.recentActivityRankingBudgetMs)
+        ? options.recentActivityRankingBudgetMs!
+        : DEFAULT_RECENT_ACTIVITY_RANKING_BUDGET_MS,
+    ),
+  );
   const recencyPrior = options.recencyPrior;
   const recallSemanticVariantCount = Math.max(
     MIN_RECALL_EXPANSION_SEMANTIC_VARIANTS,
@@ -1455,6 +1521,14 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
   };
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    // One budget starts before parsing, identity resolution, and activity ranking.
+    // Leave response headroom inside it rather than adding time after recall.
+    const requestDeadlineAt =
+      recallDeadlineMs <= 0
+        ? Infinity
+        : Date.now() +
+          recallDeadlineMs -
+          Math.min(MEMORY_RESPONSE_HEADROOM_MS, recallDeadlineMs / 10);
     const method = req.method ?? "GET";
     const { rawPath, searchParams } = parseRawRequestTarget(req.url ?? "/");
 
@@ -2718,222 +2792,301 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
                 venueLimit * EPISODE_OVERFETCH_MULTIPLIER,
               );
         const session = sessionFromCaller(parsed.data.session);
-        const identity = await pool.withTenant(
-          tenant,
-          (borg) => {
-            const resolved = resolveTeamAgentIdentity({
-              borg,
-              session,
-              rawSession: parsed.data.session,
-              sender: {
-                externalId: parsed.data.sender.external_id,
-                displayName: parsed.data.sender.display_name,
-                operator: parsed.data.sender.operator,
+        const identity = await raceRecallDeadline(
+          () =>
+            pool.withTenant(
+              tenant,
+              (borg) => {
+                const resolved = resolveTeamAgentIdentity({
+                  borg,
+                  session,
+                  rawSession: parsed.data.session,
+                  sender: {
+                    externalId: parsed.data.sender.external_id,
+                    displayName: parsed.data.sender.display_name,
+                    operator: parsed.data.sender.operator,
+                  },
+                  conversation: parsed.data.conversation,
+                });
+                if (resolved.senderEntityId === null) {
+                  throw new Error("memory context identity requires a sender entity");
+                }
+                const senderEntityId = resolved.senderEntityId;
+                const seenParticipantExternalIds = new Set([parsed.data.sender.external_id]);
+                const participantEntityIds: EntityId[] = [];
+
+                for (const participant of parsed.data.participants ?? []) {
+                  if (seenParticipantExternalIds.has(participant.external_id)) {
+                    continue;
+                  }
+                  seenParticipantExternalIds.add(participant.external_id);
+                  participantEntityIds.push(
+                    borg.entities.resolveExternal({
+                      source: TEAM_AGENT_SENDER_EXTERNAL_ID_SOURCE,
+                      externalId: participant.external_id,
+                      canonicalName: participant.display_name,
+                      kind: "person",
+                      provenance: "transport_sender",
+                    }),
+                  );
+                }
+
+                borg.sessions.ensure(resolved.sessionEnsureInput);
+                return { ...resolved, senderEntityId, participantEntityIds };
               },
-              conversation: parsed.data.conversation,
-            });
-            if (resolved.senderEntityId === null) {
-              throw new Error("memory context identity requires a sender entity");
-            }
-            const senderEntityId = resolved.senderEntityId;
-            const seenParticipantExternalIds = new Set([parsed.data.sender.external_id]);
-            const participantEntityIds: EntityId[] = [];
-
-            for (const participant of parsed.data.participants ?? []) {
-              if (seenParticipantExternalIds.has(participant.external_id)) {
-                continue;
-              }
-              seenParticipantExternalIds.add(participant.external_id);
-              participantEntityIds.push(
-                borg.entities.resolveExternal({
-                  source: TEAM_AGENT_SENDER_EXTERNAL_ID_SOURCE,
-                  externalId: participant.external_id,
-                  canonicalName: participant.display_name,
-                  kind: "person",
-                  provenance: "transport_sender",
-                }),
-              );
-            }
-
-            borg.sessions.ensure(resolved.sessionEnsureInput);
-            return { ...resolved, senderEntityId, participantEntityIds };
-          },
-          { exclusive: true },
+              { exclusive: true },
+            ),
+          requestDeadlineAt,
         );
         const nowMs = Date.now();
-        const context = await pool.withTenant(tenant, async (borg) => {
-          const observedGroupAudienceEntityIds =
-            parsed.data.conversation.type === "personal" &&
-            requestedSections.has("autobiographical")
-              ? borg.activity.listObservedGroupAudienceEntityIdsForSpeaker(identity.senderEntityId)
-              : [];
-          const visibleAudienceEntityIds = dedupePreservingOrder([
-            identity.audienceEntity.id,
-            ...observedGroupAudienceEntityIds,
-          ]);
-          const recentActivityEvents = requestedSections.has("recent_activity")
-            ? borg.activity.listRecentOtherActiveSessionEvents({
-                currentSessionId: session,
-                sinceMs: nowMs - recentActivityWindowMs,
-                limit: recentActivityLimit,
-              })
-            : [];
-          // Planner context reads the memory owner's own recent replies elsewhere through an
-          // owner-only pass of the same cognition query. Deriving them from the shared
-          // response list starved the planner on busy group days: the 12 selected rows
-          // were all user_contact messages, so zero owner rows reached the planner.
-          const plannerOwnerActivityEvents = requestedSections.has("episodes")
-            ? borg.activity.listRecentOtherActiveSessionEvents({
-                currentSessionId: session,
-                sinceMs: nowMs - recentActivityWindowMs,
-                limit: recentActivityLimit,
-                kinds: ["borg_replied"],
-              })
-            : [];
-          // One hydration pass for both lists. Owner rows go first: indexed hydration keeps input
-          // order and stops at its budget, so under pressure the response excerpts degrade before
-          // the planner loses its owner rows again.
-          const recentActivitySourceIds = dedupePreservingOrder(
-            [...plannerOwnerActivityEvents, ...recentActivityEvents].flatMap(
-              (event) => event.sourceStreamEntryIds,
-            ),
-          );
-          let recentActivitySourceEntries = new Map<StreamEntryId, StreamEntry>();
-          if (recentActivitySourceIds.length > 0) {
-            try {
-              recentActivitySourceEntries = await borg.stream.hydrateIndexed(
-                recentActivitySourceIds,
-                { budgetMs: activityExcerptHydrationBudgetMs, activeOnly: true },
-              );
-            } catch (error) {
-              // Excerpts are optional disclosure context; the event itself remains useful.
-              console.warn("memory-sidecar: recent-activity excerpt hydration failed", {
-                reason: RECENT_ACTIVITY_EXCERPT_HYDRATION_FAILURE_REASON,
-                tenant,
-                source_id_count: recentActivitySourceIds.length,
-                error_name: error instanceof Error ? error.name : typeof error,
-              });
-            }
-          }
-          const projectDisclosure = createPublicDisclosureProjector(borg.entities, {
-            senderEntityId: identity.senderEntityId,
-            currentAudienceEntityId: identity.audienceEntity.id,
-          });
-          const recentActivity = recentActivityEvents.map((event) =>
-            projectRecentActivity(event, nowMs, recentActivitySourceEntries, projectDisclosure),
-          );
-          const plannerOwnerActivity = plannerOwnerActivityEvents.flatMap((event) => {
-            const projected = projectRecentActivity(
-              event,
-              nowMs,
-              recentActivitySourceEntries,
-              projectDisclosure,
-            );
-            if (event.kind !== "borg_replied" || projected.excerpt === undefined) {
-              return [];
-            }
-
-            return [
-              {
-                excerpt: projected.excerpt,
-                occurredAt: event.occurredAt,
-                venue: projected.conversation,
-                counterpartyName: projected.participant_name,
-              },
-            ];
-          });
-          const applicableCommitments =
-            requestedSections.has("commitments") || requestedSections.has("episodes")
-              ? borg.commitments
-                  .list({
-                    activeOnly: true,
-                    audienceEntityId: identity.audienceEntity.id,
+        const context = await raceRecallDeadline(
+          () =>
+            pool.withTenant(tenant, async (borg) => {
+              const observedGroupAudienceEntityIds =
+                parsed.data.conversation.type === "personal" &&
+                requestedSections.has("autobiographical")
+                  ? borg.activity.listObservedGroupAudienceEntityIdsForSpeaker(
+                      identity.senderEntityId,
+                    )
+                  : [];
+              const visibleAudienceEntityIds = dedupePreservingOrder([
+                identity.audienceEntity.id,
+                ...observedGroupAudienceEntityIds,
+              ]);
+              const activityCandidateLimit =
+                parsed.data.focus === undefined
+                  ? recentActivityLimit
+                  : recentActivityCandidateLimit;
+              let recentActivityEvents = requestedSections.has("recent_activity")
+                ? borg.activity.listRecentOtherActiveSessionEvents({
+                    currentSessionId: session,
+                    sinceMs: nowMs - recentActivityWindowMs,
+                    limit: activityCandidateLimit,
                   })
-                  .sort(compareCommitmentsForResponse)
-                  .slice(0, MAX_COMMITMENT_RESPONSE_ITEMS)
-              : [];
-          const participantEntityIds = dedupePreservingOrder([
-            identity.senderEntityId,
-            ...identity.participantEntityIds,
-            identity.audienceEntity.id,
-          ]);
-          const directives = requestedSections.has("directives")
-            ? borg.creatorDirectives
-                .listApplicable({
-                  currentAudienceEntityId: identity.audienceEntity.id,
-                  participantEntityIds,
-                  allowListAudienceEntityIds: participantEntityIds,
-                  sessionRole: identity.audienceRole,
-                  trustedTenantOperator: parsed.data.sender.operator,
-                })
-                .filter(
-                  (applicable) => applicable.activation.active && applicable.render_mode !== "omit",
-                )
-                .map(projectApplicableCreatorDirective)
-            : [];
-          const venueCandidates = requestedSections.has("venue_recent")
-            ? await borg.episodic.listRecentForSession({
-                sessionId: session,
-                sinceMs: parsed.data.venue_since!,
-                audienceEntityId: identity.audienceEntity.id,
-                limit: venueSearchLimit,
-              })
-            : [];
-          const visibleVenueCandidates = venueCandidates.filter((candidate) =>
-            isEpisodeAccessVisibleToAnyAudience(candidate.episode, [identity.audienceEntity.id]),
-          );
-          const venueRecent = projectEpisodeHitsForResponse(
-            visibleVenueCandidates
-              .filter(
-                (candidate) => !episodeMatchesExclusions(candidate.episode, parsed.data.exclude),
-              )
-              .slice(0, venueLimit)
-              .map((candidate) => ({
-                episode: candidate.episode,
-                score: 0,
-                rawScore: 0,
-              })),
-            borg.entities,
-            {
-              senderEntityId: identity.senderEntityId,
-              currentAudienceEntityId: identity.audienceEntity.id,
-            },
-          );
+                : [];
+              // Planner context reads the memory owner's own recent replies elsewhere through an
+              // owner-only pass of the same cognition query. Deriving them from the shared
+              // response list starved the planner on busy group days: the 12 selected rows
+              // were all user_contact messages, so zero owner rows reached the planner.
+              let plannerOwnerActivityEvents = requestedSections.has("episodes")
+                ? borg.activity.listRecentOtherActiveSessionEvents({
+                    currentSessionId: session,
+                    sinceMs: nowMs - recentActivityWindowMs,
+                    limit: activityCandidateLimit,
+                    kinds: ["borg_replied"],
+                  })
+                : [];
+              // One hydration pass for both lists. Owner rows go first: indexed hydration keeps input
+              // order and stops at its budget, so under pressure the response excerpts degrade before
+              // the planner loses its owner rows again.
+              const recentActivitySourceIds = dedupePreservingOrder(
+                [...plannerOwnerActivityEvents, ...recentActivityEvents].flatMap(
+                  (event) => event.sourceStreamEntryIds,
+                ),
+              );
+              let recentActivitySourceEntries = new Map<StreamEntryId, StreamEntry>();
+              if (recentActivitySourceIds.length > 0) {
+                try {
+                  recentActivitySourceEntries = await borg.stream.hydrateIndexed(
+                    recentActivitySourceIds,
+                    { budgetMs: activityExcerptHydrationBudgetMs, activeOnly: true },
+                  );
+                } catch (error) {
+                  // Excerpts are optional disclosure context; the event itself remains useful.
+                  console.warn("memory-sidecar: recent-activity excerpt hydration failed", {
+                    reason: RECENT_ACTIVITY_EXCERPT_HYDRATION_FAILURE_REASON,
+                    tenant,
+                    source_id_count: recentActivitySourceIds.length,
+                    error_name: error instanceof Error ? error.name : typeof error,
+                  });
+                }
+              }
+              const projectDisclosure = createPublicDisclosureProjector(borg.entities, {
+                senderEntityId: identity.senderEntityId,
+                currentAudienceEntityId: identity.audienceEntity.id,
+              });
+              let activitySelection =
+                parsed.data.focus === undefined ? "recency_without_focus" : "relevance";
+              let activityDegradation = "";
+              if (
+                parsed.data.focus !== undefined &&
+                recentActivityEvents.length + plannerOwnerActivityEvents.length > 0
+              ) {
+                const activityFocus = parsed.data.focus;
+                const events = [...recentActivityEvents, ...plannerOwnerActivityEvents];
+                try {
+                  const keys = await raceRecallDeadline(
+                    () =>
+                      borg.activity.rankByRelevance({
+                        focus: activityFocus,
+                        nowMs,
+                        candidates: events.map((event, index) => {
+                          const row = projectRecentActivity(
+                            event,
+                            nowMs,
+                            recentActivitySourceEntries,
+                            projectDisclosure,
+                          );
+                          return {
+                            key: String(index),
+                            occurredAt: event.occurredAt,
+                            // Stable text makes embedding-cache reuse possible across turns.
+                            text: `${row.participant_name} | ${row.conversation.name}\n${row.excerpt ?? ""}`,
+                          };
+                        }),
+                      }),
+                    Math.min(requestDeadlineAt, Date.now() + recentActivityRankingBudgetMs),
+                  );
+                  const ranks = new Map(keys.map((key, index) => [Number(key), index]));
+                  const recentCount = recentActivityEvents.length;
+                  const ranked = events
+                    .map((event, index) => ({ event, index }))
+                    .sort(
+                      (left, right) =>
+                        (ranks.get(left.index) ?? Infinity) - (ranks.get(right.index) ?? Infinity),
+                    );
+                  recentActivityEvents = ranked
+                    .filter(({ index }) => index < recentCount)
+                    .slice(0, recentActivityLimit)
+                    .map(({ event }) => event);
+                  plannerOwnerActivityEvents = ranked
+                    .filter(({ index }) => index >= recentCount)
+                    .slice(0, recentActivityLimit)
+                    .map(({ event }) => event);
+                } catch (error) {
+                  activitySelection = "recency_fallback";
+                  activityDegradation = `recent_activity_relevance: ${error instanceof Error ? error.message : String(error)}`;
+                  console.warn("memory-sidecar: activity relevance degraded", {
+                    tenant,
+                    reason: activityDegradation,
+                  });
+                }
+              }
+              recentActivityEvents = recentActivityEvents.slice(0, recentActivityLimit);
+              plannerOwnerActivityEvents = plannerOwnerActivityEvents.slice(0, recentActivityLimit);
+              const recentActivity = recentActivityEvents.map((event) =>
+                projectRecentActivity(event, nowMs, recentActivitySourceEntries, projectDisclosure),
+              );
+              const plannerOwnerActivity = plannerOwnerActivityEvents.flatMap((event) => {
+                const projected = projectRecentActivity(
+                  event,
+                  nowMs,
+                  recentActivitySourceEntries,
+                  projectDisclosure,
+                );
+                if (event.kind !== "borg_replied" || projected.excerpt === undefined) {
+                  return [];
+                }
 
-          const plannerOwnerLivedExperience = requestedSections.has("episodes")
-            ? borg.self.livedExperience
-                .listDaySummaries({
-                  fromMs: nowMs - PLANNER_LIVED_EXPERIENCE_WINDOW_MS,
-                  toMs: nowMs,
-                  limit: PLANNER_LIVED_EXPERIENCE_LIMIT,
-                })
-                .map((summary) => ({
-                  day: summary.utc_day,
-                  gist: summary.gist,
-                  salience: summary.salience,
-                  disclosure: {
-                    class: summary.disclosure_label.disclosureClass,
-                    origin_audience_entity_ids: [
-                      ...summary.disclosure_label.originAudienceEntityIds,
-                    ],
-                    private_to_entity_ids: [...summary.disclosure_label.privateToEntityIds],
-                    public_to_entity_ids: [...summary.disclosure_label.publicToEntityIds],
+                return [
+                  {
+                    excerpt: projected.excerpt,
+                    occurredAt: event.occurredAt,
+                    venue: projected.conversation,
+                    counterpartyName: projected.participant_name,
                   },
-                }))
-            : [];
+                ];
+              });
+              const applicableCommitments =
+                requestedSections.has("commitments") || requestedSections.has("episodes")
+                  ? borg.commitments
+                      .list({
+                        activeOnly: true,
+                        audienceEntityId: identity.audienceEntity.id,
+                      })
+                      .sort(compareCommitmentsForResponse)
+                      .slice(0, MAX_COMMITMENT_RESPONSE_ITEMS)
+                  : [];
+              const participantEntityIds = dedupePreservingOrder([
+                identity.senderEntityId,
+                ...identity.participantEntityIds,
+                identity.audienceEntity.id,
+              ]);
+              const directives = requestedSections.has("directives")
+                ? borg.creatorDirectives
+                    .listApplicable({
+                      currentAudienceEntityId: identity.audienceEntity.id,
+                      participantEntityIds,
+                      allowListAudienceEntityIds: participantEntityIds,
+                      sessionRole: identity.audienceRole,
+                      trustedTenantOperator: parsed.data.sender.operator,
+                    })
+                    .filter(
+                      (applicable) =>
+                        applicable.activation.active && applicable.render_mode !== "omit",
+                    )
+                    .map(projectApplicableCreatorDirective)
+                : [];
+              const venueCandidates = requestedSections.has("venue_recent")
+                ? await borg.episodic.listRecentForSession({
+                    sessionId: session,
+                    sinceMs: parsed.data.venue_since!,
+                    audienceEntityId: identity.audienceEntity.id,
+                    limit: venueSearchLimit,
+                  })
+                : [];
+              const visibleVenueCandidates = venueCandidates.filter((candidate) =>
+                isEpisodeAccessVisibleToAnyAudience(candidate.episode, [
+                  identity.audienceEntity.id,
+                ]),
+              );
+              const venueRecent = projectEpisodeHitsForResponse(
+                visibleVenueCandidates
+                  .filter(
+                    (candidate) =>
+                      !episodeMatchesExclusions(candidate.episode, parsed.data.exclude),
+                  )
+                  .slice(0, venueLimit)
+                  .map((candidate) => ({
+                    episode: candidate.episode,
+                    score: 0,
+                    rawScore: 0,
+                  })),
+                borg.entities,
+                {
+                  senderEntityId: identity.senderEntityId,
+                  currentAudienceEntityId: identity.audienceEntity.id,
+                },
+              );
 
-          return {
-            visibleAudienceEntityIds,
-            recentActivity,
-            plannerOwnerActivity,
-            plannerOwnerLivedExperience,
-            memoryOwnerName: borg.entities.getSelf()?.canonical_name,
-            commitments: applicableCommitments.map(projectCommitment),
-            applicableCommitments,
-            directives,
-            venueRecent,
-          };
-        });
+              const plannerOwnerLivedExperience = requestedSections.has("episodes")
+                ? borg.self.livedExperience
+                    .listDaySummaries({
+                      fromMs: nowMs - PLANNER_LIVED_EXPERIENCE_WINDOW_MS,
+                      toMs: nowMs,
+                      limit: PLANNER_LIVED_EXPERIENCE_LIMIT,
+                    })
+                    .map((summary) => ({
+                      day: summary.utc_day,
+                      gist: summary.gist,
+                      salience: summary.salience,
+                      disclosure: {
+                        class: summary.disclosure_label.disclosureClass,
+                        origin_audience_entity_ids: [
+                          ...summary.disclosure_label.originAudienceEntityIds,
+                        ],
+                        private_to_entity_ids: [...summary.disclosure_label.privateToEntityIds],
+                        public_to_entity_ids: [...summary.disclosure_label.publicToEntityIds],
+                      },
+                    }))
+                : [];
+
+              return {
+                visibleAudienceEntityIds,
+                recentActivity,
+                activitySelection,
+                activityDegradation,
+                plannerOwnerActivity,
+                plannerOwnerLivedExperience,
+                memoryOwnerName: borg.entities.getSelf()?.canonical_name,
+                commitments: applicableCommitments.map(projectCommitment),
+                applicableCommitments,
+                directives,
+                venueRecent,
+              };
+            }),
+          requestDeadlineAt,
+        );
         const degradations: RetrievalDegradation[] = [];
         let episodes: Array<Record<string, unknown>> = [];
         let servedEpisodes: readonly RetrievedEpisode[] = [];
@@ -2951,130 +3104,135 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
 
           try {
             const recallResult = await raceRecallDeadline(
-              pool.withTenant(tenant, async (borg) => {
-                const recallAbstainThreshold =
-                  options.recallAbstainThreshold ??
-                  borg.similarityThresholds?.recallAbstain ??
-                  similarityThresholds().recallAbstain;
-                let recallPlan: RecallPlanOutcome | null = null;
-                const recallOptions = {
-                  limit: episodeSearchLimit,
-                  recallContext: {
-                    reader: SELF_RECALL_SCOPE,
-                    currentSessionId: session,
-                    currentAudienceEntityId: identity.audienceEntity.id,
-                    currentParticipantEntityIds: dedupePreservingOrder([
-                      identity.senderEntityId,
-                      ...identity.participantEntityIds,
-                      identity.audienceEntity.id,
-                    ]),
-                  },
-                  disclosureContext: {
-                    currentSessionId: session,
-                    currentAudienceEntityId: identity.audienceEntity.id,
-                    audienceRole: identity.audienceRole,
-                    senderEntityId: identity.senderEntityId,
-                    senderRole: null,
-                    participantEntityIds: dedupePreservingOrder([
-                      identity.senderEntityId,
-                      ...identity.participantEntityIds,
-                      identity.audienceEntity.id,
-                    ]),
-                    isPrivateSelfCognition: false,
-                  },
-                  onDegraded: (degradation: RetrievalDegradation) => degradations.push(degradation),
-                  onRecallPlan: (plan: RecallPlanOutcome) => {
-                    recallPlan = plan;
-                  },
-                  ...(parsed.data.entity_terms === undefined
-                    ? {}
-                    : { entityTerms: parsed.data.entity_terms }),
-                  semanticVariantCount: recallSemanticVariantCount,
-                  recallQueryPlannerContext: {
-                    contextTurns: contextTurns.map((turn) => ({
-                      role: turn.role,
-                      content: turn.text,
-                    })),
-                    identity: {
-                      ...(context.memoryOwnerName === undefined
-                        ? {}
-                        : { memoryOwnerName: context.memoryOwnerName }),
-                      currentSenderName: parsed.data.sender.display_name,
-                      currentAudienceName: identity.audienceEntity.canonical_name,
-                      currentVenue: identity.conversation,
-                      ...(parsed.data.entity_terms === undefined
-                        ? {}
-                        : { entityTerms: parsed.data.entity_terms }),
+              () =>
+                pool.withTenant(tenant, async (borg) => {
+                  const recallAbstainThreshold =
+                    options.recallAbstainThreshold ??
+                    borg.similarityThresholds?.recallAbstain ??
+                    similarityThresholds().recallAbstain;
+                  let recallPlan: RecallPlanOutcome | null = null;
+                  const recallOptions = {
+                    limit: episodeSearchLimit,
+                    recallContext: {
+                      reader: SELF_RECALL_SCOPE,
+                      currentSessionId: session,
+                      currentAudienceEntityId: identity.audienceEntity.id,
+                      currentParticipantEntityIds: dedupePreservingOrder([
+                        identity.senderEntityId,
+                        ...identity.participantEntityIds,
+                        identity.audienceEntity.id,
+                      ]),
                     },
-                    ownerRecentActivity: context.plannerOwnerActivity,
-                    ownerLivedExperience: context.plannerOwnerLivedExperience,
-                  },
-                  ...(recencyPrior === undefined ? {} : { recencyPrior }),
-                  recordRetrieval: false,
-                  ...(traceTurnId === undefined ? {} : { traceTurnId }),
-                };
-                const recalled = await borg.episodic.recallForCognition(recallFocus, {
-                  ...recallOptions,
-                  ...(parsed.data.time_range === undefined
-                    ? {}
-                    : {
-                        timeRange: parsed.data.time_range,
-                        strictTimeRange: false,
-                      }),
-                });
-                const eligible = recalled.filter(
-                  (hit) => !episodeMatchesExclusions(hit.episode, parsed.data.exclude),
-                );
-                // The period to prefer: an explicit time_range, else the cue the planner resolved
-                // from FOCUS, which is the range a caller with its own parser used to send.
-                const actedCue: TemporalCue | null =
-                  (recallPlan as RecallPlanOutcome | null)?.temporalCue ?? null;
-                const preferredRange = parsed.data.time_range ?? temporalCueRange(actedCue, nowMs);
-                const ordered =
-                  preferredRange === undefined
-                    ? eligible
-                    : [
-                        ...eligible.filter(
-                          (hit) =>
-                            hit.episode.start_time >= preferredRange.start &&
-                            hit.episode.start_time <= preferredRange.end,
-                        ),
-                        ...eligible.filter(
-                          (hit) =>
-                            hit.episode.start_time < preferredRange.start ||
-                            hit.episode.start_time > preferredRange.end,
-                        ),
-                      ];
-                const included = ordered.slice(0, episodeLimit);
-                const topRawScore =
-                  included.length === 0 ? null : Math.max(...included.map((hit) => hit.rawScore));
-                const shouldAbstain =
-                  recallAbstainThreshold > 0 &&
-                  (topRawScore === null || topRawScore < recallAbstainThreshold);
+                    disclosureContext: {
+                      currentSessionId: session,
+                      currentAudienceEntityId: identity.audienceEntity.id,
+                      audienceRole: identity.audienceRole,
+                      senderEntityId: identity.senderEntityId,
+                      senderRole: null,
+                      participantEntityIds: dedupePreservingOrder([
+                        identity.senderEntityId,
+                        ...identity.participantEntityIds,
+                        identity.audienceEntity.id,
+                      ]),
+                      isPrivateSelfCognition: false,
+                    },
+                    onDegraded: (degradation: RetrievalDegradation) =>
+                      degradations.push(degradation),
+                    onRecallPlan: (plan: RecallPlanOutcome) => {
+                      recallPlan = plan;
+                    },
+                    // Caller hints may include transport names or lexical guesses. The shared
+                    // planner selects their focus-bearing subset; only its output seeds exact lanes.
+                    // Opt out of facade-derived audience aliases using the existing API; Sol's
+                    // explicit audienceTerms still seed its independent cold-memory rescue lane.
+                    audienceTerms: [],
+                    semanticVariantCount: recallSemanticVariantCount,
+                    recallQueryPlannerContext: {
+                      contextTurns: contextTurns.map((turn) => ({
+                        role: turn.role,
+                        content: turn.text,
+                      })),
+                      identity: {
+                        ...(context.memoryOwnerName === undefined
+                          ? {}
+                          : { memoryOwnerName: context.memoryOwnerName }),
+                        currentSenderName: parsed.data.sender.display_name,
+                        currentAudienceName: identity.audienceEntity.canonical_name,
+                        currentVenue: identity.conversation,
+                        ...(parsed.data.entity_terms === undefined
+                          ? {}
+                          : { entityTerms: parsed.data.entity_terms }),
+                      },
+                      ownerRecentActivity: context.plannerOwnerActivity,
+                      ownerLivedExperience: context.plannerOwnerLivedExperience,
+                    },
+                    ...(recencyPrior === undefined ? {} : { recencyPrior }),
+                    recordRetrieval: false,
+                    ...(traceTurnId === undefined ? {} : { traceTurnId }),
+                  };
+                  const recalled = await borg.episodic.recallForCognition(recallFocus, {
+                    ...recallOptions,
+                    ...(parsed.data.time_range === undefined
+                      ? {}
+                      : {
+                          timeRange: parsed.data.time_range,
+                          strictTimeRange: false,
+                        }),
+                  });
+                  const eligible = recalled.filter(
+                    (hit) => !episodeMatchesExclusions(hit.episode, parsed.data.exclude),
+                  );
+                  // The period to prefer: an explicit time_range, else the cue the planner resolved
+                  // from FOCUS, which is the range a caller with its own parser used to send.
+                  const actedCue: TemporalCue | null =
+                    (recallPlan as RecallPlanOutcome | null)?.temporalCue ?? null;
+                  const preferredRange =
+                    parsed.data.time_range ?? temporalCueRange(actedCue, nowMs);
+                  const ordered =
+                    preferredRange === undefined
+                      ? eligible
+                      : [
+                          ...eligible.filter(
+                            (hit) =>
+                              hit.episode.start_time >= preferredRange.start &&
+                              hit.episode.start_time <= preferredRange.end,
+                          ),
+                          ...eligible.filter(
+                            (hit) =>
+                              hit.episode.start_time < preferredRange.start ||
+                              hit.episode.start_time > preferredRange.end,
+                          ),
+                        ];
+                  const included = ordered.slice(0, episodeLimit);
+                  const topRawScore =
+                    included.length === 0 ? null : Math.max(...included.map((hit) => hit.rawScore));
+                  const shouldAbstain =
+                    recallAbstainThreshold > 0 &&
+                    (topRawScore === null || topRawScore < recallAbstainThreshold);
 
-                if (!shouldAbstain) {
-                  for (const hit of included) {
-                    borg.episodic.recordRetrieval(hit.episode.id, hit.score);
+                  if (!shouldAbstain) {
+                    for (const hit of included) {
+                      borg.episodic.recordRetrieval(hit.episode.id, hit.score);
+                    }
                   }
-                }
 
-                return {
-                  shouldAbstain,
-                  servedEpisodes: shouldAbstain ? [] : included,
-                  topRawScore,
-                  plannerTemporalCue: parsed.data.time_range === undefined ? actedCue : null,
-                  episodes: projectEpisodeHitsForResponse(
-                    included,
-                    borg.entities,
-                    recallOptions.disclosureContext,
-                    {
-                      includeSourceMessages: true,
-                      ...(preferredRange === undefined ? {} : { timeRange: preferredRange }),
-                    },
-                  ),
-                };
-              }),
-              recallDeadlineMs,
+                  return {
+                    shouldAbstain,
+                    servedEpisodes: shouldAbstain ? [] : included,
+                    topRawScore,
+                    plannerTemporalCue: parsed.data.time_range === undefined ? actedCue : null,
+                    episodes: projectEpisodeHitsForResponse(
+                      included,
+                      borg.entities,
+                      recallOptions.disclosureContext,
+                      {
+                        includeSourceMessages: true,
+                        ...(preferredRange === undefined ? {} : { timeRange: preferredRange }),
+                      },
+                    ),
+                  };
+                }),
+              requestDeadlineAt,
             );
 
             servedEpisodes = recallResult.servedEpisodes;
@@ -3114,7 +3272,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
           const cue = plannerTemporalCue;
           const remainingMs = Math.min(
             MAX_AUTOBIOGRAPHICAL_BUDGET_MS,
-            recallDeadlineMs - (Date.now() - nowMs) - AUTOBIOGRAPHICAL_HEADROOM_MS,
+            requestDeadlineAt - Date.now(),
           );
           const noteDegradation = (reason: string): void => {
             degraded = true;
@@ -3125,31 +3283,32 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
           } else {
             try {
               autobiographical = await raceRecallDeadline(
-                pool.withTenant(tenant, async (borg) => {
-                  const recall = await borg.self.autobiographical.recall(
-                    {
-                      sessionId: session,
-                      temporalCue: cue,
-                      // Teams audiences are never the owner and the gate here is the cue alone: an
-                      // operator role would open it on every turn, which is not what a period ask
-                      // is.
-                      isSelfAudience: false,
-                      sessionAudienceRole: "participant",
-                      perceptionMode: "problem_solving",
-                    },
-                    {
-                      sessionCap: AUTOBIOGRAPHICAL_SESSION_CAP,
-                      totalCap: AUTOBIOGRAPHICAL_TOTAL_CAP,
-                    },
-                  );
-                  return recall === null
-                    ? null
-                    : projectAutobiographicalRecallForResponse(
-                        recall,
-                        context.visibleAudienceEntityIds,
-                      );
-                }),
-                remainingMs,
+                () =>
+                  pool.withTenant(tenant, async (borg) => {
+                    const recall = await borg.self.autobiographical.recall(
+                      {
+                        sessionId: session,
+                        temporalCue: cue,
+                        // Teams audiences are never the owner and the gate here is the cue alone: an
+                        // operator role would open it on every turn, which is not what a period ask
+                        // is.
+                        isSelfAudience: false,
+                        sessionAudienceRole: "participant",
+                        perceptionMode: "problem_solving",
+                      },
+                      {
+                        sessionCap: AUTOBIOGRAPHICAL_SESSION_CAP,
+                        totalCap: AUTOBIOGRAPHICAL_TOTAL_CAP,
+                      },
+                    );
+                    return recall === null
+                      ? null
+                      : projectAutobiographicalRecallForResponse(
+                          recall,
+                          context.visibleAudienceEntityIds,
+                        );
+                  }),
+                Math.min(requestDeadlineAt, Date.now() + remainingMs),
               );
             } catch (error) {
               noteDegradation(
@@ -3159,6 +3318,10 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
           }
         }
 
+        if (context.activityDegradation.length > 0) {
+          degraded = true;
+          degradedReason = [degradedReason, context.activityDegradation].filter(Boolean).join("; ");
+        }
         const response: Record<string, unknown> = {
           ok: true,
           degraded,
@@ -3192,6 +3355,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
         }
         if (requestedSections.has("recent_activity")) {
           response.recent_activity = context.recentActivity;
+          response.recent_activity_selection = context.activitySelection;
         }
         if (requestedSections.has("commitments")) {
           response.commitments = context.commitments;
@@ -3415,6 +3579,54 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
       }
 
       if (rawPath === "/memory/remember") {
+        // Presence of the explicit scope discriminant selects the consent contract.
+        // Invalid scoped requests cannot fall through to the legacy outcome writer.
+        if ("scope" in body) {
+          const parsed = memoryTenantRememberBodySchema.safeParse(body);
+          if (!parsed.success) {
+            send(res, 400, { error: "invalid memory remember body" });
+            return;
+          }
+          const request = parsed.data;
+          const session = sessionFromCaller(request.session);
+          const result = await pool.withTenant(
+            tenant,
+            async (borg) => {
+              const identity = resolveTeamAgentIdentity({
+                borg,
+                session,
+                rawSession: request.session,
+                sender: {
+                  externalId: request.sender.external_id,
+                  displayName: request.sender.display_name,
+                  operator: request.sender.operator,
+                },
+                conversation: request.conversation,
+              });
+              if (identity.senderEntityId === null) throw new Error("Remember requires a sender");
+              return await borg.episodic.rememberForTenant({
+                sessionId: session,
+                speakerEntityId: identity.senderEntityId,
+                requestId: request.request_id,
+                content: request.content,
+                sourceEpisodeIds: request.source_episode_ids,
+                sourceMessageIds: request.source_message_ids,
+                authorizationMessageIds: request.authorization_message_ids,
+              });
+            },
+            { exclusive: true },
+          );
+          send(res, 200, {
+            ok: true,
+            episode_id: result.episodeId,
+            authorization_entry_id: result.authorizationEntryId,
+            authorization: result.authorization,
+            disclosure: { class: "public", scope: "tenant" },
+            guidance: tenantFactSharingGuidance(result.authorization.speaker_name),
+            duplicate: result.duplicate,
+          });
+          return;
+        }
         const content = asString(body.content);
         if (content === "") {
           send(res, 400, { error: "missing 'content'" });
@@ -3720,59 +3932,62 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
       let episodesTimeRangeFallback = false;
       try {
         hits = await raceRecallDeadline(
-          pool.withTenant(tenant, async (borg) => {
-            const recallAbstainThreshold =
-              options.recallAbstainThreshold ??
-              borg.similarityThresholds?.recallAbstain ??
-              similarityThresholds().recallAbstain;
-            const memoryOwner = borg.entities.getSelf();
-            const recallOptions = {
-              limit: searchLimit,
-              onDegraded: (degradation: RetrievalDegradation) => degradations.push(degradation),
-              semanticVariantCount: recallSemanticVariantCount,
-              recallQueryPlannerContext: {
-                identity: {
-                  ...(memoryOwner === null ? {} : { memoryOwnerName: memoryOwner.canonical_name }),
+          () =>
+            pool.withTenant(tenant, async (borg) => {
+              const recallAbstainThreshold =
+                options.recallAbstainThreshold ??
+                borg.similarityThresholds?.recallAbstain ??
+                similarityThresholds().recallAbstain;
+              const memoryOwner = borg.entities.getSelf();
+              const recallOptions = {
+                limit: searchLimit,
+                onDegraded: (degradation: RetrievalDegradation) => degradations.push(degradation),
+                semanticVariantCount: recallSemanticVariantCount,
+                recallQueryPlannerContext: {
+                  identity: {
+                    ...(memoryOwner === null
+                      ? {}
+                      : { memoryOwnerName: memoryOwner.canonical_name }),
+                  },
                 },
-              },
-              ...(recencyPrior === undefined ? {} : { recencyPrior }),
-              ...(deferRetrievalAccounting ? { recordRetrieval: false } : {}),
-              ...(traceTurnId === undefined ? {} : { traceTurnId }),
-            };
-            const recalledResult =
-              parsedRecall.data.time_range === undefined
-                ? {
-                    episodes: await borg.episodic.search(query, recallOptions),
-                    timeRangeFallback: false,
-                  }
-                : await borg.episodic.searchWithTimeRangeFallback(query, {
-                    ...recallOptions,
-                    timeRange: parsedRecall.data.time_range,
-                  });
-            const included = recalledResult.episodes
-              .filter((hit) => !episodeMatchesExclusions(hit.episode, parsedRecall.data.exclude))
-              .slice(0, limit);
-            const topRawScore =
-              included.length === 0 ? null : Math.max(...included.map((hit) => hit.rawScore));
-            const shouldAbstain =
-              recallAbstainThreshold > 0 &&
-              (topRawScore === null || topRawScore < recallAbstainThreshold);
+                ...(recencyPrior === undefined ? {} : { recencyPrior }),
+                ...(deferRetrievalAccounting ? { recordRetrieval: false } : {}),
+                ...(traceTurnId === undefined ? {} : { traceTurnId }),
+              };
+              const recalledResult =
+                parsedRecall.data.time_range === undefined
+                  ? {
+                      episodes: await borg.episodic.search(query, recallOptions),
+                      timeRangeFallback: false,
+                    }
+                  : await borg.episodic.searchWithTimeRangeFallback(query, {
+                      ...recallOptions,
+                      timeRange: parsedRecall.data.time_range,
+                    });
+              const included = recalledResult.episodes
+                .filter((hit) => !episodeMatchesExclusions(hit.episode, parsedRecall.data.exclude))
+                .slice(0, limit);
+              const topRawScore =
+                included.length === 0 ? null : Math.max(...included.map((hit) => hit.rawScore));
+              const shouldAbstain =
+                recallAbstainThreshold > 0 &&
+                (topRawScore === null || topRawScore < recallAbstainThreshold);
 
-            if (deferRetrievalAccounting && !shouldAbstain) {
-              for (const hit of included) {
-                borg.episodic.recordRetrieval(hit.episode.id, hit.score);
+              if (deferRetrievalAccounting && !shouldAbstain) {
+                for (const hit of included) {
+                  borg.episodic.recordRetrieval(hit.episode.id, hit.score);
+                }
               }
-            }
 
-            return {
-              shouldAbstain,
-              episodes: included,
-              projected: projectEpisodeHitsForResponse(included, borg.entities, null),
-              topRawScore,
-              timeRangeFallback: recalledResult.timeRangeFallback,
-            };
-          }),
-          recallDeadlineMs,
+              return {
+                shouldAbstain,
+                episodes: included,
+                projected: projectEpisodeHitsForResponse(included, borg.entities, null),
+                topRawScore,
+                timeRangeFallback: recalledResult.timeRangeFallback,
+              };
+            }),
+          requestDeadlineAt,
         );
       } catch (error) {
         if (!(error instanceof RecallDeadlineExceeded)) {
@@ -3824,6 +4039,41 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
       });
     } catch (error) {
       if (sendEmbeddingBankUnavailable(res, error)) return;
+      if (error instanceof RecallDeadlineExceeded) {
+        send(res, 503, {
+          error: "memory context deadline exceeded",
+          degraded: true,
+          degraded_reason: `deadline: ${error.message}`,
+        });
+        return;
+      }
+      if (rawPath === "/memory/remember") {
+        const code = errorCode(error);
+        if (error instanceof z.ZodError) {
+          send(res, 400, { error: "invalid consent provenance" });
+          return;
+        }
+        const status =
+          code === "MEMORY_REMEMBER_NOT_AUTHORIZED"
+            ? 422
+            : code === "MEMORY_REMEMBER_SOURCE_INVALID"
+              ? 400
+              : code === "MEMORY_REMEMBER_CONFLICT"
+                ? 409
+                : null;
+        if (status !== null) {
+          send(res, status, {
+            error:
+              status === 422
+                ? "source-backed tenant authorization required"
+                : status === 409
+                  ? "request_id already used with different input"
+                  : "invalid consent provenance",
+            code,
+          });
+          return;
+        }
+      }
       if (
         rawPath === "/memory/forget" &&
         (errorCode(error) === "EPISODE_NOT_FOUND" || errorCode(error) === "SEMANTIC_NODE_NOT_FOUND")

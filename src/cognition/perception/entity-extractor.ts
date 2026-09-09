@@ -44,6 +44,7 @@ const ENTITY_LLM_SYSTEM_PROMPT = [
   "- Generic nouns that are not names (system, project, dog, conversation, message)",
   "- Sentence fragments or quoted spans of dialogue (anything containing punctuation that's not part of a name)",
   "- Chat-format markers ('Human:', 'Assistant:', 'User:', 'AI:', anything ending in ':')",
+  "- Sender, participant, audience or venue names that occur only in transport attribution. Extract them only when the user's actual message is about them; attribution alone is not a topic.",
   "- Bracketed stage directions or scene markers ('[end]', '[Held]', '[.]')",
   "- Verbatim phrases longer than ~6 words",
   "",
@@ -213,12 +214,12 @@ export class EntityExtractor {
       }
 
       if (isStructuredToolCallError(error, "invalid_payload")) {
-        throw (error.cause instanceof CognitionError
+        throw error.cause instanceof CognitionError
           ? error.cause
           : new CognitionError("Entity fallback returned invalid payload", {
               cause: error.cause ?? error,
               code: "ENTITY_FALLBACK_INVALID",
-            }));
+            });
       }
 
       if (isStructuredToolCallError(error, "llm_failed")) {

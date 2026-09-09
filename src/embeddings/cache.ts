@@ -17,6 +17,7 @@ type CachedEmbedding = Promise<Float32Array>;
 type CacheEntry = {
   value: CachedEmbedding;
   settled: boolean;
+  batch: boolean;
 };
 
 function normalizeMaxEntries(maxEntries: number | undefined): number {
@@ -115,7 +116,7 @@ class CachingEmbeddingClient implements EmbeddingClient {
           return new Float32Array(embedding);
         });
 
-        promisesByKey.set(key, this.setPending(key, promise));
+        promisesByKey.set(key, this.setPending(key, promise, true));
       }
     }
 
@@ -152,7 +153,7 @@ class CachingEmbeddingClient implements EmbeddingClient {
 
   private getOrCreate(text: string, create: () => CachedEmbedding): CachedEmbedding {
     const key = this.keyForText(text);
-    const cached = this.getCached(key);
+    const cached = this.getCached(key, false);
 
     if (cached !== undefined) {
       return cached;
@@ -162,10 +163,12 @@ class CachingEmbeddingClient implements EmbeddingClient {
     return this.setPending(key, promise);
   }
 
-  private getCached(key: string): CachedEmbedding | undefined {
+  private getCached(key: string, allowPendingBatch = true): CachedEmbedding | undefined {
     const entry = this.records.get(key);
 
-    if (entry === undefined) {
+    // A background batch has a much longer stall budget than a query. A query
+    // may supersede its pending cache entry; settled batch vectors are reusable.
+    if (entry === undefined || (!allowPendingBatch && entry.batch && !entry.settled)) {
       this.cacheMisses += 1;
       return undefined;
     }
@@ -176,7 +179,7 @@ class CachingEmbeddingClient implements EmbeddingClient {
     return entry.value;
   }
 
-  private setPending(key: string, promise: CachedEmbedding): CachedEmbedding {
+  private setPending(key: string, promise: CachedEmbedding, batch = false): CachedEmbedding {
     let entry: CacheEntry;
     const value = promise.then(
       (embedding) => {
@@ -197,6 +200,7 @@ class CachingEmbeddingClient implements EmbeddingClient {
 
     entry = {
       settled: false,
+      batch,
       value,
     };
 

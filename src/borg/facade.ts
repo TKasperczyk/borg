@@ -75,6 +75,8 @@ import type { CommitmentRecord } from "../memory/commitments/index.js";
 import type { GoalRecord, GoalTreeNode } from "../memory/self/index.js";
 import type { IdentityUpdateResult } from "../memory/identity/index.js";
 import { reconcileInboxReplyActivity } from "../cognition/ingestion/index.js";
+import { rankActivityByRelevance } from "../memory/activity/projection.js";
+import { TenantFactRememberer } from "../memory/episodic/remember.js";
 
 function errorCode(error: unknown): unknown {
   return error !== null && typeof error === "object" && "code" in error
@@ -222,7 +224,8 @@ async function countPendingSemanticExtractionEpisodes(
 type CreatorDirectivesFacadeDeps = Pick<BorgDependencies, "creatorDirectiveRepository">;
 
 export function createActivityFacade(
-  deps: Pick<BorgDependencies, "sqlite" | "activityRepository" | "sessionsRepository">,
+  deps: Pick<BorgDependencies, "sqlite" | "activityRepository" | "sessionsRepository"> &
+    Partial<Pick<BorgDependencies, "embeddingClient" | "config">>,
 ): BorgFacades["activity"] {
   type ObservedTurnInput = Parameters<BorgFacades["activity"]["projectObservedTurn"]>[0];
   type RepliedTurnInput = Parameters<BorgFacades["activity"]["projectRepliedTurn"]>[0];
@@ -307,6 +310,14 @@ export function createActivityFacade(
       deps.activityRepository.listObservedGroupAudienceEntityIdsForSpeaker(...args),
     listRecentOtherActiveSessionEvents: (...args) =>
       deps.activityRepository.listRecentOtherActiveSessionEvents(...args),
+    rankByRelevance: async (input) => {
+      if (deps.embeddingClient === undefined) {
+        throw new StorageError("Activity ranking requires an embedding client", {
+          code: "ACTIVITY_RANKING_UNAVAILABLE",
+        });
+      }
+      return rankActivityByRelevance(input, deps.embeddingClient, deps.config);
+    },
   };
 }
 
@@ -453,6 +464,22 @@ async function semanticWalkStepsWithDisclosure(
 }
 
 export function createBorgFacades(deps: BorgDependencies): BorgFacades {
+  // Built lazily: partial dependency sets (tests, facades that never remember)
+  // must not require config or storage at construction time.
+  let tenantFactRememberer: TenantFactRememberer | undefined;
+  const getTenantFactRememberer = (): TenantFactRememberer =>
+    (tenantFactRememberer ??= new TenantFactRememberer({
+      dataDir: deps.config.dataDir,
+      entryIndex: deps.entryIndex,
+      episodicRepository: deps.episodicRepository,
+      entityRepository: deps.entityRepository,
+      createStreamWriter: deps.createStreamWriter,
+      embeddingClient: deps.embeddingClient,
+      llmFactory: deps.llmFactory,
+      model: deps.config.anthropic.models.extraction,
+      timeZone: deps.config.retrieval.recallPlannerTimeZone,
+      clock: deps.clock,
+    }));
   const resolveEpisodeAudienceEntityId = (
     options:
       | {
@@ -699,6 +726,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
         }),
     },
     episodic: {
+      rememberForTenant: (input) => getTenantFactRememberer().remember(input),
       recallForCognition: (query, options) => {
         const rankingAudienceEntityId =
           options.rankingAudienceEntityId ?? options.recallContext.currentAudienceEntityId;

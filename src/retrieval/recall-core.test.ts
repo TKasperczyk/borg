@@ -1559,6 +1559,44 @@ describe("Recall Core", () => {
     );
   });
 
+  it("does not promote planner identity hints to exact lanes without LLM selection", async () => {
+    const llmClient = new FakeLLMClient({
+      responses: [
+        recallExpansion({
+          semantic_query: "Marcin described his leave dates",
+          named_terms: ["Marcin", "urlop"],
+        }),
+      ],
+    });
+    harness = await createOfflineTestHarness({
+      clock: new FixedClock(NOW_MS),
+      embeddingClient: createEmbeddingClient(),
+      llmClient,
+    });
+    const result = await harness.retrievalPipeline.searchWithContextForDisclosure(
+      "Czy Marcin będzie w pracy?",
+      {
+        recallQueryPlannerContext: {
+          identity: {
+            currentSenderName: "Tomasz",
+            currentAudienceName: "AI Ninjas",
+            entityTerms: ["Czy", "Tomasz", "Marcin", "AI Ninjas"],
+          },
+        },
+      },
+    );
+    expect(
+      result.recall_intents
+        .filter((intent) => intent.kind === "known_term")
+        .map((intent) => intent.query),
+    ).toEqual(["Marcin", "urlop"]);
+    expect(RECALL_QUERY_PLANNER_SYSTEM_PROMPT).toContain(
+      "Sender, audience, participant and venue names",
+    );
+    expect(RECALL_QUERY_PLANNER_SYSTEM_PROMPT).toContain("answer-shaped");
+    expect(RECALL_QUERY_PLANNER_SYSTEM_PROMPT).toContain("at least one concrete absolute endpoint");
+  });
+
   it("unions perception entities when recall expansion succeeds with no named terms", async () => {
     const llmClient = new FakeLLMClient({
       responses: [recallExpansion({ named_terms: [] })],

@@ -28,6 +28,8 @@ import {
   createMemoryHandler,
   DEFAULT_RECENT_ACTIVITY_LIMIT,
   DEFAULT_RECENT_ACTIVITY_WINDOW_MS,
+  DEFAULT_RECENT_ACTIVITY_CANDIDATE_LIMIT,
+  DEFAULT_RECENT_ACTIVITY_RANKING_BUDGET_MS,
   memoryRecallSemanticVariantCountFromEnv,
 } from "../src/sidecar/memory-handler.js";
 import {
@@ -288,6 +290,14 @@ const server = createServer(
     recallDeadlineMs,
     recentActivityWindowMs,
     recentActivityLimit,
+    recentActivityCandidateLimit: Number(
+      process.env.BORG_MEMORY_RECENT_ACTIVITY_CANDIDATE_LIMIT ??
+        DEFAULT_RECENT_ACTIVITY_CANDIDATE_LIMIT,
+    ),
+    recentActivityRankingBudgetMs: Number(
+      process.env.BORG_MEMORY_RECENT_ACTIVITY_RANKING_BUDGET_MS ??
+        DEFAULT_RECENT_ACTIVITY_RANKING_BUDGET_MS,
+    ),
     recallSemanticVariantCount,
     ...(recencyPrior === undefined ? {} : { recencyPrior }),
     ...(inboxWaiters === undefined ? {} : { inboxWaiters }),

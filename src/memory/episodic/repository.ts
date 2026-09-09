@@ -885,6 +885,9 @@ export class EpisodicRepository {
       `    WHERE cm.raw_episode_id = ${alias}.episode_id`,
       `      AND current_version.archived = 0`,
       `      AND current_version_stats.archived = 0`,
+      // A private summary cannot replace a source's public disclosure contract.
+      // Keep that raw fact independently recallable, without relabeling the summary.
+      `      AND (NOT ${indexedPublicOriginSql(alias)} OR ${indexedPublicOriginSql("current_version")})`,
       `  )`,
       `) OR (`,
       `  ${alias}.episode_kind = 'consolidation_version'`,

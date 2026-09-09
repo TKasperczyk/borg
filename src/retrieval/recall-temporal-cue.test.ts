@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { FakeLLMClient } from "../llm/test-support/fake-client.js";
 import type { LLMCompleteResult } from "../llm/index.js";
 import { expandRecall, resolveRecallTemporalCue } from "./recall-expansion.js";
+import { resolveTimeSignals } from "./time-signals.js";
 
 const NOW = Date.parse("2026-09-05T10:00:00.000Z");
 
@@ -28,6 +29,24 @@ function planResponse(temporal_cue: unknown): LLMCompleteResult {
 }
 
 describe("resolveRecallTemporalCue", () => {
+  it("never turns a label-only or invalid caller cue into an all-history filter", () => {
+    expect(
+      resolveRecallTemporalCue({ since: null, until: null, label: "next week" }, NOW),
+    ).toBeNull();
+    for (const temporalCue of [
+      { label: "next week" },
+      { label: "period", sinceTs: Number.NEGATIVE_INFINITY },
+      { label: "period", untilTs: Number.NaN },
+      { label: "period", sinceTs: NOW, untilTs: NOW - 1 },
+    ])
+      expect(resolveTimeSignals({ temporalCue })).toEqual({
+        scoringRange: null,
+        strictFilterRange: null,
+      });
+    expect(
+      resolveTimeSignals({ temporalCue: { label: "since", sinceTs: NOW } }).scoringRange,
+    ).toEqual({ start: NOW, end: Number.POSITIVE_INFINITY });
+  });
   it("parses ISO instants into a temporal cue and keeps the label", () => {
     expect(
       resolveRecallTemporalCue(

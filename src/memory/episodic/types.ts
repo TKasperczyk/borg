@@ -3,7 +3,7 @@ import { consolidationEmbeddingInputSchema } from "./protected-lines.js";
 import { z } from "zod";
 
 import { emotionalArcSchema, type EmotionalArc } from "../affective/types.js";
-import { streamEntryIdSchema } from "../../util/id-schemas.js";
+import { sessionIdSchema, streamEntryIdSchema } from "../../util/id-schemas.js";
 import {
   consolidationFamilyIdHelpers,
   entityIdHelpers,
@@ -11,6 +11,7 @@ import {
   type ConsolidationFamilyId,
   type EpisodeId,
   type EntityId,
+  type StreamEntryId,
 } from "../../util/ids.js";
 
 export { streamEntryIdSchema };
@@ -180,4 +181,58 @@ export type EpisodeSearchCandidate = {
   episode: Episode;
   stats: EpisodeStats;
   similarity: number;
+};
+
+const sourceMessageIdsSchema = z
+  .array(streamEntryIdSchema)
+  .min(1)
+  .max(32)
+  .transform((ids) => [...new Set(ids)].sort());
+export const rememberTenantFactInputSchema = z
+  .object({
+    requestId: z.string().trim().min(1).max(256),
+    sessionId: sessionIdSchema,
+    speakerEntityId: episodeAudienceEntityIdSchema,
+    content: z.string().trim().min(1).max(4_000),
+    sourceEpisodeIds: z
+      .array(episodeIdSchema)
+      .max(16)
+      .default([])
+      .transform((ids) => [...new Set(ids)].sort()),
+    sourceMessageIds: sourceMessageIdsSchema,
+    authorizationMessageIds: sourceMessageIdsSchema,
+  })
+  .strict()
+  .refine(
+    (input) => input.authorizationMessageIds.every((id) => input.sourceMessageIds.includes(id)),
+    {
+      path: ["authorizationMessageIds"],
+      message: "Authorization messages must be included in sourceMessageIds",
+    },
+  );
+export type RememberTenantFactInput = z.input<typeof rememberTenantFactInputSchema>;
+
+export const tenantFactRecordSchema = z
+  .object({
+    scope: z.literal("tenant"),
+    request_hash: z.string().length(64),
+    episode_id: episodeIdSchema,
+    speaker_entity_id: episodeAudienceEntityIdSchema,
+    speaker_name: z.string().min(1),
+    source_episode_ids: z.array(episodeIdSchema),
+    source_message_ids: sourceMessageIdsSchema,
+    authorization_message_ids: sourceMessageIdsSchema,
+    fact: z.string().min(1),
+    title: z.string().min(1),
+    tags: z.array(z.string()),
+    confidence: z.number().min(0).max(1),
+    authorized_at: z.number().finite(),
+  })
+  .strict();
+export type TenantFactAuthorization = z.infer<typeof tenantFactRecordSchema>;
+export type RememberTenantFactResult = {
+  episodeId: EpisodeId;
+  authorizationEntryId: StreamEntryId;
+  authorization: TenantFactAuthorization;
+  duplicate: boolean;
 };
