@@ -385,11 +385,21 @@ export function renderActionThreadText(
   const currentAt = new Date(actionTimestampForState(thread.current)).toISOString();
   const actor = actionActorDisplay(thread.current.actor, entityRepository);
   const originIsCurrent = thread.current.id === thread.origin.id;
+  // One extraction pass writes every record it mints under a single stamp, so a thread assembled
+  // out of one pass has no earliest member: `selectThreadOrigin` falls through the `created_at`
+  // comparison to its id tie-break, and `originating_intent` then names whichever record id sorts
+  // first. The dated clause reads as precedence -- one write, then a later one -- and there is
+  // none. Stated as the observation that the two stamps are equal rather than as a claim about
+  // passes, since equal stamps are what the render can see.
   const originAt = originIsCurrent
     ? ""
     : `; originating_intent is a separate record created ${new Date(
         thread.origin.created_at,
-      ).toISOString()}, grouped with this one by description similarity rather than by any recorded link`;
+      ).toISOString()}, grouped with this one by description similarity rather than by any recorded link${
+        thread.origin.created_at === thread.current.created_at
+          ? ", and carrying the same created_at as it, so which of the two is named originating follows record-id order and not precedence"
+          : ""
+      }`;
   const lines = [
     `actor: ${actor}`,
     `${

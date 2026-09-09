@@ -10,9 +10,11 @@ import {
   publicMemoryDisclosureLabel,
   selfPrivateMemoryDisclosureLabel,
 } from "../../retrieval/index.js";
+import type { ActionRecord } from "../../memory/actions/index.js";
 import {
   actionSalienceClass,
   allocateActionThreadRenderSlots,
+  renderActionThreadText,
   renderOlderActionThreadsSummary,
   type ActionThread,
   type ActionThreadWithSalience,
@@ -239,6 +241,59 @@ describe("allocateActionThreadRenderSlots", () => {
       ...Array.from({ length: 5 }, () => "borg_memory_tracking_action"),
       "completed_recent",
     ]);
+  });
+});
+
+describe("renderActionThreadText", () => {
+  function mergedThread(originCreatedAt: number, currentCreatedAt: number): ActionThread {
+    const origin = makeActionRecord({
+      id: "act_aaaaaaaaaaaaaaaa" as ActionRecord["id"],
+      description: "commit to filing the finding",
+      state: "committed_to_do",
+      created_at: originCreatedAt,
+      updated_at: originCreatedAt,
+    });
+    const current = makeActionRecord({
+      id: "act_bbbbbbbbbbbbbbbb" as ActionRecord["id"],
+      description: "filed the finding",
+      state: "completed",
+      created_at: currentCreatedAt,
+      updated_at: currentCreatedAt + 5,
+    });
+
+    return {
+      id: origin.id,
+      records: [origin, current],
+      origin,
+      current,
+      scope: "current_session",
+    };
+  }
+
+  // The two descriptions belong to two records with independent states, and only the current
+  // record's state was ever printed. A reader takes the one state on the page for the state of the
+  // text nearest it, which reads an open commitment as discharged.
+  it("renders the origin's own state beside the origin's description", () => {
+    const text = renderActionThreadText(mergedThread(1_000, 2_000), undefined);
+
+    expect(text).toContain(
+      "originating_intent (committed_to_do, open): commit to filing the finding",
+    );
+    expect(text).toContain("records: 2, current: completed (closed by outcome)");
+  });
+
+  // `selectThreadOrigin` compares `created_at` and falls through to an id tie-break. Every record
+  // an extraction pass mints carries that pass's single stamp, so a thread built out of one pass
+  // has no earliest member and `originating_intent` names an id sort order. The dated clause reads
+  // as precedence unless it says otherwise.
+  it("says that an equal created_at makes originating an id order rather than precedence", () => {
+    const sameStamp = renderActionThreadText(mergedThread(1_000, 1_000), undefined);
+    const laterCurrent = renderActionThreadText(mergedThread(1_000, 2_000), undefined);
+
+    expect(sameStamp).toContain(
+      "carrying the same created_at as it, so which of the two is named originating follows record-id order and not precedence",
+    );
+    expect(laterCurrent).not.toContain("record-id order");
   });
 });
 
