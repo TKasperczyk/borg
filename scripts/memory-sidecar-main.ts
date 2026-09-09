@@ -54,6 +54,15 @@ import { teamsInboxConfigFromEnv } from "../src/sidecar/teams-inbox-config.js";
 import { DeliveryWaiterRegistry } from "../src/sidecar/delivery-waiter-registry.js";
 import { TeamAgentTaskEventRunner } from "../src/sidecar/team-agent-task-event-runner.js";
 import { SystemClock } from "../src/util/clock.js";
+import { ConfigError } from "../src/util/errors.js";
+import {
+  optionAProbeConfigFromEnv,
+  selectSidecarInboxRunner,
+} from "../src/sidecar/option-a-probe.js";
+import {
+  defaultSidecarModelSlots,
+  sidecarLlmGatewayOptionsFromEnv,
+} from "../src/sidecar/llm-config.js";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -68,6 +77,8 @@ const token = requireEnv("BORG_MEMORY_TOKEN");
 const apiKey = requireEnv("LLM_API_KEY");
 const baseUrl = process.env.KRATOS_BASE_URL ?? DEFAULT_GATEWAY_BASE_URL;
 const llmModel = process.env.LLM_MODEL ?? "generative-apis/qwen3-235b-a22b-instruct-2507";
+const optionAProbe = optionAProbeConfigFromEnv(process.env);
+const gatewayOptions = sidecarLlmGatewayOptionsFromEnv(process.env, optionAProbe.enabled);
 const { model: embeddingModel, dimensions: embeddingDims } = sidecarEmbeddingProfileFromEnv(
   process.env,
 );
@@ -116,7 +127,7 @@ const recencyPrior = recencyPriorEnabled
 const recallSemanticVariantCount = memoryRecallSemanticVariantCountFromEnv(process.env);
 // Bound every provider call so a hung kratos can't pin a request + pool slot
 // (and block shutdown) indefinitely.
-const requestTimeoutMs = Number(process.env.BORG_MEMORY_LLM_TIMEOUT_MS ?? 120_000);
+const requestTimeoutMs = gatewayOptions.requestTimeoutMs;
 // Tight per-attempt stall guard for embedding calls (see StallGuardEmbeddingClient).
 const embeddingStallTimeoutMs = Number(process.env.BORG_EMBEDDING_STALL_TIMEOUT_MS ?? 1000);
 const embeddingStallBatchTimeoutMs = Number(
@@ -125,19 +136,10 @@ const embeddingStallBatchTimeoutMs = Number(
 const embeddingStallRetries = Number(process.env.BORG_EMBEDDING_STALL_RETRIES ?? 1);
 const shutdownTimeoutMs = Number(process.env.BORG_MEMORY_SHUTDOWN_MS ?? 15_000);
 
-// borg picks the LLM model per cognition slot from config (which reads process.env
-// at Borg.open). The memory paths touch extraction + recall-expansion; point them
-// (and the rest, defensively) at the injected Qwen model unless already overridden.
-for (const slot of [
-  "BORG_MODEL_EXTRACTION",
-  "BORG_MODEL_RECALL_EXPANSION",
-  "BORG_MODEL_COGNITION",
-  "BORG_MODEL_BACKGROUND",
-  "BORG_MODEL_CREATOR_DIRECTIVE",
-  "BORG_MODEL_CORRECTIVE_PREFERENCE",
-  "BORG_MODEL_SHARED_STATE_COMPILER",
-]) {
-  process.env[slot] ??= llmModel;
+defaultSidecarModelSlots(process.env, llmModel);
+if (optionAProbe.enabled) {
+  // Existing exact-request capture supplies the ledger the finalizer actually saw.
+  process.env.BORG_DELIBERATION_FINALIZER_CONTEXT_CAPTURE_SAMPLE_RATE ??= "1";
 }
 
 // One timed OpenAI client shared by both adapters (stateless, tenant-independent;
@@ -145,6 +147,8 @@ for (const slot of [
 const openai = new OpenAI({ apiKey, baseURL: baseUrl, timeout: requestTimeoutMs, maxRetries: 1 });
 const llmClient = new OpenAICompatibleLLMClient({
   client: openai as unknown as OpenAIChatCompletionsClient,
+  maxOutputTokens: gatewayOptions.maxOutputTokens,
+  reasoningEffort: gatewayOptions.reasoningEffort,
 });
 // Wrapped in the same LRU cache Borg.open would apply to its own client
 // (borg/clients.ts): injecting a bare client here bypassed it, so every recall
@@ -171,13 +175,18 @@ const embeddingClient = createCachingEmbeddingClient(
   ),
   { model: embeddingModel, dims: embeddingDims },
 );
-const traceRegistry = memoryTraceEnabledFromEnv(process.env)
-  ? new MemoryTraceRegistry({
-      capacity: memoryTraceCapacityFromEnv(process.env),
-      maxTenants: memoryTraceMaxTenantsFromEnv(process.env),
-      includePayloads: true,
-    })
-  : undefined;
+const traceRegistry =
+  memoryTraceEnabledFromEnv(process.env) || optionAProbe.enabled
+    ? new MemoryTraceRegistry({
+        capacity:
+          optionAProbe.enabled && process.env.BORG_MEMORY_TRACE_CAP === undefined
+            ? 2_000
+            : memoryTraceCapacityFromEnv(process.env),
+        maxTenants: memoryTraceMaxTenantsFromEnv(process.env),
+        includePayloads: true,
+        nativeTurnTenant: optionAProbe.enabled ? optionAProbe.tenant : undefined,
+      })
+    : undefined;
 // This root snapshot controls sidecar-wide admission/scheduling only. Do not
 // pass it to BorgPool: each being must load <root>/<tenant>/config.json itself.
 const loadedSidecarConfig = loadConfig({ env: process.env, dataDir: root });
@@ -191,8 +200,22 @@ const sidecarConfig = {
   },
 };
 logSimilarityProfile(sidecarConfig, "borg memory sidecar");
+console.log("borg memory sidecar model slots", sidecarConfig.anthropic.models);
+if (optionAProbe.enabled) {
+  console.log("borg memory sidecar option A probe", {
+    tenant: optionAProbe.tenant,
+    tools: "none",
+    gateway: baseUrl,
+    ...gatewayOptions,
+  });
+}
 const selfName = memorySelfNameFromEnv(process.env);
 const teamsInboxConfig = teamsInboxConfigFromEnv(process.env);
+if (optionAProbe.enabled && !teamsInboxConfig.enabled) {
+  throw new ConfigError(
+    "BORG_OPTION_A_PROBE requires the Teams inbox configuration (TEAM_AGENT_BASE_URL / TEAM_AGENT_API_TOKEN)",
+  );
+}
 const sidecarClock = new SystemClock();
 let pool!: BorgPool;
 const inboxWaiters = teamsInboxConfig.enabled
@@ -206,6 +229,18 @@ const inboxWaiters = teamsInboxConfig.enabled
 const deliveryWaiters = teamsInboxConfig.enabled
   ? new DeliveryWaiterRegistry({
       acquireTenantLease: (tenantId) => pool.acquireBackgroundLease(tenantId),
+      ...(optionAProbe.enabled
+        ? {
+            onWake: ({ tenant, sessionIds, wake }) => {
+              if (tenant === optionAProbe.tenant)
+                traceRegistry!.tracerFor(tenant).emit("sidecar.delivery_waiter.woke", {
+                  turnId: "agent-deliveries",
+                  session_ids: [...sessionIds],
+                  wake,
+                });
+            },
+          }
+        : {}),
     })
   : undefined;
 
@@ -234,25 +269,35 @@ pool = new BorgPool({
                 timeoutMs: teamsInboxConfig.timeoutMs,
               }),
             onDeliveryAvailable: (sessionId) => deliveryWaiters!.notify(tenantId, sessionId),
-            runner: ({ terminal, entityRepository, sessions, activity }) =>
-              new TeamAgentTurnRunner({
-                tenant: tenantId,
-                baseUrl: teamsInboxConfig.baseUrl,
-                apiToken: teamsInboxConfig.apiToken,
-                timeoutMs: teamsInboxConfig.timeoutMs,
-                staleMs: teamsInboxConfig.staleMs,
-                terminal,
-                entityRepository,
-                sessions,
-                activity,
-                clock: sidecarClock,
-                onGenerating: ({ sessionId, entryIds }) =>
-                  inboxWaiters!.markGenerating({
-                    tenant: tenantId,
-                    sessionId,
-                    entryIds,
-                  }),
-              }),
+            ...selectSidecarInboxRunner(
+              optionAProbe,
+              tenantId,
+              ({ terminal, entityRepository, sessions, activity }) =>
+                new TeamAgentTurnRunner({
+                  tenant: tenantId,
+                  baseUrl: teamsInboxConfig.baseUrl,
+                  apiToken: teamsInboxConfig.apiToken,
+                  timeoutMs: teamsInboxConfig.timeoutMs,
+                  staleMs: teamsInboxConfig.staleMs,
+                  terminal,
+                  entityRepository,
+                  sessions,
+                  activity,
+                  clock: sidecarClock,
+                  onGenerating: ({ sessionId, entryIds }) =>
+                    inboxWaiters!.markGenerating({
+                      tenant: tenantId,
+                      sessionId,
+                      entryIds,
+                    }),
+                }),
+            ),
+            ...(optionAProbe.enabled && optionAProbe.tenant === tenantId
+              ? {
+                  onGenerating: ({ sessionId, entryIds }) =>
+                    inboxWaiters!.markGenerating({ tenant: tenantId, sessionId, entryIds }),
+                }
+              : {}),
             sessionPredicate: (session) => session?.source_type === "teams_inbox",
             acquireLease: () => pool.acquireBackgroundLease(tenantId),
             onTerminalCommitted: (terminalEntry) =>

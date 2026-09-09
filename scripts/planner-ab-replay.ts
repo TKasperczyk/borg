@@ -3,9 +3,10 @@
  * opens no Borg substrate, repository, StreamWriter, retrieval service, or
  * working-memory service; it only uses the ordinary unary planner transport.
  */
-import { createReadStream, realpathSync, statSync } from "node:fs";
+import { realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { createInterface } from "node:readline";
+import { openCaptureSnapshot as openPlannerCaptureSnapshot } from "./capture-snapshot.js";
+export { openCaptureSnapshot as openPlannerCaptureSnapshot } from "./capture-snapshot.js";
 
 import { resolveClaudeOAuthCredentialsPath } from "../src/auth/claude-oauth.ts";
 import { loadConfig } from "../src/config/index.ts";
@@ -73,7 +74,9 @@ export function assertReplayOAuthCredentialsOutsideDataDir(input: {
 export function createLiveLlmClient(
   config: ReturnType<typeof loadConfig>,
   env: NodeJS.ProcessEnv,
-  attachmentResolver?: ConstructorParameters<typeof AnthropicLLMClient>[0]["attachmentResolver"],
+  attachmentResolver?: NonNullable<
+    ConstructorParameters<typeof AnthropicLLMClient>[0]
+  >["attachmentResolver"],
 ): LLMClient {
   return new AnthropicLLMClient({
     authMode: config.anthropic.auth,
@@ -105,22 +108,6 @@ function printDrySummary(result: Awaited<ReturnType<typeof replayPlannerContextC
       `fidelity=${compact.byteFaithfulToCapture && legacy.byteFaithfulToCapture && result.fidelity.currentSourceRequestMatchesCapture ? "match" : "drift"}`,
     ].join(" "),
   );
-}
-
-export function openPlannerCaptureSnapshot(path: string): {
-  snapshotBytes: number;
-  lines: ReturnType<typeof createInterface>;
-} {
-  const snapshotBytes = statSync(path).size;
-  const input = createReadStream(path, {
-    encoding: "utf8",
-    start: 0,
-    ...(snapshotBytes === 0 ? { end: 0 } : { end: snapshotBytes - 1 }),
-  });
-  return {
-    snapshotBytes,
-    lines: createInterface({ input, crlfDelay: Infinity }),
-  };
 }
 
 export async function runPlannerAbReplayCli(

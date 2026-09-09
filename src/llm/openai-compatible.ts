@@ -90,6 +90,9 @@ export type OpenAICompatibleLLMClientOptions = {
   maxTokensField?: "max_tokens" | "max_completion_tokens";
   // Per-request timeout forwarded to the OpenAI SDK call.
   requestTimeoutMs?: number;
+  // Gateway-wide ceilings/effort are opt-in; model-family limits still apply.
+  maxOutputTokens?: number;
+  reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
   // Optional push-based usage reporting (the per-call result already carries
   // token counts; this mirrors the sink other clients expose).
   usageSink?: TokenUsageSink;
@@ -249,9 +252,17 @@ export class OpenAICompatibleLLMClient implements LLMClient {
   private readonly client: OpenAIChatCompletionsClient;
   private readonly maxTokensField: "max_tokens" | "max_completion_tokens";
   private readonly requestTimeoutMs: number | undefined;
+  private readonly maxOutputTokens: number;
+  private readonly reasoningEffort: OpenAICompatibleLLMClientOptions["reasoningEffort"];
   private readonly usageSink: TokenUsageSink | undefined;
 
   constructor(options: OpenAICompatibleLLMClientOptions) {
+    if (
+      options.maxOutputTokens !== undefined &&
+      (!Number.isSafeInteger(options.maxOutputTokens) || options.maxOutputTokens <= 0)
+    ) {
+      throw new ConfigError("OpenAI-compatible maxOutputTokens must be a positive integer");
+    }
     if (options.client !== undefined) {
       this.client = options.client;
     } else {
@@ -270,6 +281,8 @@ export class OpenAICompatibleLLMClient implements LLMClient {
     }
     this.maxTokensField = options.maxTokensField ?? "max_tokens";
     this.requestTimeoutMs = options.requestTimeoutMs;
+    this.maxOutputTokens = options.maxOutputTokens ?? Infinity;
+    this.reasoningEffort = options.reasoningEffort;
     this.usageSink = options.usageSink;
   }
 
@@ -357,8 +370,14 @@ export class OpenAICompatibleLLMClient implements LLMClient {
     const params: Record<string, unknown> = {
       model: options.model,
       messages,
-      [this.maxTokensField]: clampMaxOutputTokens(options.model, requestedMaxTokens),
+      [this.maxTokensField]: Math.min(
+        this.maxOutputTokens,
+        clampMaxOutputTokens(options.model, requestedMaxTokens),
+      ),
     };
+    if (this.reasoningEffort !== undefined) {
+      params.reasoning_effort = this.reasoningEffort;
+    }
     if (options.temperature !== undefined) {
       params.temperature = options.temperature;
     }

@@ -12,6 +12,7 @@ export class DeliveryWaiterRegistry {
   constructor(
     private readonly options: {
       acquireTenantLease?: (tenant: string) => ResponseWaiterLease;
+      onWake?: (input: { tenant: string; sessionIds: readonly SessionId[]; wake: Wake }) => void;
     } = {},
   ) {}
 
@@ -38,6 +39,11 @@ export class DeliveryWaiterRegistry {
           if (bucket?.size === 0) this.waiters.delete(key);
         }
         lease?.release();
+        try {
+          this.options.onWake?.({ tenant: input.tenant, sessionIds: input.sessionIds, wake });
+        } catch (error) {
+          console.error("Delivery waiter wake observer failed", error);
+        }
         settle(wake);
       },
     };

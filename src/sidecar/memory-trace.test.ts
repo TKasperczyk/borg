@@ -10,6 +10,29 @@ import {
 } from "./memory-trace.js";
 
 describe("MemoryTraceRegistry", () => {
+  it("retains native stages and ledger payloads only for the probe tenant with monotonic cursors", () => {
+    const registry = new MemoryTraceRegistry({ nativeTurnTenant: "probe", now: () => 1000 });
+    const probe = registry.tracerFor("probe");
+    probe.emit("turn_phase.completed", {
+      turnId: "native",
+      phase: "perception",
+      ts: 1,
+      duration_ms: 25,
+    });
+    const cursor = registry.query("probe").nextSince;
+    probe.emit("evidence_ledger.built", { turnId: "native", ts: 1, ledger: { sections: [] } });
+    const result = registry.query("probe", cursor);
+    expect(result.events).toEqual([
+      expect.objectContaining({ event: "evidence_ledger.built", ledger: { sections: [] } }),
+    ]);
+    expect(result.nextSince).toBeGreaterThan(cursor);
+    registry
+      .tracerFor("other")
+      .emit("evidence_ledger.built", { turnId: "other", ledger: { sections: [] } });
+    expect(registry.query("other").events).toEqual([]);
+    expect(registry.nativeTurnsEnabled("probe")).toBe(true);
+    expect(registry.nativeTurnsEnabled("other")).toBe(false);
+  });
   it("keeps bounded isolated per-tenant buffers and filters by since", () => {
     let now = 1_000;
     const registry = new MemoryTraceRegistry({

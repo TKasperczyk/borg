@@ -2462,6 +2462,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
             events: result.events,
             nextSince: result.nextSince,
             truncated: result.truncated,
+            ...(traceRegistry.nativeTurnsEnabled(tenant) ? { option_a_probe: true } : {}),
           });
           return;
         }

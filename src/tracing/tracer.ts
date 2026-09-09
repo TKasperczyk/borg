@@ -7,6 +7,7 @@ import { serializeJsonValue, type JsonValue } from "../util/json-value.js";
 import type { SessionId } from "../util/ids.js";
 
 export type TurnTraceEventName =
+  | "sidecar.delivery_waiter.woke"
   | "task_event.terminal_committed"
   | "task_event.delivery_created"
   | "attachment.write"

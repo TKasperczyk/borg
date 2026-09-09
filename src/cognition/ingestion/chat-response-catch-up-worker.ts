@@ -60,6 +60,8 @@ export type ChatResponseCatchUpRunInput = {
 
 export type ChatResponseCatchUpRunner = {
   run(input: ChatResponseCatchUpRunInput): Promise<void>;
+  /** Repair host delivery projections before an already-advanced watermark skips generation. */
+  reconcile?(sessionId: SessionId): Promise<void>;
 };
 
 export type ChatResponseCatchUpLease = {
@@ -386,6 +388,7 @@ export class ChatResponseCatchUpWorker {
         };
       }
 
+      if (this.runner.reconcile !== undefined) await this.runner.reconcile(sessionId);
       const { watermark } = this.reconcile(sessionId);
       const prefix = await this.options.prefixBuilder.build({
         sessionId,

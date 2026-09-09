@@ -20,6 +20,7 @@ export type MemoryTraceRegistryOptions = {
   maxTenants?: number;
   includePayloads?: boolean;
   now?: () => number;
+  nativeTurnTenant?: string;
 };
 
 function normalizePositiveInteger(value: number | undefined, fallback: number): number {
@@ -73,6 +74,7 @@ export class MemoryTraceRegistry {
   private readonly maxTenants: number;
   private readonly includePayloads: boolean;
   private readonly now: () => number;
+  private readonly nativeTurnTenant: string | undefined;
   private readonly buffers = new Map<string, CallbackTraceEntry[]>();
   private lastTs = 0;
 
@@ -84,6 +86,11 @@ export class MemoryTraceRegistry {
     );
     this.includePayloads = options.includePayloads ?? true;
     this.now = options.now ?? Date.now;
+    this.nativeTurnTenant = options.nativeTurnTenant;
+  }
+
+  nativeTurnsEnabled(tenantId: string): boolean {
+    return this.nativeTurnTenant === tenantId;
   }
 
   tracerFor(tenantId: string): TurnTracer {
@@ -91,7 +98,14 @@ export class MemoryTraceRegistry {
       includePayloads: this.includePayloads,
       timestamp: () => this.nextTimestamp(),
       sink: (entry) => {
-        this.append(tenantId, entry);
+        // Native phase events carry their own clock ts. Keep the HTTP cursor
+        // monotonic even when several phases complete within one millisecond.
+        this.append(
+          tenantId,
+          this.nativeTurnsEnabled(tenantId)
+            ? { ...entry, event_ts: entry.ts, ts: this.nextTimestamp() }
+            : entry,
+        );
       },
     });
   }
@@ -120,7 +134,8 @@ export class MemoryTraceRegistry {
   }
 
   private append(tenantId: string, entry: CallbackTraceEntry): void {
-    if (!shouldStoreMemoryTraceEvent(entry.event, entry)) {
+    const nativeEvent = this.nativeTurnsEnabled(tenantId) && entry.event !== "turn.token";
+    if (!nativeEvent && !shouldStoreMemoryTraceEvent(entry.event, entry)) {
       return;
     }
 

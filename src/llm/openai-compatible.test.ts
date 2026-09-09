@@ -1,9 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { OpenAICompatibleLLMClient, type OpenAIChatCompletionsClient } from "./openai-compatible.js";
+import {
+  OpenAICompatibleLLMClient,
+  type OpenAIChatCompletionsClient,
+} from "./openai-compatible.js";
 import { callStructuredTool, isStructuredToolCallError } from "./structured-tool-call.js";
 import type { LLMCompleteOptions, LLMConverseOptions, LLMToolDefinition } from "./index.js";
 import { ConfigError, LLMError } from "../util/errors.js";
+import { sidecarLlmGatewayOptionsFromEnv } from "../sidecar/llm-config.js";
 
 type CapturedParams = Record<string, unknown>;
 
@@ -31,6 +35,70 @@ const TOOL: LLMToolDefinition = {
   inputSchema: { type: "object", properties: { facts: { type: "array" } }, required: ["facts"] },
 };
 
+describe("gateway options", () => {
+  it("serializes both flag-off request methods identically with probe gateway env present", async () => {
+    const bodies: string[][] = [];
+    for (const env of [
+      {},
+      { BORG_MEMORY_LLM_MAX_TOKENS: "1", BORG_MEMORY_LLM_REASONING_EFFORT: "none" },
+    ]) {
+      const captured: string[] = [];
+      const options = sidecarLlmGatewayOptionsFromEnv(env, false);
+      const client = new OpenAICompatibleLLMClient({
+        client: fakeClient(toolCallResponse("{}"), (params) =>
+          captured.push(JSON.stringify(params)),
+        ),
+        maxOutputTokens: options.maxOutputTokens,
+        reasoningEffort: options.reasoningEffort,
+      });
+      await client.complete(completeOptions({ model: "claude-opus-5", max_tokens: 64_000 }));
+      await client.converse({
+        model: "claude-opus-5",
+        budget: "test",
+        max_tokens: 64_000,
+        messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
+      });
+      bodies.push(captured);
+    }
+    expect(bodies[1]).toEqual(bodies[0]);
+    for (const body of bodies[1]!) {
+      expect(JSON.parse(body).max_tokens).toBe(64_000);
+      expect(JSON.parse(body)).not.toHaveProperty("reasoning_effort");
+    }
+  });
+  it("caps both completion methods and forwards explicit reasoning effort and timeouts", async () => {
+    const create = vi.fn(async () => toolCallResponse('{"facts":[]}'));
+    const client = new OpenAICompatibleLLMClient({
+      client: { chat: { completions: { create } } },
+      maxOutputTokens: 16_384,
+      reasoningEffort: "none",
+      requestTimeoutMs: 180_000,
+    });
+    await client.complete(completeOptions({ model: "claude-opus-5", max_tokens: 64_000 }));
+    await client.converse({
+      model: "glm-5",
+      budget: "test",
+      max_tokens: 32_000,
+      messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
+    });
+    expect(create.mock.calls).toMatchObject([
+      [{ max_tokens: 16_384, reasoning_effort: "none" }, { timeout: 180_000 }],
+      [{ max_tokens: 8192, reasoning_effort: "none" }, { timeout: 180_000 }],
+    ]);
+  });
+  it("does not change wire parameters without gateway options", async () => {
+    let params: CapturedParams = {};
+    const client = new OpenAICompatibleLLMClient({
+      client: fakeClient(toolCallResponse("{}"), (value) => {
+        params = value;
+      }),
+    });
+    await client.complete(completeOptions({ model: "claude-opus-5", max_tokens: 64_000 }));
+    expect(params.max_tokens).toBe(64_000);
+    expect(params).not.toHaveProperty("reasoning_effort");
+  });
+});
+
 function completeOptions(overrides: Partial<LLMCompleteOptions> = {}): LLMCompleteOptions {
   return {
     model: "generative-apis/qwen3-235b-a22b-instruct-2507",
@@ -48,7 +116,9 @@ function toolCallResponse(args: string) {
       {
         message: {
           content: null,
-          tool_calls: [{ id: "call_1", type: "function", function: { name: "EmitFacts", arguments: args } }],
+          tool_calls: [
+            { id: "call_1", type: "function", function: { name: "EmitFacts", arguments: args } },
+          ],
         },
         finish_reason: "tool_calls",
       },
@@ -74,12 +144,18 @@ describe("OpenAICompatibleLLMClient", () => {
     expect(captured.tools).toEqual([
       {
         type: "function",
-        function: { name: "EmitFacts", description: "Emit extracted facts", parameters: TOOL.inputSchema },
+        function: {
+          name: "EmitFacts",
+          description: "Emit extracted facts",
+          parameters: TOOL.inputSchema,
+        },
       },
     ]);
 
     expect(result.stop_reason).toBe("tool_use");
-    expect(result.tool_calls).toEqual([{ id: "call_1", name: "EmitFacts", input: { facts: ["a", "b"] } }]);
+    expect(result.tool_calls).toEqual([
+      { id: "call_1", name: "EmitFacts", input: { facts: ["a", "b"] } },
+    ]);
     expect(result.input_tokens).toBe(11);
     expect(result.output_tokens).toBe(7);
   });
@@ -195,7 +271,9 @@ describe("OpenAICompatibleLLMClient", () => {
       }),
     });
 
-    const result = await client.complete(completeOptions({ tools: undefined, tool_choice: undefined }));
+    const result = await client.complete(
+      completeOptions({ tools: undefined, tool_choice: undefined }),
+    );
     expect(result.text).toBe("hello");
     expect(result.stop_reason).toBe("end_turn");
     expect(result.tool_calls).toEqual([]);
@@ -211,7 +289,11 @@ describe("OpenAICompatibleLLMClient", () => {
               message: {
                 content: "done",
                 tool_calls: [
-                  { id: "c2", type: "function", function: { name: "EmitFacts", arguments: '{"facts":[]}' } },
+                  {
+                    id: "c2",
+                    type: "function",
+                    function: { name: "EmitFacts", arguments: '{"facts":[]}' },
+                  },
                 ],
               },
               finish_reason: "tool_calls",
@@ -247,7 +329,13 @@ describe("OpenAICompatibleLLMClient", () => {
       {
         role: "assistant",
         content: "calling",
-        tool_calls: [{ id: "c1", type: "function", function: { name: "EmitFacts", arguments: '{"facts":[]}' } }],
+        tool_calls: [
+          {
+            id: "c1",
+            type: "function",
+            function: { name: "EmitFacts", arguments: '{"facts":[]}' },
+          },
+        ],
       },
       { role: "tool", tool_call_id: "c1", content: "ok" },
     ]);

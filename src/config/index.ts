@@ -365,6 +365,24 @@ const anthropicModelsConfigSchema = z
   })
   .prefault({});
 
+// Shared with hosts that supply a fallback model for every slot. Keep this
+// exhaustive so a new slot cannot silently keep an unavailable provider default.
+export const MODEL_SLOT_ENV_NAMES = {
+  cognition: "BORG_MODEL_COGNITION",
+  background: "BORG_MODEL_BACKGROUND",
+  extraction: "BORG_MODEL_EXTRACTION",
+  recallExpansion: "BORG_MODEL_RECALL_EXPANSION",
+  correctivePreference: "BORG_MODEL_CORRECTIVE_PREFERENCE",
+  sharedStateCompiler: "BORG_MODEL_SHARED_STATE_COMPILER",
+  creatorDirective: "BORG_MODEL_CREATOR_DIRECTIVE",
+  imagePerception: "BORG_MODEL_IMAGE_PERCEPTION",
+} as const satisfies Record<keyof z.infer<typeof anthropicModelsConfigSchema>, string>;
+
+export function optionAProbeEnabledFromEnv(env: NodeJS.ProcessEnv): boolean {
+  const flag = env.BORG_OPTION_A_PROBE?.trim().toLowerCase();
+  return flag === "1" || flag === "true";
+}
+
 const anthropicConfigSchema = z
   .object({
     auth: anthropicAuthModeSchema.default("auto"),
@@ -1197,41 +1215,15 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     ["anthropic", "apiKey"],
     readOptionalEnvString(env, "ANTHROPIC_API_KEY"),
   );
-  setConfigOverride(
-    overrides,
-    ["anthropic", "models", "cognition"],
-    readOptionalEnvString(env, "BORG_MODEL_COGNITION"),
-  );
-  setConfigOverride(
-    overrides,
-    ["anthropic", "models", "background"],
-    readOptionalEnvString(env, "BORG_MODEL_BACKGROUND"),
-  );
-  setConfigOverride(
-    overrides,
-    ["anthropic", "models", "extraction"],
-    readOptionalEnvString(env, "BORG_MODEL_EXTRACTION"),
-  );
-  setConfigOverride(
-    overrides,
-    ["anthropic", "models", "recallExpansion"],
-    readOptionalEnvString(env, "BORG_MODEL_RECALL_EXPANSION"),
-  );
-  setConfigOverride(
-    overrides,
-    ["anthropic", "models", "correctivePreference"],
-    readOptionalEnvString(env, "BORG_MODEL_CORRECTIVE_PREFERENCE"),
-  );
-  setConfigOverride(
-    overrides,
-    ["anthropic", "models", "sharedStateCompiler"],
-    readOptionalEnvString(env, "BORG_MODEL_SHARED_STATE_COMPILER"),
-  );
-  setConfigOverride(
-    overrides,
-    ["anthropic", "models", "creatorDirective"],
-    readOptionalEnvString(env, "BORG_MODEL_CREATOR_DIRECTIVE"),
-  );
+  for (const [slot, envName] of Object.entries(MODEL_SLOT_ENV_NAMES)) {
+    // HEAD has seven env overrides. The eighth is an opt-in probe surface.
+    if (slot === "imagePerception" && !optionAProbeEnabledFromEnv(env)) continue;
+    setConfigOverride(
+      overrides,
+      ["anthropic", "models", slot],
+      readOptionalEnvString(env, envName),
+    );
+  }
   setConfigOverride(
     overrides,
     ["anthropic", "oauthSseInactivityTimeoutMs"],

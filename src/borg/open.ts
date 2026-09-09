@@ -35,7 +35,9 @@ import {
   StreamReader,
   StreamWatermarkRepository,
 } from "../stream/index.js";
-import { createOutboundPostTool } from "../tools/index.js";
+import { createOutboundPostTool, ToolDispatcher } from "../tools/index.js";
+import { ConfigError } from "../util/errors.js";
+import { NativeInboxRunner } from "./native-inbox-runner.js";
 import {
   AutonomousOutboundPolicy,
   MessageConnectorRegistry,
@@ -71,12 +73,16 @@ const CHAT_RESPONSE_CATCH_UP_BACKOFF_CONFIG = {
 export async function openBorgDependencies(
   options: BorgOpenOptions = {},
 ): Promise<BorgDependencies> {
+  if (options.inbox?.native !== undefined && options.inbox.runner !== undefined) {
+    throw new ConfigError("inbox.native and inbox.runner are mutually exclusive");
+  }
   const clock = options.clock ?? new SystemClock();
   let sqlite: SqliteDatabase | undefined;
   let lance: LanceDbStore | undefined;
   let releaseEmbeddingBankAccess: (() => Promise<void>) | undefined;
   const pendingStartupTasks: Promise<unknown>[] = [];
   let catchUpWorker: ChatResponseCatchUpWorker | undefined;
+  let nativeInboxRunner: NativeInboxRunner | undefined;
 
   try {
     const resolvedConfig = resolveBorgConfig(options);
@@ -430,7 +436,10 @@ export async function openBorgDependencies(
       skillSelector: repositories.skillSelector,
       workingMemoryStore: repositories.workingMemoryStore,
       llmFactory,
-      toolDispatcher,
+      toolDispatcher:
+        options.inbox?.native?.tools === "none"
+          ? new ToolDispatcher({ createStreamWriter: repositories.createStreamWriter, clock })
+          : toolDispatcher,
       sessionLock,
       streamIngestionCoordinator,
       chatResponseWatermarkCoordinator,
@@ -478,6 +487,25 @@ export async function openBorgDependencies(
         }),
     });
     const configuredRunner = options.inbox?.runner;
+    if (options.inbox?.native !== undefined) {
+      nativeInboxRunner = new NativeInboxRunner({
+        turnOrchestrator,
+        db: sqlite,
+        dataDir: config.dataDir,
+        createStreamWriter: repositories.createStreamWriter,
+        deliveries: agentDeliveries,
+        acceptsSession: (sessionId) => {
+          const session = repositories.sessionsRepository.get(sessionId);
+          return (
+            session?.source_type === "teams_inbox" &&
+            (options.inbox?.sessionPredicate?.(session) ?? true)
+          );
+        },
+        onGenerating: options.inbox.onGenerating,
+        onTerminalCommitted: options.inbox.onTerminalCommitted,
+      });
+      await nativeInboxRunner.reconcile();
+    }
     const catchUpRunner =
       typeof configuredRunner === "function"
         ? configuredRunner({
@@ -490,7 +518,7 @@ export async function openBorgDependencies(
               sessionsRepository: repositories.sessionsRepository,
             }),
           })
-        : configuredRunner;
+        : (configuredRunner ?? nativeInboxRunner);
     const taskEventRunner = options.inbox?.taskEventRunner?.({
       terminal: backlogTerminalService,
       taskEvents: taskEventService,

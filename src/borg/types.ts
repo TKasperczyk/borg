@@ -103,7 +103,7 @@ import type { LanceDbStore } from "../storage/lancedb/index.js";
 import type { SqliteDatabase } from "../storage/sqlite/index.js";
 import type { StreamEntry, StreamEntryIndexRepository, StreamWriter } from "../stream/index.js";
 import type { Clock } from "../util/clock.js";
-import type { EntityId, MaintenanceRunId, SessionId } from "../util/ids.js";
+import type { EntityId, MaintenanceRunId, SessionId, StreamEntryId } from "../util/ids.js";
 
 export type BorgStreamWriterFactory = (sessionId: SessionId) => StreamWriter;
 
@@ -214,6 +214,10 @@ export type BorgOpenOptions = {
   /** Per-user-entry token accounting cap for live commitment extraction. */
   liveCommitmentExtractionBudget?: number | null;
   inbox?: {
+    /** Native inbox probe: no executable tools; committed replies use claim/ack delivery.
+     * Mutually exclusive with runner. Applies to this being's native orchestrator. */
+    native?: { tools: "none"; agentDeliveries: true };
+    onGenerating?: (input: { sessionId: SessionId; entryIds: readonly StreamEntryId[] }) => void;
     taskEventRunner?: (context: {
       terminal: BacklogTerminalService;
       taskEvents: TaskEventService;
