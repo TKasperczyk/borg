@@ -147,7 +147,7 @@ export function openQuestionStateMetadata(
         ? {}
         : {
             unresolved_rumination_ticks_note:
-              "Recorded rumination notes from offline passes that ended with this question still open; a pass that recorded no note stamps the schedule without advancing this count. The count on its own does not close it, because that dismissal also requires no episode created after the question citing it and no active action against it. Zero on another row means no note has been recorded against that question, not that it is fresh.",
+              "Recorded rumination notes from offline passes that ended with this question still open; a pass that recorded no note stamps the schedule without advancing this count. The count on its own does not close it, and a count already past the threshold does not mean the other conditions are what kept it open: the dismissal is not evaluated at all on a pass that called the model for this question, so the model's still-open judgment stands and the count advances unchecked. Where the dismissal is evaluated, it also requires no episode created after the question citing it and no active action against it. Zero on another row means no note has been recorded against that question, not that it is fresh.",
           }),
     };
   }

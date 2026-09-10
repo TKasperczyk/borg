@@ -89,6 +89,11 @@ describe("openQuestionStateMetadata", () => {
       "no episode created after the question citing it",
     );
     expect(live?.unresolved_rumination_ticks_note).toContain("no active action against it");
+    // A count past the threshold on an open row is the ordinary case, not a puzzle: the pass that
+    // raised it called the model, and that path returns before shouldDismissStaleNoTraction is
+    // reached. Naming only the two conjuncts invites reading an over-threshold row as evidence
+    // that one of them fired, when the predicate was never consulted on that pass at all.
+    expect(live?.unresolved_rumination_ticks_note).toContain("is not evaluated at all on a pass");
     // The store advances this only when a note is recorded (stampRuminationForRun's note-less
     // branch writes last_ruminated_at alone), so a sentence that calls it a count of passes
     // invites reading a gap between the count and the notes as a lost note.
