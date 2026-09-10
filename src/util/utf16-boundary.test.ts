@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { utf16SafePrefixEnd, utf16SafeSuffixStart } from "./utf16-boundary.js";
+import {
+  toWellFormedUtf16,
+  utf16SafePrefix,
+  utf16SafePrefixEnd,
+  utf16SafeSuffixStart,
+} from "./utf16-boundary.js";
 
 describe("UTF-16-safe boundaries", () => {
   it("moves a prefix cut before an astral character split", () => {
@@ -28,5 +33,21 @@ describe("UTF-16-safe boundaries", () => {
     expect(utf16SafeSuffixStart(value, value.indexOf("tail"))).toBe(value.indexOf("tail"));
     expect(utf16SafePrefixEnd(value, Number.POSITIVE_INFINITY)).toBe(value.length);
     expect(utf16SafeSuffixStart(value, -10)).toBe(0);
+  });
+
+  it("slices a well-formed prefix", () => {
+    const value = "head😀tail";
+
+    expect(utf16SafePrefix(value, value.indexOf("😀") + 1)).toBe("head");
+    expect(utf16SafePrefix(value, value.indexOf("😀") + 2)).toBe("head😀");
+    expect(utf16SafePrefix(value, 100)).toBe(value);
+    expect(utf16SafePrefix(value, 0)).toBe("");
+  });
+
+  it("replaces only unpaired surrogates", () => {
+    expect(toWellFormedUtf16("### \ud83c")).toBe("### \ufffd");
+    expect(toWellFormedUtf16("\udd95 tail")).toBe("\ufffd tail");
+    expect(toWellFormedUtf16("prawdziwe emoji 🆕 zostaje")).toBe("prawdziwe emoji 🆕 zostaje");
+    expect(toWellFormedUtf16("plain")).toBe("plain");
   });
 });

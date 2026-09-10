@@ -3,6 +3,7 @@ import OpenAI from "openai";
 
 import { sleep } from "../util/clock.js";
 import { ConfigError, EmbeddingError } from "../util/errors.js";
+import { toWellFormedUtf16 } from "../util/utf16-boundary.js";
 
 type OpenAIEmbeddingsClient = {
   embeddings: {
@@ -271,9 +272,13 @@ export class OpenAICompatibleEmbeddingClient implements EmbeddingClient {
   private async createWithModelReloadRetry(
     texts: readonly string[],
   ): ReturnType<OpenAIEmbeddingsClient["embeddings"]["create"]> {
-    const singleInput = texts[0];
+    // The gateway rejects a body with a lone surrogate for the WHOLE batch, and
+    // reports it as "No model field." (prod, 2026-09-09). Callers are expected to
+    // cut text on code-point boundaries; this is the last line of defence.
+    const wellFormed = texts.map(toWellFormedUtf16);
+    const singleInput = wellFormed[0];
     const params = {
-      input: texts.length === 1 && singleInput !== undefined ? singleInput : [...texts],
+      input: wellFormed.length === 1 && singleInput !== undefined ? singleInput : wellFormed,
       model: this.model,
       // Explicit -- the OpenAI SDK defaults to "base64", which we then have
       // to decode ourselves. Many OpenAI-compatible providers (LM Studio,

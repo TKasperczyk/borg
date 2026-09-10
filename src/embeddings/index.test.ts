@@ -283,4 +283,25 @@ describe("embeddings", () => {
     expect(Array.from(first)).toEqual(Array.from(second));
     expect(Array.from(first)).not.toEqual(Array.from(different));
   });
+
+  it("sends well-formed strings even when a caller passes a lone surrogate", async () => {
+    const create = vi.fn().mockResolvedValue({
+      data: [
+        { index: 0, embedding: [1, 2, 3] },
+        { index: 1, embedding: [4, 5, 6] },
+      ],
+    });
+    const client = new OpenAICompatibleEmbeddingClient({
+      model: "embed-model",
+      dims: 3,
+      client: { embeddings: { create } } as never,
+    });
+
+    // The gateway rejects the WHOLE batch for one lone surrogate (prod, 2026-09-09).
+    await client.embedBatch(["ok", "### \ud83c"]);
+
+    const sent = create.mock.calls[0]?.[0]?.input as string[];
+    expect(sent).toEqual(["ok", "### \ufffd"]);
+    expect(sent.every((text) => !/[\uD800-\uDFFF]/u.test(text))).toBe(true);
+  });
 });

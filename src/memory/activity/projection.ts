@@ -4,6 +4,7 @@ import type { ActivityEventKind, ActivityRelevanceInput } from "./types.js";
 import type { ActivityRepository, ActivityProjectionSourceEvent } from "./repository.js";
 import type { EmbeddingClient } from "../../embeddings/index.js";
 import { cosineSimilarity } from "../../retrieval/embedding-similarity.js";
+import { utf16SafePrefix } from "../../util/utf16-boundary.js";
 import { halfLifeDecay } from "../../util/math.js";
 import { EmbeddingError } from "../../util/errors.js";
 import { similarityThresholds, type SimilarityConfigSource } from "../../config/similarity.js";
@@ -78,7 +79,7 @@ function promptSafeLabel(value: string): string {
     return "A participant";
   }
 
-  return normalized.slice(0, 120).trimEnd();
+  return utf16SafePrefix(normalized, 120).trimEnd();
 }
 
 function rowText(event: ActivityProjectionSourceEvent, relativeAge: string): string {
