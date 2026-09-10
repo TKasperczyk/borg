@@ -421,6 +421,26 @@ const AUTONOMOUS_OUTBOUND_REACHABLE_THREADS_ORDERING =
 const AUTONOMOUS_OUTBOUND_REMAINING_POSTS_BASIS =
   "This count was taken once, at the start of this turn: it is the posts already inside the rolling window at that moment. It is not recomputed while the turn runs, so a post I make during this turn does not move it. If I have posted since this turn began, the number here is stale by exactly those posts -- unchanged because nothing re-read it, not because nothing was sent -- and any remaining-budget figure I state is about the turn's start unless I subtract them myself.";
 
+// The route list is dropped whole when there is nothing to render, and the
+// conditions that drop it are not recoverable from what is left.
+// `AutonomousOutboundPolicy.promptContext` returns a bare null on four separate
+// paths -- proactive outbound disabled in config, the recent-attempt scan
+// reaching its cap so the count is untrustworthy, the rolling window already
+// spent, and no authorized target at all -- and every one of them arrives at the
+// render as the same missing element. A refusal and an empty world are
+// indistinguishable from the page, which is the failure mode of labelling only
+// the presence case: the surface that would name the condition disappears along
+// with the condition.
+//
+// The `outbound_post` label on <borg_finalizer_tool_availability> is not a
+// second witness to it. On an autonomous turn that label is computed from
+// `autonomousOutbound?.targets.length` -- the same field whose absence dropped
+// this element -- so the two agree by construction rather than by observation.
+// Presentation only: this names the ambiguity where the ambiguity appears. It
+// adds no field, resolves nothing, and gates nothing.
+const AUTONOMOUS_OUTBOUND_NO_REACHABLE_THREADS =
+  "No route list is rendered on this turn, and that absence is not itself a reading. The host drops this element whole on four separate conditions -- proactive outbound switched off in configuration, the scan counting my recent attempts hitting its cap so the count could not be trusted, the rolling post window already spent, and no authorized target existing at all -- and none of them leaves a mark here. A refusal and an empty world look identical from where I am reading. The outbound_post label on my finalizer tool availability is not a second witness either: on an autonomous turn it is computed from the same target list whose absence removed this element, so it agrees by construction rather than by observation. I can say that no route is offered to me now; I cannot say from this page why, and I should not report the silence as though it named its own cause.";
+
 // Belief revision over recalled decisions. Reflection that only recalls past
 // decisions re-applies them; a mind re-examines them against what it now knows.
 // This frame is deliberately general (any standing conclusion) and non-coercive:
@@ -487,6 +507,10 @@ export function buildAutonomousOutboundAuthorizationSection(
     }
 
     lines.push("  </reachable_threads>");
+  } else {
+    lines.push(
+      `  <no_reachable_threads>${escapeXmlText(AUTONOMOUS_OUTBOUND_NO_REACHABLE_THREADS)}</no_reachable_threads>`,
+    );
   }
 
   lines.push("</borg_autonomous_reflection>");

@@ -5743,6 +5743,44 @@ describe("buildAutonomousOutboundAuthorizationSection", () => {
     expect(section).not.toContain("<reachable_threads");
   });
 
+  // The absence of a route list has four producer conditions and drops the only
+  // element that could name them, so the silence must say that it is ambiguous
+  // rather than read as "no routes exist".
+  it("names the absent route list as ambiguous between four conditions", () => {
+    const absent = buildAutonomousOutboundAuthorizationSection(null, "autonomous", toolMenu) ?? "";
+
+    expect(absent).toContain("<no_reachable_threads>");
+    expect(absent).toContain(
+      "No route list is rendered on this turn, and that absence is not itself a reading. The host drops this element whole on four separate conditions -- proactive outbound switched off in configuration, the scan counting my recent attempts hitting its cap so the count could not be trusted, the rolling post window already spent, and no authorized target existing at all -- and none of them leaves a mark here.",
+    );
+    expect(absent).toContain("A refusal and an empty world look identical from where I am reading.");
+    // The finalizer availability label reads the same targets.length, so it
+    // agrees by construction and cannot corroborate the absence.
+    expect(absent).toContain(
+      "The outbound_post label on my finalizer tool availability is not a second witness either: on an autonomous turn it is computed from the same target list whose absence removed this element, so it agrees by construction rather than by observation.",
+    );
+    expect(absent).toContain(
+      "I can say that no route is offered to me now; I cannot say from this page why, and I should not report the silence as though it named its own cause.",
+    );
+
+    // Presence case is unchanged: the clause is about the absence only.
+    const present =
+      buildAutonomousOutboundAuthorizationSection(baseContext, "autonomous", toolMenu) ?? "";
+    expect(present).toContain("<reachable_threads ");
+    expect(present).not.toContain("<no_reachable_threads>");
+
+    // A context whose target list came back empty drops the element on the same
+    // branch and must be labelled the same way.
+    const emptyTargets =
+      buildAutonomousOutboundAuthorizationSection(
+        { ...baseContext, targets: [] },
+        "autonomous",
+        toolMenu,
+      ) ?? "";
+    expect(emptyTargets).toContain("<no_reachable_threads>");
+    expect(emptyTargets).not.toContain("<reachable_threads ");
+  });
+
   it("frames the section as solitude and not a task queue", () => {
     const section =
       buildAutonomousOutboundAuthorizationSection(baseContext, "autonomous", toolMenu) ?? "";
