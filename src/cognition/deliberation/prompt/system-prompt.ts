@@ -1932,6 +1932,15 @@ export function summarizeAutonomySchedulerState(
     // in the state where it is invisible in the result -- which, with the
     // reservation spent, is the ordinary one.
     `limit=${budget.max_wakes_per_window} is the ceiling for contemplative sources only. ${budget.reserved_contemplative_wakes_per_window} of it is reserved for them and ${budget.contemplative_used_in_current_window} contemplative wake(s) are in this window, so ${reservationStillHeld} of the reservation is still held and operational sources are refused once used reaches ${operationalLimit} -- that figure is limit minus the ${reservationStillHeld} still held, recomputed at every read rather than a second fixed ceiling. It equals limit exactly while the reservation is spent, so the two agreeing is a state of this window, not an identity.`,
+    // A refusal at the budget gate returns before `wakeRepository.record`, so it
+    // is as traceless as the dropped interval fire the tick clause already names
+    // -- and the ordering consequence is the part no field here can carry: while
+    // the window is full every freed slot is taken in admission order, so a
+    // freshly-due event sits behind every older one and waits without anything
+    // recording that it did. The stamp its source minted is then the only
+    // surviving evidence of the wait, and it survives only where that source
+    // happens to put one in the event id.
+    "A refusal at that ceiling returns before any wake row exists, so it writes nothing at all: the event stays due and is re-offered on every tick until a slot frees, and no count here separates a stretch in which every admission was refused from one in which nothing was due. Which event takes a freed slot is admission order and not which fell due first: self-scheduled fire times already reached go ahead of everything, and the rest are ordered by the stamp their own source minted, oldest first -- except on the tick that probes recovery once a brake pause has elapsed, which puts contemplative sources first. So a wake can trail the event it names by an unbounded stretch, and that distance is queue position rather than the trigger's cadence.",
   ];
 
   if (budget.wakes_in_current_window_by_trigger.length === 0) {

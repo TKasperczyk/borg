@@ -2819,6 +2819,14 @@ describe("buildBaseSystemPrompt", () => {
       expect(block).toContain(
         "limit=6 is the ceiling for contemplative sources only. 2 of it is reserved for them and 4 contemplative wake(s) are in this window, so 0 of the reservation is still held and operational sources are refused once used reaches 6 -- that figure is limit minus the 0 still held, recomputed at every read rather than a second fixed ceiling. It equals limit exactly while the reservation is spent, so the two agreeing is a state of this window, not an identity.",
       );
+      // The refusal at that ceiling returns before `wakeRepository.record`, so it
+      // leaves no row anywhere and the counts above cannot distinguish it from
+      // quiet. The consequence no field here can carry is the ordering one: a
+      // freed slot goes to the oldest source-minted stamp, so a freshly-due event
+      // waits behind every older one without anything recording that it waited.
+      expect(block).toContain(
+        "A refusal at that ceiling returns before any wake row exists, so it writes nothing at all: the event stays due and is re-offered on every tick until a slot frees, and no count here separates a stretch in which every admission was refused from one in which nothing was due. Which event takes a freed slot is admission order and not which fell due first: self-scheduled fire times already reached go ahead of everything, and the rest are ordered by the stamp their own source minted, oldest first -- except on the tick that probes recovery once a brake pause has elapsed, which puts contemplative sources first. So a wake can trail the event it names by an unbounded stretch, and that distance is queue position rather than the trigger's cadence.",
+      );
     },
   );
 
