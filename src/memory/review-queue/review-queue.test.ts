@@ -147,6 +147,69 @@ describe("review queue", () => {
     expect(harness.db.raw.inTransaction).toBe(false);
   });
 
+  it("accepts an embedding-bearing item after refreshing its vectors instead of racing itself", async () => {
+    const harness = await createOfflineTestHarness();
+    cleanup.push(harness.cleanup);
+    const episodeId = createEpisodeFixture().id;
+    const node = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture(
+        {
+          label: "Refresh target",
+          description: "Original description.",
+          source_episode_ids: [episodeId],
+        },
+        [1, 0, 0, 0],
+      ),
+    );
+    // Stands in for a re-embed under the current model: same text, different
+    // floats. Prod 2026-09-11: the refreshed refs were handed to the CAS as
+    // the EXPECTED stored value while the row still held the old vector, so
+    // every accept of a new_insight failed as a phantom "applying-state race".
+    const refreshed = [9, 9, 9, 9];
+    const replaceEmbeddings = (value: unknown): unknown => {
+      if (Array.isArray(value)) return value.map(replaceEmbeddings);
+      if (value === null || typeof value !== "object") return value;
+      return Object.fromEntries(
+        Object.entries(value as Record<string, unknown>).map(([key, entry]) => [
+          key,
+          key === "embedding" && Array.isArray(entry) ? [...refreshed] : replaceEmbeddings(entry),
+        ]),
+      );
+    };
+    const queue = new ReviewQueueRepository({
+      db: harness.db,
+      semanticNodeRepository: harness.semanticNodeRepository,
+      prepareSerializedEmbeddings: async (payload) => replaceEmbeddings(payload),
+    });
+    registerBuiltinReviewQueueHandlers(queue);
+    const item = queue.enqueue({
+      kind: "new_insight",
+      reason: "Pending insight with a stale vector",
+      refs: createPendingInsightRefs({
+        nodeId: node.id,
+        episodeId,
+        description: "Refreshed description.",
+        confidence: 0.8,
+        lastVerifiedAt: 1000,
+        embedding: [1, 2, 3, 4],
+      }),
+    });
+
+    const resolved = await queue.resolve(item.id, "accept");
+
+    expect(resolved?.resolution).toBe("accept");
+    const stored = queue.get(item.id);
+    expect(stored?.resolved_at).not.toBeNull();
+    // The refreshed vector is what got saved, not the stale one.
+    expect(
+      (stored?.refs.reflector_pending_insight as { target: { patch: { embedding: number[] } } })
+        .target.patch.embedding,
+    ).toEqual(refreshed);
+    expect((await harness.semanticNodeRepository.get(node.id))?.description).toBe(
+      "Refreshed description.",
+    );
+  });
+
   it("opens review_queue schema on empty databases and databases with existing review rows", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     cleanup.push(async () => {

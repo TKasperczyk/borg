@@ -1241,12 +1241,44 @@ export class ReviewQueueRepository {
       this.options.prepareSerializedEmbeddings &&
       !["dismiss", "reject"].includes(resolution.decision)
     ) {
-      item = {
-        ...item,
-        refs: z
-          .record(z.string(), z.unknown())
-          .parse(await this.options.prepareSerializedEmbeddings(item.refs)),
-      };
+      const refreshedRefs = z
+        .record(z.string(), z.unknown())
+        .parse(await this.options.prepareSerializedEmbeddings(item.refs));
+
+      // Save the refreshed vectors to the row BEFORE any handler path runs.
+      // Every later write compares the stored refs against `item.refs` as an
+      // optimistic-concurrency check; handing those paths refreshed refs while
+      // the row still held the old vectors made the check fail on every accept
+      // of an embedding-bearing kind (prod 2026-09-11: new_insight, misreported
+      // as "resolution lost applying-state race"). Persisting first keeps the
+      // row and `item.refs` in agreement, so the check means what it says.
+      const result = this.db
+        .prepare(
+          `
+            UPDATE review_queue
+            SET refs = ?
+            WHERE id = ? AND resolved_at IS NULL AND refs = ?
+          `,
+        )
+        .run(serializeJsonValue(refreshedRefs), item.id, serializeJsonValue(item.refs));
+
+      if (result.changes !== 1) {
+        const current = this.get(item.id);
+
+        if (current !== null && current.resolved_at !== null) {
+          throw new SemanticError(`Review item ${item.id} was already resolved`, {
+            code: "REVIEW_QUEUE_ALREADY_RESOLVED",
+            cause: { itemId: item.id, resolution: current.resolution },
+          });
+        }
+
+        throw new SemanticError(`Review item ${item.id} refresh lost applying-state race`, {
+          code: "REVIEW_QUEUE_RESOLUTION_RACE",
+          cause: { itemId: item.id },
+        });
+      }
+
+      item = { ...item, refs: refreshedRefs };
     }
     const refs = this.parseHandlerRefs(handler, item);
     const scope = handler.transactionScope({
