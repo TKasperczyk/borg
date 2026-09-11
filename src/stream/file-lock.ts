@@ -148,6 +148,67 @@ function isProcessAlive(pid: number): boolean {
   }
 }
 
+// Wall-clock start of a live process, from /proc/<pid>/stat field 22 (start
+// time in USER_HZ ticks since boot) plus the boot time in /proc/stat. USER_HZ is
+// a fixed Linux ABI constant (100), independent of the kernel HZ. Linux-only:
+// elsewhere this returns null and the different-PID branch below keeps the
+// old retain-if-alive behaviour.
+const PROC_USER_HZ = 100;
+
+function readBootTimeMs(): number | null {
+  try {
+    const match = /^btime (\d+)$/m.exec(readFileSync("/proc/stat", "utf8"));
+    return match === null ? null : Number(match[1]) * 1000;
+  } catch {
+    return null;
+  }
+}
+
+const BOOT_TIME_MS = readBootTimeMs();
+
+function processStartWallMs(pid: number): number | null {
+  if (BOOT_TIME_MS === null) return null;
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const commEnd = stat.lastIndexOf(")");
+    if (commEnd === -1) return null;
+    const fields = stat
+      .slice(commEnd + 2)
+      .trim()
+      .split(/\s+/);
+    const ticks = Number(fields[19]);
+    return Number.isFinite(ticks) ? BOOT_TIME_MS + (ticks * 1000) / PROC_USER_HZ : null;
+  } catch {
+    return null;
+  }
+}
+
+// btime has whole-second resolution; the margin only covers that, in the
+// retain direction.
+const PID_REUSE_START_MARGIN_MS = 1_000;
+// Owner ids this process issued and still holds. A lock bearing our PID whose
+// owner we never issued is definitionally a dead predecessor's.
+const issuedOwners = new Set<string>();
+
+// A live local PID cannot own a lock stamped before that process existed.
+// Container restarts keep the pod hostname and hand out the same PIDs
+// deterministically, so after a crash the dead owner's PID is alive again -
+// usually as this very process - and must not be mistaken for the holder.
+// metadata.timestamp is refreshed with every heartbeat, so it is the owner's
+// LAST heartbeat: a live holder's stamp always postdates its own start, while a
+// dead owner's stamp precedes its death and therefore the start of whichever
+// process now wears its PID.
+function isPidReusedSinceLock(metadata: FileLockMetadata): boolean {
+  if (metadata.pid === process.pid) {
+    return !issuedOwners.has(metadata.owner);
+  }
+  const holderStartMs = processStartWallMs(metadata.pid);
+  if (holderStartMs === null) {
+    return false;
+  }
+  return holderStartMs > metadata.timestamp + PID_REUSE_START_MARGIN_MS;
+}
+
 function removeLockFileIfOwned(
   lockPath: string,
   expectedIdentity: LockFileIdentity,
@@ -223,9 +284,11 @@ function reapStaleLock(lockPath: string, malformedGraceMs: number): boolean {
   }
 
   // SIGSTOP/event-loop stalls are not death. A local live PID may still resume
-  // work with open storage handles, regardless of the timestamp's age.
+  // work with open storage handles, regardless of the timestamp's age - unless
+  // the PID was reassigned after the lock was created (in-place container
+  // restart), in which case the owner is dead and the lock is reaped at once.
   forgetLockObservation(lockPath);
-  if (isProcessAlive(metadata.pid)) {
+  if (isProcessAlive(metadata.pid) && !isPidReusedSinceLock(metadata)) {
     return false;
   }
 
@@ -288,7 +351,7 @@ export function isFileLockLive(
   }
 
   forgetLockObservation(lockPath);
-  return isProcessAlive(metadata.pid);
+  return isProcessAlive(metadata.pid) && !isPidReusedSinceLock(metadata);
 }
 
 /** Acquire a renewable lease, retaining its guard until idempotent release. */
@@ -332,6 +395,7 @@ export async function acquireFileLockLease(
           } finally {
             closeSync(lockFd);
           }
+          issuedOwners.add(owner);
           break;
         }
         guard.close();
@@ -395,6 +459,10 @@ export async function acquireFileLockLease(
       if (released) return;
       released = true;
       clearInterval(heartbeat);
+      // Forget the owner BEFORE unlinking: if the unlink fails, the surviving
+      // file carries our PID with an owner we no longer recognise, so the next
+      // reapStaleLock treats it as reuse and removes the debris.
+      issuedOwners.delete(owner);
       try {
         const owned = readOwnedLock();
         if (owned === null || !removeLockFileIfOwned(lockPath, owned.identity, owned.contents)) {
