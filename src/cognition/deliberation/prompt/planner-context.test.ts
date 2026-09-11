@@ -552,6 +552,9 @@ describe("compact planner context", () => {
     expect(text).toContain('directives_rendered="18"');
     expect(text).toContain('<creator_directive_index rows_total_for_current_audience="18"');
     expect(text).toContain('rows_omitted_after_current_audience_scope="0"');
+    expect(text).toContain(
+      "rows_omitted_after_current_audience_scope counts only rows dropped after that scoping, by truncation or budget; no path here drops rows, so it reads zero on every turn. It is never a count of the directives the scope removed, and that count is deliberately not disclosed to this audience; a zero there says nothing about how many exist outside it.",
+    );
     expect(rows).toHaveLength(18);
     expect(rows.map((row) => row.match(/i="([^"]+)"/)?.[1])).toEqual(
       Array.from({ length: 18 }, (_, index) => `cd_${index + 1}`),

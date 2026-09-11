@@ -858,6 +858,12 @@ describe("compact terminal finalizer context", () => {
 
     expect(directiveIndex).toContain('rows_total_for_current_audience="4"');
     expect(directiveIndex).toContain('rows_omitted_after_current_audience_scope="0"');
+    // The zero is a literal, and its name reads as "omitted because of scope" to a careful
+    // reader. Pin the clause that says which quantity it is, so the count cannot drift back
+    // into looking like a measurement of what the audience scope removed.
+    expect(directiveIndex).toContain(
+      "rows_omitted_after_current_audience_scope counts only rows dropped after that scoping, by truncation or budget; no path here drops rows, so it reads zero on every turn. It is never a count of the directives the scope removed, and that count is deliberately not disclosed to this audience; a zero there says nothing about how many exist outside it.",
+    );
     expect(directiveIndex.match(/<creator_directive id_alias=/g)).toHaveLength(4);
     expect(rendered).toContain(`payload="${exactOperation}"`);
     expect(rendered).toContain(`payload="${exactSlottedOperation}"`);
