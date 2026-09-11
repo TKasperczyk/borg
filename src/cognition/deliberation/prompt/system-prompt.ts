@@ -2582,6 +2582,17 @@ const NO_OUTPUT_DIAGNOSTIC_PROVENANCE = `The two diagnostic lists under an entry
   ", ",
 )} -- are added afterwards from counts the harness took before it called me, and nothing in the rendered list marks which side an element came from, so a structural category there is never a word I chose. Each of those is also emitted into structural_no_output_flags beside a second name for the same count (with_state_delta with current_turn_state_delta, with_open_question with open_question_rendered), both pushed by one branch, so that pair cannot disagree and its agreement measures nothing. borg_directly_addressed runs the other way, derived from the semantic category when_borg_addressed that I did choose. primary_no_output_reason is mine when I supply one and is otherwise computed from the semantic categories alone. So the categories and the flags agreeing is restatement, not corroboration, and I do not cite one as evidence for the other.`;
 
+/**
+ * A `tool_name: none` diagnostic says the attempt emitted no terminal tool call. It does
+ * not say whether the attempt wrote anything, and those are two different endings: prose
+ * without the tool call leaves a draft the harness captures, a halt before any text leaves
+ * nothing to capture. Both print the same reason string, so read off the reason code alone
+ * the second ending is indistinguishable from the first -- which invites exactly the wrong
+ * account of the silence, that the turn did its work and only the delivery died. `text_chars`
+ * is that discriminator and it is already on the entry; name what it decides.
+ */
+const FINALIZER_INVALID_TOOL_TEXT_PROVENANCE = `A finalizer_invalid_tool diagnostic reading tool_name=none means that attempt made no terminal emission tool call; it does not by itself say whether the attempt produced anything. text_chars on the same diagnostic is that count, and it is a length of my own output, not a judgement of it. text_chars=0 means the attempt halted before writing a character, so no draft of that answer exists anywhere -- not held, not queued, not recoverable -- and the work that answer would have carried was never written down; above 0 means I wrote and omitted the call, and a non-empty draft is captured as undelivered_draft and surfaces in my recency window until it ages out, so its absence there dates the draft rather than denying it. A diagnostic with no text_chars at all predates the field: unrecorded, which is not zero. Without this count the two endings read alike, and I do not describe a turn that wrote nothing as one whose reasoning survived and whose delivery failed.`;
+
 function renderWakeSilentReasonLines(
   tally: AutonomySchedulerFleetBrakeDescription["window_silent_reasons"],
   span: AutonomySchedulerFleetBrakeDescription["window_silent_span"],
@@ -2677,12 +2688,17 @@ function summarizeMechanismEvidence(
     // each is scoped to one conversation. Unstated, that scope is invisible: the list
     // reads as a record of my silences, and a day with a suppression in another
     // conversation renders here as a day I spoke. Say the scope on the line.
+    const invalidToolNote = recentSuppressions.some(
+      (entry) => entry.diagnostic?.finalizerInvalidTool !== undefined,
+    )
+      ? ` ${FINALIZER_INVALID_TOOL_TEXT_PROVENANCE}`
+      : "";
     lines.push(
       `Recent silences from my side (newest last; this conversation only -- this list is this session's working memory, so a turn of mine suppressed in another conversation is absent here by scope and its absence says nothing about whether I went quiet there; it keeps the newest ${RECENT_SUPPRESSIONS_LIMIT} however old they are, so an age here is the entry's age, not a window): ${recentSuppressions
         .map((entry) => renderRecentSuppressionMechanismEvidence(entry, renderNowMs))
         .join(
           ", ",
-        )}. The bracketed token after each reason code is that code's outcome class, and the whole contrast set is ${SUPPRESSION_OUTCOME_CLASSES} -- so a list showing only one of them is a fact about these entries, not about which classes can occur. The class is not recoverable from the reason code by reading it: sibling codes in one enum fall on opposite sides of the line, and deliberate-silence means the turn was mine to close and I closed it, which is a different account of the same blank than a guard stopping a draft I had already written. If asked about going quiet, I attribute it to the actual reason code, its outcome class, and the rendered diagnostic. I do not invent network failures, latency spikes, or technical errors, and I do not report my own closure as something done to me. ${NO_OUTPUT_DIAGNOSTIC_PROVENANCE}`,
+        )}. The bracketed token after each reason code is that code's outcome class, and the whole contrast set is ${SUPPRESSION_OUTCOME_CLASSES} -- so a list showing only one of them is a fact about these entries, not about which classes can occur. The class is not recoverable from the reason code by reading it: sibling codes in one enum fall on opposite sides of the line, and deliberate-silence means the turn was mine to close and I closed it, which is a different account of the same blank than a guard stopping a draft I had already written. If asked about going quiet, I attribute it to the actual reason code, its outcome class, and the rendered diagnostic. I do not invent network failures, latency spikes, or technical errors, and I do not report my own closure as something done to me. ${NO_OUTPUT_DIAGNOSTIC_PROVENANCE}${invalidToolNote}`,
     );
   }
 

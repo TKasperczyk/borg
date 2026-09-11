@@ -208,6 +208,14 @@ function finalizerInvalidToolDiagnostic(
     return undefined;
   }
 
+  // Rows written before `text_chars` existed carry no such field, and a default of 0
+  // there would assert the one thing the old row cannot support -- that the attempt
+  // produced nothing. Carry it only when the stored value is a real count.
+  const textChars =
+    typeof value.text_chars === "number" && Number.isFinite(value.text_chars)
+      ? Math.max(0, Math.trunc(value.text_chars))
+      : undefined;
+
   return typeof value.tool_name === "string" &&
     typeof value.reason === "string" &&
     (value.attempt === "initial" || value.attempt === "regenerate")
@@ -215,6 +223,7 @@ function finalizerInvalidToolDiagnostic(
         tool_name: value.tool_name,
         reason: value.reason,
         attempt: value.attempt,
+        ...(textChars === undefined ? {} : { text_chars: textChars }),
       }
     : undefined;
 }

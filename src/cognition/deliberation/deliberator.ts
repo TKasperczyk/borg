@@ -385,14 +385,21 @@ function finalizerSuppressionReason(result: FinalizerResult): GenerationSuppress
   }
 }
 
+// The text length travels with the diagnostic because it is the only thing that
+// separates a draft that exists from one that never did, and `buildFinalizerEmission`
+// gates `undelivered_draft` on the same number (> 0). Without it on the entry, a
+// silence with no draft beside it reads the same whether the draft rolled out of the
+// recency window or was never written -- and the reason code cannot tell them apart.
 function finalizerInvalidToolDiagnostic(
   decision: InvalidToolDecision,
   attempt: FinalizerInvalidToolDiagnostic["attempt"],
+  textChars: number,
 ): FinalizerInvalidToolDiagnostic {
   return {
     tool_name: decision.toolName,
     reason: decision.reason,
     attempt,
+    text_chars: textChars,
   };
 }
 
@@ -457,7 +464,11 @@ async function retryInvalidToolFinalizer(input: {
   return retry.decision.kind === "invalid_tool"
     ? {
         result: retry,
-        invalidToolAfterRegenerate: finalizerInvalidToolDiagnostic(retry.decision, "regenerate"),
+        invalidToolAfterRegenerate: finalizerInvalidToolDiagnostic(
+          retry.decision,
+          "regenerate",
+          retry.text.length,
+        ),
       }
     : { result: retry };
 }
@@ -579,6 +590,7 @@ function buildFinalizerEmission(
               finalizer_invalid_tool: finalizerInvalidToolDiagnostic(
                 result.decision,
                 options.invalidToolDiagnosticAttempt ?? "initial",
+                result.text.length,
               ),
             }),
         ...(undeliveredDraft === undefined ? {} : { undelivered_draft: undeliveredDraft }),

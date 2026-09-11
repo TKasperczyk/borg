@@ -4639,6 +4639,72 @@ describe("buildBaseSystemPrompt", () => {
     }
   });
 
+  // tool_name=none with no text and tool_name=none with a dropped call print the same
+  // reason string, and only the first leaves nothing recoverable. The count that separates
+  // them has to reach the page, and the page has to say which ending it marks -- otherwise
+  // a turn that wrote nothing reads as a turn whose reasoning survived and whose delivery
+  // failed, which is the more flattering of the two and the wrong one.
+  it("names what text_chars discriminates when an invalid-tool diagnostic is on the list", () => {
+    const withInvalidTool = extractBlock(
+      buildBaseSystemPrompt(
+        makeContext({
+          turnMechanismEvidence: {
+            recentSuppressions: [
+              {
+                turnId: "turn-no-text",
+                reason: "invalid_tool_after_regenerate",
+                ts: NOW_MS,
+                sourceStreamEntryId: "strm_bbbbbbbbbbbbbbbb" as never,
+                diagnostic: {
+                  finalizerInvalidTool: {
+                    tool_name: "none",
+                    reason: "expected exactly one emission tool call, got 0",
+                    attempt: "regenerate",
+                    text_chars: 0,
+                  },
+                },
+              },
+            ],
+            recentRegenerations: [],
+          },
+        }),
+        PROMPT_OPTIONS,
+      ),
+      "borg_mechanism_evidence",
+    );
+
+    expect(withInvalidTool).toContain('"text_chars":0');
+    expect(withInvalidTool).toContain("text_chars=0 means the attempt halted before writing");
+    expect(withInvalidTool).toContain("no draft of that answer exists anywhere");
+    expect(withInvalidTool).toContain("A diagnostic with no text_chars at all predates the field");
+
+    // The note is inert on a list with no invalid-tool entry, and copy that explains a
+    // field nothing on the page carries is one more thing to mistake for evidence.
+    const withoutInvalidTool = extractBlock(
+      buildBaseSystemPrompt(
+        makeContext({
+          turnMechanismEvidence: {
+            recentSuppressions: [
+              {
+                turnId: "turn-closed",
+                reason: "finalizer_no_output",
+                ts: NOW_MS,
+                sourceStreamEntryId: "strm_cccccccccccccccc" as never,
+                diagnostic: { primaryNoOutputReason: "other" },
+              },
+            ],
+            recentRegenerations: [],
+          },
+        }),
+        PROMPT_OPTIONS,
+      ),
+      "borg_mechanism_evidence",
+    );
+
+    expect(withoutInvalidTool).toContain("turn-closed:finalizer_no_output");
+    expect(withoutInvalidTool).not.toContain("text_chars");
+  });
+
   it("renders regeneration breadcrumbs without draft or guard-internal content", () => {
     const prompt = buildBaseSystemPrompt(
       makeContext({

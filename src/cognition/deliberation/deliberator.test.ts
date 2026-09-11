@@ -1676,6 +1676,7 @@ describe("deliberator", () => {
         tool_name: "none",
         reason: "expected exactly one emission tool call, got 0",
         attempt: "regenerate",
+        text_chars: "I forgot the retry tool too.".length,
       },
       undelivered_draft: {
         text: "I forgot the retry tool too.",
@@ -1705,6 +1706,32 @@ describe("deliberator", () => {
         reason: "expected exactly one emission tool call, got 0",
       },
     ]);
+  });
+
+  // The reason code and the reason string are identical whether the attempt wrote prose
+  // and dropped the tool call or halted before writing anything, and only the second
+  // leaves nothing to recover. `undelivered_draft` is gated on the same length, so when it
+  // is absent the diagnostic has to carry the count -- otherwise the entry cannot say
+  // whether the draft is gone or never existed.
+  it("records text_chars=0 and captures no draft when both attempts produce no text", async () => {
+    const llm = new FakeLLMClient({ responses: ["", ""] });
+    const deliberator = createDeliberator(llm, tempDirs);
+
+    const result = await deliberator.run(
+      simpleDeliberationContext({ turnId: "turn-invalid-tool-no-text" }),
+    );
+
+    expect(result.emitted).toBe(false);
+    expect(result.emission).toEqual({
+      kind: "suppressed",
+      reason: "invalid_tool_after_regenerate",
+      finalizer_invalid_tool: {
+        tool_name: "none",
+        reason: "expected exactly one emission tool call, got 0",
+        attempt: "regenerate",
+        text_chars: 0,
+      },
+    });
   });
 
   it.each([
