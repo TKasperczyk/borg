@@ -1341,6 +1341,114 @@ describe("overseer process", () => {
     expect(harness.semanticEdgeRepository.getEdge(edge.id)?.valid_to).toBeNull();
   });
 
+  it("drops suggested_valid_to from a non-edge temporal drift flag so the review refs resolve", async () => {
+    const nowMs = 10 * 24 * 60 * 60 * 1_000;
+    const llm = new FakeLLMClient({
+      responses: [
+        createOverseerResponse([
+          {
+            kind: "temporal_drift",
+            reason: "The narrative gives a date the sources contradict.",
+            confidence: 0.8,
+            patch_description: "Rollback completed on the following day.",
+            // Prod 2026-09-11: the model attached this edge-only field to a
+            // semantic_node target and the strict refs schema rejected the
+            // whole flag ("Unrecognized key: suggested_valid_to").
+            suggested_valid_to: nowMs - 500,
+          },
+        ]),
+      ],
+    });
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(nowMs),
+      llmClient: llm,
+      configOverrides: {
+        offline: {
+          ...DEFAULT_CONFIG.offline,
+          overseer: { ...DEFAULT_CONFIG.offline.overseer, maxChecksPerRun: 1 },
+        },
+      },
+    });
+    cleanup.push(harness.cleanup);
+
+    const episodeId = createEpisodeFixture().id;
+    await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture(
+        {
+          label: "Atlas rollback",
+          description: "Atlas rolled back on Tuesday.",
+          source_episode_ids: [episodeId],
+          created_at: nowMs - 1_000,
+          updated_at: nowMs - 1_000,
+        },
+        [1, 0, 0, 0],
+      ),
+    );
+
+    const process = new OverseerProcess({
+      reviewQueueRepository: harness.reviewQueueRepository,
+      registry: harness.registry,
+    });
+    const result = await process.run(harness.createContext(), { dryRun: false });
+
+    expect(result.errors).toEqual([]);
+
+    const review = harness.reviewQueueRepository.getOpen()[0];
+
+    expect(review).toMatchObject({
+      kind: "temporal_drift",
+      refs: { target_type: "semantic_node" },
+    });
+    // Dropped from the refs, but still visible in the audit payload.
+    expect(review?.refs).not.toHaveProperty("suggested_valid_to");
+    expect(review?.refs).not.toHaveProperty("by_edge_id");
+  });
+
+  it("tells the model how many flags it may emit for one target", async () => {
+    const nowMs = 10 * 24 * 60 * 60 * 1_000;
+    const llm = new FakeLLMClient({ responses: [createOverseerResponse([])] });
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(nowMs),
+      llmClient: llm,
+      configOverrides: {
+        offline: {
+          ...DEFAULT_CONFIG.offline,
+          overseer: {
+            ...DEFAULT_CONFIG.offline.overseer,
+            maxChecksPerRun: 1,
+            maxFlagsPerTarget: 2,
+          },
+        },
+      },
+    });
+    cleanup.push(harness.cleanup);
+
+    const episodeId = createEpisodeFixture().id;
+    await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture(
+        {
+          label: "Atlas cap",
+          description: "Atlas cap evidence.",
+          source_episode_ids: [episodeId],
+          created_at: nowMs - 1_000,
+          updated_at: nowMs - 1_000,
+        },
+        [1, 0, 0, 0],
+      ),
+    );
+
+    const process = new OverseerProcess({
+      reviewQueueRepository: harness.reviewQueueRepository,
+      registry: harness.registry,
+    });
+    await process.run(harness.createContext(), { dryRun: false });
+
+    expect(String(llm.requests[0]?.messages[0]?.content ?? "")).toContain(
+      "I emit at most 2 flags for this item",
+    );
+    expect(llm.requests[0]?.max_tokens).toBe(16_000);
+  });
+
   it("halts further llm work after budget exhaustion", async () => {
     const llm = new FakeLLMClient({
       responses: [

@@ -600,6 +600,11 @@ const configBaseSchema = z.object({
         .object({
           lookbackHours: z.number().positive().default(24),
           maxChecksPerRun: z.number().int().positive().default(8),
+          // One call audits one memory item, and its flags array was unbounded:
+          // prod 2026-09-11 truncated EmitOverseerFlags at max_tokens (8000) and
+          // lost the whole check. A per-target flag cap is what bounds the
+          // output; the max_tokens ceiling is only headroom above it.
+          maxFlagsPerTarget: z.number().int().positive().default(4),
           budget: z.number().int().positive().nullable().default(null),
         })
         .prefault({}),
@@ -1747,6 +1752,11 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["offline", "overseer", "maxChecksPerRun"],
     readOptionalEnvNumber(env, "BORG_OFFLINE_OVERSEER_MAX_CHECKS_PER_RUN"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "overseer", "maxFlagsPerTarget"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_OVERSEER_MAX_FLAGS_PER_TARGET"),
   );
   setConfigOverride(
     overrides,

@@ -287,6 +287,7 @@ async function buildPrompt(
   ctx: OfflineContext,
   sourceBundle: OverseerSourceBundle,
   selfStateSummary: string,
+  maxFlagsPerTarget: number,
 ): Promise<string> {
   const serializedTarget = await serializeDisclosureLabeledTargetPayload(ctx, target);
 
@@ -302,6 +303,7 @@ async function buildPrompt(
     "For semantic_edge temporal drift or identity inconsistency, provide suggested_valid_to and optional by_edge_id; only flag edges that should be reviewed for closure.",
     "For identity inconsistency, target a specific value, goal, trait, commitment, or autobiographical period by id and propose reinforce, contradict, or patch.",
     "In goal records, counterparty_entity_id is the participant the responsibility runs toward, not an owner or an audience.",
+    `I emit at most ${maxFlagsPerTarget} flags for this item, the most serious first. Emitting more risks the tool call being cut off by the output limit, which loses every flag.`,
     `Emit your result by calling the ${OVERSEER_TOOL_NAME} tool exactly once.`,
     selfStateSummary,
     "Memory item:",
@@ -555,12 +557,18 @@ export class OverseerProcess implements OfflineProcess<OverseerPlan> {
                   messages: [
                     {
                       role: "user",
-                      content: await buildPrompt(target, ctx, sourceBundle, selfStateSummary),
+                      content: await buildPrompt(
+                        target,
+                        ctx,
+                        sourceBundle,
+                        selfStateSummary,
+                        ctx.config.offline.overseer.maxFlagsPerTarget,
+                      ),
                     },
                   ],
                   tools: [OVERSEER_TOOL],
                   tool_choice: { type: "tool", name: OVERSEER_TOOL_NAME },
-                  max_tokens: 8_000,
+                  max_tokens: 16_000,
                   budget: "offline-overseer",
                 },
                 toolName: OVERSEER_TOOL_NAME,
@@ -608,10 +616,16 @@ export class OverseerProcess implements OfflineProcess<OverseerPlan> {
                 ...(flag.patch_description === undefined
                   ? {}
                   : { patch_description: flag.patch_description }),
-                ...(flag.suggested_valid_to === undefined
-                  ? {}
-                  : { suggested_valid_to: flag.suggested_valid_to }),
-                ...(flag.by_edge_id === undefined ? {} : { by_edge_id: flag.by_edge_id }),
+                // suggested_valid_to / by_edge_id exist only on the semantic_edge
+                // variant of the review refs schemas, which are strict. Carrying
+                // them onto an episode or semantic_node target builds refs that
+                // the review queue rejects as unresolvable, losing the flag.
+                ...(target.type === "semantic_edge" && flag.suggested_valid_to !== undefined
+                  ? { suggested_valid_to: flag.suggested_valid_to }
+                  : {}),
+                ...(target.type === "semantic_edge" && flag.by_edge_id !== undefined
+                  ? { by_edge_id: flag.by_edge_id }
+                  : {}),
                 ...(flag.source_assessment === undefined
                   ? {}
                   : { source_assessment: flag.source_assessment }),
