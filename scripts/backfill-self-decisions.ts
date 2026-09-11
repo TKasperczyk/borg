@@ -11,7 +11,7 @@
  *     "stayed silent (deliberate silence): low value echo" etc.)
  * Delete-then-reinsert per fire_event_id so re-runs CORRECT existing rows.
  *
- * Usage: pnpm tsx scripts/backfill-self-decisions.ts <data-dir>
+ * Usage: node --import tsx scripts/backfill-self-decisions.ts <data-dir>
  */
 import { readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -36,7 +36,11 @@ type StreamEntry = {
   session_id?: string;
   content?: Record<string, unknown>;
 };
-type WakeContext = { triggerType: "trigger" | "condition"; sourceName: string; wakeEntryId: string };
+type WakeContext = {
+  triggerType: "trigger" | "condition";
+  sourceName: string;
+  wakeEntryId: string;
+};
 type Suppression = { reason: string; primary?: string };
 
 function summarize(text: string): string {
@@ -82,7 +86,8 @@ for (const file of readdirSync(streamDir).filter((f) => f.endsWith(".jsonl"))) {
       if (typeof c.reason === "string") {
         lastSup = {
           reason: c.reason,
-          primary: typeof c.primary_no_output_reason === "string" ? c.primary_no_output_reason : undefined,
+          primary:
+            typeof c.primary_no_output_reason === "string" ? c.primary_no_output_reason : undefined,
         };
       }
       continue;
@@ -123,7 +128,8 @@ for (const file of readdirSync(streamDir).filter((f) => f.endsWith(".jsonl"))) {
       sourceEventId: lastWake.wakeEntryId,
       fireEventId: fireEventId as StreamEntryId,
       decisionSummary: decisionSummaryFor(String(content.outcome_summary ?? ""), lastSup),
-      turnResultId: content.turn_result_id === undefined ? null : (content.turn_result_id as string | null),
+      turnResultId:
+        content.turn_result_id === undefined ? null : (content.turn_result_id as string | null),
       sourceStreamEntryIds: [lastWake.wakeEntryId as StreamEntryId, fireEventId as StreamEntryId],
     });
     recorded += 1;

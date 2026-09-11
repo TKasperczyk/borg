@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 const maybeIt = process.env.BORG_SKIP_CHAT_SPAWN === "1" ? it.skip : it;
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
-const pnpmCommand = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
+const tsxArgs = ["--import", "tsx"];
 const tempDirs: string[] = [];
 
 afterEach(() => {
@@ -30,7 +30,7 @@ describe("chat script", () => {
         stdout: string;
         stderr: string;
       }>((resolve, reject) => {
-        const child = spawn(pnpmCommand, ["exec", "tsx", "scripts/chat.ts", "--help"], {
+        const child = spawn(process.execPath, [...tsxArgs, "scripts/chat.ts", "--help"], {
           cwd: repoRoot,
           env: {
             ...process.env,
@@ -67,7 +67,7 @@ describe("chat script", () => {
 
       expect(result.code).toBe(0);
       expect(result.stderr).toBe("");
-      expect(result.stdout).toContain("Usage: pnpm chat -- [options]");
+      expect(result.stdout).toContain("Usage: npm run chat -- [options]");
       expect(result.stdout).toContain("--no-payloads");
     },
     30_000,
@@ -84,7 +84,7 @@ describe("chat script", () => {
         stdout: string;
         stderr: string;
       }>((resolve, reject) => {
-        const child = spawn(pnpmCommand, ["exec", "tsx", "scripts/chat.ts", "--fakes"], {
+        const child = spawn(process.execPath, [...tsxArgs, "scripts/chat.ts", "--fakes"], {
           cwd: repoRoot,
           env: {
             ...process.env,

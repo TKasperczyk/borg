@@ -410,7 +410,7 @@ function printHelp(): void {
 }
 
 function printStartupHelp(): void {
-  writeLine("Usage: pnpm chat -- [options]");
+  writeLine("Usage: npm run chat -- [options]");
   writeLine("");
   writeLine("Options:");
   writeLine("  --session <id>        Session id or label (default: chat).");
