@@ -430,6 +430,65 @@ describe("reflector process", () => {
     );
   });
 
+  it("bounds each cluster prompt to the newest episodes and says how many were omitted", async () => {
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      embeddingClient: new TestEmbeddingClient(
+        new Map([
+          ["cap-tag", [1, 0, 0, 0]],
+          ["Cap insight", [1, 0, 0, 0]],
+          ["Cap insight\nOnly the newest evidence was read.", [1, 0, 0, 0]],
+        ]),
+      ),
+      configOverrides: {
+        offline: { reflector: { minSupport: 2, maxEpisodesPerCluster: 3 } },
+      },
+    });
+    cleanup.push(harness.cleanup);
+    const episodes = [10_000, 20_000, 30_000, 40_000, 50_000].map((timestamp, index) =>
+      createEpisodeFixture(
+        {
+          title: `Cap episode ${index}`,
+          narrative: `Cap evidence ${index}.`,
+          tags: ["cap-tag"],
+          created_at: timestamp,
+          updated_at: timestamp,
+        },
+        [1, 0, 0, 0],
+      ),
+    );
+    llm.pushResponse(
+      createReflectorResponse({
+        label: "Cap insight",
+        description: "Only the newest evidence was read.",
+        confidence: 0.6,
+        source_episode_ids: episodes.slice(2).map((episode) => episode.id),
+      }),
+    );
+    for (const episode of episodes) {
+      await harness.episodicRepository.createEpisode(episode);
+    }
+    const process = new ReflectorProcess({
+      semanticNodeRepository: harness.semanticNodeRepository,
+      semanticEdgeRepository: harness.semanticEdgeRepository,
+      reviewQueueRepository: harness.reviewQueueRepository,
+      registry: harness.registry,
+    });
+    await process.plan(harness.createContext());
+    const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+
+    // Newest three present, oldest two absent.
+    expect(prompt).toContain('"title":"Cap episode 4"');
+    expect(prompt).toContain('"title":"Cap episode 3"');
+    expect(prompt).toContain('"title":"Cap episode 2"');
+    expect(prompt).not.toContain('"title":"Cap episode 1"');
+    expect(prompt).not.toContain('"title":"Cap episode 0"');
+    expect(prompt).toContain(
+      "These are the 3 most recent episodes of this cluster; 2 older episodes are omitted for length.",
+    );
+  });
+
   it("keeps existing insight updates pending until review acceptance and restores snapshots", async () => {
     const previousEpisodes = [
       createEpisodeFixture(

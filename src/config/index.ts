@@ -528,6 +528,14 @@ const configBaseSchema = z.object({
           minSupport: z.number().int().positive().default(3),
           ceilingConfidence: z.number().positive().max(0.5).default(0.5),
           maxInsightsPerRun: z.number().int().positive().default(2),
+          // Bound the evidence in one cluster prompt. Clusters are newest-first,
+          // so the cap keeps the most recent episodes. Tokens are the chars/4
+          // estimate over the actual prompt row, roughly half of provider
+          // tokens (util/token-estimate.ts); the count cap is the structural
+          // guarantee. Without this the prompt grows with the corpus and the
+          // budget below is only a runaway guard, not a bound.
+          maxEpisodesPerCluster: z.number().int().positive().default(120),
+          maxClusterInputTokens: z.number().int().positive().default(40_000),
           // Sized against observed usage, not guessed. The budget sink runs
           // AFTER each call, so an abort total is a LOWER bound on what a
           // completing run costs -- reflector aborted at 248k-271k against the
@@ -1573,6 +1581,16 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["offline", "reflector", "maxInsightsPerRun"],
     readOptionalEnvNumber(env, "BORG_OFFLINE_REFLECTOR_MAX_INSIGHTS_PER_RUN"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "reflector", "maxEpisodesPerCluster"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_REFLECTOR_MAX_EPISODES_PER_CLUSTER"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "reflector", "maxClusterInputTokens"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_REFLECTOR_MAX_CLUSTER_INPUT_TOKENS"),
   );
   setConfigOverride(
     overrides,

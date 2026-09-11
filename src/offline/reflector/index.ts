@@ -42,6 +42,7 @@ import type {
   OfflineProcessError,
   OfflineResult,
 } from "../types.js";
+import { estimatePromptTokens } from "../../util/token-estimate.js";
 import { disclosureLabelForEpisodeIds, episodeEvidencePromptRow } from "../evidence-labels.js";
 import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
 
@@ -140,6 +141,7 @@ const ABSOLUTE_CONFIDENCE_CEILING = 0.5;
 type ReflectionCluster = {
   key: string;
   episodes: Episode[];
+  omittedEpisodeCount: number;
 };
 
 type ReflectionGoalVector = {
@@ -202,6 +204,45 @@ function renderActiveGoalPromptRow(goal: GoalRecord): string {
   });
 }
 
+function reflectionEpisodePromptRow(episode: Episode): string {
+  return JSON.stringify(
+    episodeEvidencePromptRow(episode, {
+      tags: episode.tags,
+      participants: episode.participants,
+    }),
+  );
+}
+
+// Clusters arrive newest-first, so truncation keeps the most recent evidence.
+// The estimate is over the row that actually enters the prompt. At least
+// minSupport episodes are always kept so a qualifying cluster stays qualified.
+function boundClusterEpisodes(
+  episodesNewestFirst: readonly Episode[],
+  minSupport: number,
+  maxEpisodes: number,
+  maxInputTokens: number,
+): { episodes: Episode[]; omittedEpisodeCount: number } {
+  const kept: Episode[] = [];
+  let inputTokens = 0;
+
+  for (const episode of episodesNewestFirst) {
+    if (kept.length >= Math.max(minSupport, maxEpisodes)) {
+      break;
+    }
+
+    const rowTokens = estimatePromptTokens(reflectionEpisodePromptRow(episode));
+
+    if (kept.length >= minSupport && inputTokens + rowTokens > maxInputTokens) {
+      break;
+    }
+
+    kept.push(episode);
+    inputTokens += rowTokens;
+  }
+
+  return { episodes: kept, omittedEpisodeCount: episodesNewestFirst.length - kept.length };
+}
+
 function buildPrompt(cluster: ReflectionCluster, activeGoals: readonly GoalRecord[]): string {
   const goals = activeGoals.map((goal) => renderActiveGoalPromptRow(goal)).join(" | ") || "none";
 
@@ -209,15 +250,13 @@ function buildPrompt(cluster: ReflectionCluster, activeGoals: readonly GoalRecor
     OFFLINE_REFLECTOR_PROMPT_PREAMBLE,
     `Cluster key: ${cluster.key}`,
     `Unfinished goals (including blocked): ${goals}`,
+    ...(cluster.omittedEpisodeCount > 0
+      ? [
+          `These are the ${cluster.episodes.length} most recent episodes of this cluster; ${cluster.omittedEpisodeCount} older episodes are omitted for length.`,
+        ]
+      : []),
     "Episodes:",
-    ...cluster.episodes.map((episode) =>
-      JSON.stringify(
-        episodeEvidencePromptRow(episode, {
-          tags: episode.tags,
-          participants: episode.participants,
-        }),
-      ),
-    ),
+    ...cluster.episodes.map(reflectionEpisodePromptRow),
   ].join("\n");
 }
 
@@ -249,6 +288,8 @@ function collectReflectionClusters(
   minSupport: number,
   maxInsightsPerRun: number,
   goalSimilarityThreshold: number,
+  maxEpisodesPerCluster: number,
+  maxClusterInputTokens: number,
 ): ReflectionCluster[] {
   const byKey = new Map<string, Episode[]>();
   const tagGroupByTag = new Map<string, string>();
@@ -292,7 +333,16 @@ function collectReflectionClusters(
     }))
     .filter((cluster) => cluster.episodes.length >= minSupport)
     .sort((left, right) => right.episodes.length - left.episodes.length)
-    .slice(0, maxInsightsPerRun);
+    .slice(0, maxInsightsPerRun)
+    .map((cluster) => ({
+      key: cluster.key,
+      ...boundClusterEpisodes(
+        cluster.episodes,
+        minSupport,
+        maxEpisodesPerCluster,
+        maxClusterInputTokens,
+      ),
+    }));
 }
 
 function uniqueEpisodeTags(episodes: readonly Episode[]): string[] {
@@ -630,6 +680,8 @@ export class ReflectorProcess implements OfflineProcess {
       ctx.config.offline.reflector.minSupport,
       ctx.config.offline.reflector.maxInsightsPerRun,
       thresholds.reflectionGoalAndTagGrouping,
+      ctx.config.offline.reflector.maxEpisodesPerCluster,
+      ctx.config.offline.reflector.maxClusterInputTokens,
     );
     let tokensUsed = 0;
     let budgetExhausted = false;
