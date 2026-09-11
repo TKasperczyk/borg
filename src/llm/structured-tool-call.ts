@@ -14,7 +14,12 @@ import {
   traceLlmCallStarted,
 } from "../tracing/llm-call-trace.js";
 import type { TurnTraceData, TurnTracer } from "../tracing/tracer.js";
-import { BudgetExceededError, LLMError } from "../util/errors.js";
+import {
+  BudgetExceededError,
+  findInErrorCauseChain,
+  LLMError,
+  LLMToolArgumentsError,
+} from "../util/errors.js";
 import type { SessionId } from "../util/ids.js";
 import type { JsonValue } from "../util/json-value.js";
 import { parseErrorMessage } from "../util/zod-errors.js";
@@ -398,7 +403,36 @@ export async function callStructuredTool<T>(
     return toolCall;
   };
 
-  let response = await complete(request, false);
+  let response: LLMCompleteResult;
+
+  try {
+    response = await complete(request, false);
+  } catch (error) {
+    // Syntactically broken tool arguments surface inside complete(), so the
+    // validation-repair path below never sees them. Re-issue the identical
+    // request once - unless the arguments were cut off by the output limit,
+    // where a retry at the same max_tokens fails the same way.
+    const unparseable = findInErrorCauseChain(
+      error,
+      (candidate): candidate is LLMToolArgumentsError => candidate instanceof LLMToolArgumentsError,
+    );
+
+    if (unparseable === undefined || unparseable.stopReason === "max_tokens" || maxAttempts < 2) {
+      throw error;
+    }
+
+    notifySchemaRepair(options, { status: "attempted", attempt: 2, error });
+
+    try {
+      response = await complete(request, true);
+    } catch (retryError) {
+      notifySchemaRepair(options, { status: "failed", attempt: 2, error: retryError });
+      throw retryError;
+    }
+
+    notifySchemaRepair(options, { status: "succeeded", attempt: 2 });
+  }
+
   let toolCall = acceptedCall(response);
 
   try {

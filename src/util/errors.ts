@@ -92,6 +92,7 @@ export type KnownBorgErrorCode =
   | "LANCEDB_SCHEMA_MISMATCH"
   | "LLM_ATTACHMENT_RESOLVER_MISSING"
   | "LLM_STRUCTURED_OUTPUT_PARSE_FAILED"
+  | "LLM_TOOL_ARGUMENTS_UNPARSEABLE"
   | "MAINTENANCE_AUDIT_INSERT_FAILED"
   | "MAINTENANCE_AUDIT_INVALID"
   | "MAINTENANCE_PROCESS_CADENCE_OVERLAP"
@@ -327,6 +328,25 @@ export class EmbeddingError extends BorgError {
 export class LLMError extends BorgError {
   constructor(message: string, options: BorgTypedErrorOptions = {}) {
     super(options.code ?? "BORG_LLM_ERROR", message, options);
+  }
+}
+
+/**
+ * The provider returned a tool call whose arguments were not valid JSON.
+ * stopReason is the mapped finish reason: "max_tokens" means the arguments were
+ * cut off by the output limit, so re-issuing the same request cannot help.
+ */
+export class LLMToolArgumentsError extends LLMError {
+  readonly toolName: string;
+  readonly stopReason: string | null;
+
+  constructor(
+    message: string,
+    options: BorgErrorOptions & { toolName: string; stopReason: string | null },
+  ) {
+    super(message, { cause: options.cause, code: "LLM_TOOL_ARGUMENTS_UNPARSEABLE" });
+    this.toolName = options.toolName;
+    this.stopReason = options.stopReason;
   }
 }
 

@@ -560,7 +560,7 @@ export class OverseerProcess implements OfflineProcess<OverseerPlan> {
                   ],
                   tools: [OVERSEER_TOOL],
                   tool_choice: { type: "tool", name: OVERSEER_TOOL_NAME },
-                  max_tokens: 4_000,
+                  max_tokens: 8_000,
                   budget: "offline-overseer",
                 },
                 toolName: OVERSEER_TOOL_NAME,

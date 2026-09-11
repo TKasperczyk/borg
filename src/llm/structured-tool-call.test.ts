@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
-import { BudgetExceededError } from "../util/errors.js";
+import { BudgetExceededError, LLMToolArgumentsError } from "../util/errors.js";
 import type {
   LLMClient,
   LLMCompleteOptions,
@@ -181,6 +181,58 @@ describe("callStructuredTool", () => {
       "llm_call.completed",
       expect.objectContaining({ attempt: 2, schema_repair: true, repair_of_attempt: 1 }),
     );
+  });
+
+  it("re-issues the request once when tool arguments were unparseable but not cut off", async () => {
+    const llmClient = queuedClient([
+      new LLMToolArgumentsError("broken", { toolName: TOOL_NAME, stopReason: "tool_use" }),
+      completeResult([{ id: "toolu_2", name: TOOL_NAME, input: { value: "ok" } }]),
+    ]);
+
+    const result = await callStructuredTool({
+      llmClient,
+      request: {
+        model: "model",
+        messages: [{ role: "user", content: "message" }],
+        tools: [TOOL],
+        tool_choice: { type: "tool", name: TOOL_NAME },
+        budget: "test",
+      },
+      toolName: TOOL_NAME,
+      parse: (input) => schema.parse(input),
+    });
+
+    expect(result.parsed).toEqual({ value: "ok" });
+    expect(result.attemptCount).toBe(2);
+    expect(llmClient.complete).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not retry unparseable tool arguments that were cut off by the output limit", async () => {
+    const cutOff = new LLMToolArgumentsError("cut off", {
+      toolName: TOOL_NAME,
+      stopReason: "max_tokens",
+    });
+    const llmClient = queuedClient([
+      cutOff,
+      completeResult([{ id: "toolu_2", name: TOOL_NAME, input: { value: "ok" } }]),
+    ]);
+
+    const thrown = await callStructuredTool({
+      llmClient,
+      request: {
+        model: "model",
+        messages: [{ role: "user", content: "message" }],
+        tools: [TOOL],
+        tool_choice: { type: "tool", name: TOOL_NAME },
+        budget: "test",
+      },
+      toolName: TOOL_NAME,
+      parse: (input) => schema.parse(input),
+    }).catch((error: unknown) => error);
+
+    expect(isStructuredToolCallError(thrown, "llm_failed")).toBe(true);
+    expect((thrown as StructuredToolCallError).cause).toBe(cutOff);
+    expect(llmClient.complete).toHaveBeenCalledTimes(1);
   });
 
   it("preserves invalid_payload when the repair transport fails", async () => {
