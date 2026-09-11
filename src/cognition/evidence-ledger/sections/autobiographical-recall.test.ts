@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { resolveAutobiographicalRecallWindow } from "../../autobiographical-recall.js";
+import {
+  resolveAutobiographicalRecallWindow,
+  shouldRecallAutobiographicalEvidence,
+} from "../../autobiographical-recall.js";
 import type { AutobiographicalRecallResult } from "../../autobiographical-recall.js";
 import { DEFAULT_SESSION_ID, createEntityId } from "../../../util/ids.js";
 import type { BuilderSectionContext } from "../builder-context.js";
@@ -67,6 +70,33 @@ describe("evidence-ledger autobiographical recall section", () => {
     expect(framing?.text).toContain(
       "My window here is resolved from a temporal reference in this turn's inbound text, including one the text only mentions rather than asks about, so a perception_temporal_cue window can close well before now, and evidence outside window_start_ms/window_end_ms is absent by that scope rather than missing from the store.",
     );
+  });
+
+  it("names the cue as the gate on the section, not only as the bound on its window", () => {
+    // shouldRecallAutobiographicalEvidence admits a non-self, non-operator, non-reflective turn
+    // on the cue alone, so on those turns the cue decides the section exists as well as how wide
+    // it is. Naming only the bound leaves the presence readable as a property of the store.
+    const framing = buildSection(recallFixture()).get("autobiographical_recall")?.framing;
+
+    expect(framing?.text).toContain(
+      "That same reference also decides whether this section runs at all: with none in the inbound text I recall autobiographically only when the audience is myself, when the session role is operator, or when perception read this turn as reflective, so on any other turn the section's presence is itself evidence that the inbound text named a time, and its absence there is that reference missing rather than the store being empty.",
+    );
+  });
+
+  it("gates the section on the cue alone for a plain non-self, non-operator turn", () => {
+    const base = {
+      isSelfAudience: false,
+      sessionAudienceRole: "participant",
+      perceptionMode: "problem_solving",
+    } as unknown as Parameters<typeof shouldRecallAutobiographicalEvidence>[0];
+
+    expect(shouldRecallAutobiographicalEvidence({ ...base, temporalCue: null })).toBe(false);
+    expect(
+      shouldRecallAutobiographicalEvidence({
+        ...base,
+        temporalCue: { sinceTs: CUE_START_MS, untilTs: CUE_END_MS, label: "cue" },
+      }),
+    ).toBe(true);
   });
 
   it("stamps the bounds the framing sends the reader to, alongside the cue's own wording", () => {
