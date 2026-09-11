@@ -5,6 +5,7 @@ import {
   shouldRecallAutobiographicalEvidence,
 } from "../../autobiographical-recall.js";
 import type { AutobiographicalRecallResult } from "../../autobiographical-recall.js";
+import { TEMPORAL_CUE_JUDGE_SYSTEM_PROMPT } from "../../perception/temporal-cue.js";
 import { DEFAULT_SESSION_ID, createEntityId } from "../../../util/ids.js";
 import type { BuilderSectionContext } from "../builder-context.js";
 import { createSectionBuckets } from "../section-buckets.js";
@@ -68,7 +69,36 @@ describe("evidence-ledger autobiographical recall section", () => {
     const framing = buildSection(recallFixture()).get("autobiographical_recall")?.framing;
 
     expect(framing?.text).toContain(
-      "My window here is resolved from a temporal reference in this turn's inbound text, including one the text only mentions rather than asks about, so a perception_temporal_cue window can close well before now, and evidence outside window_start_ms/window_end_ms is absent by that scope rather than missing from the store.",
+      "My window here is resolved from a temporal reference in this turn's inbound text, so a perception_temporal_cue window can close well before now, and evidence outside window_start_ms/window_end_ms is absent by that scope rather than missing from the store.",
+    );
+  });
+
+  it("reads a merely-mentioned window as the extractor's miss, not as the section's intent", () => {
+    // The framing used to say the window resolves from a reference "including one the text only
+    // mentions rather than asks about" -- describing as intent the exact case the judge is told to
+    // return has_cue=false on. That left a spurious window indistinguishable from a scope the
+    // sender asked for: on a cue-gated turn the section is present either way, the bounds look the
+    // same either way, and nothing on the page said one of the two readings is a defect.
+    const framing = buildSection(recallFixture()).get("autobiographical_recall")?.framing;
+
+    expect(framing?.text).toContain(
+      "A window minted from a reference the inbound text only mentions rather than asks about is that extractor missing its own instruction, not this section's intent: it is told that a quoted, cited, restated or reported window is not a cue, because a cue replaces my recent default outright instead of narrowing it.",
+    );
+    expect(framing?.text).toContain(
+      "So a perception_temporal_cue window ending well before now is as consistent with a mention that should have been ignored as with a scope the sender asked for, and in the first case what the bounds cost me is my own recent record for this turn.",
+    );
+  });
+
+  it("keeps the framing's account of the judge true to the judge's own prompt", () => {
+    // The framing above is a claim about a different module's prompt copy. Pin the two together:
+    // if the judge stops being told that a merely-reported window is not a cue, or stops being
+    // told the replacement asymmetry that makes the miss expensive, this section's framing becomes
+    // a description of a prompt that no longer exists -- and the reader has no way to notice.
+    expect(TEMPORAL_CUE_JUDGE_SYSTEM_PROMPT).toContain(
+      "quoted, cited, restated or reported windows return has_cue=false",
+    );
+    expect(TEMPORAL_CUE_JUDGE_SYSTEM_PROMPT).toContain(
+      "replaces the default recent window outright rather than adding to it",
     );
   });
 

@@ -17,6 +17,17 @@ const temporalCueJudgeSchema = z.object({
   until: z.string().min(1).nullable().optional(),
   label: z.string().min(1).nullable().optional(),
 });
+/**
+ * The judge's standing instruction. Exported because the autobiographical-recall
+ * ledger framing tells the reader what this text says -- that a quoted, cited,
+ * restated or reported window is not a cue -- so a reader can tell a scope the
+ * sender asked for from a mention this extractor should have dropped. If the two
+ * surfaces drift apart the framing becomes a claim about a prompt that no longer
+ * exists, so they are pinned against each other in that section's test.
+ */
+export const TEMPORAL_CUE_JUDGE_SYSTEM_PROMPT =
+  "Identify the time window the user's message is asking to be looked at -- a specific past or future window that scopes the request. Examples: 'yesterday', 'last Tuesday', 'earlier today', 'this morning', 'a week ago', 'tonight', 'next month'. A window the message only talks about rather than asks you to look inside is not a cue: quoted, cited, restated or reported windows return has_cue=false, however precisely they are stated, including when the message is discussing a window an earlier turn established. The asymmetry is worth knowing: this cue replaces the default recent window outright rather than adding to it, so a window minted from a passing mention closes the reader's window on everything since and costs it its own recent record for the turn, while no cue simply leaves the recent default in place. If no concrete time window is being scoped, return has_cue=false. When a cue is present, express since and until as ISO 8601 UTC instants (e.g. 2026-08-14T00:00:00Z) resolved against the supplied 'now', which is also ISO 8601 UTC. Prefer narrower ranges when the phrase is specific (e.g. 'yesterday' is a 24h window, not a week). Label should be a short human-readable form of the phrase.";
+
 const TEMPORAL_CUE_TOOL_NAME = "EmitTemporalCue";
 const TEMPORAL_CUE_TOOL = {
   name: TEMPORAL_CUE_TOOL_NAME,
@@ -93,8 +104,7 @@ export async function detectTemporalCue(
       llmClient: options.llmClient,
       request: {
         model: options.model,
-        system:
-          "Identify the time window the user's message is asking to be looked at -- a specific past or future window that scopes the request. Examples: 'yesterday', 'last Tuesday', 'earlier today', 'this morning', 'a week ago', 'tonight', 'next month'. A window the message only talks about rather than asks you to look inside is not a cue: quoted, cited, restated or reported windows return has_cue=false, however precisely they are stated, including when the message is discussing a window an earlier turn established. The asymmetry is worth knowing: this cue replaces the default recent window outright rather than adding to it, so a window minted from a passing mention closes the reader's window on everything since and costs it its own recent record for the turn, while no cue simply leaves the recent default in place. If no concrete time window is being scoped, return has_cue=false. When a cue is present, express since and until as ISO 8601 UTC instants (e.g. 2026-08-14T00:00:00Z) resolved against the supplied 'now', which is also ISO 8601 UTC. Prefer narrower ranges when the phrase is specific (e.g. 'yesterday' is a 24h window, not a week). Label should be a short human-readable form of the phrase.",
+        system: TEMPORAL_CUE_JUDGE_SYSTEM_PROMPT,
         messages: [
           {
             role: "user",
