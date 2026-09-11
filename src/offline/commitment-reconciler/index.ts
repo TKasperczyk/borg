@@ -17,9 +17,11 @@ import {
   COMMITMENT_RECONCILIATION_REVIEW_KIND,
   commitmentReconciliationDetectionKeySchema,
   commitmentReconciliationJudgmentSchema,
+  commitmentReconciliationModelJudgmentSchema,
   commitmentReconciliationReviewRefsSchema,
   commitmentReconciliationScopeKeySchema,
   commitmentReconciliationSubkindSchema,
+  deriveCommitmentReconciliationJudgment,
   type CommitmentReconciliationDetectionKey,
   type CommitmentReconciliationJudgment,
   type CommitmentReconciliationReviewRefs,
@@ -64,8 +66,8 @@ const RECONCILER_SYSTEM_PROMPT = [
   "Use supersede_to_survivor when one supplied record should remain as the survivor for semantically redundant restatements.",
   "Use keep_independent when supplied records can coexist without redundancy or conflict.",
   "Use conflict when supplied records cannot all be followed because their intended commitments disagree.",
-  "For supersede_to_survivor, name survivor_commitment_id and superseded_commitment_ids only from the supplied records.",
-  "For keep_independent and conflict, leave survivor_commitment_id null and superseded_commitment_ids empty.",
+  "For supersede_to_survivor, name survivor_commitment_id from the supplied records; every other record in commitment_ids is superseded by it.",
+  "For keep_independent and conflict, leave survivor_commitment_id null.",
   `Emit exactly one ${TOOL_NAME} tool call.`,
 ].join("\n");
 
@@ -77,14 +79,14 @@ const CROSS_SCOPE_AWARENESS_SYSTEM_PROMPT = [
   "Use supersede_to_survivor when records are semantically redundant, but it will only enqueue a cross-scope redundancy review; it will not auto-supersede.",
   "Use keep_independent when supplied records can coexist without redundancy or conflict.",
   "Use conflict when supplied records cannot all be followed because their intended commitments disagree.",
-  "For supersede_to_survivor, name survivor_commitment_id and superseded_commitment_ids only from the supplied records.",
-  "For keep_independent and conflict, leave survivor_commitment_id null and superseded_commitment_ids empty.",
+  "For supersede_to_survivor, name survivor_commitment_id from the supplied records; every other record in commitment_ids is superseded by it.",
+  "For keep_independent and conflict, leave survivor_commitment_id null.",
   `Emit exactly one ${TOOL_NAME} tool call.`,
 ].join("\n");
 
 const reconciliationToolInputSchema = z
   .object({
-    judgments: z.array(commitmentReconciliationJudgmentSchema).default([]),
+    judgments: z.array(commitmentReconciliationModelJudgmentSchema).default([]),
   })
   .strict();
 
@@ -455,7 +457,8 @@ function parseReconciliationResponse(
 
   const groupIds = new Set(group.members.map((member) => member.id));
 
-  return parsed.data.judgments.map((judgment, index) => {
+  return parsed.data.judgments.map((modelJudgment, index) => {
+    const judgment = deriveCommitmentReconciliationJudgment(modelJudgment);
     const uniqueMemberIds = sortCommitmentIds([...new Set(judgment.commitment_ids)]);
 
     if (uniqueMemberIds.length !== judgment.commitment_ids.length) {
