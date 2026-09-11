@@ -648,6 +648,14 @@ const configBaseSchema = z.object({
           budget: z.number().int().positive().default(500_000),
           maxObservationsPerRun: z.number().int().positive().default(4),
           minSupportEpisodes: z.number().int().positive().default(2),
+          // Bound the episode evidence in one narration call. Without this the
+          // prompt grows with the period (259k provider tokens on one bank,
+          // over the 262k context). Rows are estimated with the chars/4
+          // estimator, which understates provider tokens by roughly 2x on
+          // measured surfaces (util/token-estimate.ts), so the count cap is
+          // the structural guarantee and the token cap a second bound.
+          maxEpisodesPerRun: z.number().int().positive().default(150),
+          maxInputTokensPerRun: z.number().int().positive().default(60_000),
           cadenceHintDays: z.number().positive().default(7),
         })
         .prefault({}),
@@ -1804,6 +1812,16 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["offline", "selfNarrator", "minSupportEpisodes"],
     readOptionalEnvNumber(env, "BORG_OFFLINE_SELF_NARRATOR_MIN_SUPPORT_EPISODES"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "selfNarrator", "maxEpisodesPerRun"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_SELF_NARRATOR_MAX_EPISODES_PER_RUN"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "selfNarrator", "maxInputTokensPerRun"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_SELF_NARRATOR_MAX_INPUT_TOKENS_PER_RUN"),
   );
   setConfigOverride(
     overrides,

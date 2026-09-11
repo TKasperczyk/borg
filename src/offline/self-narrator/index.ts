@@ -26,6 +26,7 @@ import {
 import { createAutobiographicalPeriodId, createGrowthMarkerId } from "../../util/ids.js";
 import { BudgetExceededError, StorageError } from "../../util/errors.js";
 import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
+import { estimatePromptTokens } from "../../util/token-estimate.js";
 
 import type { ReverserRegistry } from "../audit-log.js";
 import { getBudgetErrorTokens, withBudget } from "../budget.js";
@@ -188,11 +189,49 @@ export const SELF_NARRATOR_PERIOD_NARRATIVE_GUIDANCE = [
   "If the evidence is too thin for a period narrative, I set period_narrative to null.",
 ].join(" ");
 
+function episodePromptRow(episode: Episode): string {
+  return JSON.stringify(episodeEvidencePromptRow(episode, { start_time: episode.start_time }));
+}
+
+// Newest-first: updating the period narrative never advances start_ts, so an
+// oldest-first window would re-select the same episodes on every run. The
+// estimate is over the row that actually enters the prompt. At least one
+// episode is always kept so a single oversized row cannot empty the selection.
+function selectNewestEpisodesWithinBudget(
+  episodesOldestFirst: readonly Episode[],
+  maxEpisodes: number,
+  maxInputTokens: number,
+): { episodes: Episode[]; omittedEpisodeCount: number } {
+  const selected: Episode[] = [];
+  let inputTokens = 0;
+
+  for (let index = episodesOldestFirst.length - 1; index >= 0; index -= 1) {
+    const episode = episodesOldestFirst[index]!;
+    const rowTokens = estimatePromptTokens(episodePromptRow(episode));
+    const wouldExceedTokenCap = selected.length > 0 && inputTokens + rowTokens > maxInputTokens;
+
+    if (selected.length >= maxEpisodes || wouldExceedTokenCap) {
+      break;
+    }
+
+    selected.push(episode);
+    inputTokens += rowTokens;
+  }
+
+  selected.reverse();
+
+  return {
+    episodes: selected,
+    omittedEpisodeCount: episodesOldestFirst.length - selected.length,
+  };
+}
+
 function buildObservationPrompt(
   episodes: readonly Episode[],
   minSupportEpisodes: number,
   maxObservationsPerRun: number,
   currentPeriod: AutobiographicalPeriod | null,
+  omittedEpisodeCount: number,
 ): string {
   return [
     "I narrate my own recent experience by identifying thematic clusters and grounded autobiographical growth observations from these candidate episodes.",
@@ -219,10 +258,13 @@ function buildObservationPrompt(
             ),
           },
     ),
+    ...(omittedEpisodeCount > 0
+      ? [
+          `These are the ${episodes.length} most recent candidate episodes of this period; ${omittedEpisodeCount} earlier episodes are omitted for length.`,
+        ]
+      : []),
     "Episodes:",
-    ...episodes.map((episode) =>
-      JSON.stringify(episodeEvidencePromptRow(episode, { start_time: episode.start_time })),
-    ),
+    ...episodes.map(episodePromptRow),
   ].join("\n");
 }
 
@@ -388,7 +430,7 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
     const nowMs = ctx.clock.now();
     const configuredLabel = typeof opts.params?.label === "string" ? opts.params.label.trim() : "";
     const currentPeriod = ctx.autobiographicalRepository.currentPeriod();
-    const sourceEpisodes = (await ctx.episodicRepository.listEffectivelyVisible())
+    const candidateEpisodes = (await ctx.episodicRepository.listEffectivelyVisible())
       .filter(
         (episode) =>
           currentPeriod === null ||
@@ -396,6 +438,11 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
           episode.end_time >= currentPeriod.start_ts,
       )
       .sort((left, right) => left.start_time - right.start_time || left.id.localeCompare(right.id));
+    const { episodes: sourceEpisodes, omittedEpisodeCount } = selectNewestEpisodesWithinBudget(
+      candidateEpisodes,
+      ctx.config.offline.selfNarrator.maxEpisodesPerRun,
+      ctx.config.offline.selfNarrator.maxInputTokensPerRun,
+    );
     const minSupportEpisodes = ctx.config.offline.selfNarrator.minSupportEpisodes;
     const maxObservationsPerRun = ctx.config.offline.selfNarrator.maxObservationsPerRun;
     const markerCandidates: Array<z.infer<typeof serializableGrowthMarkerSchema>> = [];
@@ -428,6 +475,7 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
                         minSupportEpisodes,
                         maxObservationsPerRun,
                         currentPeriod,
+                        omittedEpisodeCount,
                       ),
                     },
                   ],

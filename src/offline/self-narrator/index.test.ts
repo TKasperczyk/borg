@@ -761,6 +761,56 @@ describe("SelfNarratorProcess", () => {
     }
   });
 
+  it("bounds the prompt to the newest episodes and says how many were omitted", async () => {
+    const llm = new FakeLLMClient({
+      responses: [createSelfNarratorResponse({ observation: null })],
+    });
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      clock: { now: () => Date.UTC(2026, 3, 10) },
+      configOverrides: { offline: { selfNarrator: { maxEpisodesPerRun: 3 } } },
+    });
+    const process = new SelfNarratorProcess({
+      autobiographicalRepository: harness.autobiographicalRepository,
+      growthMarkersRepository: harness.growthMarkersRepository,
+      registry: harness.registry,
+    });
+
+    try {
+      for (const day of [1, 2, 3, 4, 5]) {
+        const at = Date.UTC(2026, 3, day);
+        await harness.episodicRepository.createEpisode(
+          createEpisodeFixture({
+            id: `ep_day${day}day${day}day${day}day${day}`.slice(0, 19) as never,
+            title: `Day ${day}`,
+            narrative: `Something happened on day ${day}.`,
+            start_time: at,
+            end_time: at,
+            created_at: at,
+            updated_at: at,
+          }),
+        );
+      }
+
+      await process.plan(harness.createContext(), {});
+
+      const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+      // Newest three are present, oldest two are not.
+      expect(prompt).toContain('"title":"Day 5"');
+      expect(prompt).toContain('"title":"Day 4"');
+      expect(prompt).toContain('"title":"Day 3"');
+      expect(prompt).not.toContain('"title":"Day 2"');
+      expect(prompt).not.toContain('"title":"Day 1"');
+      // Kept episodes stay in chronological order.
+      expect(prompt.indexOf('"title":"Day 3"')).toBeLessThan(prompt.indexOf('"title":"Day 5"'));
+      expect(prompt).toContain(
+        "These are the 3 most recent candidate episodes of this period; 2 earlier episodes are omitted for length.",
+      );
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
   it("skips invalid observations that do not cite enough supporting episodes", async () => {
     const llm = new FakeLLMClient({
       responses: [
