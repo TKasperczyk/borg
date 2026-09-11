@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { operatorAttentionPromptRow } from "../../../memory/operator-attention/disclosure.js";
 import { unknownMemoryDisclosureLabel } from "../../../memory/common/disclosure-label.js";
 import { HEADWAY_EMISSION_KINDS } from "../../../autonomy/index.js";
+import { FINALIZER_NO_OUTPUT_SEMANTIC_CATEGORIES } from "../../generation/types.js";
 import type { MoodHistoryEntry } from "../../../memory/affective/index.js";
 import type { CommitmentRecord } from "../../../memory/commitments/index.js";
 import type { SocialProfile } from "../../../memory/social/index.js";
@@ -4622,6 +4623,20 @@ describe("buildBaseSystemPrompt", () => {
     expect(block).toContain("structural_no_output_flags=");
     expect(block).toContain("finalizer_invalid_tool=");
     expect(block).toContain("schema_error");
+    // The two diagnostic lists share a derivation: the structural categories in
+    // no_output_categories come from the same harness counts as the flags beside them, so
+    // the page must not let their agreement read as two witnesses.
+    expect(block).toContain("The two diagnostic lists under an entry are one record, not two.");
+    expect(block).toContain(
+      "with_state_delta with current_turn_state_delta, with_open_question with open_question_rendered",
+    );
+    expect(block).toContain("so a structural category there is never a word I chose");
+    expect(block).toContain("I do not cite one as evidence for the other");
+    // The accepted-value list is built from the tool's own enum rather than restated, so a
+    // category added to the schema cannot silently fall out of the sentence naming it.
+    for (const category of FINALIZER_NO_OUTPUT_SEMANTIC_CATEGORIES) {
+      expect(block).toContain(category);
+    }
   });
 
   it("renders regeneration breadcrumbs without draft or guard-internal content", () => {

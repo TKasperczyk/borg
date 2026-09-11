@@ -101,6 +101,10 @@ import {
   RECENT_SUPPRESSIONS_LIMIT,
 } from "../../generation/discourse-state.js";
 import { classifySuppressionReason } from "../../generation/suppression-outcome.js";
+import {
+  FINALIZER_NO_OUTPUT_SEMANTIC_CATEGORIES,
+  FINALIZER_NO_OUTPUT_STRUCTURAL_CATEGORIES,
+} from "../../generation/types.js";
 import { LIVE_TURN_READ_FINALIZER_TOOL_MENU } from "../autonomous-finalizer-tools.js";
 
 export { formatRelativeAge } from "../../../util/relative-time.js";
@@ -2562,6 +2566,22 @@ const WAKE_SILENT_OUTCOME_CLASSES =
 const SUPPRESSION_OUTCOME_CLASSES =
   "deliberate-silence (the turn was mine to close and I closed it), emission-failed (an emission was attempted and did not come out), guard-blocked (a post-generation guard stopped a draft I had already produced), observed, unknown (a code this mapping does not cover)";
 
+/**
+ * `no_output_categories` and `structural_no_output_flags` render as two adjacent JSON arrays and
+ * read as two independent records of one silence. They are not. The category list is a union of
+ * what the EmitNoOutput tool accepted from the model and structural categories the harness derived
+ * from counts it took before the call, with nothing marking which side an element came from. Each
+ * structural category is pushed alongside a second name for the same count by a single branch, so
+ * that pair cannot disagree. `borg_directly_addressed` inverts the direction, deriving from a
+ * semantic category the model did choose. Agreement across the two lines is therefore restatement,
+ * and unnamed it reads as corroboration the page structurally cannot supply.
+ */
+const NO_OUTPUT_DIAGNOSTIC_PROVENANCE = `The two diagnostic lists under an entry are one record, not two. The only values my EmitNoOutput tool accepts for no_output_categories are ${FINALIZER_NO_OUTPUT_SEMANTIC_CATEGORIES.join(
+  ", ",
+)}; the structural categories that also appear in that list -- ${FINALIZER_NO_OUTPUT_STRUCTURAL_CATEGORIES.join(
+  ", ",
+)} -- are added afterwards from counts the harness took before it called me, and nothing in the rendered list marks which side an element came from, so a structural category there is never a word I chose. Each of those is also emitted into structural_no_output_flags beside a second name for the same count (with_state_delta with current_turn_state_delta, with_open_question with open_question_rendered), both pushed by one branch, so that pair cannot disagree and its agreement measures nothing. borg_directly_addressed runs the other way, derived from the semantic category when_borg_addressed that I did choose. primary_no_output_reason is mine when I supply one and is otherwise computed from the semantic categories alone. So the categories and the flags agreeing is restatement, not corroboration, and I do not cite one as evidence for the other.`;
+
 function renderWakeSilentReasonLines(
   tally: AutonomySchedulerFleetBrakeDescription["window_silent_reasons"],
   span: AutonomySchedulerFleetBrakeDescription["window_silent_span"],
@@ -2662,7 +2682,7 @@ function summarizeMechanismEvidence(
         .map((entry) => renderRecentSuppressionMechanismEvidence(entry, renderNowMs))
         .join(
           ", ",
-        )}. The bracketed token after each reason code is that code's outcome class, and the whole contrast set is ${SUPPRESSION_OUTCOME_CLASSES} -- so a list showing only one of them is a fact about these entries, not about which classes can occur. The class is not recoverable from the reason code by reading it: sibling codes in one enum fall on opposite sides of the line, and deliberate-silence means the turn was mine to close and I closed it, which is a different account of the same blank than a guard stopping a draft I had already written. If asked about going quiet, I attribute it to the actual reason code, its outcome class, and the rendered diagnostic. I do not invent network failures, latency spikes, or technical errors, and I do not report my own closure as something done to me.`,
+        )}. The bracketed token after each reason code is that code's outcome class, and the whole contrast set is ${SUPPRESSION_OUTCOME_CLASSES} -- so a list showing only one of them is a fact about these entries, not about which classes can occur. The class is not recoverable from the reason code by reading it: sibling codes in one enum fall on opposite sides of the line, and deliberate-silence means the turn was mine to close and I closed it, which is a different account of the same blank than a guard stopping a draft I had already written. If asked about going quiet, I attribute it to the actual reason code, its outcome class, and the rendered diagnostic. I do not invent network failures, latency spikes, or technical errors, and I do not report my own closure as something done to me. ${NO_OUTPUT_DIAGNOSTIC_PROVENANCE}`,
     );
   }
 
