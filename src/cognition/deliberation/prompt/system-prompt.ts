@@ -100,6 +100,7 @@ import {
   RECENT_REGENERATIONS_LIMIT,
   RECENT_SUPPRESSIONS_LIMIT,
 } from "../../generation/discourse-state.js";
+import { classifySuppressionReason } from "../../generation/suppression-outcome.js";
 import { LIVE_TURN_READ_FINALIZER_TOOL_MENU } from "../autonomous-finalizer-tools.js";
 
 export { formatRelativeAge } from "../../../util/relative-time.js";
@@ -2553,6 +2554,14 @@ function renderWakeErrorReasonLines(
 const WAKE_SILENT_OUTCOME_CLASSES =
   "deliberate-silence (you closed the wake), emission-failed (an emission was attempted and did not come out), guard-blocked (a post-generation guard stopped it), observed, outbound-undelivered (you posted to another session and it did not come back delivered, so the wake is silent because carriage failed rather than because you closed it)";
 
+/**
+ * Same reason as the constant above, one layer in: the silences list renders whichever classes
+ * its own entries happen to carry, and a ring that is all one class reads as if that class were
+ * the only outcome a suppression can have. Name the set so the rendered subset cannot pass for it.
+ */
+const SUPPRESSION_OUTCOME_CLASSES =
+  "deliberate-silence (the turn was mine to close and I closed it), emission-failed (an emission was attempted and did not come out), guard-blocked (a post-generation guard stopped a draft I had already produced), observed, unknown (a code this mapping does not cover)";
+
 function renderWakeSilentReasonLines(
   tally: AutonomySchedulerFleetBrakeDescription["window_silent_reasons"],
   span: AutonomySchedulerFleetBrakeDescription["window_silent_span"],
@@ -2653,7 +2662,7 @@ function summarizeMechanismEvidence(
         .map((entry) => renderRecentSuppressionMechanismEvidence(entry, renderNowMs))
         .join(
           ", ",
-        )}. If asked about going quiet, I attribute it to the actual reason code and rendered diagnostic. I do not invent network failures, latency spikes, or technical errors.`,
+        )}. The bracketed token after each reason code is that code's outcome class, and the whole contrast set is ${SUPPRESSION_OUTCOME_CLASSES} -- so a list showing only one of them is a fact about these entries, not about which classes can occur. The class is not recoverable from the reason code by reading it: sibling codes in one enum fall on opposite sides of the line, and deliberate-silence means the turn was mine to close and I closed it, which is a different account of the same blank than a guard stopping a draft I had already written. If asked about going quiet, I attribute it to the actual reason code, its outcome class, and the rendered diagnostic. I do not invent network failures, latency spikes, or technical errors, and I do not report my own closure as something done to me.`,
     );
   }
 
@@ -2820,9 +2829,18 @@ function renderRecentSuppressionMechanismEvidence(
       ? null
       : `finalizer_invalid_tool=${escapeXmlText(JSON.stringify(diagnostics.finalizerInvalidTool))}`,
   ].filter((line): line is string => line !== null);
+  // The reason code alone does not say which of the two things happened. `finalizer_no_output`
+  // and `commitment_violation` are siblings in one enum and read alike, but the first is my own
+  // closure and the second is a guard stopping a draft I had already produced. The mapping is
+  // not inferable from the name -- the codebase computes it in generation/suppression-outcome.ts
+  // and, until now, kept it -- so a silence of mine could be read back as enforcement, or the
+  // reverse, with nothing on the page to check against. Render the class beside the code.
   const rendered = `${escapeXmlText(entry.turnId)}:${escapeXmlText(
     String(entry.reason),
-  )}${renderRelativeAgeSuffix(entry.ts, renderNowMs)}`;
+  )}[${escapeXmlText(classifySuppressionReason(entry.reason))}]${renderRelativeAgeSuffix(
+    entry.ts,
+    renderNowMs,
+  )}`;
 
   return renderedDiagnostics.length === 0
     ? rendered

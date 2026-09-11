@@ -2705,7 +2705,12 @@ describe("buildBaseSystemPrompt", () => {
     const block = extractBlock(prompt, "borg_mechanism_evidence");
 
     expect(block).toContain("Recent silences from my side");
-    expect(block).toContain("turn-autonomous-silence:finalizer_no_output");
+    // The class, not just the code: finalizer_no_output is my own closure, and its enum sibling
+    // commitment_violation is a guard. Nothing in either name says which, so the page has to.
+    expect(block).toContain("turn-autonomous-silence:finalizer_no_output[deliberate-silence]");
+    expect(block).toContain("deliberate-silence (the turn was mine to close and I closed it)");
+    expect(block).toContain("guard-blocked (a post-generation guard stopped a draft");
+    expect(block).toContain("I do not report my own closure as something done to me");
   });
 
   it.each(["user", "autonomous", "directed_outbound"] as const)(
@@ -4538,8 +4543,10 @@ describe("buildBaseSystemPrompt", () => {
     );
     const block = extractBlock(prompt, "borg_mechanism_evidence");
 
-    expect(block).toContain("turn-fossil:internal_identifier_leak (12d ago)");
-    expect(block).toContain("turn-fresh:commitment_violation_after_regenerate (30m ago)");
+    expect(block).toContain("turn-fossil:internal_identifier_leak[guard-blocked] (12d ago)");
+    expect(block).toContain(
+      "turn-fresh:commitment_violation_after_regenerate[guard-blocked] (30m ago)",
+    );
     expect(block).toContain(
       "turn-regenerated: an internal commitment guard regenerated this turn's final answer (commitments_unrecorded) (3h ago)",
     );
