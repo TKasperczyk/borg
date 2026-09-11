@@ -208,7 +208,7 @@ export async function acquireEmbeddingBankAccess(
     return lease.release;
   } catch (cause) {
     throw new EmbeddingBankError(
-      "Tenant bank is in use; drain it through /memory/admin/evict before resuming the embedding migration",
+      "Tenant bank lease is held by another process. If the sidecar holds it, drain the tenant through /memory/admin/evict; if the holder crashed and its lock was not reaped, replace the pod (rollout restart) rather than deleting the lock",
       { code: "EMBEDDING_BANK_BUSY", cause },
     );
   }
