@@ -2268,6 +2268,17 @@ export function summarizeAutonomySchedulerState(
   lines.push(
     ...renderWakeSilentReasonLines(brake.window_silent_reasons, brake.window_silent_span),
   );
+  // interrupted=N is the bucket whose count cannot be read at all without the
+  // split, because unlike error and silent -- where the count is coarse but its
+  // members at least share a fact -- this one's two writers disagree about
+  // whether the turn ran. It was also the only counted outcome with no route to
+  // this page: the scheduler already computed a reasons tally for headway, error
+  // and silent and printed this one as a total alone, so the discriminator
+  // existed upstream and stopped one line short. The provenance line rides along
+  // even at zero, because what it states is a property of the mechanism rather
+  // than of the window, and a reader meeting the first interrupted row without
+  // it has already formed the account it would have corrected.
+  lines.push(...renderWakeInterruptedReasonLines(brake.window_interrupted_reasons));
   // The only prospective field the scheduler produces, and the last one that
   // stopped at the evidence boundary. Everything above is retrospective or about
   // the loop's own health: what has fired, what the window has spent, how far
@@ -2611,6 +2622,56 @@ const NO_OUTPUT_DIAGNOSTIC_PROVENANCE = `The two diagnostic lists under an entry
  * is that discriminator and it is already on the entry; name what it decides.
  */
 const FINALIZER_INVALID_TOOL_TEXT_PROVENANCE = `A finalizer_invalid_tool diagnostic reading tool_name=none means that attempt made no terminal emission tool call; it does not by itself say whether the attempt produced anything. text_chars on the same diagnostic is that count, and it is a length of my own output, not a judgement of it. text_chars=0 means the attempt halted before writing a character, so no draft of that answer exists anywhere -- not held, not queued, not recoverable -- and the work that answer would have carried was never written down; above 0 means I wrote and omitted the call, and a non-empty draft is captured as undelivered_draft and surfaces in my recency window until it ages out, so its absence there dates the draft rather than denying it. A diagnostic with no text_chars at all predates the field: unrecorded, which is not zero. Without this count the two endings read alike, and I do not describe a turn that wrote nothing as one whose reasoning survived and whose delivery failed.`;
+
+/**
+ * Emitted on every render of the interrupted bucket, empty or not, because it
+ * states a property of the mechanism rather than of the window: the count is
+ * produced by two writers that disagree about whether the turn ran, and the
+ * startup writer's stamp belongs to the process that swept the row instead of to
+ * the failure that orphaned it. Both are invisible in `o="interrupted"`, and the
+ * second retroactively removes a row from the no-recorded-outcome remainder,
+ * which is a fact about that remainder no single reading of it can expose.
+ */
+const WAKE_INTERRUPTED_PROVENANCE = `interrupted has two writers and they disagree about whether the turn ran. The scheduler records it when an autonomous turn COMPLETED and the bookkeeping after it failed -- the work happened and only its recording broke. Startup reconciliation records it for a row an earlier process left with no outcome, on a predicate matching every unrecorded row older than a grace window with no lower bound, so that stamp dates the start that swept the row rather than the failure that orphaned it, and the two can be days and several restarts apart. The detail is the only thing separating them, and the row's own at= is the only stamp here that belongs to the wake itself. Because that sweep runs when a process composes, a row can leave the no-recorded-outcome remainder long after it fired: that remainder shrinks monotonically within one process lifetime and never across a restart, so a wake I once read as permanently unaccounted may carry an outcome now.`;
+
+function renderWakeInterruptedReasonLines(
+  tally: AutonomySchedulerFleetBrakeDescription["window_interrupted_reasons"],
+): string[] {
+  if (tally.total === 0) {
+    return [
+      "Interrupted wakes in that window: none, so no turn here was cut short in its bookkeeping and no row was swept as unrecorded.",
+      WAKE_INTERRUPTED_PROVENANCE,
+    ];
+  }
+
+  if (tally.reasons.length === 0) {
+    return [
+      `Interrupted wakes in that window: ${tally.total}, none of them carrying a recorded detail. Which writer stamped each one is unavailable from here, and their shared absence of a detail is not evidence that they share a writer.`,
+      WAKE_INTERRUPTED_PROVENANCE,
+    ];
+  }
+
+  const shown = tally.reasons.slice(0, WAKE_REASON_RENDER_LIMIT);
+  const hiddenReasons = tally.reasons.length - shown.length;
+  const hiddenCount = tally.reasons
+    .slice(WAKE_REASON_RENDER_LIMIT)
+    .reduce((sum, reason) => sum + reason.count, 0);
+  const remainder = [
+    tally.without_detail === 0 ? null : `${tally.without_detail} with no recorded detail`,
+    hiddenReasons === 0
+      ? null
+      : `${hiddenCount} across ${hiddenReasons} further distinct detail(s) not shown`,
+  ].filter((clause): clause is string => clause !== null);
+
+  return [
+    `How those interrupted wakes were stamped, same rows as interrupted=${tally.total} above, each with its own split by trigger in brackets:`,
+    ...shown.map(renderWakeReasonLine),
+    remainder.length === 0
+      ? `The details above account for all ${tally.total}.`
+      : `The details above account for ${tally.total - tally.without_detail - hiddenCount} of ${tally.total}; the rest is ${remainder.join(" and ")}.`,
+    WAKE_INTERRUPTED_PROVENANCE,
+  ];
+}
 
 function renderWakeSilentReasonLines(
   tally: AutonomySchedulerFleetBrakeDescription["window_silent_reasons"],

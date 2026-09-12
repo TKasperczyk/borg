@@ -212,6 +212,7 @@ const FIXTURE_AUTONOMY_SCHEDULER_STATE: NonNullable<
     window_error_span: null,
     window_silent_span: null,
     window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
+    window_interrupted_reasons: { total: 0, without_detail: 0, reasons: [] },
   },
   budget: {
     max_wakes_per_window: 6,

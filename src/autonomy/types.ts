@@ -332,6 +332,20 @@ export type AutonomySchedulerFleetBrakeDescription = {
    * the table.
    */
   window_silent_span: AutonomyWakeOutcomeSpan | null;
+  /**
+   * The `interrupted` entry of `window_outcomes` above, split by the detail its
+   * writer recorded -- same rows, same window, read like `window_error_reasons`.
+   *
+   * Carried because this is the bucket whose bare count is least readable, and
+   * the ambiguity runs in opposite directions rather than merely being coarse.
+   * `interrupted` has two writers. The scheduler records it when an autonomous
+   * turn COMPLETED and the bookkeeping after it failed. Startup reconciliation
+   * records it for a row an earlier process left with no outcome, on a predicate
+   * with no lower time bound. So `interrupted=N` cannot say whether those turns
+   * ran, which is the one question the count is asked, and the detail separates
+   * the two exactly -- it already exists at the moment each writer records.
+   */
+  window_interrupted_reasons: AutonomyWakeOutcomeDetailTally;
 };
 
 export type AutonomySchedulerDescription = {

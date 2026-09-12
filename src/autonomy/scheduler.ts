@@ -1090,6 +1090,19 @@ export class AutonomyScheduler {
           budgetCutoff,
           "silent",
         ),
+        // Same rows as window_outcomes.interrupted, one level down, and the
+        // split carries more here than anywhere else in this table: the two
+        // writers of `interrupted` disagree about whether the turn ran. A
+        // post-turn bookkeeping failure means the turn finished and only the
+        // recording after it broke; a startup reconciliation means a later
+        // process found the row unrecorded and says nothing about what the turn
+        // did. Summed into one number they support both readings and settle
+        // neither, and the discriminator was written at the same instant as the
+        // outcome it explains.
+        window_interrupted_reasons: this.options.wakeRepository.summarizeOutcomeDetailsSince(
+          budgetCutoff,
+          "interrupted",
+        ),
       },
       sources,
     };

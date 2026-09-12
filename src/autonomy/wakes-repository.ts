@@ -103,8 +103,19 @@ const autonomyWakeRowSchema = z.object({
  */
 export const AUTONOMY_WAKE_OUTCOME_DETAIL_MAX_LENGTH = 300;
 export const AUTONOMY_WAKE_STARTUP_INTERRUPTED_GRACE_MS = 60 * 60 * 1_000;
+/**
+ * What the sweep's predicate establishes, and nothing beyond it. `outcome IS
+ * NULL AND ts < now - grace` has no lower bound, so it stamps every row any
+ * earlier process left unrecorded, not only a run that was live when this one
+ * started. Two things follow that the old wording asserted away. The stamp dates
+ * the start that noticed the row, not the failure that orphaned it -- those can
+ * be days and several restarts apart. And it does not say whether the turn ran:
+ * a row is left NULL both by a turn that never began and by one that finished
+ * and failed to record. A detail is read as the account of the ending, so one
+ * that names an ending it cannot witness is an ending the reader will adopt.
+ */
 export const AUTONOMY_WAKE_STARTUP_INTERRUPTED_DETAIL =
-  "Wake was still in flight when Borg started; recorded as interrupted.";
+  "No outcome had been recorded when a later process started; one writer per data directory, so no live run could still own the row and it was reconciled as interrupted. Dates the start that swept it, not the failure.";
 
 function clampOutcomeDetail(detail: string | null | undefined): string | null {
   if (detail === null || detail === undefined) {

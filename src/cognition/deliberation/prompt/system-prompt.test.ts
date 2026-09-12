@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import { operatorAttentionPromptRow } from "../../../memory/operator-attention/disclosure.js";
 import { unknownMemoryDisclosureLabel } from "../../../memory/common/disclosure-label.js";
-import { AUTONOMY_CONDITION_NAMES, HEADWAY_EMISSION_KINDS } from "../../../autonomy/index.js";
+import {
+  AUTONOMY_CONDITION_NAMES,
+  AUTONOMY_WAKE_STARTUP_INTERRUPTED_DETAIL,
+  HEADWAY_EMISSION_KINDS,
+} from "../../../autonomy/index.js";
 import { FINALIZER_NO_OUTPUT_SEMANTIC_CATEGORIES } from "../../generation/types.js";
 import type { MoodHistoryEntry } from "../../../memory/affective/index.js";
 import type { CommitmentRecord } from "../../../memory/commitments/index.js";
@@ -313,6 +317,7 @@ function makeSchedulerStateWithSources(): NonNullable<
       window_error_span: null,
       window_silent_span: null,
       window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
+      window_interrupted_reasons: { total: 0, without_detail: 0, reasons: [] },
     },
     budget: {
       max_wakes_per_window: 6,
@@ -2756,6 +2761,7 @@ describe("buildBaseSystemPrompt", () => {
                 window_error_span: null,
                 window_silent_span: null,
                 window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
+                window_interrupted_reasons: { total: 0, without_detail: 0, reasons: [] },
               },
               budget: {
                 max_wakes_per_window: 6,
@@ -3051,6 +3057,7 @@ describe("buildBaseSystemPrompt", () => {
                 window_error_span: null,
                 window_silent_span: null,
                 window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
+                window_interrupted_reasons: { total: 0, without_detail: 0, reasons: [] },
               },
               budget: {
                 max_wakes_per_window: 6,
@@ -3144,6 +3151,7 @@ describe("buildBaseSystemPrompt", () => {
                   window_error_span: null,
                   window_silent_span: null,
                   window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
+                  window_interrupted_reasons: { total: 0, without_detail: 0, reasons: [] },
                   ...brake,
                 },
                 budget: {
@@ -3411,6 +3419,7 @@ describe("buildBaseSystemPrompt", () => {
                 window_error_span: null,
                 window_silent_span: null,
                 window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
+                window_interrupted_reasons: { total: 0, without_detail: 0, reasons: [] },
               },
               budget: {
                 max_wakes_per_window: 15,
@@ -3481,6 +3490,7 @@ describe("buildBaseSystemPrompt", () => {
                 window_error_span: null,
                 window_silent_span: null,
                 window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
+                window_interrupted_reasons: { total: 0, without_detail: 0, reasons: [] },
               },
               budget: {
                 max_wakes_per_window: 15,
@@ -3612,6 +3622,7 @@ describe("buildBaseSystemPrompt", () => {
                 window_error_span: null,
                 window_silent_span: null,
                 window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
+                window_interrupted_reasons: { total: 0, without_detail: 0, reasons: [] },
               },
               budget: {
                 max_wakes_per_window: 6,
@@ -3731,6 +3742,7 @@ describe("buildBaseSystemPrompt", () => {
               window_error_span: null,
               window_silent_span: null,
               window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
+              window_interrupted_reasons: { total: 0, without_detail: 0, reasons: [] },
             },
             budget: {
               max_wakes_per_window: 6,
@@ -3833,6 +3845,7 @@ describe("buildBaseSystemPrompt", () => {
               window_error_span: null,
               window_silent_span: null,
               window_silent_reasons: { total: 2, without_detail: 2, reasons: [] },
+              window_interrupted_reasons: { total: 0, without_detail: 0, reasons: [] },
             },
             budget: {
               max_wakes_per_window: 15,
@@ -3919,6 +3932,7 @@ describe("buildBaseSystemPrompt", () => {
               window_error_span: null,
               window_silent_span: null,
               window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
+              window_interrupted_reasons: { total: 0, without_detail: 0, reasons: [] },
             },
             budget: {
               max_wakes_per_window: 15,
@@ -4006,6 +4020,7 @@ describe("buildBaseSystemPrompt", () => {
                   window_error_span: windowErrorSpan,
                   window_silent_span: null,
                   window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
+                  window_interrupted_reasons: { total: 0, without_detail: 0, reasons: [] },
                 },
                 budget: {
                   max_wakes_per_window: 15,
@@ -4254,6 +4269,7 @@ describe("buildBaseSystemPrompt", () => {
                   window_error_span: null,
                   window_silent_span: windowSilentSpan,
                   window_silent_reasons: windowSilentReasons,
+                  window_interrupted_reasons: { total: 0, without_detail: 0, reasons: [] },
                 },
                 budget: {
                   max_wakes_per_window: 15,
@@ -4427,6 +4443,137 @@ describe("buildBaseSystemPrompt", () => {
     expect(buildPrompt({ total: 0, without_detail: 0, reasons: [] })).toContain(
       "Silent wakes in that window: none, so there is no silence to attribute.",
     );
+  });
+
+  it("splits the interrupted-wake count by writer and carries that provenance at zero", () => {
+    const buildPrompt = (
+      windowInterruptedReasons: NonNullable<
+        NonNullable<DeliberationContext["turnMechanismEvidence"]>["autonomySchedulerState"]
+      >["fleetBrake"]["window_interrupted_reasons"],
+    ) =>
+      extractBlock(
+        buildBaseSystemPrompt(
+          makeContext({
+            turnOrigin: "user",
+            turnMechanismEvidence: {
+              recentSuppressions: [],
+              recentRegenerations: [],
+              autonomySchedulerState: {
+                observedAt: NOW_MS,
+                enabled: true,
+                tickInFlight: false,
+                intervalMs: 60_000,
+                droppedIntervalFires: { since_interval_armed: 0, current_tick: null },
+                intervalArmedAt: NOW_MS - 3_600_000,
+                sources: [],
+                nextTickAt: NOW_MS + 60_000,
+                scheduledTickAt: NOW_MS + 60_000,
+                fleetBrake: {
+                  enabled: true,
+                  empty_streak: 0,
+                  empty_streak_threshold: 5,
+                  streak_anchor_ts: null,
+                  cooldown_until: null,
+                  error_streak: 0,
+                  error_streak_threshold: 3,
+                  error_paused_until: null,
+                  bypass_count: 0,
+                  freshness_bypass_cap: 3,
+                  window_outcomes: {
+                    headway: 0,
+                    silent: 0,
+                    error: 0,
+                    busy: 0,
+                    interrupted: windowInterruptedReasons.total,
+                  },
+                  window_headway_reasons: { total: 0, without_detail: 0, reasons: [] },
+                  window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
+                  window_error_span: null,
+                  window_silent_span: null,
+                  window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
+                  window_interrupted_reasons: windowInterruptedReasons,
+                },
+                budget: {
+                  max_wakes_per_window: 15,
+                  window_ms: 24 * 60 * 60_000,
+                  window_started_at: NOW_MS - 24 * 60 * 60_000,
+                  used_in_current_window: windowInterruptedReasons.total,
+                  reserved_contemplative_wakes_per_window: 1,
+                  contemplative_used_in_current_window: 0,
+                  wakes_in_current_window_by_trigger: [],
+                  next_budget_slot_frees_at: NOW_MS + 30 * 60_000,
+                },
+              },
+            },
+          }),
+          { ...PROMPT_OPTIONS, nowMs: NOW_MS },
+        ),
+        "borg_mechanism_evidence",
+      );
+
+    // A turn that finished and a turn that may never have started are the two
+    // readings interrupted=N cannot separate, and the detail decides which.
+    const attributed = buildPrompt({
+      total: 3,
+      without_detail: 0,
+      reasons: [
+        {
+          detail: "Autonomous turn completed; bookkeeping failed: Timed out after 30000ms",
+          count: 2,
+          triggers: [{ trigger: "executive_focus_due", count: 2 }],
+        },
+        {
+          detail: AUTONOMY_WAKE_STARTUP_INTERRUPTED_DETAIL,
+          count: 1,
+          triggers: [{ trigger: "open_question_dormant", count: 1 }],
+        },
+      ],
+    });
+
+    expect(attributed).toContain(
+      "How those interrupted wakes were stamped, same rows as interrupted=3 above, each with its own split by trigger in brackets:",
+    );
+    expect(attributed).toContain(
+      "Autonomous turn completed; bookkeeping failed: Timed out after 30000ms",
+    );
+    expect(attributed).toContain(AUTONOMY_WAKE_STARTUP_INTERRUPTED_DETAIL);
+    expect(attributed).toContain("The details above account for all 3.");
+
+    const partial = buildPrompt({
+      total: 4,
+      without_detail: 1,
+      reasons: [
+        {
+          detail: AUTONOMY_WAKE_STARTUP_INTERRUPTED_DETAIL,
+          count: 3,
+          triggers: [{ trigger: "open_question_dormant", count: 3 }],
+        },
+      ],
+    });
+
+    expect(partial).toContain(
+      "The details above account for 3 of 4; the rest is 1 with no recorded detail.",
+    );
+
+    // The provenance describes the mechanism, not the window, so an empty bucket
+    // still carries it -- a reader meeting the first interrupted row without it
+    // has already formed the account it would have corrected.
+    const empty = buildPrompt({ total: 0, without_detail: 0, reasons: [] });
+
+    expect(empty).toContain(
+      "Interrupted wakes in that window: none, so no turn here was cut short in its bookkeeping and no row was swept as unrecorded.",
+    );
+    for (const rendered of [attributed, partial, empty]) {
+      expect(rendered).toContain(
+        "The scheduler records it when an autonomous turn COMPLETED and the bookkeeping after it failed",
+      );
+      expect(rendered).toContain(
+        "that stamp dates the start that swept the row rather than the failure that orphaned it",
+      );
+      expect(rendered).toContain(
+        "that remainder shrinks monotonically within one process lifetime and never across a restart",
+      );
+    }
   });
 
   it("labels edge evidence as unavailable when scheduler and turn-mechanism state are absent", () => {

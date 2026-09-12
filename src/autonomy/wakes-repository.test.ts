@@ -179,6 +179,39 @@ describe("AutonomyWakesRepository", () => {
     }
   });
 
+  // The sweep's predicate is bounded above by the grace window and not bounded
+  // below at all, so it reaches rows no run of this process ever touched. That
+  // is deliberate -- one writer per data directory means an old unrecorded row
+  // cannot belong to anyone -- but it is also the reason the stored detail must
+  // not date the interruption to this start: the row below is orphaned thirty
+  // days and any number of restarts before the process that stamps it.
+  it("sweeps an orphan from arbitrarily far back and records a detail that fits the stored bound", () => {
+    const clock = new ManualClock(1_000);
+    const db = openDatabase(":memory:", { migrations: autonomyMigrations });
+
+    try {
+      const repository = new AutonomyWakesRepository({ db, clock });
+      const ancientOrphan = repository.record({
+        trigger_name: "open_question_dormant",
+        session_id: DEFAULT_SESSION_ID,
+        wake_source_type: "trigger",
+      });
+      clock.advance(30 * 24 * 60 * 60_000);
+
+      expect(repository.interruptOrphanedWakesAtStartup()).toBe(1);
+      expect(repository.listSince(0, 10).find((wake) => wake.id === ancientOrphan.id)).toMatchObject(
+        { outcome: "interrupted", outcome_detail: AUTONOMY_WAKE_STARTUP_INTERRUPTED_DETAIL },
+      );
+      // The sweep writes the constant directly rather than through
+      // clampOutcomeDetail, so nothing truncates it if it grows past the bound.
+      expect(AUTONOMY_WAKE_STARTUP_INTERRUPTED_DETAIL.length).toBeLessThanOrEqual(
+        AUTONOMY_WAKE_OUTCOME_DETAIL_MAX_LENGTH,
+      );
+    } finally {
+      db.close();
+    }
+  });
+
   it("tallies outcome details against the bucket total and names the undetailed remainder", () => {
     const clock = new ManualClock(1_000);
     const db = openDatabase(":memory:", { migrations: autonomyMigrations });
