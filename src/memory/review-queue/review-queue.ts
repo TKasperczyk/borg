@@ -1272,7 +1272,7 @@ export class ReviewQueueRepository {
           });
         }
 
-        throw new SemanticError(`Review item ${item.id} refresh lost applying-state race`, {
+        throw new SemanticError(`Review item ${item.id} refs changed before its vectors could be refreshed`, {
           code: "REVIEW_QUEUE_RESOLUTION_RACE",
           cause: { itemId: item.id },
         });
