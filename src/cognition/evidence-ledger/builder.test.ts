@@ -849,6 +849,43 @@ describe("EvidenceLedgerBuilder", () => {
     );
   });
 
+  // The commitments block's legend says its ledger-only count is zero by construction
+  // because these entries are a one-to-one map of the same draw the block renders. That
+  // claim is only as durable as this mapping, so pin the mapping rather than the count.
+  it("maps applicable commitments one-to-one onto standing-ledger commitment entries", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-commitment-one-to-one-"));
+    tempDirs.push(tempDir);
+    const commitments = [
+      makeCommitment(createStreamEntryId()),
+      makeCommitment(createStreamEntryId()),
+      makeCommitment(createStreamEntryId()),
+    ];
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+      relationalSlotRepository: { list: () => [] },
+      actionRepository: { list: () => [] },
+      currentSessionTranscriptTokenBudget: 50_000,
+    });
+
+    const ledger = await builder.build({
+      sessionId: DEFAULT_SESSION_ID,
+      turnId: "turn-commitment-one-to-one",
+      nowMs: NOW_MS,
+      audienceEntityId: null,
+      currentUserMessage: "Check commitments.",
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: commitments,
+      retrievedEvidence: [],
+      retrievedEpisodes: [],
+      openQuestions: [],
+      pendingCorrections: [],
+    });
+
+    expect(ledger.audienceStanding?.commitmentEntries.map((entry) => entry.id)).toEqual(
+      commitments.map((record) => `commitment:${record.id}`),
+    );
+  });
+
   it("keeps recent lived activity as labeled audience-standing metadata with source handles", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);

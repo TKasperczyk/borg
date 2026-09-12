@@ -1380,6 +1380,29 @@ describe("compact terminal finalizer context", () => {
     expect(commitmentBlock).toContain(
       "Those counts live in the fast turn context rather than the durable-global tier",
     );
+    // The three commitment counts and this block's completeness pair are all taken from
+    // the one draw, so the page has to say so: read as measurements they look like a
+    // cross-check they cannot be. The derived exception is named by its own rendered tag
+    // so a rename breaks this rather than leaving the contract pointing at nothing.
+    const derivedCompletenessTag = text(first).match(
+      /<(borg_terminal_values_traits) complete="/,
+    )?.[1];
+    expect(derivedCompletenessTag).toBe("borg_terminal_values_traits");
+    expect(first.system[0]?.text).toContain(
+      `${derivedCompletenessTag} is the one complete index whose complete and omitted_count are both derived from a stored count its store reports separately`,
+    );
+    expect(first.system[0]?.text).toContain(
+      "counts taken from a single draw agree by construction, and their agreeing is no evidence about the store behind it",
+    );
+    expect(commitmentBlock).toContain(
+      "all three taken from the one draw this block renders, so their agreeing is an identity and not a second witness to membership",
+    );
+    expect(commitmentBlock).toContain(
+      "commitment_ledger_only_rows is zero by construction on this path",
+    );
+    expect(commitmentBlock).toContain(
+      "the active-commitment list with no cap and no audience filter",
+    );
     expect(durableRow).toContain("disclosure=");
     expect(durableRow).toContain(`ledger_ref="commitment:${base.id}"`);
     expect(durableRow).toContain('ledger_source_type="commitment"');
