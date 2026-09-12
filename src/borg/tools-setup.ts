@@ -269,6 +269,11 @@ export function buildToolDispatcher(options: BuildToolDispatcherOptions): ToolDi
                     episodeIds,
                   ),
                 ]),
+            // The episode arm resolves its label from the store; this one does not.
+            // The callback takes no id, so the stream arm contributes one unknown per
+            // cited entry by arity alone, and a stream-only resolution's
+            // resolution_disclosure_label is that constant rather than a reading of the
+            // entry it names. Failing closed is the point; it is not a derived label.
             ...streamEntryIds.map(() => unknownMemoryDisclosureLabel()),
           ]),
       }),

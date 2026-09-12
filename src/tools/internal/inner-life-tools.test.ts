@@ -180,6 +180,30 @@ describe("inner life internal tools", () => {
     expect(issue?.message).toContain("resolution_evidence_stream_entry_ids");
   });
 
+  // Both arms are id-shape refinements over a JSON column with no reference table,
+  // and no caller on the path dereferences a cited id. "Requires evidence" therefore
+  // reads as a check the gate does not perform: a rejection for missing ids is a
+  // rejection for an empty citation, and generalizing it into "a resolution must be
+  // grounded in a record" attributes a guarantee to the harness that only the note
+  // carries. Say which of the two the requirement is.
+  it("says the evidence requirement checks the citation rather than the evidence", () => {
+    const tool = createOpenQuestionsResolveTool({
+      identityService: {
+        resolveOpenQuestion: () => {
+          throw new Error("not invoked");
+        },
+      },
+      disclosureLabelForEvidence: async () => selfPrivateMemoryDisclosureLabel(),
+    });
+
+    expect(tool.description).toContain(
+      "a check on the citation, not on the evidence",
+    );
+    expect(tool.description).toContain("either arm takes any well-formed id");
+    expect(tool.description).toContain("no id is checked to exist");
+    expect(tool.description).toContain("never a second witness to what I concluded");
+  });
+
   it("surfaces identity-governance review-required open question resolution as tool data", async () => {
     const current = sampleOpenQuestion();
     const resolveOpenQuestion = vi.fn(() => ({
