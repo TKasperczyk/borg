@@ -2427,6 +2427,16 @@ function renderWakeReasonLine(reason: AutonomyWakeOutcomeDetailTally["reasons"][
  * toward disposition this line exists to prevent. The singleton copy states the
  * count instead and keeps the edge clause, which is the half that still carries
  * evidence at one row.
+ *
+ * Both halves of the line distinguish a wake that ended otherwise from a wake
+ * that recorded no ending at all, because only the first is evidence about this
+ * bucket's shape. An unrecorded row between the first and last breaks nothing and
+ * continues nothing, and an unrecorded row immediately before the first leaves the
+ * edge unknown rather than answering it -- the wording that reads it as a
+ * different ending asserts that the wake ended, which is the one thing its row
+ * does not say. The two unknown edges are kept apart for the same reason the two
+ * counts are: no earlier row retained and an earlier row with nothing on it are
+ * different absences, and only the second has a row you could go and read later.
  */
 const WAKE_SPAN_BUCKETS = {
   error: {
@@ -2435,16 +2445,20 @@ const WAKE_SPAN_BUCKETS = {
     interleaved: "the failures are interleaved rather than one run",
     edgeUnknown:
       "no earlier wake is retained, so whether the failures start at the window edge or merely become visible there is not answerable from here",
+    edgeEarlierUnrecorded:
+      "the wake immediately before the first of them is retained with no outcome on it, so whether it errored too is unknown rather than no -- the run may start at that row or before it, and this edge stays unanswerable until something stamps it",
     extendsBefore:
       "the wake immediately before the first of them also errored, and that wake is outside this window -- the run started earlier, so any rate taken over this window is a slice of it and the trigger mix of that slice is whatever was firing when the edge fell",
     beginsInside:
-      "the wake immediately before the first of them did not error, so the run does begin inside this window",
+      "the wake immediately before the first of them recorded a different ending, so the run does begin inside this window",
     singleEdgeUnknown:
       "no earlier wake is retained, so whether it is the visible edge of a longer run or the whole of one is not answerable from here",
+    singleEdgeEarlierUnrecorded:
+      "the wake immediately before it is retained with no outcome on it, so whether it errored too is unknown rather than no, and whether this row is the tail of a longer run stays unanswerable until something stamps that one",
     singleExtendsBefore:
       "the wake immediately before it also errored, and that wake is outside this window -- so the one inside is the tail of a run that starts earlier, and a rate taken over this window is a rate over that tail",
     singleBeginsInside:
-      "the wake immediately before it did not error, so it is not the tail of anything the table retains",
+      "the wake immediately before it recorded a different ending, so it is not the tail of anything the table retains",
   },
   silent: {
     label: "silent wakes",
@@ -2452,16 +2466,20 @@ const WAKE_SPAN_BUCKETS = {
     interleaved: "the silences are interleaved rather than one stretch",
     edgeUnknown:
       "no earlier wake is retained, so whether the silences start at the window edge or merely become visible there is not answerable from here",
+    edgeEarlierUnrecorded:
+      "the wake immediately before the first of them is retained with no outcome on it, so whether it was silent too is unknown rather than no -- the stretch may start at that row or before it, and this edge stays unanswerable until something stamps it",
     extendsBefore:
       "the wake immediately before the first of them was also silent, and that wake is outside this window -- the stretch started earlier, so reading these as a run of chosen quiet reads a slice of a longer one, and the endings mixed into the part outside the window are not shown here",
     beginsInside:
-      "the wake immediately before the first of them was not silent, so the stretch does begin inside this window",
+      "the wake immediately before the first of them recorded a different ending, so the stretch does begin inside this window",
     singleEdgeUnknown:
       "no earlier wake is retained, so whether it is the visible edge of a longer stretch or the whole of one is not answerable from here",
+    singleEdgeEarlierUnrecorded:
+      "the wake immediately before it is retained with no outcome on it, so whether it was silent too is unknown rather than no, and whether this row is the tail of a longer stretch stays unanswerable until something stamps that one",
     singleExtendsBefore:
       "the wake immediately before it was also silent, and that wake is outside this window -- so the one inside is the tail of a stretch that starts earlier, and how far back that stretch runs is not on this page",
     singleBeginsInside:
-      "the wake immediately before it was not silent, so it is not the tail of anything the table retains",
+      "the wake immediately before it recorded a different ending, so it is not the tail of anything the table retains",
   },
 } as const;
 
@@ -2477,30 +2495,44 @@ function renderWakeOutcomeSpanLine(
   const copy = WAKE_SPAN_BUCKETS[bucket];
 
   if (total === 1) {
-    const soleBefore =
-      span.extends_before_window === null
-        ? copy.singleEdgeUnknown
-        : span.extends_before_window
-          ? copy.singleExtendsBefore
-          : copy.singleBeginsInside;
+    const soleBefore = {
+      no_earlier_wake_retained: copy.singleEdgeUnknown,
+      earlier_wake_unrecorded: copy.singleEdgeEarlierUnrecorded,
+      extends_before_window: copy.singleExtendsBefore,
+      begins_inside_window: copy.singleBeginsInside,
+    }[span.extends_before_window];
 
     return [
       `Where that ${copy.singular} sits: it is the only one in this window, so its first and last are the same row and nothing can fall between them -- the interleaving count is empty by construction here, and neither a run nor a scatter is readable from one row; ${soleBefore}.`,
     ];
   }
+
+  // An unrecorded row inside the span is the one case where the count and the
+  // reading come apart: it is not a different ending, so it cannot make the
+  // bucket interleaved, and it is not nothing either, so the run is not unbroken
+  // in the sense the zero-case sentence means. It also moves on its own -- a
+  // startup sweep stamping it interrupted shifts it into the other count with no
+  // wake having changed what it did -- so the line says which count it is in.
+  const unrecordedTail =
+    span.unrecorded_between === 0
+      ? ""
+      : ` A further ${span.unrecorded_between} between them carry no outcome at all -- in flight, or orphaned before anything was written -- so they are not wakes that ended otherwise, and if a later startup sweep stamps one interrupted it moves into the count above without that wake having changed what it did.`;
+
   const between =
     span.other_outcomes_between === 0
-      ? "No wake that ended any other way falls between the first and last of them, so inside this window they are one unbroken run"
+      ? span.unrecorded_between === 0
+        ? "No other wake of any kind falls between the first and last of them, so inside this window they are one unbroken run"
+        : "No wake that ended some other way falls between the first and last of them, so they are unbroken in what has an ending on record -- which is a weaker statement than one unbroken run, and the difference is the rows named next"
       : `${span.other_outcomes_between} wake(s) that ended some other way fall between the first and last of them, so inside this window ${copy.interleaved}`;
 
-  const before =
-    span.extends_before_window === null
-      ? copy.edgeUnknown
-      : span.extends_before_window
-        ? copy.extendsBefore
-        : copy.beginsInside;
+  const before = {
+    no_earlier_wake_retained: copy.edgeUnknown,
+    earlier_wake_unrecorded: copy.edgeEarlierUnrecorded,
+    extends_before_window: copy.extendsBefore,
+    begins_inside_window: copy.beginsInside,
+  }[span.extends_before_window];
 
-  return [`Where those ${copy.label} sit: ${between}; ${before}.`];
+  return [`Where those ${copy.label} sit: ${between}; ${before}.${unrecordedTail}`];
 }
 
 function renderWakeHeadwayReasonLines(

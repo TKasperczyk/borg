@@ -296,13 +296,16 @@ describe("AutonomyWakesRepository", () => {
     const repository = new AutonomyWakesRepository({ db, clock });
 
     try {
-      const recordWake = (outcome: "error" | "headway") => {
+      const admitWake = () => {
         clock.advance(1);
-        const wake = repository.record({
+        return repository.record({
           trigger_name: "goal_followup_due",
           session_id: DEFAULT_SESSION_ID,
           wake_source_type: "trigger",
         });
+      };
+      const recordWake = (outcome: "error" | "headway") => {
+        const wake = admitWake();
         repository.recordOutcome(wake.id, outcome);
         return wake;
       };
@@ -315,10 +318,13 @@ describe("AutonomyWakesRepository", () => {
       recordWake("headway");
 
       // Over the whole table the run is unbroken and nothing precedes it, so the
-      // "did this start earlier" question has no evidence rather than a no.
+      // "did this start earlier" question has no evidence rather than a no. The
+      // two absences are distinct: this one is "no earlier row exists", which is
+      // not the same as an earlier row carrying nothing.
       expect(repository.describeOutcomeSpanSince(0, "error")).toEqual({
         other_outcomes_between: 0,
-        extends_before_window: null,
+        unrecorded_between: 0,
+        extends_before_window: "no_earlier_wake_retained",
       });
 
       // A window whose edge falls inside the run sees only its tail. The count
@@ -326,7 +332,8 @@ describe("AutonomyWakesRepository", () => {
       // the predecessor read is what does, and it deliberately ignores the edge.
       expect(repository.describeOutcomeSpanSince(1_003, "error")).toEqual({
         other_outcomes_between: 0,
-        extends_before_window: true,
+        unrecorded_between: 0,
+        extends_before_window: "extends_before_window",
       });
 
       // ts 1006 error, 1007 headway, 1008 error: now the bucket is interleaved,
@@ -337,7 +344,31 @@ describe("AutonomyWakesRepository", () => {
 
       expect(repository.describeOutcomeSpanSince(1_006, "error")).toEqual({
         other_outcomes_between: 1,
-        extends_before_window: false,
+        unrecorded_between: 0,
+        extends_before_window: "begins_inside_window",
+      });
+
+      // ts 1009 admitted and never stamped, ts 1010 error. A row with no outcome
+      // has not ended, so it is counted apart from the ones that ended otherwise
+      // -- summed into that count it would report an in-flight wake as evidence
+      // that the failures are interleaved.
+      admitWake();
+      recordWake("error");
+
+      expect(repository.describeOutcomeSpanSince(1_008, "error")).toEqual({
+        other_outcomes_between: 0,
+        unrecorded_between: 1,
+        extends_before_window: "begins_inside_window",
+      });
+
+      // The same row one position earlier decides the edge instead of a count:
+      // for a window holding only the error at 1010, the wake before it is the
+      // unstamped row at 1009, so whether the run extends past the window edge is
+      // unknown rather than no.
+      expect(repository.describeOutcomeSpanSince(1_010, "error")).toEqual({
+        other_outcomes_between: 0,
+        unrecorded_between: 0,
+        extends_before_window: "earlier_wake_unrecorded",
       });
 
       // An empty bucket has no position to report.

@@ -460,15 +460,22 @@ export class AutonomyWakesRepository {
       return null;
     }
 
+    // A row with no outcome has not ended, so it cannot have ended some other
+    // way. Counted together with the rows that did, it turns an unrecorded wake
+    // into evidence of interleaving; counted apart, each says what it is.
     const between = this.db
       .prepare(
         `
-          SELECT COUNT(*) AS count
+          SELECT
+            SUM(CASE WHEN outcome IS NULL THEN 1 ELSE 0 END) AS unrecorded,
+            SUM(CASE WHEN outcome IS NOT NULL AND outcome != ? THEN 1 ELSE 0 END) AS other
           FROM autonomy_wakes
-          WHERE ts > ? AND ts < ? AND (outcome IS NULL OR outcome != ?)
+          WHERE ts > ? AND ts < ?
         `,
       )
-      .get(bounds.first_ts, bounds.last_ts, outcome) as { count: unknown } | undefined;
+      .get(outcome, bounds.first_ts, bounds.last_ts) as
+      | { unrecorded: unknown; other: unknown }
+      | undefined;
 
     const previous = this.db
       .prepare(
@@ -483,8 +490,19 @@ export class AutonomyWakesRepository {
       .get(bounds.first_ts) as { outcome: unknown } | undefined;
 
     return {
-      other_outcomes_between: Number(between?.count ?? 0),
-      extends_before_window: previous === undefined ? null : previous.outcome === outcome,
+      other_outcomes_between: Number(between?.other ?? 0),
+      unrecorded_between: Number(between?.unrecorded ?? 0),
+      // Same distinction one row earlier, where it decides a boolean rather than
+      // a count: an unrecorded predecessor is not a predecessor that ended
+      // differently, so it cannot support "the run begins inside this window".
+      extends_before_window:
+        previous === undefined
+          ? "no_earlier_wake_retained"
+          : typeof previous.outcome !== "string"
+            ? "earlier_wake_unrecorded"
+            : previous.outcome === outcome
+              ? "extends_before_window"
+              : "begins_inside_window",
     };
   }
 

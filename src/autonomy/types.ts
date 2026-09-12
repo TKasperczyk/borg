@@ -79,18 +79,35 @@ export type AutonomyWakeOutcomeDetailTally = {
  * during it, while a scatter is a rate that can differ by trigger. The rows hold
  * the ordering; the tally discarded it.
  *
- * `other_outcomes_between` counts the window's wakes that fall strictly between
- * this bucket's first and last row and did NOT land in it -- zero means an
- * unbroken run, any positive number means the bucket is interleaved.
- * `extends_before_window` reports whether the wake immediately preceding the
- * bucket's first row -- which may sit outside the window, the table retains more
- * than the window covers -- shares the outcome, so a run that started earlier is
- * not read as beginning at the window edge. It is null when no earlier wake is
- * retained, which is the absence of evidence rather than a no.
+ * The two between-counts are split because a row with no outcome recorded and a
+ * row that recorded a different outcome are different evidence about whether the
+ * bucket is one run, and summing them reports the weaker as the stronger.
+ * `other_outcomes_between` counts the wakes strictly between this bucket's first
+ * and last row that recorded a DIFFERENT ending -- those genuinely interleave it.
+ * `unrecorded_between` counts the ones that recorded no outcome at all: still in
+ * flight, or orphaned by a process that died before writing one. Such a row
+ * neither breaks the run nor continues it, and it is not stable -- a later
+ * startup sweep can stamp it `interrupted`, moving it from the second count to
+ * the first without any wake having changed what it did.
+ *
+ * `extends_before_window` reports how the bucket's first row meets what precedes
+ * it. The predecessor may sit outside the window (the table retains more than the
+ * window covers), which is the whole point of asking. Two of the four values are
+ * absences of evidence rather than a no, and they are distinct absences: the
+ * table may retain no earlier row at all (nothing was ever written, or the prune
+ * removed it), or the earlier row may be retained with no outcome on it, in which
+ * case whether it shares this bucket's ending is unknown rather than false.
  */
+export type AutonomyWakeSpanEdge =
+  | "extends_before_window"
+  | "begins_inside_window"
+  | "no_earlier_wake_retained"
+  | "earlier_wake_unrecorded";
+
 export type AutonomyWakeOutcomeSpan = {
   other_outcomes_between: number;
-  extends_before_window: boolean | null;
+  unrecorded_between: number;
+  extends_before_window: AutonomyWakeSpanEdge;
 };
 
 export const AUTONOMY_WAKE_SOURCE_METADATA = {

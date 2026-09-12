@@ -4138,11 +4138,15 @@ describe("buildBaseSystemPrompt", () => {
           },
         ],
       },
-      { other_outcomes_between: 0, extends_before_window: true },
+      {
+        other_outcomes_between: 0,
+        unrecorded_between: 0,
+        extends_before_window: "extends_before_window",
+      },
     );
 
     expect(clipped).toContain(
-      "Where those errored wakes sit: No wake that ended any other way falls between the first and last of them, so inside this window they are one unbroken run; the wake immediately before the first of them also errored, and that wake is outside this window -- the run started earlier, so any rate taken over this window is a slice of it",
+      "Where those errored wakes sit: No other wake of any kind falls between the first and last of them, so inside this window they are one unbroken run; the wake immediately before the first of them also errored, and that wake is outside this window -- the run started earlier, so any rate taken over this window is a slice of it",
     );
 
     const scattered = buildPrompt(
@@ -4157,15 +4161,81 @@ describe("buildBaseSystemPrompt", () => {
           },
         ],
       },
-      { other_outcomes_between: 9, extends_before_window: false },
+      {
+        other_outcomes_between: 9,
+        unrecorded_between: 0,
+        extends_before_window: "begins_inside_window",
+      },
     );
 
     expect(scattered).toContain(
       "9 wake(s) that ended some other way fall between the first and last of them, so inside this window the failures are interleaved rather than one run",
     );
     expect(scattered).toContain(
-      "the wake immediately before the first of them did not error, so the run does begin inside this window",
+      "the wake immediately before the first of them recorded a different ending, so the run does begin inside this window",
     );
+
+    // A row with no outcome has not ended, so it cannot have ended some other
+    // way: folded into the interleaving count it would make an in-flight wake
+    // evidence that the run is broken, and dropped it would leave "one unbroken
+    // run" resting on rows that say nothing. It gets its own count and its own
+    // sentence, including the part that says the count is not stable.
+    const withUnrecorded = buildPrompt(
+      {
+        total: 3,
+        without_detail: 0,
+        reasons: [
+          {
+            detail: "LLMError: Failed to complete Anthropic request",
+            count: 3,
+            triggers: [{ trigger: "scheduled_reflection", count: 3 }],
+          },
+        ],
+      },
+      {
+        other_outcomes_between: 0,
+        unrecorded_between: 2,
+        extends_before_window: "begins_inside_window",
+      },
+    );
+
+    expect(withUnrecorded).toContain(
+      "No wake that ended some other way falls between the first and last of them, so they are unbroken in what has an ending on record -- which is a weaker statement than one unbroken run, and the difference is the rows named next",
+    );
+    expect(withUnrecorded).toContain(
+      "A further 2 between them carry no outcome at all -- in flight, or orphaned before anything was written -- so they are not wakes that ended otherwise, and if a later startup sweep stamps one interrupted it moves into the count above without that wake having changed what it did.",
+    );
+    expect(withUnrecorded).not.toContain("they are one unbroken run");
+
+    // The same distinction one row earlier, where it decides an edge rather than
+    // a count: a predecessor with no outcome is not a predecessor that ended
+    // differently, so it cannot support "the run begins inside this window".
+    const predecessorUnrecorded = buildPrompt(
+      {
+        total: 2,
+        without_detail: 0,
+        reasons: [
+          {
+            detail: "LLMError: Failed to complete Anthropic request",
+            count: 2,
+            triggers: [{ trigger: "scheduled_reflection", count: 2 }],
+          },
+        ],
+      },
+      {
+        other_outcomes_between: 0,
+        unrecorded_between: 0,
+        extends_before_window: "earlier_wake_unrecorded",
+      },
+    );
+
+    expect(predecessorUnrecorded).toContain(
+      "the wake immediately before the first of them is retained with no outcome on it, so whether it errored too is unknown rather than no -- the run may start at that row or before it, and this edge stays unanswerable until something stamps it",
+    );
+    expect(predecessorUnrecorded).not.toContain("the run does begin inside this window");
+    // A retained row with nothing on it and no retained row at all are two
+    // different absences, and only the first has something to go back and read.
+    expect(predecessorUnrecorded).not.toContain("no earlier wake is retained");
 
     // No retained predecessor is the absence of evidence, not a no.
     const unbounded = buildPrompt(
@@ -4180,7 +4250,11 @@ describe("buildBaseSystemPrompt", () => {
           },
         ],
       },
-      { other_outcomes_between: 0, extends_before_window: null },
+      {
+        other_outcomes_between: 0,
+        unrecorded_between: 0,
+        extends_before_window: "no_earlier_wake_retained",
+      },
     );
 
     expect(unbounded).toContain(
@@ -4191,7 +4265,11 @@ describe("buildBaseSystemPrompt", () => {
     // rows that most need it are the ones whose failure was never written down.
     const bareWithSpan = buildPrompt(
       { total: 4, without_detail: 4, reasons: [] },
-      { other_outcomes_between: 0, extends_before_window: true },
+      {
+        other_outcomes_between: 0,
+        unrecorded_between: 0,
+        extends_before_window: "extends_before_window",
+      },
     );
 
     expect(bareWithSpan).toContain("none of them carrying a recorded failure");
@@ -4211,7 +4289,11 @@ describe("buildBaseSystemPrompt", () => {
           },
         ],
       },
-      { other_outcomes_between: 0, extends_before_window: true },
+      {
+        other_outcomes_between: 0,
+        unrecorded_between: 0,
+        extends_before_window: "extends_before_window",
+      },
     );
 
     expect(sole).toContain(
@@ -4356,11 +4438,15 @@ describe("buildBaseSystemPrompt", () => {
           },
         ],
       },
-      { other_outcomes_between: 0, extends_before_window: true },
+      {
+        other_outcomes_between: 0,
+        unrecorded_between: 0,
+        extends_before_window: "extends_before_window",
+      },
     );
 
     expect(clipped).toContain(
-      "Where those silent wakes sit: No wake that ended any other way falls between the first and last of them, so inside this window they are one unbroken run",
+      "Where those silent wakes sit: No other wake of any kind falls between the first and last of them, so inside this window they are one unbroken run",
     );
     expect(clipped).toContain(
       "the wake immediately before the first of them was also silent, and that wake is outside this window -- the stretch started earlier, so reading these as a run of chosen quiet reads a slice of a longer one",
@@ -4378,21 +4464,63 @@ describe("buildBaseSystemPrompt", () => {
           },
         ],
       },
-      { other_outcomes_between: 7, extends_before_window: false },
+      {
+        other_outcomes_between: 7,
+        unrecorded_between: 0,
+        extends_before_window: "begins_inside_window",
+      },
     );
 
     expect(scattered).toContain(
       "7 wake(s) that ended some other way fall between the first and last of them, so inside this window the silences are interleaved rather than one stretch",
     );
     expect(scattered).toContain(
-      "the wake immediately before the first of them was not silent, so the stretch does begin inside this window",
+      "the wake immediately before the first of them recorded a different ending, so the stretch does begin inside this window",
     );
+
+    // A chosen quiet is the reading this bucket invites, and an unrecorded row
+    // inside the stretch is the one thing that cannot support it: nobody closed
+    // that wake, so counting it with the silences would read an absent record as
+    // a decision.
+    const withUnrecorded = buildPrompt(
+      {
+        total: 3,
+        without_detail: 0,
+        reasons: [
+          {
+            detail: "deliberate-silence: finalizer_no_output",
+            count: 3,
+            triggers: [{ trigger: "executive_focus_due", count: 3 }],
+          },
+        ],
+      },
+      {
+        other_outcomes_between: 0,
+        unrecorded_between: 1,
+        extends_before_window: "earlier_wake_unrecorded",
+      },
+    );
+
+    expect(withUnrecorded).toContain(
+      "so they are unbroken in what has an ending on record -- which is a weaker statement than one unbroken run, and the difference is the rows named next",
+    );
+    expect(withUnrecorded).toContain(
+      "A further 1 between them carry no outcome at all -- in flight, or orphaned before anything was written",
+    );
+    expect(withUnrecorded).toContain(
+      "the wake immediately before the first of them is retained with no outcome on it, so whether it was silent too is unknown rather than no -- the stretch may start at that row or before it, and this edge stays unanswerable until something stamps it",
+    );
+    expect(withUnrecorded).not.toContain("they are one unbroken run");
 
     // Rows with no recorded ending are the ones whose positioning carries the
     // most, since nothing else about them is available.
     const bareWithSpan = buildPrompt(
       { total: 4, without_detail: 4, reasons: [] },
-      { other_outcomes_between: 0, extends_before_window: null },
+      {
+        other_outcomes_between: 0,
+        unrecorded_between: 0,
+        extends_before_window: "no_earlier_wake_retained",
+      },
     );
 
     expect(bareWithSpan).toContain("none of them carrying a recorded ending");
@@ -4416,11 +4544,15 @@ describe("buildBaseSystemPrompt", () => {
           },
         ],
       },
-      { other_outcomes_between: 0, extends_before_window: false },
+      {
+        other_outcomes_between: 0,
+        unrecorded_between: 0,
+        extends_before_window: "begins_inside_window",
+      },
     );
 
     expect(sole).toContain(
-      "Where that silent wake sits: it is the only one in this window, so its first and last are the same row and nothing can fall between them -- the interleaving count is empty by construction here, and neither a run nor a scatter is readable from one row; the wake immediately before it was not silent, so it is not the tail of anything the table retains.",
+      "Where that silent wake sits: it is the only one in this window, so its first and last are the same row and nothing can fall between them -- the interleaving count is empty by construction here, and neither a run nor a scatter is readable from one row; the wake immediately before it recorded a different ending, so it is not the tail of anything the table retains.",
     );
     expect(sole).not.toContain("one unbroken run");
 
@@ -4432,13 +4564,39 @@ describe("buildBaseSystemPrompt", () => {
         without_detail: 1,
         reasons: [],
       },
-      { other_outcomes_between: 0, extends_before_window: true },
+      {
+        other_outcomes_between: 0,
+        unrecorded_between: 0,
+        extends_before_window: "extends_before_window",
+      },
     );
 
     expect(soleClipped).toContain(
       "the wake immediately before it was also silent, and that wake is outside this window -- so the one inside is the tail of a stretch that starts earlier, and how far back that stretch runs is not on this page",
     );
     expect(soleClipped).not.toContain("one unbroken run");
+
+    // At one row the unrecorded predecessor is the same absence as above, and the
+    // single-row copy has to make the same distinction the plural copy does.
+    const solePredecessorUnrecorded = buildPrompt(
+      {
+        total: 1,
+        without_detail: 1,
+        reasons: [],
+      },
+      {
+        other_outcomes_between: 0,
+        unrecorded_between: 0,
+        extends_before_window: "earlier_wake_unrecorded",
+      },
+    );
+
+    expect(solePredecessorUnrecorded).toContain(
+      "the wake immediately before it is retained with no outcome on it, so whether it was silent too is unknown rather than no, and whether this row is the tail of a longer stretch stays unanswerable until something stamps that one",
+    );
+    expect(solePredecessorUnrecorded).not.toContain(
+      "it is not the tail of anything the table retains",
+    );
 
     expect(buildPrompt({ total: 0, without_detail: 0, reasons: [] })).toContain(
       "Silent wakes in that window: none, so there is no silence to attribute.",
