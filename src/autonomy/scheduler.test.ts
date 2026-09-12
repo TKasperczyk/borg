@@ -2951,6 +2951,45 @@ describe("AutonomyScheduler", () => {
     });
   });
 
+  it("names the failure behind a preparation error in the stored outcome detail", async () => {
+    const clock = new ManualClock(1_000_000);
+    const harness = await createOfflineTestHarness({ clock });
+    cleanup = harness.cleanup;
+    const wakeRepository = new AutonomyWakesRepository({ db: harness.db, clock });
+    const turnRunner = {
+      run: vi.fn().mockResolvedValue(createStructuralTurnResult({ emissionKind: "suppressed" })),
+    };
+    const scheduler = createScheduler({
+      db: harness.db,
+      wakeRepository,
+      enabled: true,
+      intervalMs: 1_000,
+      maxWakesPerWindow: 6,
+      clock,
+      createStreamWriter: (sessionId) =>
+        new StreamWriter({ dataDir: harness.tempDir, sessionId, clock }),
+      watermarkRepository: new StreamWatermarkRepository({ db: harness.db, clock }),
+      turnOrchestrator: turnRunner,
+      // Nothing is registered, so the source's preparation dispatch fails. The
+      // wrapper sentence is the same for every preparation failure of this
+      // source: without the cause the record cannot tell them apart.
+      toolDispatcher: new ToolDispatcher({
+        createStreamWriter: (sessionId) =>
+          new StreamWriter({ dataDir: harness.tempDir, sessionId, clock }),
+        clock,
+      }),
+      sources: [createTestDueSource("preparation-cause-event", "scheduled_reflection")],
+    });
+
+    expect(await scheduler.tick()).toMatchObject({ errorCount: 1 });
+    expect(turnRunner.run).not.toHaveBeenCalled();
+    expect(wakeRepository.listSince(0, 1)[0]).toMatchObject({
+      outcome: "error",
+      outcome_detail:
+        "Autonomous source preparation failed: AutonomySourcePreparationError: Autonomy source scheduled_reflection could not prepare due events; caused by Unknown tool",
+    });
+  });
+
   it("does not record self decisions for budget skips, preparation errors, busy skips, or turn errors", async () => {
     const clock = new ManualClock(1_000_000);
     const harness = await createOfflineTestHarness({

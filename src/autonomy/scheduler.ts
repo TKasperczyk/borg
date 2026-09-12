@@ -5,6 +5,7 @@ import {
   AutonomyError,
   LLMError,
   SessionBusyError,
+  describeErrorWithCauses,
   findInErrorCauseChain,
 } from "../util/errors.js";
 import { DEFAULT_SESSION_ID, goalIdHelpers, type GoalId, type SessionId } from "../util/ids.js";
@@ -205,12 +206,16 @@ function autonomousDecisionRationale(turnResult: TurnResult): string | null {
     : null;
 }
 
+/**
+ * Every string this produces is stamped into a wake's `outcome_detail` or into
+ * an event result, and the error object itself is gone by the time either is
+ * read. The wrappers here -- `AutonomySourcePreparationError`,
+ * `AutonomyBookkeepingError` -- carry a per-stage constant message and hold what
+ * actually failed in `cause`, so the chain is the only thing that tells one
+ * preparation failure from another once the record is all that is left.
+ */
 function formatError(error: unknown): string {
-  if (error instanceof Error) {
-    return `${error.name}: ${error.message}`;
-  }
-
-  return String(error);
+  return describeErrorWithCauses(error);
 }
 
 export class AutonomySourcePreparationError extends AutonomyError {
