@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { operatorAttentionPromptRow } from "../../../memory/operator-attention/disclosure.js";
 import { unknownMemoryDisclosureLabel } from "../../../memory/common/disclosure-label.js";
-import { HEADWAY_EMISSION_KINDS } from "../../../autonomy/index.js";
+import { AUTONOMY_CONDITION_NAMES, HEADWAY_EMISSION_KINDS } from "../../../autonomy/index.js";
 import { FINALIZER_NO_OUTPUT_SEMANTIC_CATEGORIES } from "../../generation/types.js";
 import type { MoodHistoryEntry } from "../../../memory/affective/index.js";
 import type { CommitmentRecord } from "../../../memory/commitments/index.js";
@@ -2814,6 +2814,18 @@ describe("buildBaseSystemPrompt", () => {
       // count of zero cannot be mistaken for a row whose identity was withheld.
       expect(block).toContain(
         "trigger_name=goal_followup_due wake_count=1 in_flight=0 outcome_counts(headway=0 silent=0 error=1 busy=0 interrupted=0)",
+      );
+      // The groups are keyed on a column whose domain is every source name, and
+      // the only typed list on the page carries one type per name -- so nothing
+      // told a reader that a group labelled trigger_name can be a condition, and
+      // the typed list agreed with the label on every name where it happened to.
+      // The condition names are derived from the enum, so this pin fails rather
+      // than goes quietly stale if the enum gains or loses one.
+      expect(block).toContain(
+        `trigger_name is the source-name column rather than an assertion of type: every wake is recorded under its own source name, the ${AUTONOMY_CONDITION_NAMES.length} conditions (${AUTONOMY_CONDITION_NAMES.join(", ")}) included, so a group here can name a condition.`,
+      );
+      expect(block).toContain(
+        "Type is stated once on this page -- the wake-sources list at the end of this block, one type per name -- which makes that list the only place a type can be read rather than a second witness that could confirm or contradict one taken from here.",
       );
       // A stamp leaving the list is the ambiguous case rather than a close: the
       // window's lower edge drops unresolved rows and resolved ones alike, so

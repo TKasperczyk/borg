@@ -58,6 +58,7 @@ import { formatUtcDayBoundary, utcDayKey } from "../../../util/utc-day.js";
 import { DEFAULT_SESSION_ID } from "../../../util/ids.js";
 import type { OperatorSessionSnapshot } from "../../lifecycle/turn-phase/session-snapshot.js";
 import {
+  AUTONOMY_CONDITION_NAMES,
   HEADWAY_EMISSION_KINDS,
   type AutonomySchedulerFleetBrakeDescription,
   type AutonomyWakeOutcomeDetailTally,
@@ -1981,6 +1982,24 @@ export function summarizeAutonomySchedulerState(
         (group) =>
           `- trigger_name=${group.trigger_name} wake_count=${group.wake_count} in_flight=${group.in_flight}${formatInFlightStamps(group.in_flight_started_at)} outcome_counts(headway=${group.outcome_counts.headway} silent=${group.outcome_counts.silent} error=${group.outcome_counts.error} busy=${group.outcome_counts.busy} interrupted=${group.outcome_counts.interrupted})`,
       ),
+      // These groups are keyed on the wakes table's trigger_name column, whose
+      // domain is every source name, conditions included -- the type lives in a
+      // separate column that reaches this page nowhere. The only place a type is
+      // stated is the forward-looking sources list at the end of this block, and
+      // it carries exactly one type per name. So a reader composing the two --
+      // which that list invites, naming them the same names counted backwards --
+      // finds every name typed there and no statement that a group labelled
+      // trigger_name can be a condition. The composition then fails silently in
+      // the one direction that costs something: the label is read as the type,
+      // and the sources list confirms it for the six names where it happens to
+      // agree. Derived rather than transcribed for the same reason
+      // HEADWAY_EMISSION_KINDS is: a list copied onto this page goes quietly
+      // false the next time the enum behind it changes.
+      `trigger_name is the source-name column rather than an assertion of type: every wake is recorded under its own source name, the ${
+        AUTONOMY_CONDITION_NAMES.length
+      } conditions (${AUTONOMY_CONDITION_NAMES.join(
+        ", ",
+      )}) included, so a group here can name a condition. The same column keys tr= on the wake rows below and the bracketed splits on the outcome-reason lines, so none of those separate the two types either. Type is stated once on this page -- the wake-sources list at the end of this block, one type per name -- which makes that list the only place a type can be read rather than a second witness that could confirm or contradict one taken from here.`,
       // Rendered whenever the section renders, including on every read where
       // in_flight is 0 everywhere: a rule that appeared only alongside a
       // non-zero count would make the zero read as "no such state exists"
