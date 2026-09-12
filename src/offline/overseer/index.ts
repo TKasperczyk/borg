@@ -460,32 +460,55 @@ function buildMisattributionRepairRefs(input: {
   };
 }
 
+// The temporal_drift review refs are a strict discriminated union on target_type
+// (review-handlers/temporal-drift.ts): episode carries corrected_start_time /
+// corrected_end_time / patch_description, semantic_node carries patch_description,
+// semantic_edge carries suggested_valid_to / by_edge_id / reason. The model may
+// attach any of these to any target; shaping the refs by target_type here keeps
+// them resolvable by construction instead of losing the flag at enqueue
+// (prod 2026-09-11: "Unrecognized key: suggested_valid_to" on a semantic_node;
+// 2026-09-12: "Unrecognized keys: corrected_start_time, corrected_end_time").
 function buildTemporalDriftRepairRefs(
   item: OverseerPlanItem,
   proposedProvenance: OverseerProposedProvenance,
 ): Record<string, unknown> {
-  return {
-    target_type: item.target_type,
-    target_id: item.target_id,
-    ...(item.corrected_start_time === undefined
-      ? {}
-      : { corrected_start_time: item.corrected_start_time }),
-    ...(item.corrected_end_time === undefined
-      ? {}
-      : { corrected_end_time: item.corrected_end_time }),
-    ...(item.patch_description === undefined ? {} : { patch_description: item.patch_description }),
-    ...(item.target_type === "semantic_edge"
-      ? {
-          target_kind: "semantic_edge",
-          reason: item.reason,
-        }
-      : {}),
-    ...(item.suggested_valid_to === undefined
-      ? {}
-      : { suggested_valid_to: item.suggested_valid_to }),
-    ...(item.by_edge_id === undefined ? {} : { by_edge_id: item.by_edge_id }),
-    proposed_provenance: proposedProvenance,
-  };
+  const patchDescription =
+    item.patch_description === undefined ? {} : { patch_description: item.patch_description };
+
+  switch (item.target_type) {
+    case "episode":
+      return {
+        target_type: item.target_type,
+        target_id: item.target_id,
+        ...(item.corrected_start_time === undefined
+          ? {}
+          : { corrected_start_time: item.corrected_start_time }),
+        ...(item.corrected_end_time === undefined
+          ? {}
+          : { corrected_end_time: item.corrected_end_time }),
+        ...patchDescription,
+        proposed_provenance: proposedProvenance,
+      };
+    case "semantic_node":
+      return {
+        target_type: item.target_type,
+        target_id: item.target_id,
+        ...patchDescription,
+        proposed_provenance: proposedProvenance,
+      };
+    case "semantic_edge":
+      return {
+        target_type: item.target_type,
+        target_id: item.target_id,
+        target_kind: "semantic_edge",
+        reason: item.reason,
+        ...(item.suggested_valid_to === undefined
+          ? {}
+          : { suggested_valid_to: item.suggested_valid_to }),
+        ...(item.by_edge_id === undefined ? {} : { by_edge_id: item.by_edge_id }),
+        proposed_provenance: proposedProvenance,
+      };
+  }
 }
 
 function buildRepairRefs(input: {

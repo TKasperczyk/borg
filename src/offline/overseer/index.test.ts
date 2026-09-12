@@ -1404,6 +1404,71 @@ describe("overseer process", () => {
     expect(review?.refs).not.toHaveProperty("by_edge_id");
   });
 
+  it("drops episode-only corrected timestamps from a semantic_node temporal drift flag", async () => {
+    const nowMs = 10 * 24 * 60 * 60 * 1_000;
+    const llm = new FakeLLMClient({
+      responses: [
+        createOverseerResponse([
+          {
+            kind: "temporal_drift",
+            reason: "The node dates the rollback a day early.",
+            confidence: 0.8,
+            patch_description: "Rollback completed on the following day.",
+            // Prod 2026-09-12 (team-agent-esb): the model attached the episode-only
+            // timestamp fields to a semantic_node target and the strict refs schema
+            // rejected the whole flag ("Unrecognized keys: corrected_start_time,
+            // corrected_end_time").
+            corrected_start_time: nowMs - 2_000,
+            corrected_end_time: nowMs - 1_000,
+          },
+        ]),
+      ],
+    });
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(nowMs),
+      llmClient: llm,
+      configOverrides: {
+        offline: {
+          ...DEFAULT_CONFIG.offline,
+          overseer: { ...DEFAULT_CONFIG.offline.overseer, maxChecksPerRun: 1 },
+        },
+      },
+    });
+    cleanup.push(harness.cleanup);
+
+    const episodeId = createEpisodeFixture().id;
+    await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture(
+        {
+          label: "Atlas rollback date",
+          description: "Atlas rolled back on Monday.",
+          source_episode_ids: [episodeId],
+          created_at: nowMs - 1_000,
+          updated_at: nowMs - 1_000,
+        },
+        [1, 0, 0, 0],
+      ),
+    );
+
+    const process = new OverseerProcess({
+      reviewQueueRepository: harness.reviewQueueRepository,
+      registry: harness.registry,
+    });
+    const result = await process.run(harness.createContext(), { dryRun: false });
+
+    expect(result.errors).toEqual([]);
+    const review = harness.reviewQueueRepository.getOpen()[0];
+    expect(review).toMatchObject({
+      kind: "temporal_drift",
+      refs: {
+        target_type: "semantic_node",
+        patch_description: "Rollback completed on the following day.",
+      },
+    });
+    expect(review?.refs).not.toHaveProperty("corrected_start_time");
+    expect(review?.refs).not.toHaveProperty("corrected_end_time");
+  });
+
   it("tells the model how many flags it may emit for one target", async () => {
     const nowMs = 10 * 24 * 60 * 60 * 1_000;
     const llm = new FakeLLMClient({ responses: [createOverseerResponse([])] });
