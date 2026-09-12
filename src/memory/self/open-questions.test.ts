@@ -230,6 +230,10 @@ describe("OpenQuestionsRepository", () => {
         "The second pass narrowed the live tension.",
         "The first pass kept the question open.",
       ]);
+      // The count is over the record, not over the page: a caller holding a one-row tail still
+      // learns there are two, which is the only thing that tells a tail from the whole of it.
+      expect(repository.countRuminations(question.id)).toBe(2);
+      expect(repository.countRuminations(connected.id)).toBe(0);
     } finally {
       db.close();
     }

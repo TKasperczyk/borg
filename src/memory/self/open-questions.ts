@@ -1336,6 +1336,24 @@ export class OpenQuestionsRepository {
     return rows.map((row) => mapOpenQuestionRuminationRow(row));
   }
 
+  // How many notes the store actually holds for this question. listRecentRuminations returns a
+  // capped tail, so a reader shown that tail cannot tell it apart from the whole record; this is
+  // the quantity that distinguishes them.
+  countRuminations(openQuestionId: OpenQuestionId): number {
+    const parsedId = openQuestionIdSchema.parse(openQuestionId);
+    const row = this.db
+      .prepare(
+        `
+          SELECT count(*) AS total
+          FROM open_question_ruminations
+          WHERE open_question_id = ?
+        `,
+      )
+      .get(parsedId) as { total: number } | undefined;
+
+    return row?.total ?? 0;
+  }
+
   // Time-range browse over ruminations regardless of the question's current status: a note written
   // against a question that has since resolved or been abandoned stays readable, because the record
   // of how a question was reached is what survives the question closing.

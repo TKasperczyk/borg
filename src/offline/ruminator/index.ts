@@ -584,6 +584,7 @@ function buildResolutionPrompt(
   question: OpenQuestion,
   evidence: string,
   recentRuminations: readonly OpenQuestionRumination[],
+  recordedRuminationNotes: number,
   connectedCandidates: readonly OpenQuestion[],
   staleNoTractionTicks: number,
 ): string {
@@ -592,6 +593,7 @@ function buildResolutionPrompt(
     question: question.question,
     source: question.source,
     unresolved_rumination_ticks: question.unresolved_rumination_ticks,
+    recorded_rumination_notes: recordedRuminationNotes,
     ...memoryDisclosurePayloadFields(openQuestionMemoryDisclosureLabel(question)),
   };
 
@@ -600,7 +602,7 @@ function buildResolutionPrompt(
     `I emit my result by calling the ${RUMINATOR_TOOL_NAME} tool exactly once.`,
     "I choose outcome=resolved only when the evidence genuinely settles the question.",
     "I choose outcome=still_open when the question should remain open, and then I state the reasoning, live tensions, connected open questions, and what evidence would settle it.",
-    `unresolved_rumination_ticks counts the recorded rumination notes from prior still_open outcomes on this question; recording a note for a still_open result now makes it one higher, while a note-less scheduling stamp does not. It is only a count -- the rumination notes below are the record of my thinking, and they survive the question closing. It feeds exactly one decision: the ruminator dismisses a question whose recorded-note ticks have reached ${staleNoTractionTicks} when no episode created after it cites it and no action against it is active. That dismissal is deterministic and taken without asking me, and reaching the count on its own does not cause it. I never choose resolved to keep a question from being dismissed.`,
+    `unresolved_rumination_ticks counts the recorded rumination notes from prior still_open outcomes on this question; recording a note for a still_open result now makes it one higher, while a note-less scheduling stamp does not. It is only a count -- the rumination notes below are the record of my thinking, and they survive the question closing. It feeds exactly one decision: the ruminator dismisses a question whose recorded-note ticks have reached ${staleNoTractionTicks} when no episode created after it cites it and no action against it is active. That dismissal is deterministic and taken without asking me, and reaching the count on its own does not cause it. I never choose resolved to keep a question from being dismissed. It is not the same quantity as recorded_rumination_notes and the two can sit far apart: merging a duplicate question into this one hands over that question's notes without handing over its ticks, and notes written before the counter existed are in the record with nothing counted for them.`,
     "For connected_open_question_ids, I cite only ids from Connected open-question candidates. I use [] when none of those prompt-visible questions genuinely connects.",
     "I only include a growth_marker on a resolved outcome when the evidence clearly shows new understanding.",
     `${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE} I apply this to resolution_note, reasoning, tensions, and any growth_marker text fields.`,
@@ -610,7 +612,7 @@ function buildResolutionPrompt(
     renderConnectedOpenQuestionCandidates(connectedCandidates),
     "Evidence:",
     evidence,
-    "Recent rumination notes:",
+    `Recent rumination notes -- the ${recentRuminations.length} most recent of the ${recordedRuminationNotes} recorded on this question; the rest are in the store, unshown rather than absent. Where a note counts itself as the Nth pass, it counts the line of notes it was written in: a merge runs two such lines through one record, so recorded_rumination_notes is the count of this question's notes and the prose in a note is not.`,
     renderRecentRuminationNotes(recentRuminations),
   ].join("\n\n");
 }
@@ -1173,6 +1175,7 @@ async function planResolution(
   const recentRuminations = ctx.openQuestionsRepository.listRecentRuminations(question.id, {
     limit: RECENT_RUMINATIONS_PER_QUESTION,
   });
+  const recordedRuminationNotes = ctx.openQuestionsRepository.countRuminations(question.id);
   const connectedCandidates = connectedOpenQuestionCandidates(question, allOpenQuestions);
   let response: RuminationResponse;
 
@@ -1191,6 +1194,7 @@ async function planResolution(
                 question,
                 evidenceBlock,
                 recentRuminations,
+                recordedRuminationNotes,
                 connectedCandidates,
                 ctx.config.offline.ruminator.staleNoTractionTicks,
               ),

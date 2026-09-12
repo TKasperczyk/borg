@@ -1677,6 +1677,89 @@ describe("RuminatorProcess", () => {
     }
   });
 
+  it("names how many notes the record holds beside the capped tail it shows", async () => {
+    const questionText = "What still explains the Atlas note tail?";
+    const llm = new FakeLLMClient();
+    const clock = new ManualClock(3_000_000);
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      clock,
+      embeddingClient: new TestEmbeddingClient(new Map([[questionText, [1, 0, 0, 0]]])),
+      configOverrides: {
+        offline: {
+          ruminator: {
+            staleNoTractionTicks: 7,
+          },
+        },
+      },
+    });
+    const process = new RuminatorProcess({
+      openQuestionsRepository: harness.openQuestionsRepository,
+      growthMarkersRepository: harness.growthMarkersRepository,
+      registry: harness.registry,
+    });
+
+    try {
+      await harness.episodicRepository.createEpisode(
+        createEpisodeFixture(
+          {
+            title: "Atlas tail evidence",
+            narrative: "Atlas evidence arrived after the question was last touched.",
+            tags: ["atlas"],
+            significance: 0.95,
+            created_at: 2_000_000,
+            updated_at: 2_000_000,
+          },
+          [1, 0, 0, 0],
+        ),
+      );
+      const question = harness.openQuestionsRepository.add({
+        question: questionText,
+        urgency: 0.7,
+        source: "reflection",
+        created_at: 1_000_000,
+        last_touched: 1_000_000,
+        provenance: { kind: "manual" },
+      });
+      // Five notes on the record against a tick count of three -- the two diverge in production
+      // when a merge hands a duplicate's notes over without its ticks, so the prompt has to carry
+      // both numbers rather than let one stand in for the other.
+      for (let index = 0; index < 5; index += 1) {
+        harness.openQuestionsRepository.recordRumination({
+          open_question_id: question.id,
+          note: `Atlas tail note ${index}`,
+          source_process: "test",
+          provenance: { kind: "manual" },
+          created_at: 1_100_000 + index * 1_000,
+        });
+      }
+      harness.openQuestionsRepository.markRuminated(question.id, 3);
+      clock.advance(100_000);
+      llm.pushResponse(
+        createStillOpenRuminatorResponse({
+          reasoning: "The evidence narrows the tension but does not settle it.",
+          tensions: ["The tail is shown but the record is longer."],
+        }),
+      );
+
+      await process.plan(harness.createContext(), {});
+      const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+
+      // The shown count is the rendered tail's own length and the total comes from the store, so
+      // neither can drift from what the reader is actually holding.
+      expect(prompt).toContain('"recorded_rumination_notes":5');
+      expect(prompt).toContain("the 3 most recent of the 5 recorded on this question");
+      expect(prompt).toContain("unshown rather than absent");
+      expect(prompt).toContain("a merge runs two such lines through one record");
+      expect(prompt).toContain("Atlas tail note 4");
+      expect(prompt).toContain("Atlas tail note 2");
+      expect(prompt).not.toContain("Atlas tail note 1");
+      expect(prompt).not.toContain("Atlas tail note 0");
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
   it("dismisses stale no-traction questions but keeps ones with active actions", async () => {
     const tracer = new CaptureTracer();
     const harness = await createOfflineTestHarness({
