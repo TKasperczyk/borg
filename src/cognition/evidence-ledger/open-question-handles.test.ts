@@ -98,6 +98,33 @@ describe("openQuestionStateMetadata", () => {
     // branch writes last_ruminated_at alone), so a sentence that calls it a count of passes
     // invites reading a gap between the count and the notes as a lost note.
     expect(live?.unresolved_rumination_ticks_note).toContain("recorded no note");
+    // Both fields are on the object, so the one inference the pair supports belongs beside them:
+    // a stamp later than the newest note is a pass that recorded nothing, and the page should not
+    // leave a reader to discover that by drawing the notes and comparing dates by hand.
+    expect(live?.unresolved_rumination_ticks_note).toContain(
+      "later than the newest note tool.openQuestions.ruminations returns",
+    );
+  });
+
+  it("names the third state: zero notes beside a live stamp", () => {
+    const neverSelected = openQuestionStateMetadata(openQuestion(), NOW_MS, 4);
+    const selectedAndSilent = openQuestionStateMetadata(
+      openQuestion({
+        unresolved_rumination_ticks: 0,
+        last_ruminated_at: Date.parse("2026-09-01T20:40:39.311Z"),
+      }),
+      NOW_MS,
+      4,
+    );
+
+    // Suppressing the sentence at zero is right only for the null-stamp zero. Zero beside a live
+    // stamp is a pass that produced nothing, and it is the one zero a reader cannot tell apart
+    // from never-selected -- so it is exactly where the omitted sentence was load-bearing.
+    expect(neverSelected).not.toHaveProperty("unresolved_rumination_ticks_note");
+    expect(selectedAndSilent?.unresolved_rumination_ticks_note).toContain("produced none");
+    expect(selectedAndSilent?.unresolved_rumination_ticks_note).toContain(
+      "not a question the loop has never reached",
+    );
   });
 
   it("omits the threshold rather than inventing one when it was not supplied", () => {

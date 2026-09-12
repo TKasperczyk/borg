@@ -114,6 +114,32 @@ export function relevantOpenQuestionEpisodeIds(input: EvidenceLedgerBuildInput):
   return episodeIds;
 }
 
+// A zero is self-describing only while nothing has stamped the row. Zero beside a live
+// last_ruminated_at is a third state -- the loop selected this question and the pass recorded
+// nothing -- and it renders identically to never-selected, so that case gets its own sentence
+// rather than the suppression the other zero earns. Above zero the sentence carries the whole
+// predicate, because the number there could be read as sufficient on its own.
+function ruminationTicksNoteFor(
+  ticks: number,
+  lastRuminatedAt: number | null,
+): Record<string, string> {
+  if (ticks === 0) {
+    if (lastRuminatedAt === null) {
+      return {};
+    }
+
+    return {
+      unresolved_rumination_ticks_note:
+        "No rumination note has been recorded against this question, yet last_ruminated_at is set: an offline pass selected it and produced none, and such a pass advances the stamp without advancing this count. A zero beside a live stamp is therefore a pass that recorded nothing, not a question the loop has never reached -- a null stamp is what the latter looks like.",
+    };
+  }
+
+  return {
+    unresolved_rumination_ticks_note:
+      "Recorded rumination notes from offline passes that ended with this question still open; a pass that recorded no note stamps the schedule without advancing this count. A last_ruminated_at later than the newest note tool.openQuestions.ruminations returns for this row is therefore evidence of at least one such pass since that note, though how many is recoverable from neither field. The count on its own does not close it, and a count already past the threshold does not mean the other conditions are what kept it open: the dismissal is not evaluated at all on a pass that called the model for this question, so the model's still-open judgment stands and the count advances unchecked. Where the dismissal is evaluated, it also requires no episode created after the question citing it and no active action against it. Zero on another row means no note has been recorded against that question, not that it is fresh.",
+  };
+}
+
 export function openQuestionStateMetadata(
   question: OpenQuestion,
   nowMs?: number,
@@ -141,14 +167,7 @@ export function openQuestionStateMetadata(
       ...(staleNoTractionTicks === undefined
         ? {}
         : { dismissal_threshold_ticks: staleNoTractionTicks }),
-      // The count is inert at zero and self-describing there, so the sentence is spent only on
-      // rows where the number is live and could be read as sufficient on its own.
-      ...(ticks === 0
-        ? {}
-        : {
-            unresolved_rumination_ticks_note:
-              "Recorded rumination notes from offline passes that ended with this question still open; a pass that recorded no note stamps the schedule without advancing this count. The count on its own does not close it, and a count already past the threshold does not mean the other conditions are what kept it open: the dismissal is not evaluated at all on a pass that called the model for this question, so the model's still-open judgment stands and the count advances unchecked. Where the dismissal is evaluated, it also requires no episode created after the question citing it and no active action against it. Zero on another row means no note has been recorded against that question, not that it is fresh.",
-          }),
+      ...ruminationTicksNoteFor(ticks, question.last_ruminated_at),
     };
   }
 
