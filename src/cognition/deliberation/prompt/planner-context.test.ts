@@ -1311,6 +1311,73 @@ describe("compact planner context", () => {
     );
   });
 
+  it("expands the selected goal whatever its rank, and says which case the render is", () => {
+    const goals = Array.from({ length: 6 }, (_, index) =>
+      goal(`GOAL_${index}`, { terminal_condition: `CLOSES_WHEN_${index}` }),
+    );
+    const candidates = goals.map((candidate, index) => ({
+      goal_id: candidate.id,
+      goal: candidate,
+      score: 1 - index / 10,
+      components: {
+        priority: 1,
+        deadline_pressure: 1,
+        context_fit: 1,
+        progress_debt: 1,
+      },
+      reason: `REASON_${index}`,
+    }));
+    const focus = (selectedIndex: number | null) => ({
+      selected_goal: selectedIndex === null ? null : goals[selectedIndex]!,
+      selected_score: selectedIndex === null ? null : candidates[selectedIndex]!,
+      candidates,
+      threshold: 0.45,
+      score_basis: {
+        score_context: "turn_selection" as const,
+        deadline_lookahead_ms: 1,
+        progress_debt_stale_ms: 1,
+      },
+    });
+    const expandedBlockFor = (selectedIndex: number | null) =>
+      taggedBlock(
+        allSystemText(
+          build(
+            context({
+              selfSnapshot: { values: [], goals, traits: [] },
+              executiveFocus: focus(selectedIndex),
+            }),
+          ),
+        ),
+        "top_global_candidates_expanded",
+      );
+    // A trigger that names a goal outright forces the selection past the score
+    // sort, so the goal the turn is about can rank below every goal the limit
+    // admits. Expanding by rank alone would print four goals the turn is not
+    // about in full and leave this one with no closing condition at all.
+    const forced = expandedBlockFor(5);
+    const forcedIds = [...forced.matchAll(/<goal_detail i="([^"]+)"/g)].map((match) => match[1]);
+
+    expect(forcedIds).toEqual([...goals.slice(0, 4), goals[5]!].map((entry) => entry.id));
+    expect(forced).toContain('rows="5"');
+    expect(forced).toContain('selected_goal_expanded="true"');
+    expect(forced).toContain('tc="CLOSES_WHEN_5"');
+    expect(forced).toContain(`<goal_detail i="${goals[5]!.id}" s="active" sel="true"`);
+    expect(forced).toContain("<omitted_count>1</omitted_count>");
+
+    const ranked = expandedBlockFor(0);
+    const rankedIds = [...ranked.matchAll(/<goal_detail i="([^"]+)"/g)].map((match) => match[1]);
+
+    expect(rankedIds).toEqual(goals.slice(0, 4).map((entry) => entry.id));
+    expect(ranked).toContain('rows="4"');
+    expect(ranked).toContain('selected_goal_expanded="true"');
+    expect(ranked).toContain("<omitted_count>2</omitted_count>");
+
+    const unselected = expandedBlockFor(null);
+
+    expect(unselected).toContain('rows="4"');
+    expect(unselected).toContain('selected_goal_expanded="none"');
+  });
+
   it("reports retained statuses and scopes complete membership to the supplied snapshot", () => {
     const mixed = build(
       context({

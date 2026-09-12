@@ -1,7 +1,7 @@
 import {
   computeExecutiveContextFits,
+  expandedExecutiveCandidateGoalIds,
   selectExecutiveFocus,
-  topExecutiveCandidateGoalIds,
 } from "../../executive/index.js";
 import type { ExecutiveFocus, ExecutiveStepsRepository } from "../../executive/index.js";
 import type { EmbeddingClient } from "../../embeddings/index.js";
@@ -278,19 +278,16 @@ export class TurnSelfContextBuilder {
       selfFeatures: selfScoringFeatures,
       primaryGoalId: executiveFocus.selected_goal?.id ?? null,
     });
-    const expandedCandidateGoalIds = topExecutiveCandidateGoalIds({
+    const selectedGoalId = executiveFocus.selected_goal?.id ?? null;
+    const expandedCandidateGoalIds = expandedExecutiveCandidateGoalIds({
       candidates: executiveFocus.candidates,
       eligibleGoalIds: new Set(selfSnapshot.goals.map((goal) => goal.id)),
       limit: PLANNER_GOAL_EXPANSION_LIMIT,
+      selectedGoalId,
     });
-    const selectedGoalId = executiveFocus.selected_goal?.id ?? null;
-    const queriedGoalIds =
-      selectedGoalId === null || expandedCandidateGoalIds.includes(selectedGoalId)
-        ? expandedCandidateGoalIds
-        : [...expandedCandidateGoalIds, selectedGoalId];
     const topOpenByGoalId = new Map(
       this.options.executiveStepsRepository
-        .topOpenForGoals(queriedGoalIds)
+        .topOpenForGoals(expandedCandidateGoalIds)
         .map((result) => [result.goal_id, result]),
     );
     const annotateStep = (goalId: GoalId) => {

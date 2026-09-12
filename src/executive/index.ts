@@ -1,5 +1,6 @@
 export {
   DEFAULT_EXECUTIVE_GOAL_FOCUS_THRESHOLD,
+  expandedExecutiveCandidateGoalIds,
   selectExecutiveFocus,
   topExecutiveCandidateGoalIds,
   type SelectExecutiveFocusInput,
