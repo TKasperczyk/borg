@@ -132,6 +132,54 @@ describe("inner life internal tools", () => {
     expect(tool.description).toContain("because this write set them there");
   });
 
+  // Both evidence arms are optional and the refinement fires only when both are
+  // empty, so stream evidence alone resolves. The rejection used to carry
+  // path: ["resolution_evidence_episode_ids"], and a reader who took the path as the
+  // address of the fault read an open disjunction as a required episode arm --
+  // on a question whose episode arm is empty for unrelated reasons, that reads as
+  // structural confirmation. The address is the record; the message names the arms.
+  it("accepts either evidence arm alone and addresses the empty-both rejection to the record", () => {
+    const tool = createOpenQuestionsResolveTool({
+      identityService: {
+        resolveOpenQuestion: () => {
+          throw new Error("not invoked");
+        },
+      },
+      disclosureLabelForEvidence: async () => selfPrivateMemoryDisclosureLabel(),
+    });
+    const openQuestionId = createOpenQuestionId();
+
+    expect(
+      tool.inputSchema.safeParse({
+        open_question_id: openQuestionId,
+        resolution_note: "Settled on stream evidence alone.",
+        resolution_evidence_stream_entry_ids: [createStreamEntryId()],
+      }).success,
+    ).toBe(true);
+    expect(
+      tool.inputSchema.safeParse({
+        open_question_id: openQuestionId,
+        resolution_note: "Settled on episode evidence alone.",
+        resolution_evidence_episode_ids: [createEpisodeId()],
+      }).success,
+    ).toBe(true);
+
+    const bothEmpty = tool.inputSchema.safeParse({
+      open_question_id: openQuestionId,
+      resolution_note: "No evidence at all.",
+    });
+
+    expect(bothEmpty.success).toBe(false);
+
+    const issue = bothEmpty.success
+      ? undefined
+      : bothEmpty.error.issues.find((candidate) => candidate.code === "custom");
+
+    expect(issue?.path).toEqual([]);
+    expect(issue?.message).toContain("resolution_evidence_episode_ids");
+    expect(issue?.message).toContain("resolution_evidence_stream_entry_ids");
+  });
+
   it("surfaces identity-governance review-required open question resolution as tool data", async () => {
     const current = sampleOpenQuestion();
     const resolveOpenQuestion = vi.fn(() => ({

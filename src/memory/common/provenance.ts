@@ -62,10 +62,12 @@ export const provenanceSchema = baseProvenanceSchema.superRefine((value, ctx) =>
     value.evidence_episode_ids.length === 0 &&
     value.evidence_stream_entry_ids.length === 0
   ) {
+    // Either arm alone satisfies this, so the issue belongs to the record: a path
+    // naming one arm reports the disjunction as a requirement on that field.
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      message: "online_reflector provenance requires episode or stream evidence",
-      path: ["evidence_episode_ids"],
+      message:
+        "online_reflector provenance requires episode or stream evidence: set evidence_episode_ids or evidence_stream_entry_ids, either one alone",
     });
   }
 });

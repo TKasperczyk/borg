@@ -320,9 +320,10 @@ export const openQuestionRecordSchema = openQuestionSchema
       value.related_semantic_node_ids.length > 0 ||
       value.provenance !== null,
     {
+      // Any one of the three arms satisfies this; addressing the issue to one of
+      // them would report the disjunction as a requirement on that field alone.
       message:
-        "Open question requires related_episode_ids, related_semantic_node_ids, or explicit provenance",
-      path: ["provenance"],
+        "Open question requires related_episode_ids, related_semantic_node_ids, or explicit provenance, any one alone",
     },
   )
   .refine(
@@ -331,8 +332,8 @@ export const openQuestionRecordSchema = openQuestionSchema
       value.resolution_evidence_episode_ids.length > 0 ||
       value.resolution_evidence_stream_entry_ids.length > 0,
     {
-      message: "Resolved open question requires episode or stream evidence",
-      path: ["resolution_evidence_episode_ids"],
+      message:
+        "Resolved open question requires episode or stream evidence: resolution_evidence_episode_ids or resolution_evidence_stream_entry_ids, either one alone",
     },
   );
 

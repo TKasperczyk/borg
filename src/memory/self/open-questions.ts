@@ -2021,9 +2021,12 @@ export class OpenQuestionsRepository {
       resolutionEvidenceEpisodeIds.length === 0 &&
       resolutionEvidenceStreamEntryIds.length === 0
     ) {
-      throw new StorageError("Open question resolution requires episode or stream evidence", {
-        code: "OPEN_QUESTION_RESOLUTION_EVIDENCE_REQUIRED",
-      });
+      throw new StorageError(
+        "Open question resolution requires episode or stream evidence: set resolution_evidence_episode_ids or resolution_evidence_stream_entry_ids, either one alone",
+        {
+          code: "OPEN_QUESTION_RESOLUTION_EVIDENCE_REQUIRED",
+        },
+      );
     }
 
     const resolvedAt = this.clock.now();

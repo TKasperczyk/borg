@@ -32,10 +32,13 @@ const openQuestionsResolveInputSchema = z
       (value.resolution_evidence_episode_ids?.length ?? 0) === 0 &&
       (value.resolution_evidence_stream_entry_ids?.length ?? 0) === 0
     ) {
+      // An "at least one of" constraint holds over the record, not over either arm.
+      // A path naming one arm reads as that arm being required, which is the opposite
+      // of what the disjunction permits, so address the record and name both fields.
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "Open question resolution requires episode or stream evidence",
-        path: ["resolution_evidence_episode_ids"],
+        message:
+          "Open question resolution requires episode or stream evidence: set resolution_evidence_episode_ids or resolution_evidence_stream_entry_ids, either one alone",
       });
     }
   });

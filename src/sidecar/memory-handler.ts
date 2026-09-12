@@ -404,10 +404,11 @@ const memoryContextBodySchema = z
     }
 
     if (episodesRequested && !value.focus && !value.query) {
+      // Either field satisfies this, so the issue is the request's and not focus's:
+      // a path naming one arm reads as that arm being the missing requirement.
       ctx.addIssue({
         code: "custom",
-        path: ["focus"],
-        message: "focus or query is required when episodes are requested",
+        message: "focus or query is required when episodes are requested, either one alone",
       });
     }
 
