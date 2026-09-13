@@ -12,7 +12,7 @@ import {
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { fork, type ChildProcess } from "node:child_process";
+import { fork, spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -255,12 +255,96 @@ describe("file-lock", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("retains a local live PID even when its heartbeat and timestamp are ancient", async () => {
+  it("retains a live local PID that already existed when the lock was last stamped", async () => {
+    // The parent process started before us; a lock it stamped a second ago is a
+    // live (possibly stalled) holder and must be kept, however old its heartbeat
+    // interval makes it look to a contender.
     const path = leasePath();
-    writeFileSync(path, JSON.stringify({ heartbeat: 0, owner: "test-lease-owner", pid: process.pid, host: hostname(), timestamp: 0 }));
+    const stamp = Date.now() - 1_000;
+    writeFileSync(
+      path,
+      JSON.stringify({ heartbeat: stamp, owner: "test-lease-owner", pid: process.ppid, host: hostname(), timestamp: stamp }),
+    );
     expect(isFileLockLive(path)).toBe(true);
     await expect(acquireFileLockLease(path, { timeoutMs: 0 })).rejects.toThrow("Timed out");
   });
+
+  it("retains a lock this process created itself", async () => {
+    const path = leasePath();
+    const lease = await acquireFileLockLease(path);
+    expect(isFileLockLive(path)).toBe(true);
+    await expect(acquireFileLockLease(path, { timeoutMs: 0 })).rejects.toThrow("Timed out");
+    await lease.release();
+    expect(isFileLockLive(path)).toBe(false);
+  });
+
+  it("reaps a same-host lock whose PID was reassigned to this process after the lock was created", async () => {
+    // In-place container restart: same hostname, the dead owner's PID is now
+    // ours, and the lock predates our start. It must not look alive forever.
+    const path = leasePath();
+    const beforeOurStart = Date.now() - process.uptime() * 1000 - 60_000;
+    writeFileSync(
+      path,
+      JSON.stringify({
+        heartbeat: beforeOurStart,
+        owner: "dead-owner",
+        pid: process.pid,
+        host: hostname(),
+        timestamp: beforeOurStart,
+      }),
+    );
+    expect(isFileLockLive(path)).toBe(false);
+    const lease = await acquireFileLockLease(path, { timeoutMs: 0 });
+    expect(JSON.parse(readFileSync(path, "utf8")).owner).not.toBe("dead-owner");
+    await lease.release();
+  });
+
+  it.each([
+    ["last heartbeat 500 ms before our start", -500],
+    ["last heartbeat after our start (fast restart)", 60_000],
+  ])("reaps a lock bearing our PID with an owner we never issued: %s", async (_label, offsetMs) => {
+    // Owner-id bookkeeping makes the same-PID case exact: no dependence on how
+    // close the dead owner's last heartbeat landed to our own start.
+    const path = leasePath();
+    const stamp = Date.now() - process.uptime() * 1000 + offsetMs;
+    writeFileSync(
+      path,
+      JSON.stringify({ heartbeat: stamp, owner: "dead-owner", pid: process.pid, host: hostname(), timestamp: stamp }),
+    );
+    expect(isFileLockLive(path)).toBe(false);
+    const lease = await acquireFileLockLease(path, { timeoutMs: 0 });
+    expect(JSON.parse(readFileSync(path, "utf8")).owner).not.toBe("dead-owner");
+    await lease.release();
+  });
+
+  it.skipIf(process.platform !== "linux")(
+    "reaps a same-host lock whose live PID belongs to a process started after the lock was last stamped",
+    async () => {
+    // Different PID, same host: the process now wearing the PID started after the
+    // lock's last heartbeat, so it cannot be the stamper. Linux-only (/proc).
+    const child = spawn("sleep", ["30"], { stdio: "ignore" });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const path = leasePath();
+      const beforeChildStart = Date.now() - 60_000;
+      writeFileSync(
+        path,
+        JSON.stringify({
+          heartbeat: beforeChildStart,
+          owner: "dead-owner",
+          pid: child.pid,
+          host: hostname(),
+          timestamp: beforeChildStart,
+        }),
+      );
+      expect(isFileLockLive(path)).toBe(false);
+      const lease = await acquireFileLockLease(path, { timeoutMs: 0 });
+      await lease.release();
+    } finally {
+      child.kill();
+    }
+  },
+  );
 
   it.each([false, true])(
     "logs heartbeat I/O failure and still releases (renamed=%s)",
