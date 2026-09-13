@@ -3720,7 +3720,9 @@ describe("EvidenceLedgerBuilder", () => {
     // still-open intent renders under the one state on the page -- a thread-mate's. Asserted on the
     // rendered line rather than on the metadata: the line is what a reader is handed.
     expect(actionEntries[0]?.text).toContain(
-      "originating_intent (considering, open): consider writing the harness presentation",
+      `originating_intent (considering since ${new Date(
+        NOW_MS,
+      ).toISOString()}, open): consider writing the harness presentation`,
     );
     expect(actionEntries[0]?.text).toContain("records: 3, current: completed");
     expect(actionEntries[0]?.state_metadata).toMatchObject({
@@ -3735,6 +3737,8 @@ describe("EvidenceLedgerBuilder", () => {
     expect(actionEntries[0]?.text).toContain(
       `at ${new Date(NOW_MS + 20).toISOString()}; originating_intent is a separate record created ${new Date(
         NOW_MS,
+      ).toISOString()}, this record created ${new Date(
+        NOW_MS + 2,
       ).toISOString()}, grouped with this one by description similarity rather than by any recorded link`,
     );
     expect(actionEntries[0]?.text).toContain(

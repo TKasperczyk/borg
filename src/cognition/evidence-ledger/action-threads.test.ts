@@ -277,9 +277,51 @@ describe("renderActionThreadText", () => {
     const text = renderActionThreadText(mergedThread(1_000, 2_000), undefined);
 
     expect(text).toContain(
-      "originating_intent (committed_to_do, open): commit to filing the finding",
+      `originating_intent (committed_to_do since ${new Date(
+        1_000,
+      ).toISOString()}, open): commit to filing the finding`,
     );
     expect(text).toContain("records: 2, current: completed (closed by outcome)");
+  });
+
+  // The disposition was printed with no date, so the page could say the originating record is closed
+  // and never when. Whether it was still open when the current record was written is what separates
+  // a fold the writer declined from a pair it could not see: the extractor's duplicate pool is drawn
+  // over active states only. The stamp is the origin's own state field rather than its `created_at`,
+  // so the current record's creation is printed beside the origin's for a same-kind comparison.
+  it("dates the origin's state from its own state stamp and prints both creations", () => {
+    const origin = makeActionRecord({
+      id: "act_aaaaaaaaaaaaaaaa" as ActionRecord["id"],
+      description: "report the spent window",
+      state: "completed",
+      created_at: 1_000,
+      updated_at: 4_000,
+      completed_at: 4_000,
+    });
+    const current = makeActionRecord({
+      id: "act_bbbbbbbbbbbbbbbb" as ActionRecord["id"],
+      description: "report the spent window again",
+      state: "scheduled",
+      created_at: 9_000,
+      updated_at: 9_000,
+      scheduled_at: 9_000,
+    });
+    const text = renderActionThreadText(
+      { id: origin.id, records: [origin, current], origin, current, scope: "current_session" },
+      undefined,
+    );
+
+    expect(text).toContain(
+      `originating_intent (completed since ${new Date(
+        4_000,
+      ).toISOString()}, closed by outcome): report the spent window`,
+    );
+    expect(text).not.toContain(`completed since ${new Date(1_000).toISOString()}`);
+    expect(text).toContain(
+      `separate record created ${new Date(1_000).toISOString()}, this record created ${new Date(
+        9_000,
+      ).toISOString()}, grouped with this one by description similarity`,
+    );
   });
 
   // `selectThreadOrigin` compares `created_at` and falls through to an id tie-break. Every record
@@ -294,6 +336,10 @@ describe("renderActionThreadText", () => {
       "carrying the same created_at as it, so which of the two is named originating follows record-id order and not precedence",
     );
     expect(laterCurrent).not.toContain("record-id order");
+    // The equal-stamp clause already accounts for the second creation; printing it as well would put
+    // the same value on the line twice.
+    expect(sameStamp).not.toContain("this record created");
+    expect(laterCurrent).toContain(`this record created ${new Date(2_000).toISOString()}`);
   });
 });
 

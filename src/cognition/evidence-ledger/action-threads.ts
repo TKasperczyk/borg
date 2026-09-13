@@ -391,21 +391,42 @@ export function renderActionThreadText(
   // first. The dated clause reads as precedence -- one write, then a later one -- and there is
   // none. Stated as the observation that the two stamps are equal rather than as a claim about
   // passes, since equal stamps are what the render can see.
+  // The origin's disposition arrived undated. `current:` carries a stamp and the origin line did
+  // not, so the page could say the originating record is closed and never when -- and whether it was
+  // still open when the current record was written is the one fact separating two writes about one
+  // undertaking from two records the writer never had the chance to fold. The extractor's duplicate
+  // check draws its pool with `states: ACTIVE_ACTION_STATES`, on the same actor/audience/goal/
+  // open-question axis this thread's guard uses and at the same similarity threshold, so a record
+  // that has already gone terminal is invisible to it and a later near-duplicate is minted rather
+  // than merged. This render then groups exactly the pairs the writer could not, and read without
+  // the origin's stamp that is indistinguishable from a fold the writer declined.
+  //
+  // The stamp is the origin's own state field, which is a different clock from the `created_at`
+  // beside it -- so the current record's creation is printed too, and the comparison a reader needs
+  // is between two values of the same kind rather than between a creation and a state change. It is
+  // omitted when the two creations are equal: the clause below already explains that case, and
+  // printing a repeated value there would only widen a line this section truncates from the tail.
+  const originStateAt = new Date(actionTimestampForState(thread.origin)).toISOString();
+  const createdAtDiffers = thread.origin.created_at !== thread.current.created_at;
   const originAt = originIsCurrent
     ? ""
     : `; originating_intent is a separate record created ${new Date(
         thread.origin.created_at,
-      ).toISOString()}, grouped with this one by description similarity rather than by any recorded link${
-        thread.origin.created_at === thread.current.created_at
-          ? ", and carrying the same created_at as it, so which of the two is named originating follows record-id order and not precedence"
+      ).toISOString()}${
+        createdAtDiffers
+          ? `, this record created ${new Date(thread.current.created_at).toISOString()}`
           : ""
+      }, grouped with this one by description similarity rather than by any recorded link${
+        createdAtDiffers
+          ? ""
+          : ", and carrying the same created_at as it, so which of the two is named originating follows record-id order and not precedence"
       }`;
   const lines = [
     `actor: ${actor}`,
     `${
       originIsCurrent
         ? "action"
-        : `originating_intent (${thread.origin.state}, ${renderActionStateDisposition(
+        : `originating_intent (${thread.origin.state} since ${originStateAt}, ${renderActionStateDisposition(
             thread.origin.state,
           )})`
     }: ${thread.origin.description}`,
