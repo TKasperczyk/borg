@@ -13,6 +13,7 @@ import type {
   CommitmentEnforcementClass,
 } from "../memory/commitments/index.js";
 import type { MemoryDisclosureLabel } from "./recall-context.js";
+import type { StreamEntryKind } from "../stream/types.js";
 
 export const RECALL_INTENT_KINDS = [
   "raw_text",
@@ -112,6 +113,17 @@ export type EvidenceItem = {
   imageOriginFrame?: string;
   citationType?: "original_image" | "generated_perception_text" | "parent_user_message";
   imageUnavailableReason?: "budget" | "inactive";
+  // Raw-stream evidence only: the recalled entry's own kind and instant. This
+  // payload is verbatim stream content, so a recalled entry that quotes a
+  // rendered block arrives byte-identical to that block -- and every other
+  // field on the row (score, disclosure, stream id) is true of both cases. The
+  // ledger's sibling lane already resolves an actor onto its
+  // `retrieved_raw_stream_evidence` rows; the verification lane renders the
+  // same text with neither an author nor a date, so nothing on it separates
+  // recalled prose from a live surface. Carried here because the constructing
+  // site holds the whole StreamEntry and drops both.
+  streamEntryKind?: StreamEntryKind;
+  streamEntryAtMs?: number;
   disclosureLabel?: MemoryDisclosureLabel;
   commitment_enforcement_class?: CommitmentEnforcementClass;
   commitment_critical_domain?: CommitmentCriticalDomain | null;

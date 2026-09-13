@@ -3081,6 +3081,8 @@ function streamEntryToEvidence(
     },
     recallIntentId: intent.id,
     matchedTerms: [],
+    streamEntryKind: entry.kind,
+    streamEntryAtMs: entry.timestamp,
     score:
       intent.kind === "recent"
         ? RECENT_RAW_STREAM_EVIDENCE_SCORE

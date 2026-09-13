@@ -399,6 +399,21 @@ function verificationEvidenceCandidates(
             }),
       },
       payload: {
+        // Raw-stream rows only, and ahead of `text` deliberately: the payload is
+        // verbatim stream content, so a recalled entry that quotes a rendered
+        // block reproduces that block exactly. Every other field on the row is
+        // equally true of a quotation and of the thing quoted, which leaves the
+        // prose itself as the only evidence of what it is -- and prose that
+        // quotes a surface reads as that surface. These two say whose text it is
+        // and when it was written, in front of the text rather than after a
+        // payload the reader may never reach the end of. Labels, not a gate:
+        // nothing branches on them.
+        ...(item.streamEntryKind === undefined
+          ? {}
+          : { stream_entry_kind: item.streamEntryKind }),
+        ...(item.streamEntryAtMs === undefined
+          ? {}
+          : { stream_entry_at: new Date(item.streamEntryAtMs).toISOString() }),
         text: item.text,
         matched_terms: item.matchedTerms,
         image_label: item.imageLabel ?? null,
