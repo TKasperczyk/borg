@@ -430,9 +430,19 @@ export function renderActionThreadText(
             thread.origin.state,
           )})`
     }: ${thread.origin.description}`,
+    // Both stamps on this entry are state-entry times from `actionTimestampForState`, but only the
+    // origin's said so: the current record's was printed as a bare `at`, and for `scheduled` that
+    // is the exact shape a due time takes -- the state's own definition is "arranged for a time",
+    // so a timestamp in that slot reads as the slot it is arranged for. No action record carries a
+    // due or appointment column at all (`scheduled_at` is the state-entry stamp, per
+    // ACTION_STATE_METADATA), so the page was offering the one quantity a reader would go looking
+    // for, spelled as a different one. `since` is the word the origin line already uses for this
+    // quantity; two values of one kind on adjacent lines now render alike. The absence of a due
+    // time is not named here: it holds for every state and every record, and a clause true on every
+    // row is a constant, not a distinction.
     `records: ${thread.records.length}, current: ${thread.current.state} (${renderActionStateDisposition(
       thread.current.state,
-    )}) at ${currentAt}${originAt}`,
+    )}) since ${currentAt}${originAt}`,
   ];
 
   if (!originIsCurrent) {

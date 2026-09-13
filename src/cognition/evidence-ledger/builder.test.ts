@@ -3735,7 +3735,7 @@ describe("EvidenceLedgerBuilder", () => {
     // that put these three records in one thread is description similarity, so the clause says that
     // where a reader would otherwise take the grouping for a stored fact.
     expect(actionEntries[0]?.text).toContain(
-      `at ${new Date(NOW_MS + 20).toISOString()}; originating_intent is a separate record created ${new Date(
+      `since ${new Date(NOW_MS + 20).toISOString()}; originating_intent is a separate record created ${new Date(
         NOW_MS,
       ).toISOString()}, this record created ${new Date(
         NOW_MS + 2,

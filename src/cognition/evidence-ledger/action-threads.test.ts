@@ -322,6 +322,39 @@ describe("renderActionThreadText", () => {
         9_000,
       ).toISOString()}, grouped with this one by description similarity`,
     );
+    // Both stamps are the same kind of quantity, so they render with the same word.
+    expect(text).toContain(`current: scheduled (open) since ${new Date(9_000).toISOString()}`);
+  });
+
+  // The counts-line stamp is the `actionTimestampForState` quantity the origin line prints, and was
+  // rendered as a bare `at`. For `scheduled` -- defined to the extractor as "arranged for a time" --
+  // a timestamp in that slot reads as the arranged time, and no record carries a due column for it
+  // to be. A single-record thread is where it bites hardest: there is no origin line, so the bare
+  // stamp is the only one on the entry.
+  it("names a single-record thread's stamp as a state-entry time rather than a bare at", () => {
+    const record = makeActionRecord({
+      id: "act_cccccccccccccccc" as ActionRecord["id"],
+      description: "requested the restart",
+      state: "scheduled",
+      created_at: 7_000,
+      updated_at: 7_000,
+      scheduled_at: 7_000,
+    });
+    const text = renderActionThreadText(
+      {
+        id: record.id,
+        records: [record],
+        origin: record,
+        current: record,
+        scope: "current_session",
+      },
+      undefined,
+    );
+
+    expect(text).toContain(
+      `records: 1, current: scheduled (open) since ${new Date(7_000).toISOString()}`,
+    );
+    expect(text).not.toContain("(open) at ");
   });
 
   // `selectThreadOrigin` compares `created_at` and falls through to an id tie-break. Every record
