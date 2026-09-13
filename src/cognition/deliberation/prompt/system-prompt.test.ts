@@ -2901,6 +2901,14 @@ describe("buildBaseSystemPrompt", () => {
     );
     expect(block).toContain("Wake rows in that current window, newest first: none.");
     expect(block).toContain("These records do not gate action.");
+    expect(block).toContain(
+      "subject unavailable marks a row recorded without a subject, not one whose subject is withheld or clipped for this page",
+    );
+    expect(block).toContain("Bodies never reach this store at all");
+    expect(block).toContain("record_key identifies a filing rather than a finding");
+    expect(block).toContain(
+      "seeing no duplicate among them is not evidence that a finding was filed once",
+    );
     const attentionRows = block.split("\n").filter((line) => line.includes("| subject="));
     expect(attentionRows).toHaveLength(2);
     expect(attentionRows[0]).toContain("disclosure_class=operator_private");
