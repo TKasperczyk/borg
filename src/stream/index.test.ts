@@ -362,12 +362,16 @@ describe("stream", () => {
     const clock = new ManualClock(100);
 
     mkdirSync(streamDir, { recursive: true });
+    // A live holder in ANOTHER process: the parent is alive and started before
+    // this stamp, so the lease code retains it until the manual release below.
+    // (Our own pid with a foreign owner would model a dead predecessor whose
+    // pid we inherited, which the lease code now reaps on sight.)
     writeFileSync(
       lockPath,
       JSON.stringify({
         heartbeat: 0,
         owner: "test-lease-owner",
-        pid: process.pid,
+        pid: process.ppid,
         host: hostname(),
         timestamp: Date.now(),
       }),
