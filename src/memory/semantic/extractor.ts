@@ -578,6 +578,25 @@ function withoutEntityIdNames(values: readonly string[]): string[] {
   return values.filter((value) => !entityIdHelpers.is(value.trim()));
 }
 
+// The label is a name slot too, and anchors only cover the roster plus self, so
+// an id naming anyone else falls straight through into storage as a name. The
+// repository is the harness's own id-to-name lookup; the model cannot perform
+// it, and an id that denotes nobody is not a name we can invent.
+function resolveNameSlotLabel(
+  label: string,
+  entityRepository: Pick<EntityRepository, "get"> | undefined,
+): string | null {
+  const trimmed = label.trim();
+
+  if (!entityIdHelpers.is(trimmed)) {
+    return trimmed;
+  }
+
+  const canonicalName = entityRepository?.get(trimmed)?.canonical_name.trim();
+
+  return canonicalName === undefined || canonicalName.length === 0 ? null : canonicalName;
+}
+
 function identityAnchorForCandidate(
   candidate: ExtractorNode,
   anchors: readonly SemanticIdentityAnchor[],
@@ -837,8 +856,18 @@ export class SemanticExtractor {
       };
     }
 
+    const candidateLabel =
+      identityAnchor?.canonical_name ??
+      resolveNameSlotLabel(candidate.label, this.options.entityRepository);
+
+    if (candidateLabel === null) {
+      return {
+        status: "skipped",
+        reason: "invalid_ref",
+      };
+    }
+
     try {
-      const candidateLabel = identityAnchor?.canonical_name ?? candidate.label.trim();
       const candidateDescription = candidate.description.trim();
       const candidateAliases = withoutEntityIdNames(
         mergeAliases(

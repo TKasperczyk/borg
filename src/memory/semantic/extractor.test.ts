@@ -202,6 +202,9 @@ async function runIdentityGuardExtraction(input: {
   selfEntityId: EntityRecord["id"];
   nodes: unknown[];
   edges?: unknown[];
+  // Entities the repository knows but the roster does not, so anchors cannot
+  // cover them.
+  offRosterRecords?: readonly EntityRecord[];
 }) {
   const repositories = await createSemanticRepositories(input.cleanup);
   const episode = buildEpisode(IDENTITY_GUARD_EPISODE_ID, "Identity attribution episode", {
@@ -223,7 +226,7 @@ async function runIdentityGuardExtraction(input: {
     model: "qwen3",
     participantRoster: identityRoster(input.records),
     selfEntityId: input.selfEntityId,
-    entityRepository: identityRepository(input.records),
+    entityRepository: identityRepository([...input.records, ...(input.offRosterRecords ?? [])]),
   });
   const result = await extractor.extractFromEpisodes([episode]);
 
@@ -417,6 +420,71 @@ describe("semantic extractor", () => {
     ]);
     expect(nodes[0]?.aliases).not.toContain(selfId);
     expect(run.result).toMatchObject({ insertedNodes: 1, skippedNodes: 0 });
+  });
+
+  it("resolves an id label through the repository when no anchor covers the entity", async () => {
+    const selfId = createEntityId();
+    const absentFriendId = createEntityId();
+    const run = await runIdentityGuardExtraction({
+      cleanup,
+      records: [identityEntity(selfId, "team-agent", "self", ["self"])],
+      offRosterRecords: [identityEntity(absentFriendId, "Marta Lis", "person")],
+      selfEntityId: selfId,
+      nodes: [
+        {
+          kind: "person",
+          label: absentFriendId,
+          description: "Runs the Tuesday retro.",
+          domain: "people",
+          aliases: [],
+          observation_metadata: null,
+          relationship_claims: [],
+          identity_entity_id: null,
+          description_perspective: "third_person",
+          confidence: 0.7,
+          source_episode_ids: [IDENTITY_GUARD_EPISODE_ID],
+        },
+      ],
+    });
+
+    const nodes = await run.nodeRepository.list();
+
+    expect(nodes).toEqual([
+      expect.objectContaining({
+        label: "Marta Lis",
+        kind: "person",
+      }),
+    ]);
+    expect(nodes[0]?.aliases).not.toContain(absentFriendId);
+    expect(run.result).toMatchObject({ insertedNodes: 1, skippedNodes: 0 });
+  });
+
+  it("refuses a node whose label is an id the repository does not resolve", async () => {
+    const selfId = createEntityId();
+    const unknownId = createEntityId();
+    const run = await runIdentityGuardExtraction({
+      cleanup,
+      records: [identityEntity(selfId, "team-agent", "self", ["self"])],
+      selfEntityId: selfId,
+      nodes: [
+        {
+          kind: "person",
+          label: unknownId,
+          description: "Runs the Tuesday retro.",
+          domain: "people",
+          aliases: [],
+          observation_metadata: null,
+          relationship_claims: [],
+          identity_entity_id: null,
+          description_perspective: "third_person",
+          confidence: 0.7,
+          source_episode_ids: [IDENTITY_GUARD_EPISODE_ID],
+        },
+      ],
+    });
+
+    await expect(run.nodeRepository.list()).resolves.toEqual([]);
+    expect(run.result).toMatchObject({ insertedNodes: 0, skippedNodes: 1 });
   });
 
   it("rejects a name-only identity candidate when two people share that display name", async () => {
