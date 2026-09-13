@@ -366,6 +366,20 @@ export async function callStructuredTool<T>(
         throw error;
       }
 
+      // Unparseable tool arguments arrive as a throw, but the provider billed
+      // that response; keep its usage on the error so callers account for it.
+      const unparseable = findInErrorCauseChain(
+        error,
+        (candidate): candidate is LLMToolArgumentsError =>
+          candidate instanceof LLMToolArgumentsError,
+      );
+      if (unparseable?.usage !== undefined) {
+        usage = addResponseUsage(usage, {
+          input_tokens: unparseable.usage.input_tokens,
+          output_tokens: unparseable.usage.output_tokens,
+        } as LLMCompleteResult);
+      }
+
       throw new StructuredToolCallError(
         `Structured tool call ${options.toolName} failed before a response was available`,
         {

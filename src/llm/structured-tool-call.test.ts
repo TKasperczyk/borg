@@ -185,7 +185,11 @@ describe("callStructuredTool", () => {
 
   it("re-issues the request once when tool arguments were unparseable but not cut off", async () => {
     const llmClient = queuedClient([
-      new LLMToolArgumentsError("broken", { toolName: TOOL_NAME, stopReason: "tool_use" }),
+      new LLMToolArgumentsError("broken", {
+        toolName: TOOL_NAME,
+        stopReason: "tool_use",
+        usage: { input_tokens: 40, output_tokens: 9 },
+      }),
       completeResult([{ id: "toolu_2", name: TOOL_NAME, input: { value: "ok" } }]),
     ]);
 
@@ -205,12 +209,16 @@ describe("callStructuredTool", () => {
     expect(result.parsed).toEqual({ value: "ok" });
     expect(result.attemptCount).toBe(2);
     expect(llmClient.complete).toHaveBeenCalledTimes(2);
+    // Both attempts were billed: the broken first one and the successful retry.
+    expect(result.usage.input_tokens).toBe(40 + completeResult([]).input_tokens);
+    expect(result.usage.output_tokens).toBe(9 + completeResult([]).output_tokens);
   });
 
   it("does not retry unparseable tool arguments that were cut off by the output limit", async () => {
     const cutOff = new LLMToolArgumentsError("cut off", {
       toolName: TOOL_NAME,
       stopReason: "max_tokens",
+      usage: { input_tokens: 3_000, output_tokens: 16_000 },
     });
     const llmClient = queuedClient([
       cutOff,
@@ -232,6 +240,10 @@ describe("callStructuredTool", () => {
 
     expect(isStructuredToolCallError(thrown, "llm_failed")).toBe(true);
     expect((thrown as StructuredToolCallError).cause).toBe(cutOff);
+    expect((thrown as StructuredToolCallError).usage).toEqual({
+      input_tokens: 3_000,
+      output_tokens: 16_000,
+    });
     expect(llmClient.complete).toHaveBeenCalledTimes(1);
   });
 

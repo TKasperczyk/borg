@@ -1,5 +1,9 @@
 import type { LLMClient, TokenUsageEvent, TokenUsageSink } from "../llm/index.js";
-import { BudgetExceededError } from "../util/errors.js";
+import {
+  BudgetExceededError,
+  findInErrorCauseChain,
+  LLMToolArgumentsError,
+} from "../util/errors.js";
 import type { OfflineProcessName } from "./types.js";
 
 export type BudgetProcessName = OfflineProcessName | "corrective-preference-extractor";
@@ -59,10 +63,42 @@ export class BudgetTracker {
   }
 }
 
+// A response whose tool arguments could not be parsed never returns a result,
+// but the provider billed it all the same (a call cut off at max_tokens costs
+// the whole output limit). Charge it before rethrowing so the budget reflects
+// real spend; a BudgetExceededError raised by the sink takes precedence.
+async function chargeUnparseableToolCall(
+  error: unknown,
+  options: { budget: string; model: string },
+  sink: TokenUsageSink,
+): Promise<void> {
+  const unparseable = findInErrorCauseChain(
+    error,
+    (candidate): candidate is LLMToolArgumentsError => candidate instanceof LLMToolArgumentsError,
+  );
+
+  if (unparseable?.usage === undefined) {
+    return;
+  }
+
+  await sink({
+    budget: options.budget,
+    model: options.model,
+    input_tokens: unparseable.usage.input_tokens,
+    output_tokens: unparseable.usage.output_tokens,
+  });
+}
+
 export function wrapLlmClientWithSink(client: LLMClient, sink: TokenUsageSink): LLMClient {
   return {
     async complete(options) {
-      const result = await client.complete(options);
+      let result;
+      try {
+        result = await client.complete(options);
+      } catch (error) {
+        await chargeUnparseableToolCall(error, options, sink);
+        throw error;
+      }
       await sink({
         budget: options.budget,
         model: options.model,
@@ -72,7 +108,13 @@ export function wrapLlmClientWithSink(client: LLMClient, sink: TokenUsageSink): 
       return result;
     },
     async converse(options) {
-      const result = await client.converse(options);
+      let result;
+      try {
+        result = await client.converse(options);
+      } catch (error) {
+        await chargeUnparseableToolCall(error, options, sink);
+        throw error;
+      }
       await sink({
         budget: options.budget,
         model: options.model,

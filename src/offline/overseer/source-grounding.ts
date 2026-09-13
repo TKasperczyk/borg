@@ -27,6 +27,7 @@ import { reviewKindSchema } from "../../memory/review-queue/index.js";
 import { streamEntryIdSchema, type StreamEntry } from "../../stream/index.js";
 import { dedupePreservingOrder } from "../../util/collections.js";
 import type { EntityId, EpisodeId, StreamEntryId } from "../../util/ids.js";
+import { isoInstantEpochMsSchema } from "../../util/iso-instant.js";
 import { valueAppearsIn } from "../../util/text-presence.js";
 import type { OfflineContext } from "../types.js";
 
@@ -70,6 +71,72 @@ export const overseerFlagPayloadSchema = z.object({
 });
 
 export type OverseerFlagPayload = z.infer<typeof overseerFlagPayloadSchema>;
+
+// The schema the MODEL fills. It differs from the persisted/audit payload above
+// in one way: every time value is an ISO-8601 date-time string on the wire and
+// is parsed to epoch milliseconds here, so the plan, the review refs and every
+// handler keep numeric time untouched. Asking the model to type a 13-digit
+// epoch-millisecond integer is what truncated EmitOverseerFlags in prod
+// (2026-09-13): the model started the number and never found its end.
+const overseerToolFlagSchema = overseerFlagPayloadSchema.extend({
+  corrected_start_time: isoInstantEpochMsSchema(
+    "Corrected episode start as an ISO-8601 date-time with zone offset.",
+  ).optional(),
+  corrected_end_time: isoInstantEpochMsSchema(
+    "Corrected episode end as an ISO-8601 date-time with zone offset.",
+  ).optional(),
+  suggested_valid_to: isoInstantEpochMsSchema(
+    "When the edge stopped holding, as an ISO-8601 date-time with zone offset.",
+  ).optional(),
+});
+
+export type OverseerTargetType = OverseerSourceTarget["type"];
+
+// Each target type is offered exactly the repair fields its review refs can
+// take (see the strict per-target refs schemas in review-handlers). Offering an
+// episode-only or edge-only field to another target invited the model to spend
+// its output on a value the plan would drop anyway -- the truncated prod calls
+// were all semantic_node targets filling suggested_valid_to.
+const overseerToolFlagSchemaByTarget = {
+  episode: overseerToolFlagSchema.omit({ suggested_valid_to: true, by_edge_id: true }),
+  semantic_node: overseerToolFlagSchema.omit({
+    suggested_valid_to: true,
+    by_edge_id: true,
+    corrected_start_time: true,
+    corrected_end_time: true,
+  }),
+  // An edge repair is a closure suggestion (suggested_valid_to / by_edge_id)
+  // for both temporal drift and identity inconsistency; it has no misattribution
+  // shape (the plan rejects the kind unconditionally), no patch, and the strict
+  // edge refs take no patch_description or identity repair-target fields.
+  semantic_edge: overseerToolFlagSchema
+    .omit({
+      patch: true,
+      patch_description: true,
+      corrected_start_time: true,
+      corrected_end_time: true,
+      quoted_span: true,
+      cited_stream_ids: true,
+      source_assessment: true,
+      provenance_note: true,
+      repair_target_type: true,
+      repair_target_id: true,
+      repair_op: true,
+      evidence_episode_ids: true,
+    })
+    .extend({
+      kind: z.enum([
+        reviewKindSchema.enum.temporal_drift,
+        reviewKindSchema.enum.identity_inconsistency,
+      ]),
+    }),
+} as const satisfies Record<OverseerTargetType, z.ZodType<OverseerFlagPayload, unknown>>;
+
+export function overseerToolFlagSchemaForTarget(
+  targetType: OverseerTargetType,
+): z.ZodType<OverseerFlagPayload, unknown> {
+  return overseerToolFlagSchemaByTarget[targetType];
+}
 
 export const overseerAudienceMetadataSchema = z
   .object({
@@ -520,7 +587,7 @@ export function renderSourceBundleForPrompt(bundle: OverseerSourceBundle): strin
 
     lines.push(
       [
-        `SOURCE[${index}] source_episode_ids=${formatIdList(source.source_episode_ids)} session_id=${source.entry.session_id} timestamp=${source.entry.timestamp} stream_id=${source.entry.id} kind=${source.entry.kind} disclosure=${JSON.stringify(disclosureFields.disclosure)} disclosure_label=${JSON.stringify(disclosureFields.disclosure_label)}`,
+        `SOURCE[${index}] source_episode_ids=${formatIdList(source.source_episode_ids)} session_id=${source.entry.session_id} timestamp=${source.entry.timestamp} timestamp_iso=${new Date(source.entry.timestamp).toISOString()} stream_id=${source.entry.id} kind=${source.entry.kind} disclosure=${JSON.stringify(disclosureFields.disclosure)} disclosure_label=${JSON.stringify(disclosureFields.disclosure_label)}`,
         entryContent(source.entry),
       ].join("\n"),
     );

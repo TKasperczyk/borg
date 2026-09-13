@@ -331,6 +331,11 @@ export class LLMError extends BorgError {
   }
 }
 
+export type LLMToolArgumentsErrorUsage = {
+  input_tokens: number;
+  output_tokens: number;
+};
+
 /**
  * The provider returned a tool call whose arguments were not valid JSON.
  * stopReason is the mapped finish reason: "max_tokens" means the arguments were
@@ -339,14 +344,28 @@ export class LLMError extends BorgError {
 export class LLMToolArgumentsError extends LLMError {
   readonly toolName: string;
   readonly stopReason: string | null;
+  // Length of the raw argument text the provider returned; with stopReason it
+  // tells a cut-off (max_tokens, thousands of chars) from a malformed emission.
+  readonly argumentsLength: number | undefined;
+  // Tokens the provider billed for the response that carried the broken
+  // arguments. The call still cost this much even though it yields no result,
+  // so budget accounting must see it (offline/budget.ts wrapLlmClientWithSink).
+  readonly usage: LLMToolArgumentsErrorUsage | undefined;
 
   constructor(
     message: string,
-    options: BorgErrorOptions & { toolName: string; stopReason: string | null },
+    options: BorgErrorOptions & {
+      toolName: string;
+      stopReason: string | null;
+      argumentsLength?: number;
+      usage?: LLMToolArgumentsErrorUsage;
+    },
   ) {
     super(message, { cause: options.cause, code: "LLM_TOOL_ARGUMENTS_UNPARSEABLE" });
     this.toolName = options.toolName;
     this.stopReason = options.stopReason;
+    this.argumentsLength = options.argumentsLength;
+    this.usage = options.usage;
   }
 }
 

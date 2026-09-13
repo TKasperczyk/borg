@@ -405,11 +405,7 @@ export class ScriptedDebugLLM implements LLMClient {
       });
     }
 
-    if (
-      /Check the memory item for misattribution, temporal drift, and identity inconsistency\./i.test(
-        prompt,
-      )
-    ) {
+    if (/^Check the memory item for /i.test(prompt)) {
       return buildToolResult(options, { flags: [] });
     }
 

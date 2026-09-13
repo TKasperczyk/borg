@@ -147,10 +147,13 @@ function mapFinishReason(finishReason: string | null): string | null {
   }
 }
 
+type ResponseUsage = { prompt_tokens?: number; completion_tokens?: number } | null | undefined;
+
 function parseToolArguments(
   name: string,
   rawArguments: string | undefined,
   stopReason: string | null,
+  usage: ResponseUsage,
 ): unknown {
   if (rawArguments === undefined || rawArguments.trim() === "") {
     return {};
@@ -161,11 +164,21 @@ function parseToolArguments(
     // Raised inside complete()/converse(), so callStructuredTool classifies it
     // as "llm_failed": the model produced syntactically broken tool arguments,
     // which is a failed call rather than a schema mismatch. The mapped stop
-    // reason travels with it so the caller can tell a cut-off ("max_tokens")
-    // from a malformed emission and retry only the latter.
+    // reason and the argument length travel with it so the caller can tell a
+    // cut-off ("max_tokens", thousands of chars) from a malformed emission, and
+    // the billed usage travels with it so the budget still sees the spend.
     throw new LLMToolArgumentsError(
-      `Tool call "${name}" returned unparseable JSON arguments (stop_reason: ${stopReason ?? "unknown"})`,
-      { cause: error, toolName: name, stopReason },
+      `Tool call "${name}" returned unparseable JSON arguments (stop_reason: ${stopReason ?? "unknown"}, ${rawArguments.length} chars)`,
+      {
+        cause: error,
+        toolName: name,
+        stopReason,
+        argumentsLength: rawArguments.length,
+        usage: {
+          input_tokens: usage?.prompt_tokens ?? 0,
+          output_tokens: usage?.completion_tokens ?? 0,
+        },
+      },
     );
   }
 }
@@ -176,6 +189,7 @@ function decodeToolCalls(
     | null
     | undefined,
   stopReason: string | null,
+  usage: ResponseUsage,
 ): LLMToolCall[] {
   if (!rawToolCalls) {
     return [];
@@ -185,7 +199,7 @@ function decodeToolCalls(
     .map((call) => ({
       id: call.id,
       name: call.function.name,
-      input: parseToolArguments(call.function.name, call.function.arguments, stopReason),
+      input: parseToolArguments(call.function.name, call.function.arguments, stopReason, usage),
     }));
 }
 
@@ -304,7 +318,11 @@ export class OpenAICompatibleLLMClient implements LLMClient {
       input_tokens: response.usage?.prompt_tokens ?? 0,
       output_tokens: response.usage?.completion_tokens ?? 0,
       stop_reason: mapFinishReason(choice.finish_reason),
-      tool_calls: decodeToolCalls(choice.message.tool_calls, mapFinishReason(choice.finish_reason)),
+      tool_calls: decodeToolCalls(
+        choice.message.tool_calls,
+        mapFinishReason(choice.finish_reason),
+        response.usage,
+      ),
     };
   }
 
@@ -331,6 +349,7 @@ export class OpenAICompatibleLLMClient implements LLMClient {
     for (const toolCall of decodeToolCalls(
       choice.message.tool_calls,
       mapFinishReason(choice.finish_reason),
+      response.usage,
     )) {
       messageBlocks.push({
         type: "tool_use",

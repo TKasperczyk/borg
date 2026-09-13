@@ -12,10 +12,13 @@ import {
   createOfflineTestHarness,
   createSemanticNodeFixture,
 } from "../test-support.js";
-import { OverseerProcess } from "./index.js";
+import { OVERSEER_TOOLS, OverseerProcess } from "./index.js";
 import { ReviewResolverProcess } from "../review-resolver/index.js";
 
 const OVERSEER_TOOL_NAME = "EmitOverseerFlags";
+// The model emits times as ISO-8601; the harness parses them to epoch ms.
+const CORRECTED_START_TIME_MS = 1_500;
+const CORRECTED_START_TIME_ISO = new Date(CORRECTED_START_TIME_MS).toISOString();
 const REVIEW_RESOLVER_TOOL_NAME = "EmitReviewResolverDecision";
 type OfflineHarness = Awaited<ReturnType<typeof createOfflineTestHarness>>;
 
@@ -478,6 +481,10 @@ describe("overseer process", () => {
     expect(prompt).toContain(`source_episode_ids: ${episode.id}`);
     expect(prompt).toContain(`stream_id=${source.id}`);
     expect(prompt).toContain("The user said Maya is my partner.");
+    expect(llm.requests[0]?.tools).toEqual([OVERSEER_TOOLS.semantic_node]);
+    expect(prompt).toContain("For temporal drift, provide a replacement patch_description.");
+    expect(prompt).not.toContain("suggested_valid_to");
+    expect(prompt).not.toContain("corrected_start_time");
   });
 
   it("includes raw source entries for semantic edge targets", async () => {
@@ -1248,7 +1255,7 @@ describe("overseer process", () => {
             kind: "temporal_drift",
             reason: "The edge only held before the later rollback evidence.",
             confidence: 0.82,
-            suggested_valid_to: suggestedValidTo,
+            suggested_valid_to: new Date(suggestedValidTo).toISOString(),
           },
         ]),
       ],
@@ -1353,8 +1360,9 @@ describe("overseer process", () => {
             patch_description: "Rollback completed on the following day.",
             // Prod 2026-09-11: the model attached this edge-only field to a
             // semantic_node target and the strict refs schema rejected the
-            // whole flag ("Unrecognized key: suggested_valid_to").
-            suggested_valid_to: nowMs - 500,
+            // whole flag ("Unrecognized key: suggested_valid_to"). The node
+            // tool schema no longer offers the field; a stray one is dropped.
+            suggested_valid_to: new Date(nowMs - 500).toISOString(),
           },
         ]),
       ],
@@ -1399,7 +1407,7 @@ describe("overseer process", () => {
       kind: "temporal_drift",
       refs: { target_type: "semantic_node" },
     });
-    // Dropped from the refs, but still visible in the audit payload.
+    // The semantic_node tool never offers the field; a stray one is dropped from the refs.
     expect(review?.refs).not.toHaveProperty("suggested_valid_to");
     expect(review?.refs).not.toHaveProperty("by_edge_id");
   });
@@ -1458,7 +1466,7 @@ describe("overseer process", () => {
               kind: "temporal_drift",
               reason: "First target issue.",
               confidence: 0.8,
-              corrected_start_time: 1_500,
+              corrected_start_time: CORRECTED_START_TIME_ISO,
             },
           ],
           35,
@@ -1470,7 +1478,7 @@ describe("overseer process", () => {
               kind: "temporal_drift",
               reason: "Second target issue.",
               confidence: 0.8,
-              corrected_start_time: 1_500,
+              corrected_start_time: CORRECTED_START_TIME_ISO,
             },
           ],
           35,
@@ -1574,7 +1582,7 @@ describe("overseer process", () => {
             kind: "temporal_drift",
             reason: "Recent target issue.",
             confidence: 0.8,
-            corrected_start_time: 1_500,
+            corrected_start_time: CORRECTED_START_TIME_ISO,
           },
         ]),
       ],
@@ -1699,5 +1707,263 @@ describe("overseer process", () => {
     } finally {
       reviewQueueRepository.options.onEnqueue = originalHook;
     }
+  });
+
+  it("offers each target type only the repair fields its review refs can take", () => {
+    const flagProperties = (targetType: keyof typeof OVERSEER_TOOLS) => {
+      const schema = OVERSEER_TOOLS[targetType].inputSchema as unknown as {
+        properties: {
+          flags: { items: { properties: Record<string, unknown>; required: string[] } };
+        };
+      };
+      return schema.properties.flags.items;
+    };
+
+    const episode = flagProperties("episode");
+    expect(Object.keys(episode.properties).sort()).toEqual([
+      "cited_stream_ids",
+      "confidence",
+      "corrected_end_time",
+      "corrected_start_time",
+      "evidence_episode_ids",
+      "kind",
+      "patch",
+      "patch_description",
+      "provenance_note",
+      "quoted_span",
+      "reason",
+      "repair_op",
+      "repair_target_id",
+      "repair_target_type",
+      "source_assessment",
+    ]);
+    // Time fields are ISO-8601 strings on the wire, never epoch-ms numbers.
+    expect(episode.properties.corrected_start_time).toMatchObject({ type: "string" });
+    expect(episode.properties.corrected_end_time).toMatchObject({ type: "string" });
+
+    const node = flagProperties("semantic_node");
+    expect(node.properties).not.toHaveProperty("suggested_valid_to");
+    expect(node.properties).not.toHaveProperty("by_edge_id");
+    expect(node.properties).not.toHaveProperty("corrected_start_time");
+    expect(node.properties).not.toHaveProperty("corrected_end_time");
+    expect(node.properties).toHaveProperty("patch");
+    expect(node.properties).toHaveProperty("patch_description");
+
+    const edge = flagProperties("semantic_edge");
+    expect(Object.keys(edge.properties).sort()).toEqual([
+      "by_edge_id",
+      "confidence",
+      "kind",
+      "reason",
+      "suggested_valid_to",
+    ]);
+    expect(edge.properties.suggested_valid_to).toMatchObject({ type: "string" });
+    expect(edge.properties.kind).toMatchObject({
+      enum: ["temporal_drift", "identity_inconsistency"],
+    });
+    for (const targetType of ["episode", "semantic_node", "semantic_edge"] as const) {
+      expect(OVERSEER_TOOLS[targetType].name).toBe(OVERSEER_TOOL_NAME);
+      expect(flagProperties(targetType).required).toEqual(["kind", "reason", "confidence"]);
+    }
+  });
+
+  it("sends the target-specific tool and shows the target's times as ISO-8601 too", async () => {
+    const nowMs = 10 * 24 * 60 * 60 * 1_000;
+    const llm = new FakeLLMClient({
+      responses: [createOverseerResponse([])],
+    });
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(nowMs),
+      llmClient: llm,
+      configOverrides: maxChecksConfig(),
+    });
+    cleanup.push(harness.cleanup);
+
+    const source = await appendSourceEntry(harness, "The rollout finished at noon.");
+    await harness.episodicRepository.createEpisode(
+      createEpisodeFixture(
+        {
+          title: "Rollout timing",
+          narrative: "The rollout finished at noon.",
+          source_stream_ids: [source.id],
+          start_time: nowMs - 5_000,
+          end_time: nowMs - 4_000,
+          created_at: nowMs - 1_000,
+          updated_at: nowMs - 1_000,
+        },
+        [1, 0, 0, 0],
+      ),
+    );
+
+    const process = new OverseerProcess({
+      reviewQueueRepository: harness.reviewQueueRepository,
+      registry: harness.registry,
+    });
+    await process.run(harness.createContext(), { dryRun: true });
+
+    expect(llm.requests[0]?.tools).toEqual([OVERSEER_TOOLS.episode]);
+    const prompt = requestPrompt(llm);
+    expect(prompt).toContain(`"start_time_iso":"${new Date(nowMs - 5_000).toISOString()}"`);
+    expect(prompt).toContain(`"end_time_iso":"${new Date(nowMs - 4_000).toISOString()}"`);
+    expect(prompt).toContain(`timestamp_iso=${new Date(source.timestamp).toISOString()}`);
+    expect(prompt).toContain("ISO-8601 date-time with a zone offset");
+    expect(prompt).toContain("corrected_start_time and/or corrected_end_time");
+    expect(prompt).not.toContain("suggested_valid_to");
+  });
+
+  it("parses ISO-8601 corrected timestamps into epoch milliseconds for episode temporal drift", async () => {
+    const nowMs = 10 * 24 * 60 * 60 * 1_000;
+    const correctedStart = Date.UTC(2026, 8, 13, 8, 0, 0);
+    const correctedEnd = Date.UTC(2026, 8, 13, 11, 0, 0);
+    const llm = new FakeLLMClient({
+      responses: [
+        createOverseerResponse([
+          {
+            kind: "temporal_drift",
+            reason: "The narrative places the rollout a day too early.",
+            confidence: 0.8,
+            corrected_start_time: "2026-09-13T08:00:00Z",
+            // A different zone spelling must land on the same instant.
+            corrected_end_time: "2026-09-13T13:00:00+02:00",
+          },
+        ]),
+      ],
+    });
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(nowMs),
+      llmClient: llm,
+      configOverrides: maxChecksConfig(),
+    });
+    cleanup.push(harness.cleanup);
+
+    const episode = await harness.episodicRepository.createEpisode(
+      createEpisodeFixture(
+        {
+          title: "Rollout timing",
+          created_at: nowMs - 1_000,
+          updated_at: nowMs - 1_000,
+        },
+        [1, 0, 0, 0],
+      ),
+    );
+
+    const process = new OverseerProcess({
+      reviewQueueRepository: harness.reviewQueueRepository,
+      registry: harness.registry,
+    });
+    const result = await process.run(harness.createContext(), { dryRun: false });
+
+    expect(result.errors).toEqual([]);
+    expect(harness.reviewQueueRepository.getOpen()[0]).toMatchObject({
+      kind: "temporal_drift",
+      refs: {
+        target_type: "episode",
+        target_id: episode.id,
+        corrected_start_time: correctedStart,
+        corrected_end_time: correctedEnd,
+        overseer_flag: {
+          corrected_start_time: correctedStart,
+          corrected_end_time: correctedEnd,
+        },
+      },
+    });
+  });
+
+  it("rejects a bare digit run for suggested_valid_to and takes the repaired ISO value", async () => {
+    const nowMs = 10 * 24 * 60 * 60 * 1_000;
+    const suggestedValidTo = nowMs - 500;
+    const llm = new FakeLLMClient({
+      responses: [
+        // Prod 2026-09-13: the model emitted a digit run in this slot.
+        createOverseerResponse([
+          {
+            kind: "temporal_drift",
+            reason: "The edge stopped holding after the rollback.",
+            confidence: 0.82,
+            suggested_valid_to: "1788936711815",
+          },
+        ]),
+        createOverseerResponse([
+          {
+            kind: "temporal_drift",
+            reason: "The edge stopped holding after the rollback.",
+            confidence: 0.82,
+            suggested_valid_to: new Date(suggestedValidTo).toISOString(),
+          },
+        ]),
+      ],
+    });
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(nowMs),
+      llmClient: llm,
+      configOverrides: maxChecksConfig(),
+    });
+    cleanup.push(harness.cleanup);
+
+    const episodeId = createEpisodeFixture().id;
+    const first = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture(
+        {
+          label: "Edge source",
+          description: "Atlas was stable.",
+          source_episode_ids: [episodeId],
+          created_at: nowMs - 2_000,
+          updated_at: nowMs - 2_000,
+        },
+        [1, 0, 0, 0],
+      ),
+    );
+    const second = await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture(
+        {
+          label: "Edge target",
+          description: "Rollback had completed.",
+          source_episode_ids: [episodeId],
+          created_at: nowMs - 1_900,
+          updated_at: nowMs - 1_900,
+        },
+        [0, 1, 0, 0],
+      ),
+    );
+    const edge = harness.semanticEdgeRepository.addEdge({
+      from_node_id: first.id,
+      to_node_id: second.id,
+      relation: "supports",
+      confidence: 0.8,
+      evidence_episode_ids: [episodeId],
+      created_at: nowMs - 100,
+      last_verified_at: nowMs - 100,
+      valid_from: nowMs - 100,
+    });
+
+    const process = new OverseerProcess({
+      reviewQueueRepository: harness.reviewQueueRepository,
+      registry: harness.registry,
+    });
+    const result = await process.run(harness.createContext(), { dryRun: false });
+
+    expect(result.errors).toEqual([]);
+    expect(llm.requests).toHaveLength(2);
+    expect(llm.requests[0]?.tools).toEqual([OVERSEER_TOOLS.semantic_edge]);
+    const edgePrompt = requestPrompt(llm);
+    expect(edgePrompt).toContain(
+      "Check the memory item for temporal drift and identity inconsistency.",
+    );
+    expect(edgePrompt).toContain("provide suggested_valid_to and optional by_edge_id");
+    expect(edgePrompt).toContain(`"valid_from_iso":"${new Date(nowMs - 100).toISOString()}"`);
+    expect(edgePrompt).not.toContain("misattribution");
+    expect(edgePrompt).not.toContain("corrected_start_time");
+    const repairMessage = llm.requests[1]?.messages.at(-1)?.content;
+    expect(
+      typeof repairMessage === "string" ? repairMessage : JSON.stringify(repairMessage),
+    ).toContain("ISO-8601");
+    expect(harness.reviewQueueRepository.getOpen()[0]).toMatchObject({
+      kind: "temporal_drift",
+      refs: {
+        target_type: "semantic_edge",
+        target_id: edge.id,
+        suggested_valid_to: suggestedValidTo,
+      },
+    });
   });
 });

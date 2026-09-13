@@ -24,6 +24,7 @@ import {
 import { streamEntryIdSchema, type StreamEntry } from "../../stream/index.js";
 import { dedupePreservingOrder } from "../../util/collections.js";
 import { BudgetExceededError } from "../../util/errors.js";
+import { epochMsToIso } from "../../util/iso-instant.js";
 
 import type { ReverserRegistry } from "../audit-log.js";
 import { getBudgetErrorTokens, withBudget } from "../budget.js";
@@ -42,24 +43,43 @@ import {
   overseerFlagAuditPayloadSchema,
   overseerFlagKindSchema,
   overseerFlagPayloadSchema,
+  overseerToolFlagSchemaForTarget,
   renderSourceBundleForPrompt,
   resolveTargetSourceBundle,
   sourceAssessmentSchema,
   suppressedOverseerFlagSchema,
   type OverseerSourceBundle,
+  type OverseerTargetType,
 } from "./source-grounding.js";
 
-const reviewFlagSchema = overseerFlagPayloadSchema;
-
-const overseerResponseSchema = z.object({
-  flags: z.array(reviewFlagSchema),
-});
 const OVERSEER_TOOL_NAME = "EmitOverseerFlags";
-export const OVERSEER_TOOL = {
-  name: OVERSEER_TOOL_NAME,
-  description: "Emit grounded overseer review flags for a memory item.",
-  inputSchema: toToolInputSchema(overseerResponseSchema),
-} satisfies LLMToolDefinition;
+const OVERSEER_TARGET_TYPES = ["episode", "semantic_node", "semantic_edge"] as const;
+
+// One tool per target type: the model is offered exactly the repair fields
+// that target's review refs can take, and every time field is an ISO-8601
+// string on the wire (parsed to epoch ms by the schema). See
+// overseerToolFlagSchemaForTarget for why both matter.
+function overseerResponseSchemaFor(targetType: OverseerTargetType) {
+  return z.object({
+    flags: z.array(overseerToolFlagSchemaForTarget(targetType)),
+  });
+}
+
+const overseerResponseSchemaByTarget = Object.fromEntries(
+  OVERSEER_TARGET_TYPES.map((targetType) => [targetType, overseerResponseSchemaFor(targetType)]),
+) as Record<OverseerTargetType, ReturnType<typeof overseerResponseSchemaFor>>;
+
+function createOverseerTool(targetType: OverseerTargetType): LLMToolDefinition {
+  return {
+    name: OVERSEER_TOOL_NAME,
+    description: "Emit grounded overseer review flags for a memory item.",
+    inputSchema: toToolInputSchema(overseerResponseSchemaByTarget[targetType]),
+  };
+}
+
+export const OVERSEER_TOOLS = Object.fromEntries(
+  OVERSEER_TARGET_TYPES.map((targetType) => [targetType, createOverseerTool(targetType)]),
+) as Record<OverseerTargetType, LLMToolDefinition>;
 
 const HOUR_MS = 60 * 60 * 1_000;
 
@@ -175,8 +195,8 @@ function invalidFlagsResponse(error: unknown): unknown {
   return error;
 }
 
-function parseFlags(input: unknown) {
-  return overseerResponseSchema.parse(input);
+function parseFlags(targetType: OverseerTargetType, input: unknown) {
+  return overseerResponseSchemaByTarget[targetType].parse(input);
 }
 
 function isAssistantAuthoredReviewSource(entry: Pick<StreamEntry, "kind">): boolean {
@@ -282,6 +302,33 @@ function summarizeSelfState(ctx: OfflineContext): string {
   ].join("\n");
 }
 
+const TARGET_TIME_FIELDS = [
+  "start_time",
+  "end_time",
+  "created_at",
+  "last_verified_at",
+  "valid_from",
+  "valid_to",
+  "invalidated_at",
+] as const;
+
+// The model reads the target's epoch-ms timestamps and must answer with times
+// of its own. It writes ISO-8601 (see overseerToolFlagSchemaForTarget), so
+// show it each time in that form too rather than asking it to convert.
+function withIsoTimestamps<T extends { content: Record<string, unknown> }>(payload: T): T {
+  const isoFields: Record<string, string> = {};
+
+  for (const field of TARGET_TIME_FIELDS) {
+    const iso = epochMsToIso(payload.content[field]);
+
+    if (iso !== null) {
+      isoFields[`${field}_iso`] = iso;
+    }
+  }
+
+  return { ...payload, content: { ...payload.content, ...isoFields } };
+}
+
 async function buildPrompt(
   target: OverseerTarget,
   ctx: OfflineContext,
@@ -289,19 +336,39 @@ async function buildPrompt(
   selfStateSummary: string,
   maxFlagsPerTarget: number,
 ): Promise<string> {
-  const serializedTarget = await serializeDisclosureLabeledTargetPayload(ctx, target);
+  const serializedTarget = withIsoTimestamps(
+    await serializeDisclosureLabeledTargetPayload(ctx, target),
+  );
+
+  const misattributionLines =
+    target.type === "semantic_edge"
+      ? []
+      : [
+          "For misattribution, use only the resolved source entries below. Include quoted_span as the exact target text span being challenged, cited_stream_ids from those entries, source_assessment, and patch fields that directly correct the target memory.",
+          "The patch must be a repair the target can actually take. For an episode target the only permitted patch keys are participants, audience_entity_id, narrative and tags; for a semantic_node target they are label, aliases, description and source_episode_ids. I never invent a domain-shaped key (business_owner, status, owner and the like) -- to correct a claim inside an episode's prose I patch narrative. A patch with any other key is discarded and the flag is lost.",
+          "I do not flag a memory that already states the correction I would make. A sentence attributing a value to one source while the memory goes on to resolve a different value is not a misattribution: the memory's claim is its conclusion, not each source it weighs. I check the whole target text for the conclusion before flagging, and quoted_span must be the claim I am actually challenging.",
+          "Set source_assessment to supports_flag only when the cited source entries support the flag, contradicts_flag when they refute the flag, and provenance_insufficient when the provided source entries are missing or inadequate.",
+          "Audience entity metadata below is legitimate grounding for the listed display_name. If the target uses that exact display_name for the audience and a source episode is tagged with that audience entity_id, do not flag the audience-name reference merely because the raw source text omits the name.",
+        ];
+  const temporalDriftLine = {
+    episode:
+      "For temporal drift, provide corrected_start_time and/or corrected_end_time and/or a replacement patch_description.",
+    semantic_node: "For temporal drift, provide a replacement patch_description.",
+    semantic_edge:
+      "For temporal drift or identity inconsistency on this edge, provide suggested_valid_to and optional by_edge_id; only flag an edge that should be reviewed for closure.",
+  }[target.type];
 
   return [
-    "Check the memory item for misattribution, temporal drift, and identity inconsistency.",
+    `Check the memory item for ${target.type === "semantic_edge" ? "temporal drift and identity inconsistency" : "misattribution, temporal drift, and identity inconsistency"}.`,
     "If you flag an issue, include the concrete repair payload needed to fix it.",
-    "For misattribution, use only the resolved source entries below. Include quoted_span as the exact target text span being challenged, cited_stream_ids from those entries, source_assessment, and patch fields that directly correct the target memory.",
-    "The patch must be a repair the target can actually take. For an episode target the only permitted patch keys are participants, audience_entity_id, narrative and tags; for a semantic_node target they are label, aliases, description and source_episode_ids. I never invent a domain-shaped key (business_owner, status, owner and the like) -- to correct a claim inside an episode's prose I patch narrative. A patch with any other key is discarded and the flag is lost.",
-    "I do not flag a memory that already states the correction I would make. A sentence attributing a value to one source while the memory goes on to resolve a different value is not a misattribution: the memory's claim is its conclusion, not each source it weighs. I check the whole target text for the conclusion before flagging, and quoted_span must be the claim I am actually challenging.",
-    "Set source_assessment to supports_flag only when the cited source entries support the flag, contradicts_flag when they refute the flag, and provenance_insufficient when the provided source entries are missing or inadequate.",
-    "Audience entity metadata below is legitimate grounding for the listed display_name. If the target uses that exact display_name for the audience and a source episode is tagged with that audience entity_id, do not flag the audience-name reference merely because the raw source text omits the name.",
-    "For temporal drift, provide corrected timestamps and/or a replacement description.",
-    "For semantic_edge temporal drift or identity inconsistency, provide suggested_valid_to and optional by_edge_id; only flag edges that should be reviewed for closure.",
-    "For identity inconsistency, target a specific value, goal, trait, commitment, or autobiographical period by id and propose reinforce, contradict, or patch.",
+    ...misattributionLines,
+    temporalDriftLine,
+    "Every time value I emit is an ISO-8601 date-time with a zone offset, in the same form as the *_iso fields shown on the source entries and on time-bearing memory items. I never emit a time as a bare number.",
+    ...(target.type === "semantic_edge"
+      ? []
+      : [
+          "For identity inconsistency, target a specific value, goal, trait, commitment, or autobiographical period by id and propose reinforce, contradict, or patch.",
+        ]),
     "In goal records, counterparty_entity_id is the participant the responsibility runs toward, not an owner or an audience.",
     `I emit at most ${maxFlagsPerTarget} flags for this item, the most serious first. Emitting more risks the tool call being cut off by the output limit, which loses every flag.`,
     `Emit your result by calling the ${OVERSEER_TOOL_NAME} tool exactly once.`,
@@ -566,13 +633,13 @@ export class OverseerProcess implements OfflineProcess<OverseerPlan> {
                       ),
                     },
                   ],
-                  tools: [OVERSEER_TOOL],
+                  tools: [OVERSEER_TOOLS[target.type]],
                   tool_choice: { type: "tool", name: OVERSEER_TOOL_NAME },
                   max_tokens: 16_000,
                   budget: "offline-overseer",
                 },
                 toolName: OVERSEER_TOOL_NAME,
-                parse: parseFlags,
+                parse: (input) => parseFlags(target.type, input),
               })
             ).parsed.flags;
 

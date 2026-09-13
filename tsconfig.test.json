@@ -11,7 +11,8 @@
     "scripts/measure-similarity-distributions.ts",
     "scripts/similarity-distributions/**/*.ts",
     "scripts/legacy-residue-report*.ts",
-    "scripts/legacy-residue/**/*.ts"
+    "scripts/legacy-residue/**/*.ts",
+    "scripts/replay-overseer.ts"
   ],
   "exclude": ["node_modules", "dist"]
 }

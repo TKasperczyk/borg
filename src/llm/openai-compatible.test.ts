@@ -210,10 +210,14 @@ describe("OpenAICompatibleLLMClient", () => {
     }).catch((error: unknown) => error);
 
     expect(isStructuredToolCallError(failure, "llm_failed")).toBe(true);
-    expect((failure as { cause?: unknown }).cause).toBeInstanceOf(LLMToolArgumentsError);
-    expect(
-      ((failure as { cause?: LLMToolArgumentsError }).cause as LLMToolArgumentsError).stopReason,
-    ).toBe("max_tokens");
+    const cause = (failure as { cause?: LLMToolArgumentsError }).cause as LLMToolArgumentsError;
+    expect(cause).toBeInstanceOf(LLMToolArgumentsError);
+    expect(cause.stopReason).toBe("max_tokens");
+    // The provider billed the cut-off response; its usage and size travel on the error.
+    expect(cause.argumentsLength).toBe('{"facts":['.length);
+    expect(cause.usage).toEqual({ input_tokens: 11, output_tokens: 7 });
+    expect(cause.message).toContain("stop_reason: max_tokens, 10 chars");
+    expect((failure as { usage: unknown }).usage).toEqual({ input_tokens: 11, output_tokens: 7 });
     expect(calls).toBe(1);
   });
 
@@ -314,6 +318,28 @@ describe("OpenAICompatibleLLMClient", () => {
       { type: "text", text: "done" },
       { type: "tool_use", id: "c2", name: "EmitFacts", input: { facts: [] } },
     ]);
+  });
+
+  it("carries usage and argument length on unparseable converse tool arguments too", async () => {
+    const client = new OpenAICompatibleLLMClient({
+      client: fakeClient(toolCallResponse('{"facts":[', "length")),
+    });
+
+    const thrown = await client
+      .converse({
+        model: "qwen",
+        budget: "x",
+        messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      })
+      .catch((error: unknown) => error);
+
+    expect(thrown).toBeInstanceOf(LLMToolArgumentsError);
+    expect((thrown as LLMToolArgumentsError).stopReason).toBe("max_tokens");
+    expect((thrown as LLMToolArgumentsError).argumentsLength).toBe('{"facts":['.length);
+    expect((thrown as LLMToolArgumentsError).usage).toEqual({
+      input_tokens: 11,
+      output_tokens: 7,
+    });
   });
 
   it("rejects image_ref blocks in converse (no attachment resolver)", async () => {

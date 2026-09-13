@@ -1,6 +1,7 @@
 import type { ExecutiveGoalScoreBasis } from "../executive/index.js";
 import { IDENTITY_EVENT_COGNITION_CHANGE_EXCERPT_MAX_CHARS } from "../memory/identity/index.js";
 import { headTailTextExcerpt } from "../util/text-excerpt.js";
+import { epochMsToIso } from "../util/iso-instant.js";
 
 export const AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS = 32_000;
 
@@ -14,18 +15,6 @@ export type AutonomyTriggerContext = {
     score_basis?: ExecutiveGoalScoreBasis;
   };
 };
-
-// Date's representable range; outside it toISOString() throws rather than
-// returning a value, so this bounds the conversion's actual domain.
-const MAX_EPOCH_MS = 8_640_000_000_000_000;
-
-function epochToIso(value: unknown): string | null {
-  if (typeof value !== "number" || !Number.isFinite(value) || Math.abs(value) > MAX_EPOCH_MS) {
-    return null;
-  }
-
-  return new Date(value).toISOString();
-}
 
 // sort_ts is rendered as a calendar instant below; every other epoch in a
 // trigger payload reaches the model as a bare 13-digit integer, which no amount
@@ -55,7 +44,7 @@ function annotateEpochFields(value: unknown): unknown {
     }
 
     const siblingKey = `${key}_iso`;
-    const iso = epochToIso(entry);
+    const iso = epochMsToIso(entry);
 
     if (iso !== null && !(siblingKey in source)) {
       annotated[siblingKey] = iso;
