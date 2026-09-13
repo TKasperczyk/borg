@@ -1039,6 +1039,7 @@ describe("config", () => {
         BORG_OFFLINE_SEMANTIC_EXTRACTOR_MAX_INPUT_TOKENS_PER_RUN: "90000",
         BORG_OFFLINE_SEMANTIC_EXTRACTOR_BUDGET: "12000",
         BORG_OFFLINE_LIVED_EXPERIENCE_DAY_SUMMARIZER_BUDGET: "123000",
+        BORG_OFFLINE_OVERSEER_MAX_OUTPUT_TOKENS: "6000",
         BORG_EXECUTIVE_GOAL_FOCUS_THRESHOLD: "0.6",
         BORG_STREAM_INGESTION_PRE_TURN_CATCHUP_MAX_ENTRIES: "8",
         BORG_GENERATION_EVIDENCE_LEDGER_CURRENT_SESSION_TRANSCRIPT_TOKEN_BUDGET: "16000",
@@ -1163,6 +1164,7 @@ describe("config", () => {
     expect(config.offline.semanticExtractor.maxInputTokensPerRun).toBe(90_000);
     expect(config.offline.semanticExtractor.budget).toBe(12_000);
     expect(config.offline.livedExperienceDaySummarizer.budget).toBe(123_000);
+    expect(config.offline.overseer.maxOutputTokens).toBe(6_000);
   });
 
   it("accepts post-generation guard simple modes", () => {

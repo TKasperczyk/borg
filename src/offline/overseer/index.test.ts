@@ -1519,7 +1519,8 @@ describe("overseer process", () => {
     expect(String(llm.requests[0]?.messages[0]?.content ?? "")).toContain(
       "I emit at most 2 flags for this item",
     );
-    expect(llm.requests[0]?.max_tokens).toBe(16_000);
+    expect(llm.requests[0]?.max_tokens).toBe(DEFAULT_CONFIG.offline.overseer.maxOutputTokens);
+    expect(DEFAULT_CONFIG.offline.overseer.maxOutputTokens).toBe(8_000);
   });
 
   it("halts further llm work after budget exhaustion", async () => {

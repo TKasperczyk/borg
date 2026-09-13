@@ -658,7 +658,7 @@ export class OverseerProcess implements OfflineProcess<OverseerPlan> {
                   ],
                   tools: [OVERSEER_TOOLS[target.type]],
                   tool_choice: { type: "tool", name: OVERSEER_TOOL_NAME },
-                  max_tokens: 16_000,
+                  max_tokens: ctx.config.offline.overseer.maxOutputTokens,
                   budget: "offline-overseer",
                 },
                 toolName: OVERSEER_TOOL_NAME,

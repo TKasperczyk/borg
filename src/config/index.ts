@@ -605,6 +605,14 @@ const configBaseSchema = z.object({
           // lost the whole check. A per-target flag cap is what bounds the
           // output; the max_tokens ceiling is only headroom above it.
           maxFlagsPerTarget: z.number().int().positive().default(4),
+          // Output ceiling for one EmitOverseerFlags call. Healthy calls are small
+          // (replayed 2026-09-13 across 141 prod targets: max 1,318 output tokens,
+          // a 2.5k-char patch); the only calls that ever reached the ceiling were
+          // degenerate loops that emit nothing usable, so headroom above the
+          // flag cap only buys a loop more time and tokens. Raise it if a
+          // legitimate long repair (a full-narrative patch on a long episode)
+          // is ever seen cut off.
+          maxOutputTokens: z.number().int().positive().default(8_000),
           budget: z.number().int().positive().nullable().default(null),
         })
         .prefault({}),
@@ -1757,6 +1765,11 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["offline", "overseer", "maxFlagsPerTarget"],
     readOptionalEnvNumber(env, "BORG_OFFLINE_OVERSEER_MAX_FLAGS_PER_TARGET"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "overseer", "maxOutputTokens"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_OVERSEER_MAX_OUTPUT_TOKENS"),
   );
   setConfigOverride(
     overrides,
