@@ -3,6 +3,8 @@ import { coercePositiveIntegerOrFallback } from "../../util/math.js";
 import { formatUtcDaySpanLabel } from "../../util/utc-day.js";
 import { isRecentLivedExperienceSpineKind } from "../../memory/activity/index.js";
 import { selfPrivateMemoryDisclosureLabel } from "../../memory/common/disclosure-label.js";
+import { OPEN_QUESTION_STATUSES } from "../../memory/self/index.js";
+import { LIFECYCLE_OPEN_QUESTION_STATUSES } from "./open-question-handles.js";
 import { allSectionIds, emptySectionCountRecord } from "./budget.js";
 import { estimateEvidenceLedgerTokens, cloneLedgerWithSections } from "./ledger-copy.js";
 import { dedupeEvidenceLedgerByProvenance } from "./provenance-dedupe.js";
@@ -168,12 +170,42 @@ const TAIL_PRESERVING_FULL_LEDGER_SECTIONS = new Set<EvidenceLedgerSectionId>([
   "current_session_transcript",
 ]);
 
+function formatStatusList(statuses: readonly string[]): string {
+  return statuses.length <= 1
+    ? (statuses[0] ?? "none")
+    : `${statuses.slice(0, -1).join(", ")} or ${statuses[statuses.length - 1]!}`;
+}
+
+// The statuses a status-bearing `open_questions` row can arrive with, split by the admission that can
+// produce it: handle matching asks for the closed lifecycle statuses only, and the scored retrieval
+// draw asks for their complement. Both lists are derived from the enums rather than restated, so a
+// change to either admission breaks the sentence below instead of leaving it quietly false.
+const HANDLE_MATCHED_OPEN_QUESTION_STATUSES: readonly string[] = LIFECYCLE_OPEN_QUESTION_STATUSES;
+const DRAWN_OPEN_QUESTION_STATUSES: readonly string[] = OPEN_QUESTION_STATUSES.filter(
+  (status) => !HANDLE_MATCHED_OPEN_QUESTION_STATUSES.includes(status),
+);
+
 // Sections whose entries carry a lifecycle status as the leading token of `state`. For these a bare
 // omitted count cannot answer "was anything of this kind cut?": retention keeps a prefix of assembly
 // order, so the omitted tail can be entirely one status, and a reader checking a status that
 // rendered nothing cannot tell an empty draw from a budget cut. The composition is counted off the
 // `state` field itself, so it stays true for whatever statuses the section's rows actually carry.
-const STATUS_COMPOSED_OMISSION_SECTIONS = new Set<EvidenceLedgerSectionId>(["open_questions"]);
+//
+// Each opted-in section also states how a status-bearing row is admitted, because "absent from the
+// section" is only as informative as the admission that could have produced it: where two admissions
+// take disjoint status sets, an absent status reports on one of them and on neither the store's
+// population, and calling that absence one empty draw names a mechanism that never ran for half the
+// statuses in the tally.
+const STATUS_COMPOSED_OMISSION_SECTIONS = new Map<EvidenceLedgerSectionId, string>([
+  [
+    "open_questions",
+    ` A status-bearing row reaches this section by one of two admissions, and they take disjoint statuses: ${formatStatusList(
+      HANDLE_MATCHED_OPEN_QUESTION_STATUSES,
+    )} only by handle match on this turn's stream and episode ids, ${formatStatusList(
+      DRAWN_OPEN_QUESTION_STATUSES,
+    )} only by the scored retrieval draw. So an absent status reports that the one admission able to carry it produced nothing here, and neither admission counts how many rows of that status my store holds.`,
+  ],
+]);
 
 function truncateTextForFullEvidenceLedger(
   value: string | undefined,
@@ -295,7 +327,10 @@ function mergeOmittedStateTallies(
   return merged;
 }
 
-function formatOmittedStateTally(tally: OmittedStateTally | undefined): string {
+function formatOmittedStateTally(
+  sectionId: EvidenceLedgerSectionId,
+  tally: OmittedStateTally | undefined,
+): string {
   if (tally === undefined) {
     return "";
   }
@@ -303,10 +338,13 @@ function formatOmittedStateTally(tally: OmittedStateTally | undefined): string {
   const parts = Object.entries(tally)
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([state, count]) => `${state} ${count}`);
+  // The admission sentence describes the section, not this cut, so it rides along on an empty tally
+  // too: a reader meeting the first absent status has already formed the account it would correct.
+  const admission = STATUS_COMPOSED_OMISSION_SECTIONS.get(sectionId) ?? "";
 
   return parts.length === 0
-    ? " Omitted by state: none of the omitted entries carried a status, so no status had rows cut here."
-    : ` Omitted by state: ${parts.join(", ")}. A status absent from that list had no rows cut here, so its absence from the section above is an empty draw rather than a budget cut.`;
+    ? ` Omitted by state: none of the omitted entries carried a status, so no status had rows cut here.${admission}`
+    : ` Omitted by state: ${parts.join(", ")}. A status absent from that list had no rows cut here, so its absence from the section above is an absence at admission rather than a budget cut.${admission}`;
 }
 
 function mergeOmittedSpans(
@@ -383,6 +421,7 @@ function fullLedgerOmittedEntry(
             omittedSpan.lastOccurredAt,
           )}; omitted detail is summarized in the dated spine above.`
       : `Evidence ledger omitted ${omittedCount} ${omittedKind} entries from ${section.id} to stay within the finalizer ledger budget.${formatOmittedStateTally(
+          section.id,
           omittedStates,
         )}`;
   const disclosure = recentLivedExperienceBreadcrumbDisclosure(section, {
@@ -426,6 +465,7 @@ function fullLedgerDroppedSectionEntry(
     trust_rank: 0,
     ...disclosure,
     text: `Evidence ledger dropped all entries from ${section.id} to stay within the global hard cap: entries=${omittedCount}.${formatOmittedStateTally(
+      section.id,
       omittedStates,
     )}`,
     taint: "none",

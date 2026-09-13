@@ -7,6 +7,8 @@ import type {
 } from "../../memory/shared-state/index.js";
 import { createSharedStateEntryId, createEntityId, createStreamEntryId } from "../../util/ids.js";
 import { estimatePromptTokens } from "../../util/token-estimate.js";
+import { OPEN_QUESTION_STATUSES } from "../../memory/self/index.js";
+import { LIFECYCLE_OPEN_QUESTION_STATUSES } from "./open-question-handles.js";
 import { EVIDENCE_LEDGER_SECTION_DEFINITIONS, type EvidenceLedger } from "./types.js";
 import {
   buildSharedStateArtifactPromptSummary,
@@ -975,6 +977,10 @@ describe("compactEvidenceLedger", () => {
 
     expect(rendered).toContain("lower-priority entries from open_questions");
     expect(rendered).toContain("A status absent from that list had no rows cut here");
+    // The absent status reports on the one admission that could have carried it, not on a draw that
+    // ran and came back empty: the closed statuses never reach this section by the scored draw.
+    expect(rendered).toContain("an absence at admission rather than a budget cut");
+    expect(rendered).not.toContain("is an empty draw");
 
     const clause = /Omitted by state: ([^.]+)\./.exec(rendered)?.[1] ?? "";
     const tallied = [...clause.matchAll(/([a-z_]+) (\d+)/g)];
@@ -986,6 +992,56 @@ describe("compactEvidenceLedger", () => {
     expect(tallied.map(([, status]) => status)).toEqual(["abandoned", "open", "resolved"]);
     expect(talliedTotal).toBe(compacted.traceSummary.omittedEntryCountsBySection.open_questions);
     expect(talliedTotal).toBe(8);
+  });
+
+  it("names both open questions admissions with the status sets the enums actually carry", () => {
+    const ledger = makeLedger();
+    const pressureText = "open question pressure ".repeat(40);
+
+    section(ledger, "open_questions").entries = Array.from({ length: 12 }, (_, index) =>
+      syntheticEntry({
+        id: `open_question:oq_${index}`,
+        text: `question ${index} ${pressureText}`,
+        trust_rank: 38,
+        state: `${OPEN_QUESTION_STATUSES[index % OPEN_QUESTION_STATUSES.length]!} public`,
+      }),
+    );
+
+    const compacted = compactEvidenceLedger(ledger, {
+      targetTokens: 20_000,
+      hardCapTokens: 30_000,
+      maxEntryTextTokens: 60,
+      sectionOptions: {
+        open_questions: {
+          maxEntries: 8,
+          maxTokens: 4_000,
+        },
+      },
+    });
+    const rendered = renderEvidenceLedger(compacted.ledger) ?? "";
+    const admission =
+      /A status-bearing row reaches this section by one of two admissions[\s\S]*?my store holds\./.exec(
+        rendered,
+      )?.[0] ?? "";
+
+    expect(admission).not.toBe("");
+
+    // The two sides of the sentence are derived from the admissions' own status sets rather than
+    // restated, so widening either enum breaks this instead of leaving the sentence quietly false.
+    const handleMatched: readonly string[] = LIFECYCLE_OPEN_QUESTION_STATUSES;
+    const drawn = OPEN_QUESTION_STATUSES.filter((status) => !handleMatched.includes(status));
+
+    expect(handleMatched.length).toBeGreaterThan(0);
+    expect(drawn.length).toBeGreaterThan(0);
+    expect([...handleMatched, ...drawn].sort()).toEqual([...OPEN_QUESTION_STATUSES].sort());
+
+    for (const status of handleMatched) {
+      expect(admission.slice(0, admission.indexOf("only by handle match"))).toContain(status);
+    }
+
+    for (const status of drawn) {
+      expect(admission.slice(admission.indexOf("only by handle match"))).toContain(status);
+    }
   });
 
   it("reports an empty open questions omission composition when no cut row carried a status", () => {
@@ -1018,6 +1074,9 @@ describe("compactEvidenceLedger", () => {
     expect(rendered).toContain(
       "none of the omitted entries carried a status, so no status had rows cut here",
     );
+    // The admission sentence describes the section, not this cut, so an empty tally carries it too:
+    // a reader with zero statuses in the tally is exactly the one about to over-read an absence.
+    expect(rendered).toContain("A status-bearing row reaches this section by one of two admissions");
   });
 
   it("trims recent lived experience before core retrieved evidence sections", () => {
