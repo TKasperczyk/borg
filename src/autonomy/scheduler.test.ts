@@ -3567,6 +3567,64 @@ describe("AutonomyScheduler", () => {
     },
   );
 
+  it("admits every due event in one tick when the ceiling is nowhere near", async () => {
+    const clock = new ManualClock(1_000_000);
+    const harness = await createOfflineTestHarness({ clock });
+    cleanup = harness.cleanup;
+    const watermarkRepository = new StreamWatermarkRepository({ db: harness.db, clock });
+    const turnRunner = {
+      run: vi.fn().mockResolvedValue(createStructuralTurnResult({ emissionKind: "suppressed" })),
+    };
+    const createStreamWriter = (sessionId: typeof DEFAULT_SESSION_ID) =>
+      new StreamWriter({ dataDir: harness.tempDir, sessionId, clock });
+    const dispatcher = new ToolDispatcher({ createStreamWriter, clock });
+    dispatcher.register(
+      createIdentityEventsListForCognitionTool({
+        listEvents: (options) => harness.identityService.listEvents(options),
+      }),
+    );
+    const scheduler = createScheduler({
+      db: harness.db,
+      enabled: true,
+      intervalMs: 1_000,
+      maxWakesPerWindow: 10,
+      fleetBrake: TEST_FLEET_BRAKE,
+      clock,
+      createStreamWriter,
+      watermarkRepository,
+      turnOrchestrator: turnRunner,
+      toolDispatcher: dispatcher,
+      sources: [
+        createPersistentDueSource({
+          watermarkRepository,
+          eventIds: ["reflection-event"],
+          sourceName: "scheduled_reflection",
+          sourceCategory: "contemplative",
+          sortTs: () => 15,
+        }),
+        createPersistentDueSource({
+          watermarkRepository,
+          eventIds: ["z-earlier", "c-later"],
+          sortTs: (_id, index) => [5, 20][index]!,
+        }),
+      ],
+    });
+
+    const result = await scheduler.tick();
+
+    // Admission order decides who waits at any budget state, not only at the
+    // ceiling: the freshest source-minted stamp is admitted last with seven
+    // slots free, so its wait is the turns ahead of it inside this one tick
+    // rather than a refusal or a later tick.
+    expect(result).toMatchObject({ firedEvents: 3, budgetSkipped: 0, errorCount: 0 });
+    expect(result.events.map((event) => [event.id, event.status])).toEqual([
+      ["z-earlier", "fired"],
+      ["reflection-event", "fired"],
+      ["c-later", "fired"],
+    ]);
+    expect(turnRunner.run).toHaveBeenCalledTimes(3);
+  });
+
   it("checks persisted wake history when a fresh scheduler enforces budget", async () => {
     const clock = new ManualClock(1_000_000);
     const harness = await createOfflineTestHarness({
