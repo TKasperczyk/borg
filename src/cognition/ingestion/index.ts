@@ -32,6 +32,7 @@ export {
   ChatResponseCatchUpWorker,
   TurnOrchestratorChatResponseCatchUpRunner,
   type ChatResponseCatchUpRunner,
+  type ChatResponseCatchUpObserver,
   type ChatResponseCatchUpRunInput,
   type ChatResponseCatchUpLease,
   type ChatResponseReconcileAdvance,

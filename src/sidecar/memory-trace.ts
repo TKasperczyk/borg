@@ -71,7 +71,7 @@ function shouldStoreMemoryTraceEvent(event: TurnTraceEventName, data: TurnTraceD
 export class MemoryTraceRegistry {
   private readonly capacity: number;
   private readonly maxTenants: number;
-  private readonly includePayloads: boolean;
+  readonly includePayloads: boolean;
   private readonly now: () => number;
   private readonly buffers = new Map<string, CallbackTraceEntry[]>();
   private lastTs = 0;

@@ -35,6 +35,7 @@ import {
   type SessionRecord,
 } from "../sessions/index.js";
 import { TeamAgentTurnRunner, type TeamAgentTurnRunnerOptions } from "./team-agent-turn-runner.js";
+import { ObservatoryEmitter, type ObservatoryEvent } from "./observatory/emitter.js";
 
 const cleanups: Array<() => void> = [];
 
@@ -47,7 +48,7 @@ afterEach(() => {
 
 function harness(
   fetchResponse: () => Promise<Response>,
-  options: Pick<TeamAgentTurnRunnerOptions, "onGenerating"> = {},
+  options: Pick<TeamAgentTurnRunnerOptions, "onGenerating" | "observatory" | "onAttempt"> = {},
   fixture: { senderIsAudience?: boolean; sessionRecord?: Partial<SessionRecord> | null } = {},
 ) {
   const sessionId = createSessionId();
@@ -300,6 +301,44 @@ function openRealHarness(input: {
 }
 
 describe("TeamAgentTurnRunner", () => {
+  it("mints a new correlated turn for each retry and reports both HTTP outcomes", async () => {
+    const events: ObservatoryEvent[] = [];
+    const observatory = new ObservatoryEmitter({
+      config: { enabled: true, baseUrl: "http://observatory", token: "secret", flushMs: 250, maxBatch: 100, queueCap: 5000, timeoutMs: 2000 },
+      fetchFn: async (_url, init) => {
+        events.push(...(JSON.parse(String(init?.body)) as { events: ObservatoryEvent[] }).events);
+        return new Response(null, { status: 202 });
+      },
+    });
+    let calls = 0;
+    const h = harness(async () => {
+      calls += 1;
+      return calls === 1 ? new Response(null, { status: 503 })
+        : new Response(JSON.stringify({ action: "silent", reason: "done" }), { status: 200 });
+    }, { observatory });
+    await expect(h.runner.run(h.input)).rejects.toThrow("HTTP 503");
+    await h.runner.run(h.input);
+    await observatory.shutdown();
+    const fetchCalls = vi.mocked(h.fetchFn).mock.calls;
+    const turns = fetchCalls.map(([, init]) => new Headers(init?.headers).get("X-Observatory-Turn-Id"));
+    expect(turns[0]).toMatch(/^turn_/);
+    expect(turns[1]).not.toBe(turns[0]);
+    expect(events.filter((event) => event.phase === "end")).toMatchObject([
+      { turn_id: turns[0], status: "error", data: { attempt: 1, http_status: 503 } },
+      { turn_id: turns[1], status: "ok", data: { attempt: 2, http_status: 200, action: "silent", terminal_kind: "agent_observed" } },
+    ]);
+  });
+
+  it("keeps generation working when optional observatory hooks throw", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const h = harness(async () => new Response(JSON.stringify({ action: "reply", content: "answer" }), { status: 200 }), {
+      observatory: { emit() { throw new Error("observer"); }, stage() { throw new Error("observer"); } },
+      onAttempt: () => { throw new Error("observer"); },
+    });
+    await expect(h.runner.run(h.input)).resolves.toBeUndefined();
+    expect(h.appendBacklogTerminal).toHaveBeenCalledOnce();
+  });
+
   it("signals a full-turn batch before starting the Team Agent request", async () => {
     const events: string[] = [];
     const onGenerating = vi.fn(() => events.push("generating"));

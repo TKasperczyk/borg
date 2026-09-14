@@ -34,6 +34,7 @@ export const TRACE_EVENT_TAXONOMY = {
     "retrieval.started",
     "retrieval.completed",
     "retrieval.intent_candidates",
+    "retrieval.lane_settled",
     "retrieval.degraded",
     "recall_expansion.completed",
     "creator_directive_rendered",
@@ -109,6 +110,7 @@ export const TRACE_EVENT_TAXONOMY = {
     "post_generation.rejected",
   ],
   extraction: [
+    "sidecar.append_turn.completed",
     "extraction.commitments.degraded",
     "extraction.commitments.rejected",
     "extraction.commitments.transitioned",

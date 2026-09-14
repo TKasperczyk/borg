@@ -10,6 +10,19 @@ import {
 } from "./memory-trace.js";
 
 describe("MemoryTraceRegistry", () => {
+  it("retains legacy entityTerms and nested payloads when payloads are disabled", () => {
+    const registry = new MemoryTraceRegistry({ includePayloads: false, now: () => 100 });
+    registry.tracerFor("a").emit("retrieval.started", {
+      turnId: "legacy", query: "omitted", entityTerms: ["legacy top-level"],
+      options: { entityTerms: ["legacy nested"] },
+    });
+    const event = registry.query("a").events[0];
+    expect(event).toMatchObject({
+      entityTerms: ["legacy top-level"], options: { entityTerms: ["legacy nested"] },
+    });
+    expect(event).not.toHaveProperty("query");
+  });
+
   it("keeps bounded isolated per-tenant buffers and filters by since", () => {
     let now = 1_000;
     const registry = new MemoryTraceRegistry({

@@ -9,8 +9,48 @@ describe("ResponseWaiterRegistry", () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
+  it("observes registration, generation, timeout and cancellation independently per tenant", async () => {
+    const observer = vi.fn();
+    const registry = new ResponseWaiterRegistry({ observer });
+    const sessionId = createSessionId();
+    const entryId = createStreamEntryId();
+    const input = { tenant: "a", sessionId, entryId, timeoutMs: 10 };
+    const generating = registry.register(input);
+    const timeout = registry.register({ ...input, tenant: "b" });
+    registry.markGenerating({ tenant: "a", sessionId, entryIds: [entryId] });
+    await expect(generating.promise).resolves.toEqual({ status: "generating" });
+    await vi.advanceTimersByTimeAsync(10);
+    await expect(timeout.promise).resolves.toEqual({ status: "pending" });
+    const cancelled = registry.register({ ...input, seenGenerating: true });
+    cancelled.cancel();
+    cancelled.cancel();
+    const shutdown = registry.register({ ...input, seenGenerating: true });
+    registry.shutdown();
+    await expect(shutdown.promise).resolves.toEqual({ status: "pending" });
+    expect(observer.mock.calls.map(([event]) => [event.tenant, event.action])).toEqual([
+      ["a", "registered"], ["b", "registered"], ["a", "generating"], ["b", "timeout"],
+      ["a", "registered"], ["a", "cancelled"], ["a", "registered"], ["a", "cancelled"],
+    ]);
+  });
+
+  it("does not retain a waiter or lease when its observer fails", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const release = vi.fn();
+    try {
+      const registry = new ResponseWaiterRegistry({
+        observer: () => { throw new Error("observer"); }, acquireTenantLease: () => ({ release }),
+      });
+      const waiter = registry.register({ tenant: "a", sessionId: createSessionId(), entryId: createStreamEntryId(), timeoutMs: 10 });
+      waiter.cancel();
+      await expect(waiter.promise).resolves.toEqual({ status: "pending" });
+      expect(registry.size()).toBe(0);
+      expect(release).toHaveBeenCalledOnce();
+    } finally { log.mockRestore(); }
+  });
+
   it("resolves every waiter for a covered entry after the terminal commit", async () => {
-    const registry = new ResponseWaiterRegistry();
+    const observer = vi.fn();
+    const registry = new ResponseWaiterRegistry({ observer });
     const sessionId = createSessionId();
     const sourceId = createStreamEntryId();
     const terminalId = createStreamEntryId();
@@ -52,6 +92,9 @@ describe("ResponseWaiterRegistry", () => {
     });
     await expect(second.promise).resolves.toMatchObject({ status: "answered" });
     expect(registry.size()).toBe(0);
+    expect(observer.mock.calls.map(([event]) => event.action)).toEqual([
+      "registered", "registered", "resolved", "resolved",
+    ]);
   });
 
   it("serves remembered generating state until a terminal clears it and rejects late progress", async () => {

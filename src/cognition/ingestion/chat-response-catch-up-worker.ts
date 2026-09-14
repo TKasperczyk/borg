@@ -18,6 +18,7 @@ type ClearTimeoutFn = (handle: TimeoutHandle) => void;
 type ResponseLane = "user" | "task_event";
 type LaneState = {
   oldestPendingAt: number | null;
+  pendingEntryId?: StreamEntryId;
   timer: TimeoutHandle | null;
   backoffMs: number | null;
   repairOnly: boolean;
@@ -51,6 +52,8 @@ export type DrainResult = {
 
 export type ChatResponseCatchUpRunInput = {
   sessionId: SessionId;
+  /** Optional transport correlation; never affects the durable batch. */
+  onAttempt?: (turnId: string) => void;
   inboundBatch: {
     kind: "stream_backlog";
     entryIds: readonly StreamEntryId[];
@@ -64,6 +67,26 @@ export type ChatResponseCatchUpRunner = {
 
 export type ChatResponseCatchUpLease = {
   release(): void;
+};
+
+export type ChatResponseCatchUpObserver = {
+  onSettle?(event: {
+    sessionId: SessionId;
+    entryId?: StreamEntryId;
+    reason: ScheduleReason;
+    delayMs: number;
+    bound: "quiet" | "max" | "immediate" | "backoff";
+    oldestPendingAt: number;
+    quietWindowMs: number;
+    maxWaitMs: number;
+  }): void;
+  onBatch?(event: {
+    sessionId: SessionId;
+    entryIds: readonly StreamEntryId[];
+    includedCount: number;
+    hasMore: boolean;
+    watermark: StreamCursor | null;
+  }): ((result: DrainResult, turnId?: string, errorName?: string) => void) | undefined;
 };
 
 export type ChatResponseReconcileAdvance = {
@@ -98,6 +121,7 @@ export type ChatResponseCatchUpWorkerOptions = {
   sessionPredicate?: (sessionId: SessionId) => boolean;
   acquireLease?: () => ChatResponseCatchUpLease;
   onReconcileAdvance?: (event: ChatResponseReconcileAdvance) => void;
+  observer?: ChatResponseCatchUpObserver;
   clock: Clock;
   setTimeoutFn?: SetTimeoutFn;
   clearTimeoutFn?: ClearTimeoutFn;
@@ -233,12 +257,12 @@ export class ChatResponseCatchUpWorker {
         continue;
       }
 
-      this.markPending(entry.session_id, entry.timestamp);
-      this.schedule(entry.session_id, "append");
+      this.markPending(entry.session_id, entry.timestamp, "user", entry.id);
+      this.schedule(entry.session_id, "append", "user", entry.id);
     }
   }
 
-  onPendingSession(sessionId: SessionId, pendingAt: number): void {
+  onPendingSession(sessionId: SessionId, pendingAt: number, entryId?: StreamEntryId): void {
     if (!this.started || this.stopping) {
       return;
     }
@@ -246,8 +270,8 @@ export class ChatResponseCatchUpWorker {
       return;
     }
 
-    this.markPending(sessionId, pendingAt);
-    this.schedule(sessionId, "append");
+    this.markPending(sessionId, pendingAt, "user", entryId);
+    this.schedule(sessionId, "append", "user", entryId);
   }
 
   onPendingTaskSession(sessionId: SessionId, pendingAt: number): void {
@@ -287,8 +311,8 @@ export class ChatResponseCatchUpWorker {
         });
 
         if (prefix.includedCount > 0) {
-          this.markPending(sessionId, this.clock.now());
-          this.schedule(sessionId, "startup");
+          this.markPending(sessionId, this.clock.now(), "user", prefix.entryIds[0]);
+          this.schedule(sessionId, "startup", "user", prefix.entryIds[0]);
         }
       } catch (error) {
         this.markPending(sessionId, this.clock.now());
@@ -309,6 +333,7 @@ export class ChatResponseCatchUpWorker {
     sessionId: SessionId,
     reason: ScheduleReason,
     lane: ResponseLane = "user",
+    entryId?: StreamEntryId,
   ): void {
     if (!this.started || this.stopping) {
       return;
@@ -339,10 +364,11 @@ export class ChatResponseCatchUpWorker {
     }
 
     this.ensureSessionLease(session);
-    const delayMs =
+    const delay =
       lane === "task_event" && state.retryAt !== null
-        ? clampNonnegativeDelay(state.retryAt - this.clock.now())
+        ? { delayMs: clampNonnegativeDelay(state.retryAt - this.clock.now()), bound: "backoff" as const }
         : this.delayFor(state, reason);
+    const { delayMs } = delay;
     state.timer = this.setTimeoutFn(() => {
       state.timer = null;
 
@@ -353,14 +379,37 @@ export class ChatResponseCatchUpWorker {
 
       void this.runScheduledDrain(sessionId);
     }, delayMs);
+    if (lane === "user") {
+      try {
+        this.options.observer?.onSettle?.({
+          sessionId, entryId: entryId ?? state.pendingEntryId, reason, delayMs, bound: delay.bound,
+          oldestPendingAt: state.oldestPendingAt,
+          quietWindowMs: this.options.config.quietWindowMs,
+          maxWaitMs: this.options.config.maxWaitMs,
+        });
+      } catch (error) {
+        this.logObserverError("settle", error);
+      }
+    }
   }
 
   private async drain(sessionId: SessionId, selectTaskLane: () => void): Promise<DrainResult> {
     const state = this.ensureSessionState(sessionId);
     const claimedPendingSince = state.oldestPendingAt ?? this.clock.now();
+    const claimedPendingEntryId = state.pendingEntryId;
     const repairOnly = state.repairOnly;
     state.oldestPendingAt = null;
     state.repairOnly = false;
+    let batchEnd: ReturnType<NonNullable<ChatResponseCatchUpObserver["onBatch"]>> = undefined;
+    let turnId: string | undefined;
+    const finish = (result: DrainResult, errorName?: string): DrainResult => {
+      try {
+        batchEnd?.(result, turnId, errorName);
+      } catch (error) {
+        this.logObserverError("batch.end", error);
+      }
+      return result;
+    };
 
     try {
       if (!this.acceptsSession(sessionId)) {
@@ -411,8 +460,20 @@ export class ChatResponseCatchUpWorker {
         throw new Error("Chat response catch-up prefix included entries without a through cursor");
       }
 
+      try {
+        batchEnd = this.options.observer?.onBatch?.({
+          sessionId,
+          entryIds: prefix.entryIds,
+          includedCount: prefix.includedCount,
+          hasMore: prefix.hasMore,
+          watermark,
+        });
+      } catch (error) {
+        this.logObserverError("batch.start", error);
+      }
       await this.runner.run({
         sessionId,
+        ...(this.options.observer === undefined ? {} : { onAttempt: (id: string) => { turnId = id; } }),
         inboundBatch: {
           kind: "stream_backlog",
           entryIds: prefix.entryIds,
@@ -440,12 +501,12 @@ export class ChatResponseCatchUpWorker {
         this.markPending(sessionId, this.clock.now());
         const coveredEntryIndex =
           reconciled === null ? -1 : prefix.entryIds.indexOf(reconciled.entryId);
-        return {
+        return finish({
           sessionId,
           status: "drained",
           drained: coveredEntryIndex + 1,
           hasMore: true,
-        };
+        });
       }
 
       const hasMore = prefix.hasMore;
@@ -453,18 +514,22 @@ export class ChatResponseCatchUpWorker {
         this.markPending(sessionId, this.clock.now());
       }
 
-      return {
+      return finish({
         sessionId,
         status: "drained",
         drained: prefix.includedCount,
         hasMore,
-      };
+      });
     } catch (error) {
+      state.pendingEntryId = claimedPendingEntryId ?? state.pendingEntryId;
       if (repairOnly) {
         return this.handleRepairOnlyError(sessionId, error, claimedPendingSince);
       }
 
-      return this.handleDrainError(sessionId, error, claimedPendingSince);
+      return finish(
+        this.handleDrainError(sessionId, error, claimedPendingSince),
+        error instanceof Error ? error.name : typeof error,
+      );
     }
   }
 
@@ -637,11 +702,19 @@ export class ChatResponseCatchUpWorker {
     };
   }
 
-  private markPending(sessionId: SessionId, pendingAt: number, lane: ResponseLane = "user"): void {
+  private markPending(
+    sessionId: SessionId,
+    pendingAt: number,
+    lane: ResponseLane = "user",
+    entryId?: StreamEntryId,
+  ): void {
     const state = this.laneState(sessionId, lane);
 
     if (state.oldestPendingAt === null) {
       state.oldestPendingAt = pendingAt;
+      state.pendingEntryId = entryId;
+    } else if (state.pendingEntryId === undefined) {
+      state.pendingEntryId = entryId;
     }
   }
 
@@ -685,13 +758,16 @@ export class ChatResponseCatchUpWorker {
     return lane === "user" ? state : state.task;
   }
 
-  private delayFor(state: LaneState, reason: ScheduleReason): number {
+  private delayFor(state: LaneState, reason: ScheduleReason): {
+    delayMs: number;
+    bound: "quiet" | "max" | "immediate" | "backoff";
+  } {
     if (reason === "startup" || reason === "has_more") {
-      return 0;
+      return { delayMs: 0, bound: "immediate" };
     }
 
     if (reason === "retry") {
-      return state.backoffMs ?? this.options.config.backoffBaseMs;
+      return { delayMs: state.backoffMs ?? this.options.config.backoffBaseMs, bound: "backoff" };
     }
 
     const now = this.clock.now();
@@ -699,7 +775,10 @@ export class ChatResponseCatchUpWorker {
     const quietDueAt = now + this.options.config.quietWindowMs;
     const maxWaitDueAt = oldestPendingAt + this.options.config.maxWaitMs;
 
-    return clampNonnegativeDelay(Math.min(quietDueAt, maxWaitDueAt) - now);
+    return {
+      delayMs: clampNonnegativeDelay(Math.min(quietDueAt, maxWaitDueAt) - now),
+      bound: maxWaitDueAt <= quietDueAt ? "max" : "quiet",
+    };
   }
 
   private applyBackoff(sessionId: SessionId, lane: ResponseLane = "user"): void {
@@ -768,6 +847,16 @@ export class ChatResponseCatchUpWorker {
 
   private logError(message: string, error: unknown): void {
     console.error(`Chat response catch-up worker ${message}: ${describeError(error)}`);
+  }
+
+  private logObserverError(hook: string, error: unknown): void {
+    try {
+      console.error("Chat response catch-up observer failed", {
+        hook, error_name: error instanceof Error ? error.name : typeof error,
+      });
+    } catch {
+      // Observer diagnostics must not break catch-up either.
+    }
   }
 
   private acceptsSession(sessionId: SessionId): boolean {

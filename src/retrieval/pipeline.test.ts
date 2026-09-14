@@ -33,6 +33,7 @@ import {
   createEntityId,
   createEpisodeId,
   createImagePerceptionId,
+  createSemanticNodeId,
   createSessionId,
   createStreamEntryId,
   type AttachmentId,
@@ -450,6 +451,11 @@ describe("retrieval pipeline", () => {
     });
 
     expect(retrievalClock.now()).toBeGreaterThan(10_000);
+    expect(tracer.emit).toHaveBeenCalledWith("retrieval.lane_settled", expect.objectContaining({
+      turnId: "turn-retrieval-session", session_id: sessionId,
+      intent_kind: "raw_text", collector: "episodic", outcome: "fulfilled",
+      candidate_count: expect.any(Number), duration_ms: expect.any(Number),
+    }));
     expect(result.retrieval_read_at_ms).toBe(10_000);
 
     expect(tracer.emit).toHaveBeenCalledWith(
@@ -560,6 +566,9 @@ describe("retrieval pipeline", () => {
     });
 
     expect(result.evidence.some((item) => item.source === "commitment")).toBe(false);
+    expect(tracer.emit).toHaveBeenCalledWith("retrieval.lane_settled", expect.objectContaining({
+      collector: "commitments", outcome: "rejected", candidate_count: 0, error_name: "Error",
+    }));
     expect(result.episodes).toHaveLength(1);
     expect(tracer.emit).toHaveBeenCalledWith(
       "retrieval.degraded",
@@ -2200,6 +2209,76 @@ describe("retrieval pipeline", () => {
       "What snacks should we order?",
     );
     expect(defaultResult.open_questions).toEqual([]);
+  });
+
+  it.each(["throwing", "unresolved", "rejecting"] as const)("preserves open-question fallback and rejected lanes with a %s degradation observer", async (observerKind) => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-open-question-degraded-"));
+    const fixture = await openRetrievalFixture(tempDir);
+    cleanup.push(async () => {
+      fixture.db.close();
+      await fixture.store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+    const embeddingClient = new ScriptedEmbeddingClient();
+    const openQuestionsRepository = new OpenQuestionsRepository({
+      db: fixture.db,
+      table: await fixture.store.openTable({
+        name: "open_questions", schema: createOpenQuestionsTableSchema(4),
+      }),
+      embeddingClient,
+      clock: new FixedClock(5_000),
+    });
+    const relatedNodeId = createSemanticNodeId();
+    const question = openQuestionsRepository.add({
+      question: "Why does Atlas deployment keep failing?",
+      urgency: 0.8,
+      source: "reflection",
+      provenance: { kind: "manual" },
+      related_semantic_node_ids: [relatedNodeId],
+    });
+    await openQuestionsRepository.waitForPendingEmbeddings();
+    await fixture.episodicRepository.createEpisode(
+      createEpisode(createEpisodeId(), createStreamEntryId(), [1, 0, 0, 0]),
+    );
+    vi.spyOn(openQuestionsRepository, "searchByVector").mockRejectedValue(new TypeError("search offline"));
+    const tracer: TurnTracer = { enabled: true, includePayloads: false, emit: vi.fn() };
+    const pipeline = new RetrievalPipeline({
+      embeddingClient,
+      episodicRepository: fixture.episodicRepository,
+      openQuestionsRepository,
+      dataDir: tempDir,
+      clock: new FixedClock(10_000),
+      tracer,
+    });
+
+    // The helper still returns relation-backed fallback results after a failed search.
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const fallback = await pipeline.retrieveOpenQuestionsForQuery("Atlas deployment", {
+      relatedSemanticNodeIds: [relatedNodeId],
+      onDegraded: () => {
+        if (observerKind === "unresolved") return new Promise<void>(() => {});
+        if (observerKind === "rejecting") return Promise.reject(new Error("private observer detail"));
+        throw new Error("private observer detail");
+      },
+    });
+    expect(fallback.map((item) => item.id)).toEqual([question.id]);
+    if (observerKind === "unresolved") expect(log).not.toHaveBeenCalled();
+    else expect(log).toHaveBeenCalledWith(expect.any(String), { error_name: "Error" });
+    expect(JSON.stringify(log.mock.calls)).not.toContain("private observer detail");
+    const result = await pipeline.searchWithContextForDisclosure("Atlas deployment", {
+      includeOpenQuestions: true, limit: 1, traceTurnId: "open-question-failure",
+    });
+    expect(result.episodes).toHaveLength(1);
+    // Without matching semantic nodes, the same fallback correctly yields no questions.
+    expect(result.open_questions).toEqual([]);
+    const lanes = vi.mocked(tracer.emit).mock.calls
+      .filter(([event, data]) => event === "retrieval.lane_settled" && data.collector === "open_questions");
+    expect(lanes.length).toBeGreaterThan(0);
+    for (const [, data] of lanes) {
+      expect(data).toMatchObject({
+        turnId: "open-question-failure", outcome: "rejected", error_name: "TypeError", candidate_count: 0,
+      });
+    }
   });
 
   it("recalls audience-scoped open questions globally for cognition", async () => {

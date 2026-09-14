@@ -19,6 +19,8 @@ import {
   type MemoryPool,
 } from "./memory-handler.js";
 import { MemoryTraceRegistry } from "./memory-trace.js";
+import { ObservatoryEmitter, type ObservatoryEvent } from "./observatory/emitter.js";
+import { ObservatoryTracerSink } from "./observatory/tracer.js";
 import { ServedMemoryContextRegistry } from "./served-memory-context.js";
 import { ManualClock } from "../util/clock.js";
 import {
@@ -968,6 +970,105 @@ async function requestRaw(
 }
 
 describe("memory sidecar handler", () => {
+  it("correlates recall and append events with the dashboard enabled and /memory/trace disabled", async () => {
+    const { rec } = recordingPool();
+    const events: ObservatoryEvent[] = [];
+    const observatory = new ObservatoryEmitter({
+      config: { enabled: true, baseUrl: "http://observatory", token: "secret", flushMs: 10_000, maxBatch: 100, queueCap: 5000, timeoutMs: 2000 },
+      fetchFn: async (_url, init) => {
+        events.push(...(JSON.parse(String(init?.body)) as { events: ObservatoryEvent[] }).events);
+        return new Response(null, { status: 202 });
+      },
+    });
+    const observatoryTracer = new ObservatoryTracerSink({ emitter: observatory, includePayloads: false });
+    const borg = stubBorg(rec);
+    borg.guardReply = async (input) => {
+      observatoryTracer.tracerFor("acme").emit("internal_identifier_guard.completed", {
+        turnId: input.turnId, session_id: input.sessionId,
+      });
+      return { kind: "message", content: input.response };
+    };
+    const recall = borg.episodic.recallForCognition;
+    borg.episodic.recallForCognition = async (query, options) => {
+      observatoryTracer.tracerFor("acme").emit("retrieval.started", {
+        turnId: options?.traceTurnId ?? "missing-correlation", query,
+      });
+      return recall(query, options);
+    };
+    const pool: MemoryPool = { listTenantIds: async () => ["acme"], withTenant: async (_tenant, fn) => fn(borg) };
+    try {
+      const base = await start(pool, TOKEN, { observatory, observatoryTracer });
+      const headers = { "content-type": "application/json", "x-borg-token": TOKEN, "x-observatory-turn-id": "turn_external_attempt" };
+      const identity = { tenant: "acme", session: "acme::thread", ...TRANSPORT_IDENTITY };
+      const response = await fetch(`${base}/memory/context`, {
+        method: "POST", headers,
+        body: JSON.stringify({ ...identity, sections: ["episodes"], focus: "private query", context_turns: [] }),
+      });
+      expect(response.status).toBe(200);
+      const body = await response.json() as { episodes: unknown[]; degraded: boolean; context_id: string };
+      expect(rec.lastRecallTraceTurnId).toMatch(/^sidecar_recall:acme:/);
+      const guard = await fetch(`${base}/memory/guard-reply`, {
+        method: "POST", headers,
+        body: JSON.stringify({ ...identity, context_id: body.context_id, response: "reply" }),
+      });
+      expect(guard.status).toBe(200);
+      await guard.json();
+      const append = await fetch(`${base}/memory/append-turn`, {
+        method: "POST", headers, body: JSON.stringify({ ...identity, user: "hello", assistant: "reply" }),
+      });
+      expect(append.status).toBe(200);
+      await append.json();
+      await observatory.shutdown();
+      expect(events.find((event) => event.kind === "trace.retrieval.started")).toMatchObject({
+        turn_id: "turn_external_attempt", data: { trace_turn_id: rec.lastRecallTraceTurnId },
+      });
+      expect(events.find((event) => event.kind === "trace.retrieval.started")?.data).not.toHaveProperty("query");
+      expect(events.find((event) => event.kind === "recall.request" && event.phase === "end")).toMatchObject({
+        turn_id: "turn_external_attempt", data: { episode_count: body.episodes.length, degraded: body.degraded, hidden_episode_count: 0 },
+      });
+      expect(events.filter((event) => event.kind === "recall.phase" && event.phase === "end").map((event) => event.data?.phase))
+        .toEqual(["identity", "context_sections", "episodes"]);
+      expect(events.find((event) => event.kind === "trace.sidecar.append_turn.completed")?.turn_id).toBe("turn_external_attempt");
+      expect(events.find((event) => event.kind === "guard.reply")).toMatchObject({
+        phase: "end", turn_id: "turn_external_attempt", data: { verdict: "pass", reason: "" },
+      });
+      expect(events.find((event) => event.kind === "trace.internal_identifier_guard.completed")?.turn_id).toBe("turn_external_attempt");
+      expect(events.find((event) => event.kind === "job.ingestion" && event.phase === "end")).toMatchObject({
+        turn_id: "turn_external_attempt", data: { processed_entries: 2, ran: true },
+      });
+    } finally { await observatory.shutdown(); }
+  });
+
+  it("reports legacy recall degradation exactly as served and contains a failing stage hook", async () => {
+    const { pool, rec } = recordingPool();
+    rec.recallError = new EmbeddingError("embedding unavailable");
+    const events: ObservatoryEvent[] = [];
+    const observatory = new ObservatoryEmitter({
+      config: { enabled: true, baseUrl: "http://observatory", token: "secret", flushMs: 10_000, maxBatch: 100, queueCap: 5000, timeoutMs: 2000 },
+      fetchFn: async (_url, init) => {
+        events.push(...(JSON.parse(String(init?.body)) as { events: ObservatoryEvent[] }).events);
+        return new Response(null, { status: 202 });
+      },
+    });
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const base = await start(pool, TOKEN, { observatory });
+      const response = await post(base, "/memory/recall", { tenant: "acme", query: "hello" }, TOKEN);
+      const body = await response.json() as { degraded_reason: string };
+      expect(response.status).toBe(200);
+      await observatory.shutdown();
+      expect(events.find((event) => event.kind === "recall.request" && event.phase === "end")).toMatchObject({
+        status: "degraded", data: { degraded: true, degraded_reason: body.degraded_reason, episode_count: 0 },
+      });
+      const brokenBase = await start(pool, TOKEN, {
+        observatory: { emit() { throw new Error("observer"); }, stage() { throw new Error("observer"); } },
+      });
+      const stillDegraded = await post(brokenBase, "/memory/recall", { tenant: "acme", query: "hello" }, TOKEN);
+      expect(stillDegraded.status).toBe(200);
+      await stillDegraded.json();
+    } finally { await observatory.shutdown(); log.mockRestore(); }
+  });
+
   it("projects private-to membership by entity identity even when sender display names match", async () => {
     const { pool, rec } = recordingPool();
     const fixture = stubBorg(rec);

@@ -78,6 +78,26 @@ function maintenanceConfig(
 }
 
 describe("memory maintenance coordinator", () => {
+  it("notifies a second report sink on acceptance and forced abort without trusting that sink", async () => {
+    const states: string[] = [];
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const coordinator = new MemoryMaintenanceCoordinator({
+        pool: { withTenant: async () => { throw new Error("must not execute"); } },
+        config: maintenanceConfig(), schedule: () => {}, writeReport: () => {},
+        observeReport: (report) => { states.push(report.state); throw new Error("observer"); },
+      });
+      const result = coordinator.tryStart({ tenant: "alpha", mode: "heavy", dryRun: false });
+      expect(result.status).toBe("accepted");
+      if (result.status !== "accepted") throw new Error("expected accepted run");
+      expect(states).toEqual(["running"]);
+      coordinator.beginShutdown();
+      coordinator.forceFinalizeAborted();
+      await expect(result.completion).resolves.toMatchObject({ state: "aborted" });
+      expect(states).toEqual(["running", "aborted"]);
+    } finally { log.mockRestore(); }
+  });
+
   it("rejects disabled and shutting-down starts without scheduling work", () => {
     const scheduled: Array<() => void> = [];
     const pool = {

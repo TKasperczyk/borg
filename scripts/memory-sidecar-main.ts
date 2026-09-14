@@ -54,6 +54,11 @@ import { teamsInboxConfigFromEnv } from "../src/sidecar/teams-inbox-config.js";
 import { DeliveryWaiterRegistry } from "../src/sidecar/delivery-waiter-registry.js";
 import { TeamAgentTaskEventRunner } from "../src/sidecar/team-agent-task-event-runner.js";
 import { SystemClock } from "../src/util/clock.js";
+import { compositeTracer } from "../src/tracing/tracer.js";
+import { observatoryConfigFromEnv } from "../src/sidecar/observatory/config.js";
+import { ObservatoryEmitter, emitObservatoryEvent, reportObservatoryObserverError } from "../src/sidecar/observatory/emitter.js";
+import { ObservatoryTracerSink } from "../src/sidecar/observatory/tracer.js";
+import { ObservatoryInboxObserver, observeMaintenanceReport } from "../src/sidecar/observatory/observers.js";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -194,12 +199,31 @@ logSimilarityProfile(sidecarConfig, "borg memory sidecar");
 const selfName = memorySelfNameFromEnv(process.env);
 const teamsInboxConfig = teamsInboxConfigFromEnv(process.env);
 const sidecarClock = new SystemClock();
+const observatoryConfig = observatoryConfigFromEnv(process.env);
+const observatory = observatoryConfig.enabled
+  ? new ObservatoryEmitter({ config: observatoryConfig, clock: sidecarClock })
+  : undefined;
+const observatoryTracer = observatory === undefined ? undefined : new ObservatoryTracerSink({
+  emitter: observatory,
+  // Match the underlying /memory/trace payload setting; enabling the dashboard alone
+  // must never enable prompts, query text, or other payload-gated fields.
+  includePayloads: traceRegistry?.includePayloads ?? false,
+  clock: sidecarClock,
+});
+const observatoryInbox = observatory === undefined ? undefined : new ObservatoryInboxObserver({
+  emitter: observatory, clock: sidecarClock,
+});
 let pool!: BorgPool;
 const inboxWaiters = teamsInboxConfig.enabled
   ? new ResponseWaiterRegistry({
       acquireTenantLease: (tenantId) => pool.acquireBackgroundLease(tenantId),
       clock: sidecarClock,
       generatingTtlMs: teamsInboxConfig.timeoutMs + 10_000,
+      observer: observatory === undefined ? undefined : (event) => emitObservatoryEvent(observatory, {
+        tenant: event.tenant, kind: "inbox.waiter", phase: "point",
+        refs: { sidecar_session_id: event.sessionId, entry_id: event.entryId },
+        data: { action: event.action },
+      }),
     })
   : undefined;
 
@@ -246,6 +270,8 @@ pool = new BorgPool({
                 sessions,
                 activity,
                 clock: sidecarClock,
+                observatory,
+                onAttempt: (turnId, input) => observatoryInbox?.onAttempt(tenantId, input.sessionId, input.inboundBatch.entryIds, turnId),
                 onGenerating: ({ sessionId, entryIds }) =>
                   inboxWaiters!.markGenerating({
                     tenant: tenantId,
@@ -255,8 +281,11 @@ pool = new BorgPool({
               }),
             sessionPredicate: (session) => session?.source_type === "teams_inbox",
             acquireLease: () => pool.acquireBackgroundLease(tenantId),
-            onTerminalCommitted: (terminalEntry) =>
-              inboxWaiters!.resolveTerminal(tenantId, terminalEntry),
+            onTerminalCommitted: (terminalEntry, details) => {
+              observatoryInbox?.onTerminalCommitted(tenantId, terminalEntry, details);
+              inboxWaiters!.resolveTerminal(tenantId, terminalEntry);
+            },
+            observer: observatoryInbox?.forTenant(tenantId),
             settleMs: teamsInboxConfig.settleMs,
             maxSettleMs: teamsInboxConfig.maxSettleMs,
           },
@@ -271,10 +300,12 @@ pool = new BorgPool({
       borg.inbox.catchUp.start();
     }
   },
-  ...(traceRegistry === undefined
+  ...(traceRegistry === undefined && observatoryTracer === undefined
     ? {}
     : {
-        tracerFor: (tenantId: string) => traceRegistry.tracerFor(tenantId),
+        tracerFor: (tenantId: string) => compositeTracer([
+          traceRegistry?.tracerFor(tenantId), observatoryTracer?.tracerFor(tenantId),
+        ]),
       }),
 });
 const maintenanceCoordinator = new MemoryMaintenanceCoordinator({
@@ -287,6 +318,7 @@ const maintenanceCoordinator = new MemoryMaintenanceCoordinator({
   // seven nightly heavy reports were missing from the pod log. Structured
   // events go to stderr, which is where the error report already goes.
   writeReport: (line) => console.error(line),
+  observeReport: observatory === undefined ? undefined : (report) => observeMaintenanceReport(observatory, report),
 });
 
 const server = createServer(
@@ -306,6 +338,8 @@ const server = createServer(
         DEFAULT_RECENT_ACTIVITY_RANKING_BUDGET_MS,
     ),
     recallSemanticVariantCount,
+    observatory,
+    observatoryTracer,
     ...(recencyPrior === undefined ? {} : { recencyPrior }),
     ...(inboxWaiters === undefined ? {} : { inboxWaiters }),
     ...(deliveryWaiters === undefined ? {} : { deliveryWaiters }),
@@ -331,6 +365,7 @@ async function shutdown(signal: string): Promise<void> {
   console.log(`memory-sidecar: ${signal} received, draining in-flight requests...`);
   const result = await drainMemorySidecar({
     timeoutMs: shutdownTimeoutMs,
+    now: () => sidecarClock.now(),
     beginShutdown: () => {
       inboxWaiters?.shutdown();
       deliveryWaiters?.shutdown();
@@ -349,6 +384,9 @@ async function shutdown(signal: string): Promise<void> {
     // shutdown() (not closeAll()) is a barrier: it rejects any new withTenant so
     // accepted requests cannot open a being that escapes the drain.
     shutdownPool: () => pool.shutdown(),
+    shutdownObservatory: observatory === undefined
+      ? undefined
+      : (options) => observatory.shutdown(options),
   });
   if (result.http.status === "timed_out") {
     console.error("memory-sidecar: HTTP drain exceeded the shutdown deadline");
@@ -359,6 +397,9 @@ async function shutdown(signal: string): Promise<void> {
     console.error("memory-sidecar: pool shutdown exceeded the shutdown deadline");
   } else if (result.pool.status === "error") {
     console.error("memory-sidecar: error during pool shutdown", result.pool.error);
+  }
+  if (result.observatory?.status === "error") {
+    reportObservatoryObserverError("shutdown", result.observatory.error);
   }
   process.exit(0);
 }

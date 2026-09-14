@@ -163,6 +163,8 @@ export type MemoryMaintenanceCoordinatorOptions = {
   yieldBetweenChunks?: () => Promise<void>;
   writeReport?: (line: string) => void;
   writeError?: (message: string) => void;
+  /** Second, typed report sink, including starts and aborted/error completions. */
+  observeReport?: (report: MemoryMaintenanceRunReport) => void;
 };
 
 const DEFAULT_MAX_LAST_TENANTS = 64;
@@ -352,6 +354,7 @@ export class MemoryMaintenanceCoordinator {
   private readonly yieldBetweenChunks: () => Promise<void>;
   private readonly writeReport: (line: string) => void;
   private readonly writeError: (message: string) => void;
+  private readonly observeReport: MemoryMaintenanceCoordinatorOptions["observeReport"];
 
   private readonly activeByTenant = new Map<string, ActiveRun>();
   private readonly lastByTenant = new Map<string, MemoryMaintenanceRunReport>();
@@ -378,6 +381,7 @@ export class MemoryMaintenanceCoordinator {
         }));
     this.writeReport = options.writeReport ?? ((line) => console.log(line));
     this.writeError = options.writeError ?? ((message) => console.error(message));
+    this.observeReport = options.observeReport;
   }
 
   tryStart(input: MemoryMaintenanceStartInput): MemoryMaintenanceStartResult {
@@ -466,6 +470,7 @@ export class MemoryMaintenanceCoordinator {
     }
     state.phase = "scheduled";
     state.accepted = true;
+    this.notifyReport(state.report);
 
     this.schedule(() => {
       if (state.finalized) {
@@ -827,6 +832,7 @@ export class MemoryMaintenanceCoordinator {
         this.lastByTenant.delete(oldest);
       }
 
+      this.notifyReport(finalReport);
       this.writeReport(JSON.stringify(stdoutReport(finalReport)));
       const errors = finalReport.errors_total;
       if (errors > 0) {
@@ -835,5 +841,20 @@ export class MemoryMaintenanceCoordinator {
     }
     state.resolveCompletion(finalReport);
     return true;
+  }
+
+  private notifyReport(report: MemoryMaintenanceRunReport): void {
+    if (this.observeReport === undefined) return;
+    try {
+      this.observeReport(cloneReport(report));
+    } catch (error) {
+      try {
+        console.error("Memory maintenance report observer failed", {
+          error_name: error instanceof Error ? error.name : typeof error,
+        });
+      } catch {
+        // Observability must not affect scheduling or completion.
+      }
+    }
   }
 }

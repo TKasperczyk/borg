@@ -270,6 +270,20 @@ describe("TurnTracer", () => {
     expect(typeof fullEntries[0]?.wallMs).toBe("number");
   });
 
+  it("retains legacy entityTerms and nested payloads in JSONL when payloads are disabled", () => {
+    const tracePath = join(createTempDir(), "legacy-payload-policy.jsonl");
+    const tracer = new JsonlTracer({ path: tracePath, includePayloads: false });
+    tracer.emit("retrieval.started", {
+      turnId: "legacy", query: "omitted", entityTerms: ["legacy top-level"],
+      options: { entityTerms: ["legacy nested"] },
+    });
+    const event = readTraceEvents(tracePath)[0];
+    expect(event).toMatchObject({
+      entityTerms: ["legacy top-level"], options: { entityTerms: ["legacy nested"] },
+    });
+    expect(event).not.toHaveProperty("query");
+  });
+
   it("strips payload-gated keys for a lone JsonlTracer without payloads", () => {
     const tempDir = createTempDir();
     const tracePath = join(tempDir, "jsonl-no-payloads.jsonl");

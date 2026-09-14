@@ -160,6 +160,7 @@ function createHarness(
     acquireLease?: () => { release(): void };
     reconcileAdvance?: StreamCursor;
     taskEvents?: ChatResponseCatchUpWorkerOptions["taskEvents"];
+    observer?: ChatResponseCatchUpWorkerOptions["observer"];
   } = {},
 ) {
   const clock = new ManualClock(0);
@@ -223,6 +224,7 @@ function createHarness(
         };
   const worker = new ChatResponseCatchUpWorker({
     taskEvents: options.taskEvents,
+    observer: options.observer,
     coordinator,
     prefixBuilder,
     entryIndex,
@@ -326,6 +328,60 @@ describe("ChatResponseCatchUpWorker", () => {
       },
     };
   }
+
+  it("reports the winning settle bound without changing timers and isolates batch observers", async () => {
+    const onSettle = vi.fn();
+    const batchEnd = vi.fn(() => { throw new Error("observer"); });
+    const onBatch = vi.fn(() => batchEnd);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const h = createHarness({ prefixes: [prefix()], observer: { onSettle, onBatch } });
+    h.worker.start();
+    await flushAsync();
+    h.worker.onAppend([entry({ timestamp: 0 })]);
+    expect(onSettle).toHaveBeenLastCalledWith(expect.objectContaining({ reason: "append", bound: "quiet", delayMs: 10, oldestPendingAt: 0 }));
+    h.clock.advance(95);
+    h.worker.onAppend([entry({ timestamp: 95 })]);
+    expect(onSettle).toHaveBeenLastCalledWith(expect.objectContaining({ bound: "max", delayMs: 5 }));
+    await expect(h.worker.tick(DEFAULT_SESSION_ID)).resolves.toMatchObject({ status: "drained", drained: 1 });
+    expect(onBatch).toHaveBeenCalledOnce();
+    expect(batchEnd).toHaveBeenCalledWith(expect.objectContaining({ status: "drained" }), undefined, undefined);
+    await h.worker.stop();
+  });
+
+  it("attributes consecutive receipt settle events to the entry that resets the timer", async () => {
+    const onSettle = vi.fn();
+    const h = createHarness({ observer: { onSettle } });
+    const firstEntryId = createStreamEntryId();
+    const secondEntryId = createStreamEntryId();
+    h.worker.start();
+    await flushAsync();
+    h.worker.onPendingSession(DEFAULT_SESSION_ID, 0, firstEntryId);
+    h.clock.advance(5);
+    h.worker.onPendingSession(DEFAULT_SESSION_ID, 5, secondEntryId);
+
+    expect(onSettle).toHaveBeenCalledTimes(2);
+    expect(onSettle).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      entryId: firstEntryId, reason: "append", bound: "quiet", oldestPendingAt: 0,
+    }));
+    expect(onSettle).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      entryId: secondEntryId, reason: "append", bound: "quiet", oldestPendingAt: 0,
+    }));
+    await h.worker.stop();
+  });
+
+  it("ends a failed handoff with its DrainResult and schedules backoff", async () => {
+    const onSettle = vi.fn();
+    const batchEnd = vi.fn();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const h = createHarness({ prefixes: [prefix()], run: async () => { throw new TypeError("provider failure"); }, observer: { onSettle, onBatch: () => batchEnd } });
+    h.worker.start();
+    await flushAsync();
+    h.worker.onAppend([entry()]);
+    await expect(h.worker.tick(DEFAULT_SESSION_ID)).resolves.toMatchObject({ status: "error" });
+    expect(batchEnd).toHaveBeenCalledWith(expect.objectContaining({ status: "error" }), undefined, "TypeError");
+    expect(onSettle).toHaveBeenLastCalledWith(expect.objectContaining({ reason: "retry", bound: "backoff", delayMs: 25 }));
+    await h.worker.stop();
+  });
 
   it("uses one in-flight gate for user and task turns and leaves the user watermark unchanged by a task", async () => {
     const hold = deferred();

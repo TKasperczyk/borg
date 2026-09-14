@@ -17,6 +17,14 @@ keeps generating with its own model. A separate identifier-only reply guard make
 The sidecar populates sessions, audiences and activity events on the write path and assembles
 these sections through `/memory/context`. Sol's full turn pipeline keeps its existing behavior.
 
+The optional live observatory producer follows [the observatory event contract](observatory-events.md).
+Set `OBSERVATORY_BASE_URL` and `OBSERVATORY_TOKEN` to enable background event delivery; without a
+base URL it is disabled. Batching and bounds are configured with `OBSERVATORY_FLUSH_MS` (250),
+`OBSERVATORY_MAX_BATCH` (100, at most 500), `OBSERVATORY_QUEUE_CAP` (5000), and
+`OBSERVATORY_TIMEOUT_MS` (2000). Inbox, recall, guard and job events are tenant-scoped; the runner
+sends `X-Observatory-Turn-Id`, which callers forward on sidecar requests. Trace payloads follow the
+existing `/memory/trace` payload setting. Emission never waits for the dashboard on a request path.
+
 ## Identity model (borg concepts -> Microsoft Teams)
 
 - Session = team-agent thread key, exactly the `session` value already sent on append-turn
