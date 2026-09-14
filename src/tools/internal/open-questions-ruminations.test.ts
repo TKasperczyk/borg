@@ -176,7 +176,12 @@ describe("tool.openQuestions.ruminations", () => {
       expect(description).toContain("still-open passes reach the no-traction threshold");
       expect(description).toContain("no episode created after it cites it");
       expect(description).toContain("no action against it is active");
-      expect(description).toContain("without a model call");
+      // The conjuncts alone read as a test every pass applies. Both call sites reach
+      // shouldDismissStaleNoTraction only where the model was not consulted for this question:
+      // planResolution's two null returns are both upstream of onLlmVisit, and the sweep over the
+      // remaining questions skips the LLM window outright. Without the gate, a still-open row
+      // sitting past the threshold has to be read as one of the other conjuncts having fired.
+      expect(description).toContain("evaluated only on a pass that did not call the model");
     } finally {
       db.close();
     }
