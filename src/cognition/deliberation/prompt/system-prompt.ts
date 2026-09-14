@@ -62,7 +62,6 @@ import {
   HEADWAY_EMISSION_KINDS,
   type AutonomySchedulerFleetBrakeDescription,
   type AutonomyWakeOutcomeDetailTally,
-  type AutonomyWakeOutcomeSpan,
 } from "../../../autonomy/index.js";
 import { AUTONOMY_SCHEDULER_DESCRIPTION_DROPPED_FIELDS } from "../../mechanism-evidence.js";
 import { formatAutonomyTriggerContext } from "../../autonomy-trigger.js";
@@ -2263,28 +2262,13 @@ export function summarizeAutonomySchedulerState(
   // route to this page. The split below is the same rows as error=N -- total is
   // restated so it can be checked, and undetailed rows are named rather than
   // left as an unexplained shortfall in the reason counts.
-  lines.push(...renderWakeErrorReasonLines(brake.window_error_reasons, brake.window_error_span));
+  lines.push(...renderWakeErrorReasonLines(brake.window_error_reasons));
   // silent=N has the same defect as error=N and a worse consequence: it is the
   // complement of headway, so a closure you chose, an emission that failed on
   // the way out, and a guard that blocked one are one number even though only
   // the first two advance empty_streak. The split below is the same rows as
   // silent=N and carries the structural class that selected that disposition.
-  // The span line after it answers a question the count cannot: the same number
-  // of silences scattered across the window and consecutive within it are a
-  // different fact, and only the second has the shape of a chosen quiet.
-  lines.push(
-    ...renderWakeSilentReasonLines(brake.window_silent_reasons, brake.window_silent_span),
-  );
-  // interrupted=N is the bucket whose count cannot be read at all without the
-  // split, because unlike error and silent -- where the count is coarse but its
-  // members at least share a fact -- this one's two writers disagree about
-  // whether the turn ran. It was also the only counted outcome with no route to
-  // this page: the scheduler already computed a reasons tally for headway, error
-  // and silent and printed this one as a total alone, so the discriminator
-  // existed upstream and stopped one line short. The provenance line rides along
-  // even at zero, because what it states is a property of the mechanism rather
-  // than of the window, and a reader meeting the first interrupted row without
-  // it has already formed the account it would have corrected.
+  lines.push(...renderWakeSilentReasonLines(brake.window_silent_reasons));
   lines.push(...renderWakeInterruptedReasonLines(brake.window_interrupted_reasons));
   // The only prospective field the scheduler produces, and the last one that
   // stopped at the evidence boundary. Everything above is retrospective or about
@@ -2413,135 +2397,6 @@ function renderWakeReasonLine(reason: AutonomyWakeOutcomeDetailTally["reasons"][
   return `- ${reason.count}x ${reason.detail}${renderWakeReasonTriggerClause(reason.triggers)}`;
 }
 
-/**
- * Where one outcome's rows sit among the window's other wakes. Kept to what the
- * rows state -- how many rows that ended otherwise fall inside the span, and
- * whether the run predates the window -- with the reading left open: an unbroken
- * run and a scatter support different conclusions, and which one applies is the
- * entity's call, not a verdict this block should reach for it.
- *
- * Rendered for `error` because that is the bucket whose count invites a rate
- * reading, and for `silent` because that is the bucket whose count invites a
- * reading about the entity: a scatter of closures and a consecutive stretch of
- * them are the same number and a different fact, and only the second has the
- * shape of a disposition.
- *
- * A bucket holding one row is the case the interleaving read cannot serve: its
- * first and last are the same row, so nothing can fall between them and the
- * count is zero by construction rather than by observation. Rendered through
- * the plural wording that produced the strongest available reading -- one
- * unbroken run -- on a single isolated wake, which is the exact misreading
- * toward disposition this line exists to prevent. The singleton copy states the
- * count instead and keeps the edge clause, which is the half that still carries
- * evidence at one row.
- *
- * Both halves of the line distinguish a wake that ended otherwise from a wake
- * that recorded no ending at all, because only the first is evidence about this
- * bucket's shape. An unrecorded row between the first and last breaks nothing and
- * continues nothing, and an unrecorded row immediately before the first leaves the
- * edge unknown rather than answering it -- the wording that reads it as a
- * different ending asserts that the wake ended, which is the one thing its row
- * does not say. The two unknown edges are kept apart for the same reason the two
- * counts are: no earlier row retained and an earlier row with nothing on it are
- * different absences, and only the second has a row you could go and read later.
- */
-const WAKE_SPAN_BUCKETS = {
-  error: {
-    label: "errored wakes",
-    singular: "errored wake",
-    interleaved: "the failures are interleaved rather than one run",
-    edgeUnknown:
-      "no earlier wake is retained, so whether the failures start at the window edge or merely become visible there is not answerable from here",
-    edgeEarlierUnrecorded:
-      "the wake immediately before the first of them is retained with no outcome on it, so whether it errored too is unknown rather than no -- the run may start at that row or before it, and this edge stays unanswerable until something stamps it",
-    extendsBefore:
-      "the wake immediately before the first of them also errored, and that wake is outside this window -- the run started earlier, so any rate taken over this window is a slice of it and the trigger mix of that slice is whatever was firing when the edge fell",
-    beginsInside:
-      "the wake immediately before the first of them recorded a different ending, so the run does begin inside this window",
-    singleEdgeUnknown:
-      "no earlier wake is retained, so whether it is the visible edge of a longer run or the whole of one is not answerable from here",
-    singleEdgeEarlierUnrecorded:
-      "the wake immediately before it is retained with no outcome on it, so whether it errored too is unknown rather than no, and whether this row is the tail of a longer run stays unanswerable until something stamps that one",
-    singleExtendsBefore:
-      "the wake immediately before it also errored, and that wake is outside this window -- so the one inside is the tail of a run that starts earlier, and a rate taken over this window is a rate over that tail",
-    singleBeginsInside:
-      "the wake immediately before it recorded a different ending, so it is not the tail of anything the table retains",
-  },
-  silent: {
-    label: "silent wakes",
-    singular: "silent wake",
-    interleaved: "the silences are interleaved rather than one stretch",
-    edgeUnknown:
-      "no earlier wake is retained, so whether the silences start at the window edge or merely become visible there is not answerable from here",
-    edgeEarlierUnrecorded:
-      "the wake immediately before the first of them is retained with no outcome on it, so whether it was silent too is unknown rather than no -- the stretch may start at that row or before it, and this edge stays unanswerable until something stamps it",
-    extendsBefore:
-      "the wake immediately before the first of them was also silent, and that wake is outside this window -- the stretch started earlier, so reading these as a run of chosen quiet reads a slice of a longer one, and the endings mixed into the part outside the window are not shown here",
-    beginsInside:
-      "the wake immediately before the first of them recorded a different ending, so the stretch does begin inside this window",
-    singleEdgeUnknown:
-      "no earlier wake is retained, so whether it is the visible edge of a longer stretch or the whole of one is not answerable from here",
-    singleEdgeEarlierUnrecorded:
-      "the wake immediately before it is retained with no outcome on it, so whether it was silent too is unknown rather than no, and whether this row is the tail of a longer stretch stays unanswerable until something stamps that one",
-    singleExtendsBefore:
-      "the wake immediately before it was also silent, and that wake is outside this window -- so the one inside is the tail of a stretch that starts earlier, and how far back that stretch runs is not on this page",
-    singleBeginsInside:
-      "the wake immediately before it recorded a different ending, so it is not the tail of anything the table retains",
-  },
-} as const;
-
-function renderWakeOutcomeSpanLine(
-  span: AutonomyWakeOutcomeSpan | null,
-  bucket: keyof typeof WAKE_SPAN_BUCKETS,
-  total: number,
-): string[] {
-  if (span === null) {
-    return [];
-  }
-
-  const copy = WAKE_SPAN_BUCKETS[bucket];
-
-  if (total === 1) {
-    const soleBefore = {
-      no_earlier_wake_retained: copy.singleEdgeUnknown,
-      earlier_wake_unrecorded: copy.singleEdgeEarlierUnrecorded,
-      extends_before_window: copy.singleExtendsBefore,
-      begins_inside_window: copy.singleBeginsInside,
-    }[span.extends_before_window];
-
-    return [
-      `Where that ${copy.singular} sits: it is the only one in this window, so its first and last are the same row and nothing can fall between them -- the interleaving count is empty by construction here, and neither a run nor a scatter is readable from one row; ${soleBefore}.`,
-    ];
-  }
-
-  // An unrecorded row inside the span is the one case where the count and the
-  // reading come apart: it is not a different ending, so it cannot make the
-  // bucket interleaved, and it is not nothing either, so the run is not unbroken
-  // in the sense the zero-case sentence means. It also moves on its own -- a
-  // startup sweep stamping it interrupted shifts it into the other count with no
-  // wake having changed what it did -- so the line says which count it is in.
-  const unrecordedTail =
-    span.unrecorded_between === 0
-      ? ""
-      : ` A further ${span.unrecorded_between} between them carry no outcome at all -- in flight, or orphaned before anything was written -- so they are not wakes that ended otherwise, and if a later startup sweep stamps one interrupted it moves into the count above without that wake having changed what it did.`;
-
-  const between =
-    span.other_outcomes_between === 0
-      ? span.unrecorded_between === 0
-        ? "No other wake of any kind falls between the first and last of them, so inside this window they are one unbroken run"
-        : "No wake that ended some other way falls between the first and last of them, so they are unbroken in what has an ending on record -- which is a weaker statement than one unbroken run, and the difference is the rows named next"
-      : `${span.other_outcomes_between} wake(s) that ended some other way fall between the first and last of them, so inside this window ${copy.interleaved}`;
-
-  const before = {
-    no_earlier_wake_retained: copy.edgeUnknown,
-    earlier_wake_unrecorded: copy.edgeEarlierUnrecorded,
-    extends_before_window: copy.extendsBefore,
-    begins_inside_window: copy.beginsInside,
-  }[span.extends_before_window];
-
-  return [`Where those ${copy.label} sit: ${between}; ${before}.${unrecordedTail}`];
-}
-
 function renderWakeHeadwayReasonLines(
   tally: AutonomySchedulerFleetBrakeDescription["window_headway_reasons"],
 ): string[] {
@@ -2580,7 +2435,6 @@ function renderWakeHeadwayReasonLines(
 
 function renderWakeErrorReasonLines(
   tally: AutonomySchedulerFleetBrakeDescription["window_error_reasons"],
-  span: AutonomySchedulerFleetBrakeDescription["window_error_span"],
 ): string[] {
   if (tally.total === 0) {
     return ["Errored wakes in that window: none, so there is no failure to attribute."];
@@ -2589,7 +2443,6 @@ function renderWakeErrorReasonLines(
   if (tally.reasons.length === 0) {
     return [
       `Errored wakes in that window: ${tally.total}, none of them carrying a recorded failure (rows written before the scheduler kept one). The count is real; why is unavailable from here, and their absence of a reason is not evidence that they share one.`,
-      ...renderWakeOutcomeSpanLine(span, "error", tally.total),
     ];
   }
 
@@ -2613,7 +2466,6 @@ function renderWakeErrorReasonLines(
     remainder.length === 0
       ? `The reasons above account for all ${tally.total}.`
       : `The reasons above account for ${tally.total - tally.without_detail - hiddenCount} of ${tally.total}; the rest is ${remainder.join(" and ")}.`,
-    ...renderWakeOutcomeSpanLine(span, "error", tally.total),
   ];
 }
 
@@ -2635,21 +2487,11 @@ const WAKE_SILENT_OUTCOME_CLASSES =
 const SUPPRESSION_OUTCOME_CLASSES =
   "deliberate-silence (the turn was mine to close and I closed it), emission-failed (an emission was attempted and did not come out), guard-blocked (a post-generation guard stopped a draft I had already produced), observed, unknown (a code this mapping does not cover)";
 
-/**
- * `no_output_categories` and `structural_no_output_flags` render as two adjacent JSON arrays and
- * read as two independent records of one silence. They are not. The category list is a union of
- * what the EmitNoOutput tool accepted from the model and structural categories the harness derived
- * from counts it took before the call, with nothing marking which side an element came from. Each
- * structural category is pushed alongside a second name for the same count by a single branch, so
- * that pair cannot disagree. `borg_directly_addressed` inverts the direction, deriving from a
- * semantic category the model did choose. Agreement across the two lines is therefore restatement,
- * and unnamed it reads as corroboration the page structurally cannot supply.
- */
-const NO_OUTPUT_DIAGNOSTIC_PROVENANCE = `The two diagnostic lists under an entry are one record, not two. The only values my EmitNoOutput tool accepts for no_output_categories are ${FINALIZER_NO_OUTPUT_SEMANTIC_CATEGORIES.join(
+const NO_OUTPUT_DIAGNOSTIC_PROVENANCE = `no_output_categories: model-supplied (${FINALIZER_NO_OUTPUT_SEMANTIC_CATEGORIES.join(
   ", ",
-)}; the structural categories that also appear in that list -- ${FINALIZER_NO_OUTPUT_STRUCTURAL_CATEGORIES.join(
+)}); harness-added (${FINALIZER_NO_OUTPUT_STRUCTURAL_CATEGORIES.join(
   ", ",
-)} -- are added afterwards from counts the harness took before it called me, and nothing in the rendered list marks which side an element came from, so a structural category there is never a word I chose. Each of those is also emitted into structural_no_output_flags beside a second name for the same count (with_state_delta with current_turn_state_delta, with_open_question with open_question_rendered), both pushed by one branch, so that pair cannot disagree and its agreement measures nothing. borg_directly_addressed runs the other way, derived from the semantic category when_borg_addressed that I did choose. primary_no_output_reason is mine when I supply one and is otherwise computed from the semantic categories alone. So the categories and the flags agreeing is restatement, not corroboration, and I do not cite one as evidence for the other.`;
+)}). structural_no_output_flags share those harness counts: with_state_delta/current_turn_state_delta and with_open_question/open_question_rendered. borg_directly_addressed derives from when_borg_addressed. primary_no_output_reason is model-supplied or derived from semantic categories.`;
 
 /**
  * A `tool_name: none` diagnostic says the attempt emitted no terminal tool call. It does
@@ -2662,16 +2504,8 @@ const NO_OUTPUT_DIAGNOSTIC_PROVENANCE = `The two diagnostic lists under an entry
  */
 const FINALIZER_INVALID_TOOL_TEXT_PROVENANCE = `A finalizer_invalid_tool diagnostic reading tool_name=none means that attempt made no terminal emission tool call; it does not by itself say whether the attempt produced anything. text_chars on the same diagnostic is that count, and it is a length of my own output, not a judgement of it. text_chars=0 means the attempt halted before writing a character, so no draft of that answer exists anywhere -- not held, not queued, not recoverable -- and the work that answer would have carried was never written down; above 0 means I wrote and omitted the call, and a non-empty draft is captured as undelivered_draft and surfaces in my recency window until it ages out, so its absence there dates the draft rather than denying it. A diagnostic with no text_chars at all predates the field: unrecorded, which is not zero. Without this count the two endings read alike, and I do not describe a turn that wrote nothing as one whose reasoning survived and whose delivery failed.`;
 
-/**
- * Emitted on every render of the interrupted bucket, empty or not, because it
- * states a property of the mechanism rather than of the window: the count is
- * produced by two writers that disagree about whether the turn ran, and the
- * startup writer's stamp belongs to the process that swept the row instead of to
- * the failure that orphaned it. Both are invisible in `o="interrupted"`, and the
- * second retroactively removes a row from the no-recorded-outcome remainder,
- * which is a fact about that remainder no single reading of it can expose.
- */
-const WAKE_INTERRUPTED_PROVENANCE = `interrupted has two writers and they disagree about whether the turn ran. The scheduler records it when an autonomous turn COMPLETED and the bookkeeping after it failed -- the work happened and only its recording broke. Startup reconciliation records it for a row an earlier process left with no outcome, on a predicate matching every unrecorded row older than a grace window with no lower bound, so that stamp dates the start that swept the row rather than the failure that orphaned it, and the two can be days and several restarts apart. The detail is the only thing separating them, and the row's own at= is the only stamp here that belongs to the wake itself. Because that sweep runs when a process composes, a row can leave the no-recorded-outcome remainder long after it fired: that remainder shrinks monotonically within one process lifetime and never across a restart, so a wake I once read as permanently unaccounted may carry an outcome now.`;
+const WAKE_INTERRUPTED_PROVENANCE =
+  "interrupted provenance: scheduler = turn completed, bookkeeping failed; startup reconciliation = outcome was NULL and wake ts was older than the startup grace window. The reconciliation stamp dates the sweep; whether that turn ran is unknown.";
 
 function renderWakeInterruptedReasonLines(
   tally: AutonomySchedulerFleetBrakeDescription["window_interrupted_reasons"],
@@ -2714,7 +2548,6 @@ function renderWakeInterruptedReasonLines(
 
 function renderWakeSilentReasonLines(
   tally: AutonomySchedulerFleetBrakeDescription["window_silent_reasons"],
-  span: AutonomySchedulerFleetBrakeDescription["window_silent_span"],
 ): string[] {
   if (tally.total === 0) {
     return ["Silent wakes in that window: none, so there is no silence to attribute."];
@@ -2723,7 +2556,6 @@ function renderWakeSilentReasonLines(
   if (tally.reasons.length === 0) {
     return [
       `Silent wakes in that window: ${tally.total}, none of them carrying a recorded ending (rows written before the scheduler kept one). The count is real; whether they were closures you chose, failed emissions or guard blocks is unavailable from here, and their shared absence of a reason is not evidence that they share an ending.`,
-      ...renderWakeOutcomeSpanLine(span, "silent", tally.total),
     ];
   }
 
@@ -2747,7 +2579,6 @@ function renderWakeSilentReasonLines(
     remainder.length === 0
       ? `The endings above account for all ${tally.total}.`
       : `The endings above account for ${tally.total - tally.without_detail - hiddenCount} of ${tally.total}; the rest is ${remainder.join(" and ")}.`,
-    ...renderWakeOutcomeSpanLine(span, "silent", tally.total),
   ];
 }
 

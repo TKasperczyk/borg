@@ -314,8 +314,6 @@ function makeSchedulerStateWithSources(): NonNullable<
       window_outcomes: { headway: 0, silent: 0, error: 0, busy: 0, interrupted: 0 },
       window_headway_reasons: { total: 0, without_detail: 0, reasons: [] },
       window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
-      window_error_span: null,
-      window_silent_span: null,
       window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
       window_interrupted_reasons: { total: 0, without_detail: 0, reasons: [] },
     },
@@ -2758,8 +2756,6 @@ describe("buildBaseSystemPrompt", () => {
                 },
                 window_headway_reasons: { total: 0, without_detail: 0, reasons: [] },
                 window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
-                window_error_span: null,
-                window_silent_span: null,
                 window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
                 window_interrupted_reasons: { total: 0, without_detail: 0, reasons: [] },
               },
@@ -3062,8 +3058,6 @@ describe("buildBaseSystemPrompt", () => {
                 },
                 window_headway_reasons: { total: 0, without_detail: 0, reasons: [] },
                 window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
-                window_error_span: null,
-                window_silent_span: null,
                 window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
                 window_interrupted_reasons: { total: 0, without_detail: 0, reasons: [] },
               },
@@ -3156,8 +3150,6 @@ describe("buildBaseSystemPrompt", () => {
                   window_outcomes: { headway: 0, silent: 0, error: 0, busy: 0, interrupted: 0 },
                   window_headway_reasons: { total: 0, without_detail: 0, reasons: [] },
                   window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
-                  window_error_span: null,
-                  window_silent_span: null,
                   window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
                   window_interrupted_reasons: { total: 0, without_detail: 0, reasons: [] },
                   ...brake,
@@ -3424,8 +3416,6 @@ describe("buildBaseSystemPrompt", () => {
                 },
                 window_headway_reasons: { total: 0, without_detail: 0, reasons: [] },
                 window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
-                window_error_span: null,
-                window_silent_span: null,
                 window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
                 window_interrupted_reasons: { total: 0, without_detail: 0, reasons: [] },
               },
@@ -3495,8 +3485,6 @@ describe("buildBaseSystemPrompt", () => {
                 },
                 window_headway_reasons: { total: 0, without_detail: 0, reasons: [] },
                 window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
-                window_error_span: null,
-                window_silent_span: null,
                 window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
                 window_interrupted_reasons: { total: 0, without_detail: 0, reasons: [] },
               },
@@ -3627,8 +3615,6 @@ describe("buildBaseSystemPrompt", () => {
                 },
                 window_headway_reasons: { total: 0, without_detail: 0, reasons: [] },
                 window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
-                window_error_span: null,
-                window_silent_span: null,
                 window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
                 window_interrupted_reasons: { total: 0, without_detail: 0, reasons: [] },
               },
@@ -3747,8 +3733,6 @@ describe("buildBaseSystemPrompt", () => {
               },
               window_headway_reasons: { total: 0, without_detail: 0, reasons: [] },
               window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
-              window_error_span: null,
-              window_silent_span: null,
               window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
               window_interrupted_reasons: { total: 0, without_detail: 0, reasons: [] },
             },
@@ -3850,8 +3834,6 @@ describe("buildBaseSystemPrompt", () => {
                 ],
               },
               window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
-              window_error_span: null,
-              window_silent_span: null,
               window_silent_reasons: { total: 2, without_detail: 2, reasons: [] },
               window_interrupted_reasons: { total: 0, without_detail: 0, reasons: [] },
             },
@@ -3937,8 +3919,6 @@ describe("buildBaseSystemPrompt", () => {
               },
               window_headway_reasons: { total: 0, without_detail: 0, reasons: [] },
               window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
-              window_error_span: null,
-              window_silent_span: null,
               window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
               window_interrupted_reasons: { total: 0, without_detail: 0, reasons: [] },
             },
@@ -3984,9 +3964,6 @@ describe("buildBaseSystemPrompt", () => {
       windowErrorReasons: NonNullable<
         NonNullable<DeliberationContext["turnMechanismEvidence"]>["autonomySchedulerState"]
       >["fleetBrake"]["window_error_reasons"],
-      windowErrorSpan: NonNullable<
-        NonNullable<DeliberationContext["turnMechanismEvidence"]>["autonomySchedulerState"]
-      >["fleetBrake"]["window_error_span"] = null,
     ) =>
       extractBlock(
         buildBaseSystemPrompt(
@@ -4025,8 +4002,6 @@ describe("buildBaseSystemPrompt", () => {
                   },
                   window_headway_reasons: { total: 0, without_detail: 0, reasons: [] },
                   window_error_reasons: windowErrorReasons,
-                  window_error_span: windowErrorSpan,
-                  window_silent_span: null,
                   window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
                   window_interrupted_reasons: { total: 0, without_detail: 0, reasons: [] },
                 },
@@ -4130,184 +4105,8 @@ describe("buildBaseSystemPrompt", () => {
       "Errored wakes in that window: none, so there is no failure to attribute.",
     );
 
-    // The count alone cannot separate one run from a scatter, and the two
-    // support opposite readings of whichever trigger holds most of the
-    // failures. A run clipped by the window edge is the case that misleads
-    // hardest, so it is stated rather than left to be inferred from a rate.
-    const clipped = buildPrompt(
-      {
-        total: 3,
-        without_detail: 0,
-        reasons: [
-          {
-            detail: "LLMError: Failed to complete Anthropic request",
-            count: 3,
-            triggers: [{ trigger: "scheduled_reflection", count: 3 }],
-          },
-        ],
-      },
-      {
-        other_outcomes_between: 0,
-        unrecorded_between: 0,
-        extends_before_window: "extends_before_window",
-      },
-    );
-
-    expect(clipped).toContain(
-      "Where those errored wakes sit: No other wake of any kind falls between the first and last of them, so inside this window they are one unbroken run; the wake immediately before the first of them also errored, and that wake is outside this window -- the run started earlier, so any rate taken over this window is a slice of it",
-    );
-
-    const scattered = buildPrompt(
-      {
-        total: 3,
-        without_detail: 0,
-        reasons: [
-          {
-            detail: "LLMError: Failed to complete Anthropic request",
-            count: 3,
-            triggers: [{ trigger: "scheduled_reflection", count: 3 }],
-          },
-        ],
-      },
-      {
-        other_outcomes_between: 9,
-        unrecorded_between: 0,
-        extends_before_window: "begins_inside_window",
-      },
-    );
-
-    expect(scattered).toContain(
-      "9 wake(s) that ended some other way fall between the first and last of them, so inside this window the failures are interleaved rather than one run",
-    );
-    expect(scattered).toContain(
-      "the wake immediately before the first of them recorded a different ending, so the run does begin inside this window",
-    );
-
-    // A row with no outcome has not ended, so it cannot have ended some other
-    // way: folded into the interleaving count it would make an in-flight wake
-    // evidence that the run is broken, and dropped it would leave "one unbroken
-    // run" resting on rows that say nothing. It gets its own count and its own
-    // sentence, including the part that says the count is not stable.
-    const withUnrecorded = buildPrompt(
-      {
-        total: 3,
-        without_detail: 0,
-        reasons: [
-          {
-            detail: "LLMError: Failed to complete Anthropic request",
-            count: 3,
-            triggers: [{ trigger: "scheduled_reflection", count: 3 }],
-          },
-        ],
-      },
-      {
-        other_outcomes_between: 0,
-        unrecorded_between: 2,
-        extends_before_window: "begins_inside_window",
-      },
-    );
-
-    expect(withUnrecorded).toContain(
-      "No wake that ended some other way falls between the first and last of them, so they are unbroken in what has an ending on record -- which is a weaker statement than one unbroken run, and the difference is the rows named next",
-    );
-    expect(withUnrecorded).toContain(
-      "A further 2 between them carry no outcome at all -- in flight, or orphaned before anything was written -- so they are not wakes that ended otherwise, and if a later startup sweep stamps one interrupted it moves into the count above without that wake having changed what it did.",
-    );
-    expect(withUnrecorded).not.toContain("they are one unbroken run");
-
-    // The same distinction one row earlier, where it decides an edge rather than
-    // a count: a predecessor with no outcome is not a predecessor that ended
-    // differently, so it cannot support "the run begins inside this window".
-    const predecessorUnrecorded = buildPrompt(
-      {
-        total: 2,
-        without_detail: 0,
-        reasons: [
-          {
-            detail: "LLMError: Failed to complete Anthropic request",
-            count: 2,
-            triggers: [{ trigger: "scheduled_reflection", count: 2 }],
-          },
-        ],
-      },
-      {
-        other_outcomes_between: 0,
-        unrecorded_between: 0,
-        extends_before_window: "earlier_wake_unrecorded",
-      },
-    );
-
-    expect(predecessorUnrecorded).toContain(
-      "the wake immediately before the first of them is retained with no outcome on it, so whether it errored too is unknown rather than no -- the run may start at that row or before it, and this edge stays unanswerable until something stamps it",
-    );
-    expect(predecessorUnrecorded).not.toContain("the run does begin inside this window");
-    // A retained row with nothing on it and no retained row at all are two
-    // different absences, and only the first has something to go back and read.
-    expect(predecessorUnrecorded).not.toContain("no earlier wake is retained");
-
-    // No retained predecessor is the absence of evidence, not a no.
-    const unbounded = buildPrompt(
-      {
-        total: 2,
-        without_detail: 0,
-        reasons: [
-          {
-            detail: "LLMError: Failed to complete Anthropic request",
-            count: 2,
-            triggers: [{ trigger: "scheduled_reflection", count: 2 }],
-          },
-        ],
-      },
-      {
-        other_outcomes_between: 0,
-        unrecorded_between: 0,
-        extends_before_window: "no_earlier_wake_retained",
-      },
-    );
-
-    expect(unbounded).toContain(
-      "no earlier wake is retained, so whether the failures start at the window edge or merely become visible there is not answerable from here",
-    );
-
-    // A bucket with no recorded reasons still carries the positioning: the
-    // rows that most need it are the ones whose failure was never written down.
-    const bareWithSpan = buildPrompt(
-      { total: 4, without_detail: 4, reasons: [] },
-      {
-        other_outcomes_between: 0,
-        unrecorded_between: 0,
-        extends_before_window: "extends_before_window",
-      },
-    );
-
-    expect(bareWithSpan).toContain("none of them carrying a recorded failure");
-    expect(bareWithSpan).toContain("they are one unbroken run");
-
-    // A single failure in the window cannot be a run, and the between-count
-    // that would say so is empty by construction rather than by observation.
-    const sole = buildPrompt(
-      {
-        total: 1,
-        without_detail: 0,
-        reasons: [
-          {
-            detail: "Autonomous preparation failed: Timed out after 30000ms",
-            count: 1,
-            triggers: [{ trigger: "scheduled_reflection", count: 1 }],
-          },
-        ],
-      },
-      {
-        other_outcomes_between: 0,
-        unrecorded_between: 0,
-        extends_before_window: "extends_before_window",
-      },
-    );
-
-    expect(sole).toContain(
-      "Where that errored wake sits: it is the only one in this window, so its first and last are the same row and nothing can fall between them -- the interleaving count is empty by construction here, and neither a run nor a scatter is readable from one row; the wake immediately before it also errored, and that wake is outside this window -- so the one inside is the tail of a run that starts earlier, and a rate taken over this window is a rate over that tail.",
-    );
-    expect(sole).not.toContain("one unbroken run");
+    const unattributed = buildPrompt({ total: 4, without_detail: 4, reasons: [] });
+    expect(unattributed).toContain("none of them carrying a recorded failure");
   });
 
   it("splits the silent-wake count by recorded ending and names the classes that can appear", () => {
@@ -4315,9 +4114,6 @@ describe("buildBaseSystemPrompt", () => {
       windowSilentReasons: NonNullable<
         NonNullable<DeliberationContext["turnMechanismEvidence"]>["autonomySchedulerState"]
       >["fleetBrake"]["window_silent_reasons"],
-      windowSilentSpan: NonNullable<
-        NonNullable<DeliberationContext["turnMechanismEvidence"]>["autonomySchedulerState"]
-      >["fleetBrake"]["window_silent_span"] = null,
     ) =>
       extractBlock(
         buildBaseSystemPrompt(
@@ -4356,8 +4152,6 @@ describe("buildBaseSystemPrompt", () => {
                   },
                   window_headway_reasons: { total: 0, without_detail: 0, reasons: [] },
                   window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
-                  window_error_span: null,
-                  window_silent_span: windowSilentSpan,
                   window_silent_reasons: windowSilentReasons,
                   window_interrupted_reasons: { total: 0, without_detail: 0, reasons: [] },
                 },
@@ -4430,188 +4224,15 @@ describe("buildBaseSystemPrompt", () => {
 
     expect(partial).toContain("The endings above account for 2 of 5; the rest is 3 with no");
 
-    // The same count scattered and consecutive are a different fact, and here
-    // the difference is a reading about the entity rather than the provider:
-    // only a run has the shape of a chosen quiet. A run clipped by the window
-    // edge is the case that misleads hardest, so it is stated.
-    const clipped = buildPrompt(
-      {
-        total: 3,
-        without_detail: 0,
-        reasons: [
-          {
-            detail: "deliberate-silence: finalizer_no_output",
-            count: 3,
-            triggers: [{ trigger: "executive_focus_due", count: 3 }],
-          },
-        ],
-      },
-      {
-        other_outcomes_between: 0,
-        unrecorded_between: 0,
-        extends_before_window: "extends_before_window",
-      },
-    );
-
-    expect(clipped).toContain(
-      "Where those silent wakes sit: No other wake of any kind falls between the first and last of them, so inside this window they are one unbroken run",
-    );
-    expect(clipped).toContain(
-      "the wake immediately before the first of them was also silent, and that wake is outside this window -- the stretch started earlier, so reading these as a run of chosen quiet reads a slice of a longer one",
-    );
-
-    const scattered = buildPrompt(
-      {
-        total: 3,
-        without_detail: 0,
-        reasons: [
-          {
-            detail: "deliberate-silence: finalizer_no_output",
-            count: 3,
-            triggers: [{ trigger: "executive_focus_due", count: 3 }],
-          },
-        ],
-      },
-      {
-        other_outcomes_between: 7,
-        unrecorded_between: 0,
-        extends_before_window: "begins_inside_window",
-      },
-    );
-
-    expect(scattered).toContain(
-      "7 wake(s) that ended some other way fall between the first and last of them, so inside this window the silences are interleaved rather than one stretch",
-    );
-    expect(scattered).toContain(
-      "the wake immediately before the first of them recorded a different ending, so the stretch does begin inside this window",
-    );
-
-    // A chosen quiet is the reading this bucket invites, and an unrecorded row
-    // inside the stretch is the one thing that cannot support it: nobody closed
-    // that wake, so counting it with the silences would read an absent record as
-    // a decision.
-    const withUnrecorded = buildPrompt(
-      {
-        total: 3,
-        without_detail: 0,
-        reasons: [
-          {
-            detail: "deliberate-silence: finalizer_no_output",
-            count: 3,
-            triggers: [{ trigger: "executive_focus_due", count: 3 }],
-          },
-        ],
-      },
-      {
-        other_outcomes_between: 0,
-        unrecorded_between: 1,
-        extends_before_window: "earlier_wake_unrecorded",
-      },
-    );
-
-    expect(withUnrecorded).toContain(
-      "so they are unbroken in what has an ending on record -- which is a weaker statement than one unbroken run, and the difference is the rows named next",
-    );
-    expect(withUnrecorded).toContain(
-      "A further 1 between them carry no outcome at all -- in flight, or orphaned before anything was written",
-    );
-    expect(withUnrecorded).toContain(
-      "the wake immediately before the first of them is retained with no outcome on it, so whether it was silent too is unknown rather than no -- the stretch may start at that row or before it, and this edge stays unanswerable until something stamps it",
-    );
-    expect(withUnrecorded).not.toContain("they are one unbroken run");
-
-    // Rows with no recorded ending are the ones whose positioning carries the
-    // most, since nothing else about them is available.
-    const bareWithSpan = buildPrompt(
-      { total: 4, without_detail: 4, reasons: [] },
-      {
-        other_outcomes_between: 0,
-        unrecorded_between: 0,
-        extends_before_window: "no_earlier_wake_retained",
-      },
-    );
-
-    expect(bareWithSpan).toContain("none of them carrying a recorded ending");
-    expect(bareWithSpan).toContain(
-      "no earlier wake is retained, so whether the silences start at the window edge or merely become visible there is not answerable from here",
-    );
-
-    // One silence in the window is the case the interleaving read cannot serve:
-    // first and last are the same row, so the between-count is zero by
-    // construction and the plural wording would call an isolated closure an
-    // unbroken run -- the reading toward disposition this line exists against.
-    const sole = buildPrompt(
-      {
-        total: 1,
-        without_detail: 0,
-        reasons: [
-          {
-            detail: "deliberate-silence: finalizer_no_output",
-            count: 1,
-            triggers: [{ trigger: "open_question_dormant", count: 1 }],
-          },
-        ],
-      },
-      {
-        other_outcomes_between: 0,
-        unrecorded_between: 0,
-        extends_before_window: "begins_inside_window",
-      },
-    );
-
-    expect(sole).toContain(
-      "Where that silent wake sits: it is the only one in this window, so its first and last are the same row and nothing can fall between them -- the interleaving count is empty by construction here, and neither a run nor a scatter is readable from one row; the wake immediately before it recorded a different ending, so it is not the tail of anything the table retains.",
-    );
-    expect(sole).not.toContain("one unbroken run");
-
-    // The edge is the half that still carries evidence at one row: a lone
-    // in-window silence preceded by another is the tail of a longer stretch.
-    const soleClipped = buildPrompt(
-      {
-        total: 1,
-        without_detail: 1,
-        reasons: [],
-      },
-      {
-        other_outcomes_between: 0,
-        unrecorded_between: 0,
-        extends_before_window: "extends_before_window",
-      },
-    );
-
-    expect(soleClipped).toContain(
-      "the wake immediately before it was also silent, and that wake is outside this window -- so the one inside is the tail of a stretch that starts earlier, and how far back that stretch runs is not on this page",
-    );
-    expect(soleClipped).not.toContain("one unbroken run");
-
-    // At one row the unrecorded predecessor is the same absence as above, and the
-    // single-row copy has to make the same distinction the plural copy does.
-    const solePredecessorUnrecorded = buildPrompt(
-      {
-        total: 1,
-        without_detail: 1,
-        reasons: [],
-      },
-      {
-        other_outcomes_between: 0,
-        unrecorded_between: 0,
-        extends_before_window: "earlier_wake_unrecorded",
-      },
-    );
-
-    expect(solePredecessorUnrecorded).toContain(
-      "the wake immediately before it is retained with no outcome on it, so whether it was silent too is unknown rather than no, and whether this row is the tail of a longer stretch stays unanswerable until something stamps that one",
-    );
-    expect(solePredecessorUnrecorded).not.toContain(
-      "it is not the tail of anything the table retains",
-    );
+    const unattributed = buildPrompt({ total: 4, without_detail: 4, reasons: [] });
+    expect(unattributed).toContain("none of them carrying a recorded ending");
 
     expect(buildPrompt({ total: 0, without_detail: 0, reasons: [] })).toContain(
       "Silent wakes in that window: none, so there is no silence to attribute.",
     );
   });
 
-  it("splits the interrupted-wake count by writer and carries that provenance at zero", () => {
+  it("splits the interrupted-wake count by recorded detail and reports an empty bucket", () => {
     const buildPrompt = (
       windowInterruptedReasons: NonNullable<
         NonNullable<DeliberationContext["turnMechanismEvidence"]>["autonomySchedulerState"]
@@ -4654,8 +4275,6 @@ describe("buildBaseSystemPrompt", () => {
                   },
                   window_headway_reasons: { total: 0, without_detail: 0, reasons: [] },
                   window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
-                  window_error_span: null,
-                  window_silent_span: null,
                   window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
                   window_interrupted_reasons: windowInterruptedReasons,
                 },
@@ -4721,25 +4340,11 @@ describe("buildBaseSystemPrompt", () => {
       "The details above account for 3 of 4; the rest is 1 with no recorded detail.",
     );
 
-    // The provenance describes the mechanism, not the window, so an empty bucket
-    // still carries it -- a reader meeting the first interrupted row without it
-    // has already formed the account it would have corrected.
     const empty = buildPrompt({ total: 0, without_detail: 0, reasons: [] });
 
     expect(empty).toContain(
       "Interrupted wakes in that window: none, so no turn here was cut short in its bookkeeping and no row was swept as unrecorded.",
     );
-    for (const rendered of [attributed, partial, empty]) {
-      expect(rendered).toContain(
-        "The scheduler records it when an autonomous turn COMPLETED and the bookkeeping after it failed",
-      );
-      expect(rendered).toContain(
-        "that stamp dates the start that swept the row rather than the failure that orphaned it",
-      );
-      expect(rendered).toContain(
-        "that remainder shrinks monotonically within one process lifetime and never across a restart",
-      );
-    }
   });
 
   it("labels edge evidence as unavailable when scheduler and turn-mechanism state are absent", () => {
@@ -4948,15 +4553,6 @@ describe("buildBaseSystemPrompt", () => {
     expect(block).toContain("structural_no_output_flags=");
     expect(block).toContain("finalizer_invalid_tool=");
     expect(block).toContain("schema_error");
-    // The two diagnostic lists share a derivation: the structural categories in
-    // no_output_categories come from the same harness counts as the flags beside them, so
-    // the page must not let their agreement read as two witnesses.
-    expect(block).toContain("The two diagnostic lists under an entry are one record, not two.");
-    expect(block).toContain(
-      "with_state_delta with current_turn_state_delta, with_open_question with open_question_rendered",
-    );
-    expect(block).toContain("so a structural category there is never a word I chose");
-    expect(block).toContain("I do not cite one as evidence for the other");
     // The accepted-value list is built from the tool's own enum rather than restated, so a
     // category added to the schema cannot silently fall out of the sentence naming it.
     for (const category of FINALIZER_NO_OUTPUT_SEMANTIC_CATEGORIES) {

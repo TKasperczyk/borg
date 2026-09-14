@@ -24,7 +24,6 @@ import {
   type AutonomyConditionName,
   type AutonomyWakeOutcome,
   type AutonomyWakeOutcomeDetailTally,
-  type AutonomyWakeOutcomeSpan,
   type AutonomyWakeSourceCategory,
   type AutonomyWakeSourceName,
   type AutonomyWakeSourceType,
@@ -429,81 +428,6 @@ export class AutonomyWakesRepository {
     reasons.sort((a, b) => b.count - a.count || a.detail.localeCompare(b.detail));
 
     return { total, without_detail: withoutDetail, reasons };
-  }
-
-  /**
-   * Where one outcome's rows sit among the window's other wakes: how many wakes
-   * that did not land in the bucket fall strictly between its first and last row,
-   * and whether the wake immediately before its first row carries the same
-   * outcome. The second read deliberately ignores the window -- the table retains
-   * more than the window covers, and a run clipped by the window edge is exactly
-   * the case a count inside the window cannot distinguish from a run that began
-   * there.
-   */
-  describeOutcomeSpanSince(
-    ts: number,
-    outcome: AutonomyWakeOutcome,
-  ): AutonomyWakeOutcomeSpan | null {
-    const bounds = this.db
-      .prepare(
-        `
-          SELECT MIN(ts) AS first_ts, MAX(ts) AS last_ts, COUNT(*) AS count
-          FROM autonomy_wakes
-          WHERE ts >= ? AND outcome = ?
-        `,
-      )
-      .get(ts, outcome) as { first_ts: unknown; last_ts: unknown; count: unknown } | undefined;
-
-    const count = Number(bounds?.count ?? 0);
-
-    if (count === 0 || typeof bounds?.first_ts !== "number" || typeof bounds.last_ts !== "number") {
-      return null;
-    }
-
-    // A row with no outcome has not ended, so it cannot have ended some other
-    // way. Counted together with the rows that did, it turns an unrecorded wake
-    // into evidence of interleaving; counted apart, each says what it is.
-    const between = this.db
-      .prepare(
-        `
-          SELECT
-            SUM(CASE WHEN outcome IS NULL THEN 1 ELSE 0 END) AS unrecorded,
-            SUM(CASE WHEN outcome IS NOT NULL AND outcome != ? THEN 1 ELSE 0 END) AS other
-          FROM autonomy_wakes
-          WHERE ts > ? AND ts < ?
-        `,
-      )
-      .get(outcome, bounds.first_ts, bounds.last_ts) as
-      | { unrecorded: unknown; other: unknown }
-      | undefined;
-
-    const previous = this.db
-      .prepare(
-        `
-          SELECT outcome
-          FROM autonomy_wakes
-          WHERE ts < ?
-          ORDER BY ts DESC
-          LIMIT 1
-        `,
-      )
-      .get(bounds.first_ts) as { outcome: unknown } | undefined;
-
-    return {
-      other_outcomes_between: Number(between?.other ?? 0),
-      unrecorded_between: Number(between?.unrecorded ?? 0),
-      // Same distinction one row earlier, where it decides a boolean rather than
-      // a count: an unrecorded predecessor is not a predecessor that ended
-      // differently, so it cannot support "the run begins inside this window".
-      extends_before_window:
-        previous === undefined
-          ? "no_earlier_wake_retained"
-          : typeof previous.outcome !== "string"
-            ? "earlier_wake_unrecorded"
-            : previous.outcome === outcome
-              ? "extends_before_window"
-              : "begins_inside_window",
-    };
   }
 
   prune(olderThan: number): number {

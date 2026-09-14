@@ -1,13 +1,23 @@
 import { describe, expect, it } from "vitest";
 
+import { FakeEmbeddingClient } from "../../../embeddings/index.js";
 import type { CommitmentRecord } from "../../../memory/commitments/index.js";
-import type { GoalRecord } from "../../../memory/self/index.js";
+import {
+  selfMigrations,
+  TraitsRepository,
+  ValuesRepository,
+  type GoalRecord,
+} from "../../../memory/self/index.js";
 import type { RelationalSlot } from "../../../memory/relational-slots/index.js";
+import { openDatabase } from "../../../storage/sqlite/index.js";
+import { NOOP_TRACER } from "../../../tracing/tracer.js";
+import { FixedClock } from "../../../util/clock.js";
 import {
   DEFAULT_SESSION_ID,
   createCommitmentId,
   createCreatorDirectiveId,
   createEntityId,
+  createEpisodeId,
   createGoalId,
   createRelationalSlotId,
   createSessionId,
@@ -28,6 +38,7 @@ import {
 import { buildFinalizerSystemPrompt } from "../finalizer.js";
 import { TRUSTED_GUIDANCE_PREAMBLE } from "../../prompts/base-identity.js";
 import { buildCacheableBaseSystemPromptParts } from "./system-prompt.js";
+import { TurnSelfContextBuilder } from "../../self/turn-self-context.js";
 import { headTailPlannerExcerpt } from "./planner-context.js";
 import { OUTBOUND_POST_TOOL_NAME } from "../../../tools/internal/outbound-post-name.js";
 
@@ -1380,29 +1391,6 @@ describe("compact terminal finalizer context", () => {
     expect(commitmentBlock).toContain(
       "Those counts live in the fast turn context rather than the durable-global tier",
     );
-    // The three commitment counts and this block's completeness pair are all taken from
-    // the one draw, so the page has to say so: read as measurements they look like a
-    // cross-check they cannot be. The derived exception is named by its own rendered tag
-    // so a rename breaks this rather than leaving the contract pointing at nothing.
-    const derivedCompletenessTag = text(first).match(
-      /<(borg_terminal_values_traits) complete="/,
-    )?.[1];
-    expect(derivedCompletenessTag).toBe("borg_terminal_values_traits");
-    expect(first.system[0]?.text).toContain(
-      `${derivedCompletenessTag} is the one complete index whose complete and omitted_count are both derived from a stored count its store reports separately`,
-    );
-    expect(first.system[0]?.text).toContain(
-      "counts taken from a single draw agree by construction, and their agreeing is no evidence about the store behind it",
-    );
-    expect(commitmentBlock).toContain(
-      "all three taken from the one draw this block renders, so their agreeing is an identity and not a second witness to membership",
-    );
-    expect(commitmentBlock).toContain(
-      "commitment_ledger_only_rows is zero by construction on this path",
-    );
-    expect(commitmentBlock).toContain(
-      "the active-commitment list with no cap and no audience filter",
-    );
     expect(durableRow).toContain("disclosure=");
     expect(durableRow).toContain(`ledger_ref="commitment:${base.id}"`);
     expect(durableRow).toContain('ledger_source_type="commitment"');
@@ -1751,35 +1739,77 @@ describe("compact terminal finalizer context", () => {
     expect(first.system[2]?.text).not.toBe(second.system[2]?.text);
     expect(durable.indexOf(olderValue.id)).toBeLessThan(durable.indexOf(newerValue.id));
     expect(durable.indexOf(firstTrait.id)).toBeLessThan(durable.indexOf(secondTrait.id));
+  });
 
-    // The coverage claim is checked against counts the stores report by their own
-    // statements, so it cannot stay true for a reason that has stopped holding.
-    const durableSelf = (text: string) =>
-      text.match(/<borg_terminal_values_traits[\s\S]*?<\/borg_terminal_values_traits>/)?.[0] ?? "";
-    const rendered = {
-      goals: [],
-      values: [olderValue, newerValue],
-      traits: [firstTrait, secondTrait],
-    };
+  it("renders the uncapped global values and traits draw from the stores through the self snapshot", async () => {
+    const db = openDatabase(":memory:", { migrations: [...selfMigrations] });
+    const clock = new FixedClock(NOW_MS);
+    const values = new ValuesRepository({ db, clock });
+    const traits = new TraitsRepository({ db, clock });
+    const builder = new TurnSelfContextBuilder({
+      embeddingClient: new FakeEmbeddingClient(4),
+      valuesRepository: values,
+      traitsRepository: traits,
+      goalsRepository: { list: () => [] },
+      executiveStepsRepository: { topOpenForGoals: () => [] },
+      clock,
+      tracer: NOOP_TRACER,
+      goalFocusThreshold: 0,
+      goalFollowupLookaheadMs: 0,
+      goalFollowupStaleMs: 0,
+    });
 
-    const unmeasured = durableSelf(build(context({ selfSnapshot: rendered })).system[0]!.text);
-    expect(unmeasured).toContain('complete="unmeasured"');
-    expect(unmeasured).not.toContain("<omitted_count>");
+    try {
+      // Exceed compact draw sizes and vary priority, strength, and promotion state.
+      const records = Array.from({ length: 64 }, (_, index) => {
+        const provenance =
+          index % 2 === 0
+            ? { kind: "manual" as const }
+            : {
+                kind: "episodes" as const,
+                // Five distinct sources establish both values and traits.
+                episode_ids: Array.from({ length: 5 }, () => createEpisodeId()),
+              };
+        return {
+          value: values.add({
+            label: `Value ${index}`,
+            description: `Stored value ${index}`,
+            priority: index % 11,
+            provenance,
+          }),
+          trait: traits.reinforce({
+            label: `Trait ${index}`,
+            delta: (index + 1) / 64,
+            provenance,
+          }),
+        };
+      });
 
-    const agreeing = durableSelf(
-      build(context({ selfSnapshot: { ...rendered, valuesStoredTotal: 2, traitsStoredTotal: 2 } }))
-        .system[0]!.text,
-    );
-    expect(agreeing).toContain('complete="true"');
-    expect(agreeing).toContain("<omitted_count>0</omitted_count>");
+      expect(new Set(records.map(({ value }) => value.state))).toEqual(
+        new Set(["candidate", "established"]),
+      );
+      expect(new Set(records.map(({ trait }) => trait.state))).toEqual(
+        new Set(["candidate", "established"]),
+      );
 
-    const narrowed = durableSelf(
-      build(context({ selfSnapshot: { ...rendered, valuesStoredTotal: 5, traitsStoredTotal: 3 } }))
-        .system[0]!.text,
-    );
-    expect(narrowed).toContain('complete="false"');
-    expect(narrowed).toContain("<omitted_count>4</omitted_count>");
-    expect(narrowed).toContain('rows_total="4"');
+      for (const audience of [null, createEntityId(), createEntityId()]) {
+        const selfSnapshot = await builder.buildSelfSnapshot(audience);
+        const durable = build(context({ selfSnapshot, audienceEntityId: audience })).system[0]!
+          .text;
+        const rows =
+          durable.match(
+            /<borg_terminal_values_traits[\s\S]*?<\/borg_terminal_values_traits>/,
+          )?.[0] ?? "";
+        expect([...rows.matchAll(/<value id="([^"]+)"/g)].map((match) => match[1]).sort()).toEqual(
+          records.map(({ value }) => value.id).sort(),
+        );
+        expect([...rows.matchAll(/<trait id="([^"]+)"/g)].map((match) => match[1]).sort()).toEqual(
+          records.map(({ trait }) => trait.id).sort(),
+        );
+      }
+    } finally {
+      db.close();
+    }
   });
 
   it("keeps mutable self state and ledger scope out of the one-hour global block", () => {

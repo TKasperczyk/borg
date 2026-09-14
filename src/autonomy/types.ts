@@ -71,45 +71,6 @@ export type AutonomyWakeOutcomeDetailTally = {
   }>;
 };
 
-/**
- * Where one outcome's rows sit relative to the window's other wakes. A bucket
- * count alone cannot distinguish one continuous run from the same number of
- * failures scattered through successes, and the two support opposite readings:
- * a run is one incident whose trigger mix is whatever happened to be firing
- * during it, while a scatter is a rate that can differ by trigger. The rows hold
- * the ordering; the tally discarded it.
- *
- * The two between-counts are split because a row with no outcome recorded and a
- * row that recorded a different outcome are different evidence about whether the
- * bucket is one run, and summing them reports the weaker as the stronger.
- * `other_outcomes_between` counts the wakes strictly between this bucket's first
- * and last row that recorded a DIFFERENT ending -- those genuinely interleave it.
- * `unrecorded_between` counts the ones that recorded no outcome at all: still in
- * flight, or orphaned by a process that died before writing one. Such a row
- * neither breaks the run nor continues it, and it is not stable -- a later
- * startup sweep can stamp it `interrupted`, moving it from the second count to
- * the first without any wake having changed what it did.
- *
- * `extends_before_window` reports how the bucket's first row meets what precedes
- * it. The predecessor may sit outside the window (the table retains more than the
- * window covers), which is the whole point of asking. Two of the four values are
- * absences of evidence rather than a no, and they are distinct absences: the
- * table may retain no earlier row at all (nothing was ever written, or the prune
- * removed it), or the earlier row may be retained with no outcome on it, in which
- * case whether it shares this bucket's ending is unknown rather than false.
- */
-export type AutonomyWakeSpanEdge =
-  | "extends_before_window"
-  | "begins_inside_window"
-  | "no_earlier_wake_retained"
-  | "earlier_wake_unrecorded";
-
-export type AutonomyWakeOutcomeSpan = {
-  other_outcomes_between: number;
-  unrecorded_between: number;
-  extends_before_window: AutonomyWakeSpanEdge;
-};
-
 export const AUTONOMY_WAKE_SOURCE_METADATA = {
   commitment_expiring: {
     type: "trigger",
@@ -319,13 +280,6 @@ export type AutonomySchedulerFleetBrakeDescription = {
    */
   window_error_reasons: AutonomyWakeOutcomeDetailTally;
   /**
-   * Where those same errored rows sit in the window's order. Carried for errors
-   * and not for every bucket because this is the bucket whose count invites
-   * a rate reading, and a rate over a window that clips a longer run is a slice
-   * of that run rather than a property of anything the window contains.
-   */
-  window_error_span: AutonomyWakeOutcomeSpan | null;
-  /**
    * The `silent` entry of `window_outcomes` above, split by what actually ended
    * the wake -- same rows, same window, same categories, one level of detail
    * further down, and read the same way as `window_error_reasons`.
@@ -339,16 +293,6 @@ export type AutonomySchedulerFleetBrakeDescription = {
    * without recomputing the ending.
    */
   window_silent_reasons: AutonomyWakeOutcomeDetailTally;
-  /**
-   * Where those same silent rows sit in the window's order, read exactly like
-   * `window_error_span`. Carried for the same reason and one more: `silent` is
-   * the bucket whose count invites a reading about the entity rather than about
-   * the machine, and scattered silences and consecutive ones are the same number
-   * and a different fact -- only the second has the shape of a disposition. The
-   * count alone cannot separate them, and the ordering that would is already in
-   * the table.
-   */
-  window_silent_span: AutonomyWakeOutcomeSpan | null;
   /**
    * The `interrupted` entry of `window_outcomes` above, split by the detail its
    * writer recorded -- same rows, same window, read like `window_error_reasons`.

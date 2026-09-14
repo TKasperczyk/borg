@@ -849,9 +849,8 @@ describe("EvidenceLedgerBuilder", () => {
     );
   });
 
-  // The commitments block's legend says its ledger-only count is zero by construction
-  // because these entries are a one-to-one map of the same draw the block renders. That
-  // claim is only as durable as this mapping, so pin the mapping rather than the count.
+  // Pin the one-to-one, order-preserving mapping from applicable commitments
+  // to standing-ledger entries with corresponding commitment ids.
   it("maps applicable commitments one-to-one onto standing-ledger commitment entries", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-commitment-one-to-one-"));
     tempDirs.push(tempDir);
