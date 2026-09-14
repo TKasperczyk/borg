@@ -30,7 +30,12 @@ import {
 } from "../../stream/index.js";
 import { ManualClock } from "../../util/clock.js";
 import { EmbeddingError } from "../../util/errors.js";
-import { DEFAULT_SESSION_ID, type EntityId, type StreamEntryId } from "../../util/ids.js";
+import {
+  createStreamEntryId,
+  DEFAULT_SESSION_ID,
+  type EntityId,
+  type StreamEntryId,
+} from "../../util/ids.js";
 
 import { ChatResponseWatermarkCoordinator } from "./chat-response-watermark.js";
 import { StreamIngestionCoordinator } from "./coordinator.js";
@@ -970,6 +975,120 @@ describe("StreamIngestionCoordinator", () => {
         processedEntries: 0,
       });
       expect(calls).toHaveLength(1);
+    } finally {
+      close();
+    }
+  });
+
+  it("names the terminal entry when the answered window points outside the stream", async () => {
+    const dataDir = createTempDir();
+    const { watermarkRepository, entryIndex, close } = openIndexedRepos(dataDir);
+    const calls: ExtractCall[] = [];
+    const answeredUser = await appendIndexedEntry(dataDir, entryIndex, {
+      kind: "user_msg",
+      content: "peer reply to prior outbound",
+      ts: 110,
+    });
+    const unwrittenTerminalId = createStreamEntryId();
+    const answeredWindow = {
+      responseTo: {
+        kind: "stream_backlog" as const,
+        from_cursor_exclusive: null,
+        through_cursor_inclusive: {
+          ts: answeredUser.timestamp,
+          entryId: answeredUser.id,
+        },
+        source_entry_ids: [answeredUser.id],
+        count: 1,
+      },
+      terminalCursor: {
+        ts: 120,
+        entryId: unwrittenTerminalId,
+      },
+    };
+    const coordinator = new StreamIngestionCoordinator({
+      extractor: createFakeExtractor(calls),
+      watermarkRepository,
+      dataDir,
+      minEntriesThreshold: 1,
+    });
+
+    try {
+      await expect(coordinator.ingest(DEFAULT_SESSION_ID, { answeredWindow })).rejects.toThrow(
+        `Answered ingestion window references a missing stream entry: terminal ${unwrittenTerminalId} is not readable from the stream`,
+      );
+      expect(calls).toHaveLength(0);
+    } finally {
+      close();
+    }
+  });
+
+  it("names the required source entry the pass window did not reach", async () => {
+    const dataDir = createTempDir();
+    const { watermarkRepository, entryIndex, close } = openIndexedRepos(dataDir);
+    const calls: ExtractCall[] = [];
+    const answeredUser = await appendIndexedEntry(dataDir, entryIndex, {
+      kind: "user_msg",
+      content: "peer reply the pass will start after",
+      ts: 100,
+    });
+    const terminal = await appendIndexedEntry(dataDir, entryIndex, {
+      kind: "agent_msg",
+      content: "reply to that peer message",
+      ts: 110,
+      responseTo: {
+        kind: "stream_backlog",
+        from_cursor_exclusive: null,
+        through_cursor_inclusive: {
+          ts: answeredUser.timestamp,
+          entryId: answeredUser.id,
+        },
+        source_entry_ids: [answeredUser.id],
+        count: 1,
+      },
+    });
+    watermarkRepository.set("episodic-extractor", DEFAULT_SESSION_ID, {
+      lastTs: answeredUser.timestamp,
+      lastEntryId: answeredUser.id,
+    });
+    const answeredWindow = {
+      responseTo: {
+        kind: "stream_backlog" as const,
+        from_cursor_exclusive: null,
+        through_cursor_inclusive: {
+          ts: answeredUser.timestamp,
+          entryId: answeredUser.id,
+        },
+        source_entry_ids: [answeredUser.id],
+        count: 1,
+      },
+      terminalCursor: {
+        ts: terminal.timestamp,
+        entryId: terminal.id,
+      },
+    };
+    const reportedErrors: unknown[] = [];
+    const coordinator = new StreamIngestionCoordinator({
+      extractor: createFakeExtractor(calls),
+      watermarkRepository,
+      dataDir,
+      minEntriesThreshold: 1,
+      onError: (error) => {
+        reportedErrors.push(error);
+      },
+    });
+
+    try {
+      const result = await coordinator.ingest(DEFAULT_SESSION_ID, { answeredWindow });
+
+      expect(result.ran).toBe(false);
+      expect(calls).toHaveLength(0);
+      // onError is the sink that records the failure as an internal_event, so
+      // the missing entry's id has to survive as far as the message it sees.
+      const expectedMessage = `Answered ingestion window references a missing stream entry: ${answeredUser.id} is not in the entries this pass read`;
+      expect((result.error as Error | undefined)?.message).toBe(expectedMessage);
+      expect(reportedErrors).toHaveLength(1);
+      expect((reportedErrors[0] as Error).message).toBe(expectedMessage);
     } finally {
       close();
     }

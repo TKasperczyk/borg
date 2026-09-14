@@ -972,9 +972,12 @@ export class StreamIngestionCoordinator {
     const terminalEntry = terminalEntries[0];
 
     if (terminalEntry === undefined) {
-      throw new CognitionError("Answered ingestion window references a missing stream entry", {
-        code: "ANSWERED_INGESTION_WINDOW_ENTRY_MISSING",
-      });
+      throw new CognitionError(
+        `Answered ingestion window references a missing stream entry: terminal ${answeredWindow.terminalCursor.entryId} is not readable from the stream`,
+        {
+          code: "ANSWERED_INGESTION_WINDOW_ENTRY_MISSING",
+        },
+      );
     }
 
     if (
@@ -1088,9 +1091,12 @@ export class StreamIngestionCoordinator {
       const missingEntryId = requiredEntryIds.find((entryId) => !entriesById.has(entryId));
 
       if (missingEntryId !== undefined) {
-        throw new CognitionError("Answered ingestion window references a missing stream entry", {
-          code: "ANSWERED_INGESTION_WINDOW_ENTRY_MISSING",
-        });
+        throw new CognitionError(
+          `Answered ingestion window references a missing stream entry: ${missingEntryId} is not in the entries this pass read`,
+          {
+            code: "ANSWERED_INGESTION_WINDOW_ENTRY_MISSING",
+          },
+        );
       }
 
       const entryIds = this.answeredWindowEntryIds({
