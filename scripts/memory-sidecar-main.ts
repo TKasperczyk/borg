@@ -280,6 +280,13 @@ pool = new BorgPool({
 const maintenanceCoordinator = new MemoryMaintenanceCoordinator({
   pool,
   config: memoryMaintenanceConfigFromConfig(sidecarConfig),
+  // The run report is the only durable record of a maintenance run and the
+  // nightly fan-out finishes seven of them within the same second. Measured on
+  // ai-prod 2026-09-14 (node waw6-pos-becl05): the container runtime kept 7-15
+  // of 30 stdout lines written in a burst and 30 of 30 on stderr, and four of
+  // seven nightly heavy reports were missing from the pod log. Structured
+  // events go to stderr, which is where the error report already goes.
+  writeReport: (line) => console.error(line),
 });
 
 const server = createServer(

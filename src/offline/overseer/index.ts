@@ -40,6 +40,7 @@ import type {
 import {
   buildOverseerFlagAuditPayload,
   gateMisattributionFlag,
+  gateTemporalDriftRepair,
   overseerFlagAuditPayloadSchema,
   overseerFlagKindSchema,
   overseerFlagPayloadSchema,
@@ -352,8 +353,9 @@ async function buildPrompt(
         ];
   const temporalDriftLine = {
     episode:
-      "For temporal drift, provide corrected_start_time and/or corrected_end_time and/or a replacement patch_description.",
-    semantic_node: "For temporal drift, provide a replacement patch_description.",
+      "For temporal drift, provide corrected_start_time and/or corrected_end_time and/or a replacement patch_description; a temporal_drift flag with none of them is discarded.",
+    semantic_node:
+      "For temporal drift, provide a replacement patch_description; a temporal_drift flag without it is discarded.",
     semantic_edge:
       "For temporal drift or identity inconsistency on this edge, provide suggested_valid_to and optional by_edge_id; only flag an edge that should be reviewed for closure.",
   }[target.type];
@@ -737,26 +739,27 @@ export class OverseerProcess implements OfflineProcess<OverseerPlan> {
                   : { evidence_episode_ids: flag.evidence_episode_ids }),
               };
 
-              if (target.type === "episode") {
-                items.push({
-                  target_type: "episode",
-                  target_id: target.id,
-                  ...baseItem,
-                });
-              } else if (target.type === "semantic_node") {
-                items.push({
-                  target_type: "semantic_node",
-                  target_id: target.id,
-                  ...baseItem,
-                });
-              } else {
-                items.push({
-                  target_type: "semantic_edge",
-                  target_id: target.id,
-                  ...baseItem,
-                });
+              const item: OverseerPlanItem =
+                target.type === "episode"
+                  ? { target_type: "episode", target_id: target.id, ...baseItem }
+                  : target.type === "semantic_node"
+                    ? { target_type: "semantic_node", target_id: target.id, ...baseItem }
+                    : { target_type: "semantic_edge", target_id: target.id, ...baseItem };
+
+              if (item.kind === "temporal_drift") {
+                const suppression = gateTemporalDriftRepair(
+                  flag,
+                  buildTemporalDriftRepairRefs(item, { kind: "offline", process: this.name }),
+                );
+
+                if (suppression !== null) {
+                  suppressedFlags.push(suppression);
+                  candidateStats.rejected += 1;
+                  continue;
+                }
               }
 
+              items.push(item);
               candidateStats.accepted += 1;
             }
           } catch (error) {

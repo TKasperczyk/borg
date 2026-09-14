@@ -4,6 +4,7 @@ import {
   misattributionEpisodePatchSchema,
   semanticNodeMisattributionPatchSchema,
 } from "../../memory/review-queue/review-handlers/misattribution.js";
+import { temporalDriftReviewRefsSchema } from "../../memory/review-queue/review-handlers/temporal-drift.js";
 
 import { memoryDisclosurePayloadFields } from "../../memory/common/disclosure-serializers.js";
 import { entityIdSchema } from "../../memory/commitments/index.js";
@@ -173,6 +174,7 @@ export const suppressedFlagReasonSchema = z.enum([
   "SOURCE-CONTRADICTS",
   "AUDIENCE-NAME-GROUNDED",
   "PATCH-NOT-APPLICABLE",
+  "REPAIR-NOT-RESOLVABLE",
 ]);
 
 export const suppressedOverseerFlagSchema = z.object({
@@ -282,6 +284,23 @@ function gatePatchApplicability(
   return schema.safeParse(flag.patch).success
     ? null
     : suppressFlag(flag, "PATCH-NOT-APPLICABLE", flag.cited_stream_ids ?? []);
+}
+
+// A temporal_drift flag is only worth queueing if the refs the plan would build
+// from it satisfy the resolver's own per-target schema: a semantic_node drift
+// needs a patch_description, an episode drift needs a corrected time or a
+// patch_description. Prod 2026-09-14 lost two node flags at enqueue
+// ("expected string, received undefined") because the model flagged drift
+// without saying what to change. Gating here, with the same schema the queue
+// applies, keeps that flag out of the apply-error path and counts it as
+// rejected instead.
+export function gateTemporalDriftRepair(
+  flag: OverseerFlagPayload,
+  refs: Record<string, unknown>,
+): SuppressedOverseerFlag | null {
+  return temporalDriftReviewRefsSchema.safeParse(refs).success
+    ? null
+    : suppressFlag(flag, "REPAIR-NOT-RESOLVABLE", flag.cited_stream_ids ?? []);
 }
 
 // Target types a misattribution repair can actually be applied to. semantic_edge

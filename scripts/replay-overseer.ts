@@ -3,7 +3,7 @@
 // length, parse success, flag count, and a head/tail sample. Dry run only.
 //
 // Usage (inside the memory sidecar image, cwd = app root):
-//   ./node_modules/.bin/tsx scripts/replay-overseer.ts <root> <tenant> [maxChecks] [lookbackHours] [budget] [maxTokens]
+//   ./node_modules/.bin/tsx scripts/replay-overseer.ts <root> <tenant> [maxChecks] [lookbackHours] [budget] [maxTokens] [process=overseer]
 //
 // The bank under <root>/<tenant> must be a scratch copy: Borg.open takes the
 // bank lease and this process must never share a live bank with the sidecar.
@@ -21,7 +21,9 @@ import {
 import type { OpenAIChatCompletionsClient } from "../src/llm/openai-compatible.js";
 import { SystemClock } from "../src/util/clock.js";
 
-const [root, tenant, maxChecksArg, lookbackArg, budgetArg, maxTokensArg] = process.argv.slice(2);
+const [root, tenant, maxChecksArg, lookbackArg, budgetArg, maxTokensArg, processArg] =
+  process.argv.slice(2);
+const offlineProcess = (processArg ?? "overseer") as "overseer" | "self-narrator" | "reflector";
 if (!root || !tenant) {
   console.error(
     "usage: replay-overseer.ts <root> <tenant> [maxChecks] [lookbackHours] [budget] [maxTokens]",
@@ -192,10 +194,10 @@ try {
   );
   const result = await pool.withTenant(
     tenant,
-    (borg) => borg.dream({ processes: ["overseer"], dryRun: true, budget }),
+    (borg) => borg.dream({ processes: [offlineProcess], dryRun: true, budget }),
     { exclusive: true },
   );
-  const overseer = result.results.find((entry) => entry.process === "overseer");
+  const overseer = result.results.find((entry) => entry.process === offlineProcess);
   console.log(
     JSON.stringify(
       {

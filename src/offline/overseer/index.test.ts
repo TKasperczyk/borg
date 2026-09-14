@@ -482,7 +482,7 @@ describe("overseer process", () => {
     expect(prompt).toContain(`stream_id=${source.id}`);
     expect(prompt).toContain("The user said Maya is my partner.");
     expect(llm.requests[0]?.tools).toEqual([OVERSEER_TOOLS.semantic_node]);
-    expect(prompt).toContain("For temporal drift, provide a replacement patch_description.");
+    expect(prompt).toContain("For temporal drift, provide a replacement patch_description;");
     expect(prompt).not.toContain("suggested_valid_to");
     expect(prompt).not.toContain("corrected_start_time");
   });
@@ -2031,5 +2031,60 @@ describe("overseer process", () => {
         suggested_valid_to: suggestedValidTo,
       },
     });
+  });
+
+  it("suppresses a temporal drift flag that carries no repair its target can take", async () => {
+    const nowMs = 10 * 24 * 60 * 60 * 1_000;
+    const llm = new FakeLLMClient({
+      responses: [
+        // Prod 2026-09-14: two node drift flags with neither patch_description
+        // nor any other repair field were lost at enqueue ("expected string,
+        // received undefined"). The plan now rejects them with the queue's own schema.
+        createOverseerResponse([
+          {
+            kind: "temporal_drift",
+            reason: "The dates in this node no longer match its sources.",
+            confidence: 0.8,
+          },
+        ]),
+      ],
+    });
+    const harness = await createOfflineTestHarness({
+      clock: new FixedClock(nowMs),
+      llmClient: llm,
+      configOverrides: maxChecksConfig(),
+    });
+    cleanup.push(harness.cleanup);
+
+    const episode = await harness.episodicRepository.createEpisode(
+      createEpisodeFixture(
+        { title: "Drift source", created_at: nowMs - 3_000, updated_at: nowMs - 3_000 },
+        [1, 0, 0, 0],
+      ),
+    );
+    await harness.semanticNodeRepository.insert(
+      createSemanticNodeFixture(
+        {
+          label: "Rollout date",
+          description: "The rollout happened on Monday.",
+          source_episode_ids: [episode.id],
+          created_at: nowMs - 1_000,
+          updated_at: nowMs - 1_000,
+        },
+        [0, 1, 0, 0],
+      ),
+    );
+
+    const process = new OverseerProcess({
+      reviewQueueRepository: harness.reviewQueueRepository,
+      registry: harness.registry,
+    });
+    const result = await process.run(harness.createContext(), { dryRun: false });
+
+    expect(result.errors).toEqual([]);
+    expect(result.changes).toEqual([]);
+    expect(result.candidate_stats).toMatchObject({ proposed: 1, accepted: 0, rejected: 1 });
+    expect(harness.reviewQueueRepository.getOpen()).toEqual([]);
+    expect(requestPrompt(llm)).toContain("a temporal_drift flag without it is discarded");
   });
 });
