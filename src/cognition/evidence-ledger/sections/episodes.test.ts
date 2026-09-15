@@ -9,10 +9,11 @@ import {
   DEFAULT_SESSION_ID,
   createEntityId,
   createEpisodeId,
+  createSessionId,
   createStreamEntryId,
 } from "../../../util/ids.js";
 import type { BuilderSectionContext } from "../builder-context.js";
-import { createSectionBuckets } from "../section-buckets.js";
+import { RAW_STREAM_TRUST_RANK, createSectionBuckets } from "../section-buckets.js";
 import { addEpisodesSection } from "./episodes.js";
 import {
   addRetrievedRawStreamEvidenceSection,
@@ -187,6 +188,145 @@ describe("evidence-ledger episode section", () => {
       },
       disclosure_note:
         "I can use this internally; I do not disclose it to the current audience unless authorized",
+    });
+  });
+
+  describe("raw-stream evidence the builder's entry map does not hold", () => {
+    const otherSession = createSessionId();
+
+    const rawStreamEvidence = (overrides: Partial<EvidenceItem>): EvidenceItem => ({
+      id: "evidence_raw_stream_unresolved",
+      source: "raw_stream",
+      text: "Recalled raw-stream detail.",
+      provenance: { streamIds: [createStreamEntryId()] },
+      recallIntentId: "intent",
+      matchedTerms: [],
+      score: 1,
+      scoreBreakdown: { provenance: 1 },
+      ...overrides,
+    });
+
+    const renderRow = (evidence: EvidenceItem, streamEntriesById = new Map()) => {
+      const buckets = createSectionBuckets();
+      addRetrievedRawStreamEvidenceSection({
+        input: { retrievedEvidence: [evidence] },
+        resolver: {
+          currentSessionId: DEFAULT_SESSION_ID,
+          streamEntriesById,
+          streamOrderById: new Map(),
+          episodeScopesById: new Map(),
+          episodeSourceStreamIdsById: new Map(),
+        },
+        transcript: { rawStreamIds: new Set() },
+        buckets,
+      } as unknown as BuilderSectionContext);
+
+      // `addEntry` routes any prior_session row to prior_session_memory, so which bucket
+      // the row lands in is part of what a corrected scope changes. Read both.
+      return (
+        buckets.get("retrieved_raw_stream_evidence")?.entries[0] ??
+        buckets.get("prior_session_memory")?.entries[0]
+      );
+    };
+
+    const sectionOf = (evidence: EvidenceItem) => {
+      const buckets = createSectionBuckets();
+      addRetrievedRawStreamEvidenceSection({
+        input: { retrievedEvidence: [evidence] },
+        resolver: {
+          currentSessionId: DEFAULT_SESSION_ID,
+          streamEntriesById: new Map(),
+          streamOrderById: new Map(),
+          episodeScopesById: new Map(),
+          episodeSourceStreamIdsById: new Map(),
+        },
+        transcript: { rawStreamIds: new Set() },
+        buckets,
+      } as unknown as BuilderSectionContext);
+
+      return [...buckets.entries()]
+        .filter(([, bucket]) => bucket.entries.length > 0)
+        .map(([sectionId]) => sectionId);
+    };
+
+    it("reads the carried session as current when it matches, rather than reporting global", () => {
+      const entry = renderRow(
+        rawStreamEvidence({
+          streamEntrySessionId: DEFAULT_SESSION_ID,
+          streamEntryKind: "user_msg",
+        }),
+      );
+
+      expect(entry?.session_scope).toBe("current_session");
+      expect(entry?.source_type).toBe("current_session_stream");
+      expect(entry?.actor).toBe("user");
+      expect(entry?.trust_rank).toBe(RAW_STREAM_TRUST_RANK);
+    });
+
+    it("reads a carried session other than the current one as prior", () => {
+      const entry = renderRow(
+        rawStreamEvidence({
+          streamEntrySessionId: otherSession,
+          streamEntryKind: "agent_msg",
+        }),
+      );
+
+      expect(entry?.session_scope).toBe("prior_session");
+      expect(entry?.source_type).toBe("prior_session_stream");
+      expect(entry?.actor).toBe("assistant");
+    });
+
+    it("sends a corrected prior_session row down the existing prior-session path", () => {
+      // The cost side of the correction, asserted rather than left to a deploy: a row the
+      // map could not place stayed in retrieved_raw_stream_evidence at full raw-stream
+      // trust. Named as prior_session it takes the route every resolvable prior-session
+      // row already takes -- a section compacted first, at the prior-session trust cap.
+      const evidence = rawStreamEvidence({
+        streamEntrySessionId: otherSession,
+        streamEntryKind: "agent_msg",
+      });
+
+      expect(sectionOf(evidence)).toEqual(["prior_session_memory"]);
+      expect(renderRow(evidence)?.trust_rank).toBeLessThan(RAW_STREAM_TRUST_RANK);
+      expect(sectionOf(rawStreamEvidence({ streamEntryKind: "agent_msg" }))).toEqual([
+        "retrieved_raw_stream_evidence",
+      ]);
+    });
+
+    it("keeps global and memory when neither the map nor the item carries the fact", () => {
+      const entry = renderRow(rawStreamEvidence({}));
+
+      expect(entry?.session_scope).toBe("global");
+      expect(entry?.source_type).toBe("system_metadata");
+      expect(entry?.actor).toBe("memory");
+    });
+
+    it("prefers the entry map over the carried copy when the map has the row", () => {
+      const streamId = createStreamEntryId();
+      const entry = renderRow(
+        rawStreamEvidence({
+          provenance: { streamIds: [streamId] },
+          // Disagrees with the map on both fields, so a row built from these instead of
+          // from the map would be visible rather than coincidentally equal.
+          streamEntrySessionId: otherSession,
+          streamEntryKind: "agent_msg",
+        }),
+        new Map([
+          [
+            streamId,
+            {
+              id: streamId,
+              kind: "user_msg",
+              session_id: DEFAULT_SESSION_ID,
+              timestamp: NOW_MS,
+              content: "Live entry.",
+            },
+          ],
+        ]),
+      );
+
+      expect(entry?.session_scope).toBe("current_session");
+      expect(entry?.actor).toBe("user");
     });
   });
 });

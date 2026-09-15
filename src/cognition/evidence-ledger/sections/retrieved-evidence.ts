@@ -1,5 +1,6 @@
 import type { BuilderSectionContext } from "../builder-context.js";
 import {
+  actorForStreamEntry,
   appendMemoryDisclosureState,
   appendMemoryDisclosureStateMetadata,
   rawStreamActor,
@@ -18,6 +19,7 @@ import { unknownMemoryDisclosureLabel } from "../../../retrieval/index.js";
 import {
   persistenceClassFromProvenance,
   persistenceClassFromStreamIds,
+  scopeFromCarriedSessionId,
   scopeFromStreamIds,
   streamIndexFromSingleCurrentSessionStreamId,
 } from "../scope-resolver.js";
@@ -48,7 +50,26 @@ export function addRetrievedRawStreamEvidenceSection(context: BuilderSectionCont
       continue;
     }
 
-    const scope = scopeFromStreamIds(itemStreamIds, context.resolver);
+    // Both of the next two resolve out of the builder's entry map, and a recalled entry
+    // is frequently not in it. Neither miss is visible on the row: the miss answers
+    // "global" and "memory", which are also answers a hit produces. Fall back to the
+    // facts the pipeline copied off the entry itself -- `kind` decides the actor on its
+    // own, and the carried session gets the same comparison the resolver would apply.
+    // `source_type` follows scope, so it is corrected by the same step. What this does
+    // not recover is `persistence_class` below, whose absence still reads as "not an
+    // assistant self-report" on an entry the map never held.
+    const resolvedFromEntries = itemStreamIds.every((id) =>
+      context.resolver.streamEntriesById.has(id),
+    );
+    const resolvedScope = scopeFromStreamIds(itemStreamIds, context.resolver);
+    const scope = resolvedFromEntries
+      ? resolvedScope
+      : (scopeFromCarriedSessionId(item.streamEntrySessionId, context.resolver.currentSessionId) ??
+        resolvedScope);
+    const actor =
+      resolvedFromEntries || item.streamEntryKind === undefined
+        ? rawStreamActor(itemStreamIds, context.resolver)
+        : actorForStreamEntry({ kind: item.streamEntryKind });
     const streamIndex = streamIndexFromSingleCurrentSessionStreamId(
       itemStreamIds,
       context.resolver,
@@ -65,7 +86,7 @@ export function addRetrievedRawStreamEvidenceSection(context: BuilderSectionCont
         id: `retrieved_stream:${item.id}`,
         source_type: rawStreamSourceType(scope),
         session_scope: scope,
-        actor: rawStreamActor(itemStreamIds, context.resolver),
+        actor,
         trust_rank: RAW_STREAM_TRUST_RANK,
         text: item.text,
         value: item.source,

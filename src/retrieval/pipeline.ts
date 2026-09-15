@@ -3083,6 +3083,7 @@ function streamEntryToEvidence(
     matchedTerms: [],
     streamEntryKind: entry.kind,
     streamEntryAtMs: entry.timestamp,
+    streamEntrySessionId: entry.session_id,
     score:
       intent.kind === "recent"
         ? RECENT_RAW_STREAM_EVIDENCE_SCORE

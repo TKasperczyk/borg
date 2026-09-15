@@ -4,6 +4,7 @@ import type {
   OpenQuestionId,
   SemanticEdgeId,
   SemanticNodeId,
+  SessionId,
   StreamEntryId,
   AttachmentId,
   ImagePerceptionId,
@@ -124,6 +125,13 @@ export type EvidenceItem = {
   // site holds the whole StreamEntry and drops both.
   streamEntryKind?: StreamEntryKind;
   streamEntryAtMs?: number;
+  // Same reason, one field further: the ledger's raw-stream lane resolves scope and
+  // actor out of the builder's entry map, which holds this session's reverse scan plus
+  // recalled episodes' citation chains -- and a recalled entry is often in neither. The
+  // miss is silent, because the values a miss produces (`global`, `memory`) are also
+  // values a determined lookup produces. The session is on the entry this item was
+  // built from; carry it so the lane has a second source rather than a default.
+  streamEntrySessionId?: SessionId;
   disclosureLabel?: MemoryDisclosureLabel;
   commitment_enforcement_class?: CommitmentEnforcementClass;
   commitment_critical_domain?: CommitmentCriticalDomain | null;

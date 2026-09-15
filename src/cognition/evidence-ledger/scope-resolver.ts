@@ -51,6 +51,24 @@ export function scopeFromStreamIds(
   return "global";
 }
 
+// `scopeFromStreamIds` reaches "global" from three places -- no ids, an id the entry map
+// has no row for, and a set that genuinely spans sessions -- and the word it returns is
+// the same in all three. For a raw-stream evidence item only the middle one is reachable
+// (that item carries exactly one id, and one id cannot span), so a "global" there reports
+// a lookup that failed, in the vocabulary of one that succeeded. The pipeline built the
+// item out of the entry, so the session is on the item; this applies the resolver's own
+// comparison to that copy. Same rule, second source.
+export function scopeFromCarriedSessionId(
+  sessionId: SessionId | undefined,
+  currentSessionId: SessionId,
+): EvidenceLedgerSessionScope | undefined {
+  if (sessionId === undefined) {
+    return undefined;
+  }
+
+  return sessionId === currentSessionId ? "current_session" : "prior_session";
+}
+
 export function streamIndexFromSingleCurrentSessionStreamId(
   streamEntryIds: readonly StreamEntryId[] | readonly string[] | undefined,
   resolver: ScopeResolver,
