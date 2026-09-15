@@ -2139,7 +2139,7 @@ export function summarizeAutonomySchedulerState(
     droppedFires.current_tick === null
       ? ""
       : `, ${droppedFires.current_tick} of them by the tick that was in flight at that read`
-  }. A refused fire writes nothing anywhere, so the periods it covers are missing from the counts above rather than counted as quiet.${armedClause}`;
+  }. A refused fire writes no row anywhere, so the periods it covers are missing from the counts above rather than counted as quiet.${armedClause}`;
   // The liveness clause and the tick clause answer different questions and are stated separately:
   // how far behind the loop is, and which of the two causes is producing that. The blind spot is
   // printed with the flag rather than left for the reader to discover, because a field that is

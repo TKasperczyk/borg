@@ -2996,7 +2996,7 @@ describe("buildBaseSystemPrompt", () => {
       turnOrigin: "user" as const,
       expected: [
         "not an observation that the loop is alive",
-        "Interval fires refused because a tick was already running: 4 since the loop was last armed. A refused fire writes nothing anywhere, so the periods it covers are missing from the counts above rather than counted as quiet.",
+        "Interval fires refused because a tick was already running: 4 since the loop was last armed. A refused fire writes no row anywhere, so the periods it covers are missing from the counts above rather than counted as quiet.",
       ],
       absent: "of them by the tick that was in flight",
     },
