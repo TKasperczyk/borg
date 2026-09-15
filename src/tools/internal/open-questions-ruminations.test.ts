@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { openDatabase } from "../../storage/sqlite/index.js";
 import { OpenQuestionsRepository, selfMigrations } from "../../memory/self/index.js";
 import { FixedClock } from "../../util/clock.js";
-import { createEpisodeId } from "../../util/ids.js";
+import { createEpisodeId, createMaintenanceRunId } from "../../util/ids.js";
 
 import { createOpenQuestionsRuminationsTool } from "./open-questions-ruminations.js";
 
@@ -77,6 +77,42 @@ describe("tool.openQuestions.ruminations", () => {
       ]);
       expect(output.has_more).toBe(false);
       expect(output.ruminations.every((row) => row.disclosure.length > 0)).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("returns nothing for a pass that stamped the run without writing a note", async () => {
+    const { db, repository } = openRepository();
+
+    try {
+      const question = repository.add({
+        question: "Did the loop reach this one at all?",
+        urgency: 0.4,
+        source: "reflection",
+        provenance: manualProvenance,
+      });
+      const stamped = repository.stampRuminationForRun({
+        open_question_id: question.id,
+        source_run_id: createMaintenanceRunId(),
+        next_unresolved_rumination_ticks: 1,
+        rumination: null,
+      });
+
+      const output = await toolFor(repository).invoke(
+        { since: new Date(0).toISOString(), until: new Date(20_000).toISOString() },
+        toolContext,
+      );
+
+      // The pass reached the question -- it stamped the run and moved last_ruminated_at -- and this
+      // reader still returns nothing. The tick counter does not separate the two states either, so
+      // an empty range here is a count of notes and not a count of passes, which is what the
+      // description now says rather than leaving the reader to infer silence from the emptiness.
+      expect(stamped.stamped).toBe(true);
+      expect(stamped.question.last_ruminated_at).toBe(10_000);
+      expect(stamped.question.unresolved_rumination_ticks).toBe(0);
+      expect(output.ruminations).toEqual([]);
+      expect(output.has_more).toBe(false);
     } finally {
       db.close();
     }
