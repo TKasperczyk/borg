@@ -140,6 +140,7 @@ export type SharedStateRenderOptions = SharedStateRenderBudgetOptions &
   SharedStateRenderSalienceOptions & {
     currentTurnCounter?: number;
     lastUpdatedTurnByStreamEntryId?: Readonly<Record<string, number>>;
+    sourceKindByStreamEntryId?: Readonly<Record<string, string>>;
     recentTurnThreshold?: number;
   };
 
@@ -147,6 +148,7 @@ type NormalizedSharedStateRenderOptions = Required<SharedStateRenderBudgetOption
   SharedStateRenderSalienceOptions & {
     currentTurnCounter?: number;
     lastUpdatedTurnByStreamEntryId: Readonly<Record<string, number>>;
+    sourceKindByStreamEntryId?: Readonly<Record<string, string>>;
     recentTurnThreshold: number;
   };
 
@@ -182,6 +184,7 @@ function sharedStateRenderOptions(
     recentlyRetrievedEntryIds: options.recentlyRetrievedEntryIds ?? [],
     currentTurnCounter: options.currentTurnCounter,
     lastUpdatedTurnByStreamEntryId: options.lastUpdatedTurnByStreamEntryId ?? {},
+    sourceKindByStreamEntryId: options.sourceKindByStreamEntryId,
     recentTurnThreshold: coercePositiveIntegerOrFallback(
       options.recentTurnThreshold,
       SHARED_STATE_RECENT_TURN_THRESHOLD,
@@ -244,13 +247,38 @@ function supersededPredecessorIdsBySuccessor(
   return bySuccessor;
 }
 
+// A citation is a bare stream entry id, so whether a row rests on something this audience said or
+// on Borg's own prior output is recoverable only where that id also appears in the rendered
+// transcript -- the current session and nothing older. The entry index holds each cited entry's wire
+// kind; name it on the line so the source stays readable at any age. This is a provenance label and
+// not a standing: a row cited to agent_msg is one Borg sourced from itself, which is not by itself
+// evidence that the audience ever saw the claim, and this block is named for the audience.
+//
+// The whole line is either labelled or bare. With no map supplied the caller resolved nothing, and
+// per-id silence there would read as a fact about that id rather than about the call site.
+function renderSharedStateCitations(
+  entry: SharedStateEntry,
+  sourceKindByStreamEntryId: Readonly<Record<string, string>> | undefined,
+): string {
+  const ids = entry.provenance_stream_entry_ids;
+
+  if (sourceKindByStreamEntryId === undefined) {
+    return `[citation: ${ids.join(", ")}]`;
+  }
+
+  return `[citation: ${ids
+    .map((id) => `${id}=${sourceKindByStreamEntryId[id] ?? "unindexed"}`)
+    .join(", ")}]`;
+}
+
 function renderSharedStateEntry(
   entry: SharedStateEntry,
   supersededPredecessorIds: ReadonlyMap<string, string[]>,
+  sourceKindByStreamEntryId: Readonly<Record<string, string>> | undefined,
 ): string {
   const owner = entry.owner_entity_id === null ? "owner=null" : `owner=${entry.owner_entity_id}`;
   const stateKey = `state_key=${sharedStateKeyBucket(entry.state_key)}`;
-  const citations = `[citation: ${entry.provenance_stream_entry_ids.join(", ")}]`;
+  const citations = renderSharedStateCitations(entry, sourceKindByStreamEntryId);
   const disclosureLabel = sharedStateEntryDisclosureLabel(entry);
   const disclosure =
     disclosureLabel.disclosureClass === "public"
@@ -553,6 +581,7 @@ function renderSharedStateArtifactContent(input: {
   entries: readonly SharedStateEntry[];
   omittedByKind: SharedStateKindCounts;
   renderedByKind: SharedStateKindCounts;
+  sourceKindByStreamEntryId?: Readonly<Record<string, string>>;
 }): string {
   const omittedCount = Object.values(input.omittedByKind).reduce((sum, count) => sum + count, 0);
   const supersededPredecessorIds = supersededPredecessorIdsBySuccessor(input.artifact);
@@ -583,7 +612,11 @@ function renderSharedStateArtifactContent(input: {
     ...entriesGroupedByStateKey(input.entries).flatMap((group) => [
       `state_key_bucket=${group.stateKey}`,
       ...group.entries.map((groupEntry) =>
-        renderSharedStateEntry(groupEntry, supersededPredecessorIds),
+        renderSharedStateEntry(
+          groupEntry,
+          supersededPredecessorIds,
+          input.sourceKindByStreamEntryId,
+        ),
       ),
     ]),
     omission,
@@ -640,6 +673,7 @@ function renderSingleEntryWithinSharedStateArtifactCap(input: {
   entry: SharedStateEntry;
   activeEntries: readonly SharedStateEntry[];
   maxTokens: number;
+  sourceKindByStreamEntryId?: Readonly<Record<string, string>>;
 }): { content: string; renderedEntryCount: number; omittedEntryCount: number } {
   const counts = sharedStateRenderedCounts({
     activeEntries: input.activeEntries,
@@ -656,6 +690,7 @@ function renderSingleEntryWithinSharedStateArtifactCap(input: {
     ],
     omittedByKind: counts.omittedByKind,
     renderedByKind: counts.renderedByKind,
+    sourceKindByStreamEntryId: input.sourceKindByStreamEntryId,
   });
   const remainingTokens = input.maxTokens - estimatePromptTokens(emptyEntryContent);
 
@@ -683,6 +718,7 @@ function renderSingleEntryWithinSharedStateArtifactCap(input: {
     ],
     omittedByKind: counts.omittedByKind,
     renderedByKind: counts.renderedByKind,
+    sourceKindByStreamEntryId: input.sourceKindByStreamEntryId,
   });
 
   if (estimatePromptTokens(content) <= input.maxTokens) {
@@ -710,6 +746,7 @@ function renderTruncatedEntriesWithinSharedStateArtifactCap(input: {
   entries: readonly SharedStateEntry[];
   activeEntries: readonly SharedStateEntry[];
   maxTokens: number;
+  sourceKindByStreamEntryId?: Readonly<Record<string, string>>;
 }): { content: string; entries: SharedStateEntry[] } {
   const counts = sharedStateRenderedCounts({
     activeEntries: input.activeEntries,
@@ -724,6 +761,7 @@ function renderTruncatedEntriesWithinSharedStateArtifactCap(input: {
     })),
     omittedByKind: counts.omittedByKind,
     renderedByKind: counts.renderedByKind,
+    sourceKindByStreamEntryId: input.sourceKindByStreamEntryId,
   });
   const remainingTokens = input.maxTokens - estimatePromptTokens(emptyEntryContent);
 
@@ -739,6 +777,7 @@ function renderTruncatedEntriesWithinSharedStateArtifactCap(input: {
         entries: [],
         omittedByKind: countSharedStateArtifactEntriesByKind(input.activeEntries),
         renderedByKind: emptySharedStateKindCounts(),
+        sourceKindByStreamEntryId: input.sourceKindByStreamEntryId,
       }),
       entries: [],
     };
@@ -757,6 +796,7 @@ function renderTruncatedEntriesWithinSharedStateArtifactCap(input: {
       entries: truncatedEntries,
       omittedByKind: counts.omittedByKind,
       renderedByKind: counts.renderedByKind,
+      sourceKindByStreamEntryId: input.sourceKindByStreamEntryId,
     }),
     entries: truncatedEntries,
   };
@@ -1010,6 +1050,7 @@ function cappedSharedStateArtifactRender(input: {
     entries,
     omittedByKind: counts.omittedByKind,
     renderedByKind: counts.renderedByKind,
+    sourceKindByStreamEntryId: options.sourceKindByStreamEntryId,
   });
 
   // The stopping condition here and in both loops below is the token total and nothing else --
@@ -1050,6 +1091,7 @@ function cappedSharedStateArtifactRender(input: {
       entries,
       omittedByKind: counts.omittedByKind,
       renderedByKind: counts.renderedByKind,
+      sourceKindByStreamEntryId: options.sourceKindByStreamEntryId,
     });
   }
 
@@ -1059,6 +1101,7 @@ function cappedSharedStateArtifactRender(input: {
       entries,
       activeEntries,
       maxTokens: options.maxTokens,
+      sourceKindByStreamEntryId: options.sourceKindByStreamEntryId,
     });
 
     content = truncatedRender.content;
@@ -1076,6 +1119,7 @@ function cappedSharedStateArtifactRender(input: {
       entries,
       activeEntries,
       maxTokens: options.maxTokens,
+      sourceKindByStreamEntryId: options.sourceKindByStreamEntryId,
     });
 
     content = truncatedRender.content;
@@ -1092,6 +1136,7 @@ function cappedSharedStateArtifactRender(input: {
       entry: entries[0]!,
       activeEntries,
       maxTokens: options.maxTokens,
+      sourceKindByStreamEntryId: options.sourceKindByStreamEntryId,
     });
 
     content = singleEntryRender.content;

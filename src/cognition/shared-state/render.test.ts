@@ -1120,4 +1120,62 @@ describe("renderSharedStateArtifact", () => {
     expect(indexLineFor("audit.replaced")).toContain("superseded_count=1");
     expect(indexLineFor("audit.untouched")).not.toContain("superseded_count=");
   });
+
+  it("names each cited entry's source kind so a citation older than the transcript still has a voice", () => {
+    const audience = createEntityId();
+    const fromAudience = createStreamEntryId();
+    const fromSelf = createStreamEntryId();
+    const unresolved = createStreamEntryId();
+    const cited = entry({
+      audience,
+      kind: "locked",
+      rank: 0,
+      updatedAt: 9_000,
+      stateKey: "audit.cited",
+      text: "a row standing on three entries",
+      provenanceStreamEntryIds: [fromAudience, fromSelf, unresolved],
+    });
+
+    const rendered =
+      renderSharedStateArtifact(artifact([cited]), {
+        maxEntries: 10,
+        maxTokens: 50_000,
+        lockedMaxEntries: 10,
+        sourceKindByStreamEntryId: {
+          [fromAudience]: "user_msg",
+          [fromSelf]: "agent_msg",
+        },
+      }) ?? "";
+
+    expect(rendered).toContain(
+      `[citation: ${fromAudience}=user_msg, ${fromSelf}=agent_msg, ${unresolved}=unindexed]`,
+    );
+  });
+
+  it("leaves the whole citation bare when the caller resolved no source kinds at all", () => {
+    const audience = createEntityId();
+    const first = createStreamEntryId();
+    const second = createStreamEntryId();
+    const cited = entry({
+      audience,
+      kind: "locked",
+      rank: 0,
+      updatedAt: 9_000,
+      stateKey: "audit.cited",
+      text: "a row standing on two entries",
+      provenanceStreamEntryIds: [first, second],
+    });
+
+    // No map means the caller had no index to ask, which is a fact about the call site.
+    // Marking each id unindexed here would state it as a fact about the ids instead.
+    const rendered =
+      renderSharedStateArtifact(artifact([cited]), {
+        maxEntries: 10,
+        maxTokens: 50_000,
+        lockedMaxEntries: 10,
+      }) ?? "";
+
+    expect(rendered).toContain(`[citation: ${first}, ${second}]`);
+    expect(rendered).not.toContain("unindexed");
+  });
 });
