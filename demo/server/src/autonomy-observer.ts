@@ -44,7 +44,7 @@ export function wireAutonomySchedulerObserver(
         bookkeepingErrorCount: result.bookkeepingErrorCount,
       };
 
-      if (hasErrors || result.budgetSkipped > 0) {
+      if (hasErrors) {
         logger.warn(`autonomy.tick ${JSON.stringify(summary)}`);
       }
 

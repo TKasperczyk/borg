@@ -74,7 +74,7 @@ describe("demo autonomy observer", () => {
 
   it.each([
     { field: "dueEvents", journal: false },
-    { field: "budgetSkipped", journal: true },
+    { field: "budgetSkipped", journal: false },
     { field: "errorCount", journal: true },
     { field: "sourceErrorCount", journal: true },
     { field: "bookkeepingErrorCount", journal: true },
@@ -86,6 +86,40 @@ describe("demo autonomy observer", () => {
       expect.objectContaining({ [field]: 1 }),
     );
     expect(logger.warn).toHaveBeenCalledTimes(journal ? 1 : 0);
+    expect(logger.error).not.toHaveBeenCalled();
+  });
+
+  it("traces repeated budget-refusal-only ticks without journaling", async () => {
+    const { observer, tracer, logger } = harness();
+    for (const ts of [1000, 61_000]) {
+      await observer.onTick?.(
+        tick({
+          ts,
+          dueEvents: 1,
+          budgetSkipped: 1,
+          events: [event({ status: "budget_skipped" })],
+        }),
+      );
+      expect(tracer.emit).toHaveBeenLastCalledWith("autonomy.tick", {
+        turnId: `autonomy_tick_${process.pid}_${ts}`,
+        ts,
+        dueEvents: 1,
+        admittedEvents: 0,
+        firedEvents: 0,
+        budgetSkipped: 1,
+        fleetCooldownSkipped: 0,
+        errorCircuitSkipped: 0,
+        busySkipped: 0,
+        errorCount: 0,
+        sourceErrorCount: 0,
+        bookkeepingErrorCount: 0,
+        triggerNames: ["scheduled_wake"],
+        errors: [],
+        sourceErrors: [],
+      });
+    }
+    expect(tracer.emit).toHaveBeenCalledTimes(2);
+    expect(logger.warn).not.toHaveBeenCalled();
     expect(logger.error).not.toHaveBeenCalled();
   });
 
