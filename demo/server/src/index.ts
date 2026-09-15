@@ -17,6 +17,7 @@ import {
   serializeStreamEntries,
   wireMaintenanceSchedulerLiveObserver,
 } from "./app.js";
+import { wireAutonomySchedulerObserver } from "./autonomy-observer.js";
 import { createLiveBridge } from "./live.js";
 import { MemorySampler, readMemorySamplerConfig } from "./memory.js";
 import { createResetBorgController, type BorgHandle } from "./reset.js";
@@ -78,6 +79,7 @@ const dataDir = demoConfig.dataDir;
 const demoCreatorEntityName = process.env.DEMO_CREATOR_ENTITY_NAME ?? undefined;
 const port = readPort();
 const live = createLiveBridge();
+const hostTracer = compositeTracer([createTurnTracer({ env: process.env }), live.tracer]);
 const memorySamplerConfig = readMemorySamplerConfig();
 const connectorPlugin = await loadExternalConnectorPlugin();
 
@@ -92,6 +94,8 @@ async function openDemoBorg(): Promise<Borg> {
     ],
   });
   ensureDemoDefaultSession(borg, { demoCreatorEntityName });
+  // Attach before start, including when reset opens a replacement Borg.
+  wireAutonomySchedulerObserver(borg.autonomy.scheduler, hostTracer);
   return borg;
 }
 
@@ -133,7 +137,7 @@ const memorySampler = new MemorySampler({
     ...live.broadcaster.memoryStats(),
     ledgerCacheEntries: live.ledgerCache.size,
   }),
-  tracer: compositeTracer([createTurnTracer({ env: process.env }), live.tracer]),
+  tracer: hostTracer,
 });
 
 const { app, injectWebSocket } = createDemoServerApp({

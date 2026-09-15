@@ -430,6 +430,7 @@ export type AutonomyTickEventResult = {
   outcomeSummary?: string;
   turnResultId?: string | null;
   error?: string;
+  errorName?: string;
 };
 
 export type TickResult = {
@@ -444,6 +445,8 @@ export type TickResult = {
   busySkipped: number;
   errorCount: number;
   sourceErrorCount: number;
+  /** Scan/preparation failures, including sources that produced no due event. */
+  sourceErrors?: Array<{ sourceName: AutonomyWakeSourceName; error: string; errorName?: string }>;
   bookkeepingErrorCount: number;
   events: AutonomyTickEventResult[];
 };

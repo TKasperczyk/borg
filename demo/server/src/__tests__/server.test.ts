@@ -103,6 +103,7 @@ function createBorgCloseStub(input: { start?: () => void } = {}): Borg {
     },
     autonomy: {
       scheduler: {
+        setObserver: vi.fn(),
         start: vi.fn(),
         stop: vi.fn(async () => {}),
       },
@@ -5156,12 +5157,17 @@ describe("demo server", () => {
       injectWebSocket: vi.fn(),
     }));
     const wireMaintenanceSchedulerLiveObserverMock = vi.fn();
+    const hostTracer = { enabled: true, includePayloads: true, emit: vi.fn() };
+    const memoryConstruct = vi.fn();
+    const createResetBorgControllerMock = vi.fn((_options: { openBorg: () => Promise<Borg> }) =>
+      vi.fn(),
+    );
     const memoryStart = vi.fn();
     const memoryStop = vi.fn(async () => {});
 
     vi.doMock("borg", () => ({
       Borg: { open },
-      compositeTracer: vi.fn(() => ({})),
+      compositeTracer: vi.fn(() => hostTracer),
       createTurnTracer: vi.fn(() => ({})),
       DemoMessageConnector: class DemoMessageConnector {},
       loadConfig: vi.fn(() => ({
@@ -5185,11 +5191,14 @@ describe("demo server", () => {
       createLiveBridge: vi.fn(() => liveBridgeMock),
     }));
     vi.doMock("../reset.js", () => ({
-      createResetBorgController: vi.fn(() => vi.fn()),
+      createResetBorgController: createResetBorgControllerMock,
     }));
     vi.doMock("../memory.js", () => ({
       readMemorySamplerConfig: vi.fn(() => ({})),
       MemorySampler: class {
+        constructor(options: unknown) {
+          memoryConstruct(options);
+        }
         start = memoryStart;
         stop = memoryStop;
       },
@@ -5200,9 +5209,38 @@ describe("demo server", () => {
       await import("../index.js?server-start");
       expect(open).toHaveBeenCalledTimes(1);
       expect(start).toHaveBeenCalledTimes(1);
+      expect(borg.autonomy.scheduler.setObserver).toHaveBeenCalledOnce();
+      expect(
+        vi.mocked(borg.autonomy.scheduler.setObserver).mock.invocationCallOrder[0],
+      ).toBeLessThan(vi.mocked(borg.autonomy.scheduler.start).mock.invocationCallOrder[0]!);
       expect(wireMaintenanceSchedulerLiveObserverMock).toHaveBeenCalledWith(borg, liveBridgeMock);
       expect(serveMock).toHaveBeenCalledTimes(1);
       expect(memoryStart).toHaveBeenCalledOnce();
+      expect(memoryConstruct).toHaveBeenCalledWith(expect.objectContaining({ tracer: hostTracer }));
+      const observer = vi.mocked(borg.autonomy.scheduler.setObserver).mock.calls[0]![0]!;
+      await observer.onTick?.({
+        status: "ok",
+        ts: 1000,
+        scannedSources: [],
+        dueEvents: 1,
+        firedEvents: 0,
+        budgetSkipped: 0,
+        fleetCooldownSkipped: 0,
+        errorCircuitSkipped: 0,
+        busySkipped: 0,
+        errorCount: 0,
+        sourceErrorCount: 0,
+        bookkeepingErrorCount: 0,
+        events: [],
+      });
+      expect(hostTracer.emit).toHaveBeenCalledWith(
+        "autonomy.tick",
+        expect.objectContaining({ dueEvents: 1 }),
+      );
+      const replacement = createBorgCloseStub();
+      open.mockResolvedValueOnce(replacement);
+      await createResetBorgControllerMock.mock.calls[0]![0].openBorg();
+      expect(replacement.autonomy.scheduler.setObserver).toHaveBeenCalledOnce();
     } finally {
       if (previousPort === undefined) {
         delete process.env.PORT;

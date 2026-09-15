@@ -8,6 +8,8 @@ import type { SessionId } from "../util/ids.js";
 
 export type TurnTraceEventName =
   | "process.memory.sample"
+  | "autonomy.tick"
+  | "autonomy.tick_error"
   | "attachment.write"
   | "attachment.quarantined"
   | "attachment.fetch_for_ledger"
@@ -300,7 +302,7 @@ const PAYLOAD_GATED_TRACE_KEYS = new Set([
   "query",
 ]);
 
-function stripPayloadGatedTraceData(data: TurnTraceData): TurnTraceData {
+function stripPayloadGatedTraceData(event: TurnTraceEventName, data: TurnTraceData): TurnTraceData {
   let stripped: TurnTraceData | undefined;
 
   for (const key of PAYLOAD_GATED_TRACE_KEYS) {
@@ -313,6 +315,27 @@ function stripPayloadGatedTraceData(data: TurnTraceData): TurnTraceData {
   if (Object.hasOwn(data, "spans") && data.reason !== "mixed_closure_observed") {
     stripped ??= { ...data };
     delete stripped.spans;
+  }
+
+  // A composite tracer may have a payload-enabled live sink and a redacted
+  // file sink. Gate nested autonomy messages per sink, using structured names
+  // rather than attempting to recover an error class from exception text.
+  if (event === "autonomy.tick" || event === "autonomy.tick_error") {
+    for (const key of ["errors", "sourceErrors"] as const) {
+      const errors = data[key];
+      if (!Array.isArray(errors)) continue;
+      stripped ??= { ...data };
+      stripped[key] = errors.map((value) => {
+        const fields =
+          value !== null && typeof value === "object" && !Array.isArray(value) ? value : {};
+        const errorName = typeof fields.errorName === "string" ? fields.errorName : "UnknownError";
+        return {
+          ...(typeof fields.sourceName === "string" ? { sourceName: fields.sourceName } : {}),
+          errorName,
+          error: errorName,
+        };
+      });
+    }
   }
 
   return stripped ?? data;
@@ -330,7 +353,7 @@ export class CompositeTracer implements TurnTracer {
   }
 
   emit(event: TurnTraceEventName, data: TurnTraceData): void {
-    const strippedData = stripPayloadGatedTraceData(data);
+    const strippedData = stripPayloadGatedTraceData(event, data);
 
     for (const tracer of this.tracers) {
       tracer.emit(event, tracer.includePayloads ? data : strippedData);
@@ -379,7 +402,7 @@ export class CallbackTracer implements TurnTracer {
   }
 
   emit(event: TurnTraceEventName, data: TurnTraceData): void {
-    const emittedData = this.includePayloads ? data : stripPayloadGatedTraceData(data);
+    const emittedData = this.includePayloads ? data : stripPayloadGatedTraceData(event, data);
     const { turnId, ...payload } = emittedData;
     const entry: Record<string, JsonValue> = {
       ts: this.timestamp(),
@@ -525,7 +548,7 @@ export class JsonlTracer implements TurnTracer {
   }
 
   emit(event: TurnTraceEventName, data: TurnTraceData): void {
-    const emittedData = this.includePayloads ? data : stripPayloadGatedTraceData(data);
+    const emittedData = this.includePayloads ? data : stripPayloadGatedTraceData(event, data);
     const { turnId, ...payload } = emittedData;
     // ts uses the injected logical clock (ManualClock in tests, SystemClock
     // in prod) so trace event ordering follows Borg's logical time.

@@ -78,7 +78,7 @@ type GoalWakeOutcome = {
 type ScannedDueEvent = { source: AutonomyWakeSource; event: DueEvent };
 type ScannedDueEvents = {
   events: ScannedDueEvent[];
-  sourceErrorCount: number;
+  sourceErrors: NonNullable<TickResult["sourceErrors"]>;
 };
 type GoalWakePresentation = {
   source_name: DueEvent["sourceName"];
@@ -798,7 +798,9 @@ export class AutonomyScheduler {
   private eventResultsForBatch(
     batch: WakeBatch,
     input: Pick<AutonomyTickEventResult, "status"> &
-      Partial<Pick<AutonomyTickEventResult, "outcomeSummary" | "turnResultId" | "error">>,
+      Partial<
+        Pick<AutonomyTickEventResult, "outcomeSummary" | "turnResultId" | "error" | "errorName">
+      >,
   ): AutonomyTickEventResult[] {
     return batch.events.map(({ source, event }) => ({
       id: event.id,
@@ -810,6 +812,7 @@ export class AutonomyScheduler {
       ...(input.outcomeSummary === undefined ? {} : { outcomeSummary: input.outcomeSummary }),
       ...(input.turnResultId === undefined ? {} : { turnResultId: input.turnResultId }),
       ...(input.error === undefined ? {} : { error: input.error }),
+      ...(input.errorName === undefined ? {} : { errorName: input.errorName }),
     }));
   }
 
@@ -1166,8 +1169,9 @@ export class AutonomyScheduler {
       let fleetCooldownSkipped = 0;
       let errorCircuitSkipped = 0;
       let busySkipped = 0;
-      let errorCount = scanResult.sourceErrorCount;
-      let sourceErrorCount = scanResult.sourceErrorCount;
+      const sourceErrors = scanResult.sourceErrors;
+      let errorCount = sourceErrors.length;
+      let sourceErrorCount = sourceErrors.length;
       let bookkeepingErrorCount = 0;
       const consumedEventKeys = new Set<string>();
 
@@ -1293,6 +1297,11 @@ export class AutonomyScheduler {
               error instanceof AutonomySourcePreparationError
                 ? error
                 : new AutonomySourcePreparationError(dueEvent.sourceName, error);
+            sourceErrors.push({
+              sourceName: dueEvent.sourceName,
+              error: formatError(preparationError),
+              errorName: preparationError.name,
+            });
             const outcomeSummary = `Autonomous source preparation failed: ${formatError(error)}`;
             this.options.wakeRepository.recordOutcome(
               wakeRecord.id,
@@ -1322,6 +1331,7 @@ export class AutonomyScheduler {
                 outcomeSummary,
                 turnResultId: null,
                 error: formatError(preparationError),
+                errorName: preparationError.name,
               }),
             );
             await this.notifyError(preparationError);
@@ -1403,7 +1413,12 @@ export class AutonomyScheduler {
                 status: busy ? "busy_skipped" : "error",
                 outcomeSummary,
                 turnResultId: null,
-                ...(busy ? {} : { error: formatError(error) }),
+                ...(busy
+                  ? {}
+                  : {
+                      error: formatError(error),
+                      errorName: error instanceof Error ? error.name : "UnknownError",
+                    }),
               }),
             );
             continue;
@@ -1484,6 +1499,7 @@ export class AutonomyScheduler {
                 outcomeSummary,
                 turnResultId: turnResult.agentMessageId ?? null,
                 error: formatError(bookkeepingError),
+                errorName: bookkeepingError.name,
               }),
             );
             await this.notifyError(bookkeepingError);
@@ -1569,6 +1585,7 @@ export class AutonomyScheduler {
                 outcomeSummary: `Autonomous turn completed; bookkeeping failed: ${formatError(error)}`,
                 turnResultId: turnResult.agentMessageId ?? null,
                 error: formatError(bookkeepingError),
+                errorName: bookkeepingError.name,
               }),
             );
             await this.notifyError(bookkeepingError);
@@ -1587,6 +1604,7 @@ export class AutonomyScheduler {
           busySkipped,
           errorCount,
           sourceErrorCount,
+          ...(sourceErrors.length === 0 ? {} : { sourceErrors }),
           bookkeepingErrorCount,
           events: eventResults,
         };
@@ -2015,7 +2033,7 @@ export class AutonomyScheduler {
 
   private async scanDueEvents(): Promise<ScannedDueEvents> {
     const dueEvents: Array<{ source: AutonomyWakeSource; event: DueEvent }> = [];
-    let sourceErrorCount = 0;
+    const sourceErrors: NonNullable<TickResult["sourceErrors"]> = [];
 
     for (const source of this.options.sources) {
       if (
@@ -2030,9 +2048,14 @@ export class AutonomyScheduler {
       try {
         events = await source.scan();
       } catch (error) {
-        sourceErrorCount += 1;
         this.scheduleSourceRetryBackoff(source.name);
-        await this.notifyError(new AutonomySourcePreparationError(source.name, error));
+        const sourceError = new AutonomySourcePreparationError(source.name, error);
+        sourceErrors.push({
+          sourceName: source.name,
+          error: formatError(sourceError),
+          errorName: sourceError.name,
+        });
+        await this.notifyError(sourceError);
         continue;
       }
 
@@ -2053,7 +2076,7 @@ export class AutonomyScheduler {
         (left, right) =>
           left.event.sortTs - right.event.sortTs || left.event.id.localeCompare(right.event.id),
       ),
-      sourceErrorCount,
+      sourceErrors,
     };
   }
 

@@ -2886,7 +2886,10 @@ describe("AutonomyScheduler", () => {
         toolDispatcher: new ToolDispatcher({ createStreamWriter, clock }),
         sources: [createTestDueSource("error-execution-counts")],
       });
-      expect(await scheduler.tick()).toMatchObject({ errorCount: 1 });
+      expect(await scheduler.tick()).toMatchObject({
+        errorCount: 1,
+        events: [expect.objectContaining({ errorName: "Error" })],
+      });
       expect(wakeRepository.listSince(0, 1)[0]).toMatchObject({
         outcome: "error",
         finalizer_rounds: recorded ? 2 : null,
@@ -2942,6 +2945,7 @@ describe("AutonomyScheduler", () => {
     expect(result.events[0]).toMatchObject({
       status: "bookkeeping_error",
       outcomeSummary: expect.stringContaining(originalError.message),
+      errorName: "AutonomyBookkeepingError",
     });
     expect(wakeRepository.listSince(0, 1)[0]).toMatchObject({
       outcome: "interrupted",
@@ -2981,7 +2985,10 @@ describe("AutonomyScheduler", () => {
       sources: [createTestDueSource("preparation-cause-event", "scheduled_reflection")],
     });
 
-    expect(await scheduler.tick()).toMatchObject({ errorCount: 1 });
+    expect(await scheduler.tick()).toMatchObject({
+      errorCount: 1,
+      events: [expect.objectContaining({ errorName: "AutonomySourcePreparationError" })],
+    });
     expect(turnRunner.run).not.toHaveBeenCalled();
     expect(wakeRepository.listSince(0, 1)[0]).toMatchObject({
       outcome: "error",
@@ -5039,6 +5046,18 @@ describe("AutonomyScheduler", () => {
       firedEvents: 1,
       errorCount: 2,
       sourceErrorCount: 2,
+      sourceErrors: [
+        {
+          sourceName: "goal_followup_due",
+          error: expect.stringContaining("goal_followup_due repository unavailable"),
+          errorName: "AutonomySourcePreparationError",
+        },
+        {
+          sourceName: "commitment_expiring",
+          error: expect.stringContaining("commitment_expiring repository unavailable"),
+          errorName: "AutonomySourcePreparationError",
+        },
+      ],
       errorCircuitSkipped: 0,
     });
     expect(first.events[0]).toMatchObject({
@@ -5052,6 +5071,7 @@ describe("AutonomyScheduler", () => {
 
     const second = await scheduler.tick();
     expect(second.sourceErrorCount).toBe(0);
+    expect(second.sourceErrors ?? []).toEqual([]);
     expect(second.errorCircuitSkipped).toBe(0);
   });
 
@@ -6614,10 +6634,21 @@ describe("AutonomyScheduler", () => {
         sources: [source],
       });
 
-      expect((await scheduler.tick()).sourceErrorCount).toBe(1);
+      expect(await scheduler.tick()).toMatchObject({
+        sourceErrorCount: 1,
+        sourceErrors: [
+          {
+            sourceName: "scheduled_wake",
+            error: expect.stringContaining(`${failureStage} failed`),
+            errorName: "AutonomySourcePreparationError",
+          },
+        ],
+      });
       clock.advance(30_000);
       phase = "empty";
-      expect(await scheduler.tick()).toMatchObject({ events: [], sourceErrorCount: 0 });
+      const recovered = await scheduler.tick();
+      expect(recovered).toMatchObject({ events: [], sourceErrorCount: 0 });
+      expect(recovered.sourceErrors ?? []).toEqual([]);
       expect(source.scan).toHaveBeenCalledTimes(2);
 
       clock.advance(1_000);
