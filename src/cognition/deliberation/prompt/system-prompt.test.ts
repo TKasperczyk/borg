@@ -7,7 +7,11 @@ import {
   AUTONOMY_WAKE_STARTUP_INTERRUPTED_DETAIL,
   HEADWAY_EMISSION_KINDS,
 } from "../../../autonomy/index.js";
-import { FINALIZER_NO_OUTPUT_SEMANTIC_CATEGORIES } from "../../generation/types.js";
+import {
+  FINALIZER_NO_OUTPUT_CATEGORIES,
+  FINALIZER_NO_OUTPUT_PRIMARY_REASONS,
+  FINALIZER_NO_OUTPUT_SEMANTIC_CATEGORIES,
+} from "../../generation/types.js";
 import type { MoodHistoryEntry } from "../../../memory/affective/index.js";
 import type { CommitmentRecord } from "../../../memory/commitments/index.js";
 import type { SocialProfile } from "../../../memory/social/index.js";
@@ -4560,6 +4564,19 @@ describe("buildBaseSystemPrompt", () => {
     for (const category of FINALIZER_NO_OUTPUT_SEMANTIC_CATEGORIES) {
       expect(block).toContain(category);
     }
+    // This entry is the case the reader trips on: its primary is "other", which no category
+    // can carry, so the two fields cannot agree however the silence was classified. Derive
+    // the gap here as the render does -- an edit moving a value across the two enums carries
+    // both, and one that empties the gap fails here rather than leaving a prompt sentence
+    // claiming a wider list that no longer exists.
+    const primaryReasonsWithoutCategory = FINALIZER_NO_OUTPUT_PRIMARY_REASONS.filter(
+      (reason) => !(FINALIZER_NO_OUTPUT_CATEGORIES as readonly string[]).includes(reason),
+    );
+    expect(primaryReasonsWithoutCategory.length).toBeGreaterThan(0);
+    expect(primaryReasonsWithoutCategory).toContain("other");
+    expect(block).toContain(
+      `${primaryReasonsWithoutCategory.join(" and ")} have no category to appear as`,
+    );
   });
 
   // tool_name=none with no text and tool_name=none with a dropped call print the same

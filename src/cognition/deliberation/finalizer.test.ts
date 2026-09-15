@@ -18,6 +18,10 @@ import {
   promptSurfaceBlocksForSurface,
 } from "../prompts/prompt-surface-registry.js";
 import { resolveFinalizerNonTerminalTools } from "./autonomous-finalizer-tools.js";
+import {
+  FINALIZER_NO_OUTPUT_CATEGORIES,
+  FINALIZER_NO_OUTPUT_PRIMARY_REASONS,
+} from "../generation/types.js";
 import { OUTBOUND_POST_TOOL_NAME } from "../../tools/internal/outbound-post-name.js";
 import type { DeliberationContext } from "./types.js";
 import {
@@ -1487,6 +1491,45 @@ describe("runFinalizer emission tools", () => {
       });
     },
   );
+
+  // The two fields are read side by side on my own silences list, and a primary that never
+  // shows up among the categories reads as the two records disagreeing. It is the schema:
+  // the category field takes the semantic enum only, so these values cannot be written there
+  // at all. Derive the set so this tracks an edit to either enum instead of pinning names.
+  it.each(
+    FINALIZER_NO_OUTPUT_PRIMARY_REASONS.filter(
+      (reason) => !(FINALIZER_NO_OUTPUT_CATEGORIES as readonly string[]).includes(reason),
+    ),
+  )("rejects %s as an EmitNoOutput category", async (primaryOnlyReason) => {
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          messageBlocks: [
+            {
+              type: "tool_use",
+              id: "toolu_no_output_category",
+              name: "EmitNoOutput",
+              input: {
+                reason: "no_visible_reply_needed",
+                primary_no_output_reason: primaryOnlyReason,
+                no_output_categories: [primaryOnlyReason],
+              },
+            },
+          ],
+          input_tokens: 4,
+          output_tokens: 2,
+          stop_reason: "tool_use",
+        },
+      ],
+    });
+
+    const result = await runEmissionFinalizer(llm, tempDirs);
+
+    expect(result.decision).toMatchObject({
+      kind: "invalid_tool",
+      toolName: "EmitNoOutput",
+    });
+  });
 
   it("rejects malformed EmitSelfReport payloads", async () => {
     const llm = new FakeLLMClient({

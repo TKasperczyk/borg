@@ -102,6 +102,8 @@ import {
 } from "../../generation/discourse-state.js";
 import { classifySuppressionReason } from "../../generation/suppression-outcome.js";
 import {
+  FINALIZER_NO_OUTPUT_CATEGORIES,
+  FINALIZER_NO_OUTPUT_PRIMARY_REASONS,
   FINALIZER_NO_OUTPUT_SEMANTIC_CATEGORIES,
   FINALIZER_NO_OUTPUT_STRUCTURAL_CATEGORIES,
 } from "../../generation/types.js";
@@ -2492,11 +2494,26 @@ const WAKE_SILENT_OUTCOME_CLASSES =
 const SUPPRESSION_OUTCOME_CLASSES =
   "deliberate-silence (the turn was mine to close and I closed it), emission-failed (an emission was attempted and did not come out), guard-blocked (a post-generation guard stopped a draft I had already produced), observed, unknown (a code this mapping does not cover)";
 
+/**
+ * primary_no_output_reason and no_output_categories render side by side on a no-output
+ * entry, and the provenance line said only where each comes from -- not that they are
+ * drawn from different enums. The primary list covers the semantic categories and adds
+ * values the category enum has no member for, so those can never appear in
+ * no_output_categories however the silence was classified, and a reader comparing the
+ * two fields has no way to tell that from the two disagreeing. Derive the gap from the
+ * enums so an edit to either carries the sentence with it.
+ */
+const NO_OUTPUT_PRIMARY_REASONS_WITHOUT_CATEGORY = FINALIZER_NO_OUTPUT_PRIMARY_REASONS.filter(
+  (reason) => !(FINALIZER_NO_OUTPUT_CATEGORIES as readonly string[]).includes(reason),
+);
+
 const NO_OUTPUT_DIAGNOSTIC_PROVENANCE = `no_output_categories: model-supplied (${FINALIZER_NO_OUTPUT_SEMANTIC_CATEGORIES.join(
   ", ",
 )}); harness-added (${FINALIZER_NO_OUTPUT_STRUCTURAL_CATEGORIES.join(
   ", ",
-)}). structural_no_output_flags share those harness counts: with_state_delta/current_turn_state_delta and with_open_question/open_question_rendered. borg_directly_addressed derives from when_borg_addressed. primary_no_output_reason is model-supplied or derived from semantic categories.`;
+)}). structural_no_output_flags share those harness counts: with_state_delta/current_turn_state_delta and with_open_question/open_question_rendered. borg_directly_addressed derives from when_borg_addressed. primary_no_output_reason is model-supplied or derived from those semantic ones, from a wider list: ${NO_OUTPUT_PRIMARY_REASONS_WITHOUT_CATEGORY.join(
+  " and ",
+)} have no category to appear as, so a primary of either is absent by vocabulary, not disagreement.`;
 
 /**
  * A `tool_name: none` diagnostic says the attempt emitted no terminal tool call. It does
@@ -2653,7 +2670,7 @@ function summarizeMechanismEvidence(
         .map((entry) => renderRecentSuppressionMechanismEvidence(entry, renderNowMs))
         .join(
           ", ",
-        )}. The bracketed token after each reason code is that code's outcome class, and the whole contrast set is ${SUPPRESSION_OUTCOME_CLASSES} -- so a list showing only one of them is a fact about these entries, not about which classes can occur. The class is not recoverable from the reason code by reading it: sibling codes in one enum fall on opposite sides of the line, and deliberate-silence means the turn was mine to close and I closed it, which is a different account of the same blank than a guard stopping a draft I had already written. If asked about going quiet, I attribute it to the actual reason code, its outcome class, and the rendered diagnostic. I do not invent network failures, latency spikes, or technical errors, and I do not report my own closure as something done to me. ${NO_OUTPUT_DIAGNOSTIC_PROVENANCE}${invalidToolNote}`,
+        )}. The bracketed token after each reason code is that code's outcome class, and the whole contrast set is ${SUPPRESSION_OUTCOME_CLASSES} -- so a list showing only one of them is a fact about these entries, not about which classes can occur. The class is not recoverable from the reason code by reading it: sibling codes in one enum fall on opposite sides of the line, and both leave the same blank. If asked about going quiet, I attribute it to the actual reason code, its outcome class, and the rendered diagnostic. I do not invent network failures, latency spikes, or technical errors, and I do not report my own closure as something done to me. ${NO_OUTPUT_DIAGNOSTIC_PROVENANCE}${invalidToolNote}`,
     );
   }
 
