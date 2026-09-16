@@ -121,10 +121,74 @@ describe("openQuestionStateMetadata", () => {
     // stamp is a pass that produced nothing, and it is the one zero a reader cannot tell apart
     // from never-selected -- so it is exactly where the omitted sentence was load-bearing.
     expect(neverSelected).not.toHaveProperty("unresolved_rumination_ticks_note");
-    expect(selectedAndSilent?.unresolved_rumination_ticks_note).toContain("produced none");
+    expect(selectedAndSilent?.unresolved_rumination_ticks_note).toContain("produced no note");
     expect(selectedAndSilent?.unresolved_rumination_ticks_note).toContain(
       "not a question the loop has never reached",
     );
+  });
+
+  it("carries the store's note count beside the ticks, in both directions of divergence", () => {
+    // A merge hands a duplicate's notes to the primary without its ticks, so the two quantities
+    // separate. Neither direction is recoverable from the page while only the counter is on it.
+    const ticksAboveNotes = openQuestionStateMetadata(
+      openQuestion({ unresolved_rumination_ticks: 4, last_ruminated_at: NOW_MS }),
+      NOW_MS,
+      4,
+      2,
+    );
+    const notesAboveTicks = openQuestionStateMetadata(
+      openQuestion({ unresolved_rumination_ticks: 2, last_ruminated_at: NOW_MS }),
+      NOW_MS,
+      4,
+      4,
+    );
+
+    expect(ticksAboveNotes).toMatchObject({
+      unresolved_rumination_ticks: 4,
+      recorded_rumination_notes: 2,
+    });
+    expect(notesAboveTicks).toMatchObject({
+      unresolved_rumination_ticks: 2,
+      recorded_rumination_notes: 4,
+    });
+    // The ticks label must not name itself as the note count once the note count is beside it.
+    expect(ticksAboveNotes?.unresolved_rumination_ticks_note).toContain(
+      "not recorded_rumination_notes beside it",
+    );
+  });
+
+  it("suppresses the note count only where the row carries no rumination signal at all", () => {
+    const silent = openQuestionStateMetadata(openQuestion(), NOW_MS, 4, 0);
+    // Zero ticks and a null stamp with notes on the row is the merge case, and it is the one the
+    // reader cannot reconstruct: the counter reads the same as a question never worked.
+    const mergedOntoUnworked = openQuestionStateMetadata(openQuestion(), NOW_MS, 4, 3);
+
+    expect(silent).not.toHaveProperty("recorded_rumination_notes");
+    expect(mergedOntoUnworked).toMatchObject({
+      unresolved_rumination_ticks: 0,
+      recorded_rumination_notes: 3,
+    });
+  });
+
+  it("counts the record a closed row's notes outlived, which its zeroed counter cannot", () => {
+    const abandoned = openQuestionStateMetadata(
+      openQuestion({
+        status: "abandoned",
+        abandoned_reason: "stale",
+        abandoned_at: NOW_MS,
+        unresolved_rumination_ticks: 0,
+        last_ruminated_at: null,
+      }),
+      NOW_MS,
+      4,
+      18,
+    );
+
+    // The closure zeroes the counter and nulls the stamp, so the note count is the only quantity
+    // left that distinguishes a question worked eighteen times from one never worked at all.
+    expect(abandoned).toMatchObject({ recorded_rumination_notes: 18 });
+    expect(abandoned?.rumination_record_note).toContain("recorded_rumination_notes");
+    expect(abandoned).not.toHaveProperty("unresolved_rumination_ticks");
   });
 
   it("omits the threshold rather than inventing one when it was not supplied", () => {

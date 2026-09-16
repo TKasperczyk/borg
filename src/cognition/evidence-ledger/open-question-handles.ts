@@ -130,13 +130,13 @@ function ruminationTicksNoteFor(
 
     return {
       unresolved_rumination_ticks_note:
-        "No rumination note has been recorded against this question, yet last_ruminated_at is set: an offline pass selected it and produced none, and such a pass advances the stamp without advancing this count. A zero beside a live stamp is therefore a pass that recorded nothing, not a question the loop has never reached -- a null stamp is what the latter looks like.",
+        "This count stands at zero while last_ruminated_at is set: an offline pass selected it and produced no note, and such a pass advances the stamp without advancing the count. A zero beside a live stamp is therefore a pass that recorded nothing, not a question the loop has never reached -- a null stamp is what the latter looks like.",
     };
   }
 
   return {
     unresolved_rumination_ticks_note:
-      "Recorded rumination notes from offline passes that ended with this question still open; a pass that recorded no note stamps the schedule without advancing this count. A last_ruminated_at later than the newest note tool.openQuestions.ruminations returns for this row is therefore evidence of at least one such pass since that note, though how many is recoverable from neither field. The count on its own does not close it, and a count already past the threshold does not mean the other conditions are what kept it open: the dismissal is not evaluated at all on a pass that called the model for this question, so the model's still-open judgment stands and the count advances unchecked. Where the dismissal is evaluated, it also requires no episode created after the question citing it and no active action against it. Zero on another row means no note has been recorded against that question, not that it is fresh.",
+      "Note-bearing offline passes counted on this row while open, which is not recorded_rumination_notes beside it: a merge hands a duplicate's notes over without its ticks, so either can be larger. A pass that recorded no note stamps the schedule without advancing it, so a last_ruminated_at later than the newest note tool.openQuestions.ruminations returns is evidence of at least one such pass, though how many is recoverable from neither. The count on its own does not close it, and a count already past the threshold does not mean the other conditions are what kept it open: the dismissal is not evaluated at all on a pass that called the model for this question, so the model's still-open judgment stands and the count advances unchecked. Where it is evaluated, it also requires no episode created after the question citing it and no active action against it.",
   };
 }
 
@@ -144,9 +144,21 @@ export function openQuestionStateMetadata(
   question: OpenQuestion,
   nowMs?: number,
   staleNoTractionTicks?: number,
+  recordedRuminationNotes?: number,
 ): Record<string, unknown> | undefined {
+  const recordedNotes =
+    recordedRuminationNotes === undefined
+      ? {}
+      : { recorded_rumination_notes: recordedRuminationNotes };
+
   if (question.status === "open") {
     const ticks = question.unresolved_rumination_ticks;
+    // A row with no ticks, no stamp and no notes carries no rumination signal, and a zero is
+    // self-describing there -- which is why the ticks note is suppressed on the same condition.
+    // Everywhere else the count is shown: it and the ticks are different quantities, and a merge
+    // moves notes onto a row without moving the ticks that were counted for them.
+    const silentOnRumination =
+      ticks === 0 && question.last_ruminated_at === null && recordedRuminationNotes === 0;
     return {
       created_at: new Date(question.created_at).toISOString(),
       last_touched: new Date(question.last_touched).toISOString(),
@@ -157,6 +169,7 @@ export function openQuestionStateMetadata(
             last_touched_relative_age: formatRelativeAge(question.last_touched, nowMs),
           }),
       unresolved_rumination_ticks: ticks,
+      ...(silentOnRumination ? {} : recordedNotes),
       last_ruminated_at:
         question.last_ruminated_at === null
           ? null
@@ -174,9 +187,10 @@ export function openQuestionStateMetadata(
   // Closing a question zeroes unresolved_rumination_ticks and nulls last_ruminated_at in the same
   // write, so on a closed row those two fields record the closure rather than the work, and reading
   // a null there as "never ruminated" is reading the write's own echo. The rumination notes are the
-  // durable record: they are append-only and status-blind, so they outlive the row's closure.
+  // durable record: they are append-only and status-blind, so they outlive the row's closure, and
+  // recorded_rumination_notes is their count where the repository was available to take it.
   const closedRuminationNote =
-    "The rumination counter and last-ruminated stamp were zeroed and nulled by the write that closed this question, so they are not shown here: on a closed row they would describe the closure, not whether the loop ever worked the question. Absence of a stamp is therefore not evidence of absence of rumination. The passes that recorded one persist as rumination notes, which are append-only and survive the question closing; tool.openQuestions.ruminations reads them.";
+    "The rumination counter and last-ruminated stamp were zeroed and nulled by the write that closed this question, so they are not shown here: on a closed row they would describe the closure, not whether the loop ever worked the question. The notes those passes recorded outlive it; recorded_rumination_notes is the store's count of them, and tool.openQuestions.ruminations returns a capped tail rather than the whole record.";
 
   if (question.status === "resolved") {
     return {
@@ -184,6 +198,7 @@ export function openQuestionStateMetadata(
       resolved_at: question.resolved_at,
       resolution_evidence_episode_ids: question.resolution_evidence_episode_ids,
       resolution_evidence_stream_entry_ids: question.resolution_evidence_stream_entry_ids,
+      ...recordedNotes,
       rumination_record_note: closedRuminationNote,
     };
   }
@@ -192,6 +207,7 @@ export function openQuestionStateMetadata(
     return {
       abandoned_reason: question.abandoned_reason,
       abandoned_at: question.abandoned_at,
+      ...recordedNotes,
       rumination_record_note: closedRuminationNote,
     };
   }

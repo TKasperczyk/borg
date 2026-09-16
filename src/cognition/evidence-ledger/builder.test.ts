@@ -4670,6 +4670,7 @@ describe("EvidenceLedgerBuilder", () => {
       },
       openQuestionsRepository: {
         findByHandles: () => [resolvedQuestion],
+        countRuminations: () => 18,
       },
       currentSessionTranscriptTokenBudget: 50_000,
     });
@@ -4700,6 +4701,10 @@ describe("EvidenceLedgerBuilder", () => {
           resolution_note: "The user explicitly said the dish worked out well.",
           resolved_at: NOW_MS,
           resolution_evidence_stream_entry_ids: [resolvedEntry.id],
+          // A closed row shows neither the counter nor the stamp, because the closing write zeroed
+          // both. The note count is taken from the repository rather than the row, so it is the one
+          // quantity on a closed question that still reports how much work the loop did on it.
+          recorded_rumination_notes: 18,
         }),
       }),
     ]);

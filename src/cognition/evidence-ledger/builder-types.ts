@@ -38,7 +38,7 @@ export type EvidenceLedgerBuilderOptions = {
   commitmentRepository?: CommitmentLedgerRepository;
   sourceStreamAudienceDisclosureResolver?: SourceStreamAudienceDisclosureResolver;
   goalsRepository?: GoalLedgerRepository;
-  openQuestionsRepository?: Pick<OpenQuestionsRepository, "findByHandles">;
+  openQuestionsRepository?: Pick<OpenQuestionsRepository, "findByHandles" | "countRuminations">;
   currentSessionTranscriptTokenBudget: number;
   actionThreadRenderLimit?: number;
   actionThreadSimilarityThreshold?: number;

@@ -56,6 +56,7 @@ export function addOpenQuestionsSection(context: BuilderSectionContext): void {
             question,
             context.nowMs,
             context.options.openQuestionStaleNoTractionTicks,
+            context.repos.openQuestions?.countRuminations(question.id),
           ),
           disclosureLabel,
         }),
