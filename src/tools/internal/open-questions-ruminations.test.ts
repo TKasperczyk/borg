@@ -20,6 +20,7 @@ function toolFor(repository: OpenQuestionsRepository) {
   return createOpenQuestionsRuminationsTool({
     listRuminations: (input) => repository.listRuminationsInRange(input),
     getOpenQuestion: (id) => repository.get(id),
+    countRuminations: (id) => repository.countRuminations(id),
     clock: new FixedClock(100_000),
   });
 }
@@ -198,6 +199,49 @@ describe("tool.openQuestions.ruminations", () => {
 
       expect(output.ruminations.map((row) => row.note)).toEqual(["pass-2", "pass-1"]);
       expect(output.has_more).toBe(true);
+      // has_more says the page was cut; it never says by how much. The per-row count is the
+      // record's size, so two delivered out of three still report three.
+      expect(output.ruminations.map((row) => row.question_recorded_rumination_notes)).toEqual([
+        3, 3,
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("counts a question's whole record even when the range excludes most of it", async () => {
+    const { db, repository } = openRepository();
+
+    try {
+      const question = repository.add({
+        question: "How much of this am I holding?",
+        urgency: 0.4,
+        source: "reflection",
+        provenance: manualProvenance,
+      });
+
+      for (let index = 0; index < 5; index += 1) {
+        repository.recordRumination({
+          open_question_id: question.id,
+          note: `pass-${index}`,
+          source_process: "offline_ruminator",
+          provenance: manualProvenance,
+          created_at: 11_000 + index,
+        });
+      }
+
+      const output = await toolFor(repository).invoke(
+        { since: new Date(11_003).toISOString(), until: new Date(20_000).toISOString() },
+        toolContext,
+      );
+
+      // A range cut leaves has_more false, so nothing on the page marks the tail at all. Without
+      // the count, two notes read as the whole record rather than as the newest two of five.
+      expect(output.ruminations.map((row) => row.note)).toEqual(["pass-4", "pass-3"]);
+      expect(output.has_more).toBe(false);
+      expect(output.ruminations.map((row) => row.question_recorded_rumination_notes)).toEqual([
+        5, 5,
+      ]);
     } finally {
       db.close();
     }

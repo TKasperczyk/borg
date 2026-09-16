@@ -49,6 +49,12 @@ const ruminationForCognitionSchema = z
     question: z.string().nullable(),
     question_status: z.string().nullable(),
     question_unresolved_rumination_ticks: z.number().int().nonnegative().nullable(),
+    // How many notes this note's question holds in the store, not how many of them this page
+    // carries. `has_more` says a page was cut without saying by how much, and for a single-question
+    // read that leaves a tail indistinguishable from a whole record: twelve returned reads the same
+    // as twelve existing. The ledger already prints this count beside the question; printing it
+    // beside the note makes the two surfaces agree about the size of what is being held.
+    question_recorded_rumination_notes: z.number().int().nonnegative(),
     note: z.string().nullable(),
     payload_status: z.enum(RUMINATION_PAYLOAD_STATUSES),
     payload_included_chars: z.number().int().nonnegative(),
@@ -79,6 +85,7 @@ export type OpenQuestionsRuminationsToolOptions = {
     limit: number;
   }) => OpenQuestionRumination[] | Promise<OpenQuestionRumination[]>;
   getOpenQuestion: (id: OpenQuestionId) => OpenQuestion | null | Promise<OpenQuestion | null>;
+  countRuminations: (id: OpenQuestionId) => number | Promise<number>;
   clock?: Clock;
 };
 
@@ -146,6 +153,7 @@ export function createOpenQuestionsRuminationsTool(
             ? unknownMemoryDisclosureLabel()
             : openQuestionMemoryDisclosureLabel(question),
         ]);
+        const recordedRuminationNotes = await options.countRuminations(candidate.open_question_id);
         const payloadChars = candidate.note.length + (question?.question.length ?? 0);
         const row: RuminationForCognition = {
           handle: `rumination:${candidate.id}`,
@@ -153,6 +161,7 @@ export function createOpenQuestionsRuminationsTool(
           question: question?.question ?? null,
           question_status: question?.status ?? null,
           question_unresolved_rumination_ticks: question?.unresolved_rumination_ticks ?? null,
+          question_recorded_rumination_notes: recordedRuminationNotes,
           note: candidate.note,
           payload_status: "exact",
           payload_included_chars: payloadChars,

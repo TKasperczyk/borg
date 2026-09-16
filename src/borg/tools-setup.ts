@@ -283,6 +283,7 @@ export function buildToolDispatcher(options: BuildToolDispatcherOptions): ToolDi
         listRuminations: (listOptions) =>
           options.openQuestionsRepository.listRuminationsInRange(listOptions),
         getOpenQuestion: (id) => options.openQuestionsRepository.get(id),
+        countRuminations: (id) => options.openQuestionsRepository.countRuminations(id),
       }),
     )
     .register(
