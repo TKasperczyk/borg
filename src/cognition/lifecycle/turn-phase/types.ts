@@ -166,7 +166,7 @@ export type TurnPhaseCoordinatorOptions = {
   autobiographicalRepository?: Pick<AutobiographicalRepository, "listPeriods">;
   openQuestionsRepository: Pick<
     OpenQuestionsRepository,
-    "findByHandles" | "get" | "list" | "resolve"
+    "findByHandles" | "get" | "list" | "resolve" | "countRuminations"
   >;
   toolDispatcher: ToolDispatcher;
   createStreamReader: (sessionId: SessionId) => StreamReader;
