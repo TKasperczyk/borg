@@ -196,6 +196,7 @@ export type AutonomySchedulerBudgetDescription = {
    * comparable across reads.
    */
   window_started_at: number;
+  /** Excludes structurally recorded preparation failures; outcome tallies retain them. */
   used_in_current_window: number;
   reserved_contemplative_wakes_per_window: number;
   contemplative_used_in_current_window: number;

@@ -194,4 +194,18 @@ export const autonomyMigrations = [
       `);
     },
   },
+  {
+    id: 9,
+    name: "autonomy_wakes_preparation_failed",
+    up: (db) => {
+      // Only an observed preparation failure earns this flag. Existing errors
+      // stay budgeted: their text cannot establish whether a turn opened.
+      db.exec(`
+        ALTER TABLE autonomy_wakes
+        ADD COLUMN preparation_failed INTEGER NOT NULL DEFAULT 0 CHECK (
+          preparation_failed IN (0, 1)
+        );
+      `);
+    },
+  },
 ] as const satisfies readonly Migration[];

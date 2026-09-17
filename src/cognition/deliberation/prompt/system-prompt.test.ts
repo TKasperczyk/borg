@@ -2814,6 +2814,9 @@ describe("buildBaseSystemPrompt", () => {
         "Wake budget: used=5 / limit=6 / window=1h rolling, covering wakes stamped at or after 2023-11-14T21:13:20.000Z",
       );
       expect(block).toContain(
+        "Recorded preparation failures before a turn opens remain in the wake rows and error tallies below, but do not consume the wake budget or its contemplative reservation.",
+      );
+      expect(block).toContain(
         "trigger_name=scheduled_reflection wake_count=4 in_flight=1(fired 2023-11-14T21:28:20.000Z) outcome_counts(headway=2 silent=1 error=0 busy=0 interrupted=0)",
       );
       // in_flight=0 prints bare: an empty stamp list has nothing to name, and a
