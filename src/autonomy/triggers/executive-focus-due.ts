@@ -65,6 +65,7 @@ export type ExecutiveFocusDuePayload = {
   selected_goal: {
     goal_id: GoalRecord["id"];
     description: string;
+    terminal_condition: GoalRecord["terminal_condition"];
     priority: number;
     status: GoalRecord["status"];
     block_history?: GoalRecord["block_history"];
@@ -248,6 +249,13 @@ function buildScorePayload(input: {
     selected_goal: {
       goal_id: input.goal.id,
       description: input.goal.description,
+      // The wake that forces focus onto a goal is where the keep-or-retire
+      // judgment happens, and the stored criterion for that judgment reaches
+      // no other surface inside the turn: tc renders only on the handful of
+      // expanded goal_detail rows, and a forced goal is forced precisely
+      // because it scores below that cut. Carried whole, like the description
+      // beside it -- an excerpt of the criterion is the defect, not the fix.
+      terminal_condition: input.goal.terminal_condition,
       priority: input.goal.priority,
       status: input.goal.status,
       ...goalBlockStateFields(input.goal),
