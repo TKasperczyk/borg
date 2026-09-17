@@ -181,6 +181,7 @@ export type AutonomySchedulerWakeDescription = {
   ts: number;
   trigger_name: AutonomyWakeSourceName;
   outcome: AutonomyWakeOutcome | null;
+  preparation_failed: boolean;
   headway_bases: string[] | null;
   finalizer_rounds: number | null;
   stall_retries: number | null;
@@ -196,6 +197,7 @@ export type AutonomySchedulerBudgetDescription = {
    * comparable across reads.
    */
   window_started_at: number;
+  /** Excludes structurally recorded preparation failures; outcome tallies retain them. */
   used_in_current_window: number;
   reserved_contemplative_wakes_per_window: number;
   contemplative_used_in_current_window: number;

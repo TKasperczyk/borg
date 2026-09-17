@@ -6,6 +6,7 @@ import {
   AUTONOMY_CONDITION_NAMES,
   AUTONOMY_WAKE_STARTUP_INTERRUPTED_DETAIL,
   HEADWAY_EMISSION_KINDS,
+  type AutonomySchedulerDescription,
 } from "../../../autonomy/index.js";
 import {
   FINALIZER_NO_OUTPUT_CATEGORIES,
@@ -2930,6 +2931,7 @@ describe("buildBaseSystemPrompt", () => {
         ts: NOW_MS - 11 * 60_000,
         trigger_name: "scheduled_reflection",
         outcome: "headway",
+        preparation_failed: false,
         headway_bases: ["continued private thought"],
         finalizer_rounds: 3,
         stall_retries: 2,
@@ -2938,6 +2940,7 @@ describe("buildBaseSystemPrompt", () => {
         ts: NOW_MS - 20 * 60_000,
         trigger_name: "goal_followup_due",
         outcome: "silent",
+        preparation_failed: false,
         headway_bases: null,
         finalizer_rounds: null,
         stall_retries: null,
@@ -2975,6 +2978,56 @@ describe("buildBaseSystemPrompt", () => {
     expect(block).toContain(
       "Wake execution totals over those 2 row(s): fr=3 from 1/2 rows with fr recorded; sr=2 from 1/2 rows with sr recorded. Absent values are excluded, not counted as zero.",
     );
+  });
+
+  it("renders preparation budget exemptions on their error rows without annotating legacy errors", () => {
+    const description: Pick<AutonomySchedulerDescription, "window_wakes"> = {
+      window_wakes: [
+        {
+          ts: NOW_MS - 1_000,
+          trigger_name: "open_question_dormant",
+          outcome: "error",
+          preparation_failed: true,
+          headway_bases: null,
+          finalizer_rounds: 0,
+          stall_retries: 0,
+        },
+        {
+          ts: NOW_MS - 2_000,
+          trigger_name: "open_question_dormant",
+          outcome: "error",
+          preparation_failed: false,
+          headway_bases: null,
+          finalizer_rounds: null,
+          stall_retries: null,
+        },
+      ],
+    };
+    const schedulerState = makeSchedulerStateWithSources();
+    schedulerState.windowWakes = description.window_wakes;
+    schedulerState.fleetBrake.window_outcomes.error = 2;
+    schedulerState.fleetBrake.window_error_reasons = { total: 2, without_detail: 2, reasons: [] };
+    const block = extractBlock(
+      buildBaseSystemPrompt(
+        makeContext({
+          turnOrigin: "autonomous",
+          turnMechanismEvidence: {
+            recentSuppressions: [],
+            recentRegenerations: [],
+            autonomySchedulerState: schedulerState,
+          },
+        }),
+        { ...PROMPT_OPTIONS, nowMs: NOW_MS },
+      ),
+      "borg_mechanism_evidence",
+    );
+    const rows = block.split("\n").filter((line) => line.startsWith("- <wake "));
+    expect(rows).toEqual([
+      '- <wake at="2023-11-14T22:13:19.000Z" tr="open_question_dormant" o="error" preparation_failed="true" budgeted="false" fr="0" sr="0" />',
+      '- <wake at="2023-11-14T22:13:18.000Z" tr="open_question_dormant" o="error" />',
+    ]);
+    expect(block).toContain("Wake budget: used=1 / limit=6");
+    expect(block).not.toContain("Recorded preparation failures before a turn opens");
   });
 
   // `enabled` is the constructor flag and never a liveness fact, but the line

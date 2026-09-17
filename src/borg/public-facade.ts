@@ -1260,6 +1260,7 @@ export type BorgAutonomyWakeRecord = {
   source_category: AutonomyWakeSourceCategory;
   selected_goal_id: GoalId | null;
   outcome: AutonomyWakeOutcome | null;
+  preparation_failed: boolean;
   outcome_detail: string | null;
   headway_bases: string[] | null;
   finalizer_rounds: number | null;
@@ -1277,7 +1278,10 @@ export type BorgAutonomyWakeRecordInput = {
 
 export type BorgAutonomyWakesFacade = {
   record(input: BorgAutonomyWakeRecordInput): BorgAutonomyWakeRecord;
-  countSince(ts: number, options?: { sourceCategory?: AutonomyWakeSourceCategory }): number;
+  countSince(
+    ts: number,
+    options?: { sourceCategory?: AutonomyWakeSourceCategory; excludePreparationFailures?: boolean },
+  ): number;
   listSince(ts: number, limit: number): BorgAutonomyWakeRecord[];
   prune(olderThan: number): number;
 };

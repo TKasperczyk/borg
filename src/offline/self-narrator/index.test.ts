@@ -1,9 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
+import {
+  publicMemoryDisclosureLabel,
+  selfPrivateMemoryDisclosureLabel,
+} from "../../memory/common/disclosure-label.js";
 import { createMaintenanceRunId } from "../../util/ids.js";
 import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
+import { estimatePromptTokens } from "../../util/token-estimate.js";
 
+import { episodeEvidencePromptRow } from "../evidence-labels.js";
 import { createEpisodeFixture, createOfflineTestHarness } from "../test-support.js";
 import { SelfNarratorProcess } from "./index.js";
 
@@ -58,6 +64,341 @@ function createSelfNarratorResponse(input: {
 }
 
 describe("SelfNarratorProcess", () => {
+  it("bounds the prompt by newest episodes while retaining all prior context and scoped citations", async () => {
+    const episodes = Array.from({ length: 6 }, (_, index) =>
+      createEpisodeFixture({
+        start_time: 1_000 + index * 1_000,
+        end_time: 1_500 + index * 1_000,
+        narrative: `${index}: ${"経験".repeat(4_000)}`,
+      }),
+    );
+    const llm = new FakeLLMClient({
+      responses: [
+        createSelfNarratorResponse({ observation: null, period_decision: "continue_current" }),
+        createSelfNarratorResponse({ observation: null, period_decision: "continue_current" }),
+        createSelfNarratorResponse({
+          observation: {
+            category: "understanding",
+            what_changed: "A proposed change citing omitted prior evidence.",
+            before_description: null,
+            after_description: null,
+            confidence: 0.5,
+            evidence_episode_ids: [episodes[0]!.id, episodes[5]!.id],
+          },
+          period_decision: "continue_current",
+        }),
+      ],
+    });
+    const harness = await createOfflineTestHarness({ llmClient: llm });
+    const process = new SelfNarratorProcess({
+      autobiographicalRepository: harness.autobiographicalRepository,
+      growthMarkersRepository: harness.growthMarkersRepository,
+      registry: harness.registry,
+    });
+    try {
+      harness.autobiographicalRepository.upsertPeriod({
+        label: "Established period",
+        start_ts: 1_000,
+        narrative: "I already have a story of the early part of this period.",
+        key_episode_ids: [episodes[0]!.id],
+        provenance: { kind: "offline", process: "self-narrator" },
+      });
+      // More than list()'s default page, including a marker at the period boundary.
+      const markers = Array.from({ length: 51 }, (_, index) =>
+        harness.growthMarkersRepository.add({
+          ts: 1_000 + index,
+          category: "understanding",
+          what_changed: `Prior development ${index}`,
+          evidence_episode_ids: [episodes[0]!.id],
+          confidence: 0.5,
+          source_process: "self-narrator",
+          provenance: { kind: "offline", process: "self-narrator" },
+        }),
+      );
+      // Deliberately out of order: selection must use timestamps, not repository order.
+      vi.spyOn(harness.episodicRepository, "listEffectivelyVisible").mockResolvedValue(
+        [...episodes].reverse(),
+      );
+      await process.plan(harness.createContext());
+      const fullPrompt = String(llm.requests[0]!.messages[0]!.content);
+      const overhead =
+        estimatePromptTokens(String(llm.requests[0]!.system)) +
+        estimatePromptTokens(JSON.stringify(llm.requests[0]!.tools));
+      const omittedRows = episodes
+        .slice(0, 4)
+        .map((episode) =>
+          JSON.stringify(episodeEvidencePromptRow(episode, { start_time: episode.start_time })),
+        );
+      // Leave space for the coverage notice, but nowhere near another episode.
+      const cap =
+        overhead +
+        estimatePromptTokens(fullPrompt) -
+        estimatePromptTokens(omittedRows.join("\n")) +
+        100;
+      harness.config.offline.selfNarrator.maxPromptTokens = cap;
+      await process.plan(harness.createContext());
+      const prompt = String(llm.requests[1]!.messages[0]!.content);
+      const request = llm.requests[1]!;
+      expect(
+        estimatePromptTokens(String(request.system)) +
+          estimatePromptTokens(JSON.stringify(request.tools)) +
+          request.messages.reduce(
+            (sum, message) => sum + estimatePromptTokens(String(message.content)),
+            0,
+          ),
+      ).toBeLessThanOrEqual(cap);
+      expect(prompt.split("\nEpisodes:\n")[1]).toBe(
+        episodes
+          .slice(4)
+          .map((episode) =>
+            JSON.stringify(episodeEvidencePromptRow(episode, { start_time: episode.start_time })),
+          )
+          .join("\n"),
+      );
+      expect(prompt).toContain("4 earlier episodes of this period are not shown");
+      expect(prompt).toContain("1970-01-01T00:00:01.000Z to 1970-01-01T00:00:04.500Z");
+      expect(prompt).toContain("I already have a story of the early part of this period.");
+      for (const marker of markers) expect(prompt).toContain(marker.what_changed);
+      expect(prompt).toContain("I revise and extend its existing story");
+
+      // IDs carried by the prior narrative/markers do not enlarge allowedIds.
+      const invalidPlan = await process.plan(harness.createContext());
+      expect(invalidPlan.errors).toEqual([
+        expect.objectContaining({ code: "SELF_NARRATOR_INVALID_REF" }),
+      ]);
+      expect(invalidPlan.items.some((item) => item.action === "add_growth_marker")).toBe(false);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("keeps every episode unchanged when the complete prompt fits exactly at the cap", async () => {
+    const episodes = [
+      createEpisodeFixture({ start_time: 1_000 }),
+      createEpisodeFixture({ start_time: 2_000 }),
+    ];
+    const response = createSelfNarratorResponse({ observation: null });
+    const llm = new FakeLLMClient({ responses: [response, response] });
+    const harness = await createOfflineTestHarness({ llmClient: llm });
+    const process = new SelfNarratorProcess({
+      autobiographicalRepository: harness.autobiographicalRepository,
+      growthMarkersRepository: harness.growthMarkersRepository,
+      registry: harness.registry,
+    });
+    try {
+      harness.autobiographicalRepository.upsertPeriod({
+        label: "Current period",
+        start_ts: 1_000,
+        narrative: "My existing narrative.",
+        provenance: { kind: "offline", process: "self-narrator" },
+      });
+      vi.spyOn(harness.episodicRepository, "listEffectivelyVisible").mockResolvedValue(episodes);
+      await process.plan(harness.createContext());
+      const prompt = String(llm.requests[0]!.messages[0]!.content);
+      const cap =
+        estimatePromptTokens(String(llm.requests[0]!.system)) +
+        estimatePromptTokens(JSON.stringify(llm.requests[0]!.tools)) +
+        estimatePromptTokens(prompt);
+      harness.config.offline.selfNarrator.maxPromptTokens = cap;
+      await process.plan(harness.createContext());
+      expect(llm.requests[1]!.messages[0]!.content).toBe(prompt);
+      const request = llm.requests[1]!;
+      expect(
+        estimatePromptTokens(String(request.system)) +
+          estimatePromptTokens(JSON.stringify(request.tools)) +
+          request.messages.reduce(
+            (sum, message) => sum + estimatePromptTokens(String(message.content)),
+            0,
+          ),
+      ).toBe(cap);
+      expect(prompt).toContain("All 2 candidate episodes are shown; 0 earlier episodes omitted.");
+      expect(prompt.split("\nEpisodes:\n")[1]).toBe(
+        episodes
+          .map((episode) =>
+            JSON.stringify(episodeEvidencePromptRow(episode, { start_time: episode.start_time })),
+          )
+          .join("\n"),
+      );
+      // The user message alone fitting is insufficient: reserve system and tools.
+      harness.config.offline.selfNarrator.maxPromptTokens = estimatePromptTokens(prompt);
+      const tooSmall = await process.plan(harness.createContext());
+      expect(tooSmall.errors).toEqual([
+        expect.objectContaining({ code: "SELF_NARRATOR_PROMPT_BUDGET_TOO_SMALL" }),
+      ]);
+      expect(llm.requests).toHaveLength(2);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("reports a cap too small for prior context or the newest evidence without an oversized call", async () => {
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({ llmClient: llm });
+    const process = new SelfNarratorProcess({
+      autobiographicalRepository: harness.autobiographicalRepository,
+      growthMarkersRepository: harness.growthMarkersRepository,
+      registry: harness.registry,
+    });
+    try {
+      harness.config.offline.selfNarrator.maxPromptTokens = 1_000;
+      const episodes = [
+        createEpisodeFixture(),
+        createEpisodeFixture({ start_time: 2_000_000, narrative: "x".repeat(8_000) }),
+      ];
+      vi.spyOn(harness.episodicRepository, "listEffectivelyVisible").mockResolvedValue(episodes);
+      const plan = await process.plan(harness.createContext());
+      expect(plan.errors).toEqual([
+        expect.objectContaining({ code: "SELF_NARRATOR_PROMPT_BUDGET_TOO_SMALL" }),
+      ]);
+      expect(plan.items).toEqual([]);
+      expect(llm.requests).toEqual([]);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("carries prior growth-marker disclosure into a revised narrative", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        createSelfNarratorResponse({
+          observation: null,
+          period_decision: "continue_current",
+          period_narrative: "I have revised my story with earlier growth.",
+        }),
+      ],
+    });
+    const harness = await createOfflineTestHarness({ llmClient: llm });
+    const process = new SelfNarratorProcess({
+      autobiographicalRepository: harness.autobiographicalRepository,
+      growthMarkersRepository: harness.growthMarkersRepository,
+      registry: harness.registry,
+    });
+    try {
+      const episodes = [createEpisodeFixture(), createEpisodeFixture()];
+      vi.spyOn(harness.episodicRepository, "listEffectivelyVisible").mockResolvedValue(episodes);
+      harness.autobiographicalRepository.upsertPeriod({
+        label: "Current period",
+        start_ts: 1_000,
+        narrative: "My earlier public narrative.",
+        disclosure_label: publicMemoryDisclosureLabel(),
+        provenance: { kind: "offline", process: "self-narrator" },
+      });
+      harness.growthMarkersRepository.add({
+        ts: 2_000,
+        category: "understanding",
+        what_changed: "An earlier private development.",
+        evidence_episode_ids: [episodes[0]!.id],
+        confidence: 0.5,
+        source_process: "ruminator",
+        disclosure_label: selfPrivateMemoryDisclosureLabel(),
+        provenance: { kind: "offline", process: "ruminator" },
+      });
+      const plan = await process.plan(harness.createContext());
+      expect(plan.items).toEqual([
+        expect.objectContaining({
+          action: "update_period_narrative",
+          disclosure_label: expect.objectContaining({ disclosureClass: "self_private" }),
+        }),
+      ]);
+      expect(String(llm.requests[0]!.messages[0]!.content)).toContain(
+        '"disclosure_class":"self_private"',
+      );
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it.each(["continue_current", "open_new"] as const)(
+    "labels public-episode observations and fallback narratives from private prior context (%s)",
+    async (periodDecision) => {
+      const episodes = [
+        createEpisodeFixture({ shared: true, created_at: 2_000 }),
+        createEpisodeFixture({ shared: true, created_at: 3_000 }),
+      ];
+      const whatChanged = "I carried an earlier private development into my new understanding.";
+      const llm = new FakeLLMClient({
+        responses: [
+          createSelfNarratorResponse({
+            observation: {
+              category: "understanding",
+              what_changed: whatChanged,
+              before_description: null,
+              after_description: null,
+              confidence: 0.5,
+              evidence_episode_ids: episodes.map((episode) => episode.id),
+            },
+            period_decision: periodDecision,
+            period_narrative: null,
+          }),
+        ],
+      });
+      const harness = await createOfflineTestHarness({
+        llmClient: llm,
+        clock: { now: () => 10 * 86_400_000 },
+      });
+      const process = new SelfNarratorProcess({
+        autobiographicalRepository: harness.autobiographicalRepository,
+        growthMarkersRepository: harness.growthMarkersRepository,
+        registry: harness.registry,
+      });
+      try {
+        for (const episode of episodes) await harness.episodicRepository.createEpisode(episode);
+        harness.autobiographicalRepository.upsertPeriod({
+          label: "Current period",
+          start_ts: 1_000,
+          narrative: "My earlier public narrative.",
+          disclosure_label: publicMemoryDisclosureLabel(),
+          provenance: { kind: "offline", process: "self-narrator" },
+        });
+        const priorMarker = harness.growthMarkersRepository.add({
+          ts: 1_500,
+          category: "understanding",
+          what_changed: "An earlier private development.",
+          evidence_episode_ids: [episodes[0]!.id],
+          confidence: 0.5,
+          source_process: "ruminator",
+          disclosure_label: selfPrivateMemoryDisclosureLabel(),
+          provenance: { kind: "offline", process: "ruminator" },
+        });
+        const plan = await process.plan(harness.createContext());
+        expect(plan.errors).toEqual([]);
+        const marker = plan.items.find((item) => item.action === "add_growth_marker")?.marker;
+        expect(marker).toMatchObject({
+          what_changed: whatChanged,
+          evidence_episode_ids: episodes.map((episode) => episode.id),
+          disclosure_label: expect.objectContaining({ disclosureClass: "self_private" }),
+        });
+        const periodItem = plan.items.find(
+          (item) =>
+            item.action ===
+            (periodDecision === "open_new" ? "open_period" : "update_period_narrative"),
+        );
+        expect(periodItem).toBeDefined();
+        const period = periodItem?.action === "open_period" ? periodItem.period : periodItem;
+        expect(period).toMatchObject({
+          narrative: expect.stringContaining(whatChanged),
+          disclosure_label: expect.objectContaining({ disclosureClass: "self_private" }),
+        });
+        const prompt = String(llm.requests[0]!.messages[0]!.content);
+        expect(prompt).toContain(priorMarker.what_changed);
+        expect(prompt).toContain('"disclosure_class":"self_private"');
+        expect(prompt.split("\nEpisodes:\n")[1]).toBe(
+          episodes
+            .map((episode) =>
+              JSON.stringify(episodeEvidencePromptRow(episode, { start_time: episode.start_time })),
+            )
+            .join("\n"),
+        );
+        await process.apply(harness.createContext(), plan);
+        expect(
+          harness.growthMarkersRepository.get(marker!.id)?.disclosure_label?.disclosureClass,
+        ).toBe("self_private");
+      } finally {
+        await harness.cleanup();
+      }
+    },
+  );
+
   it("rejects malformed reversal ids before repository deletes", async () => {
     const harness = await createOfflineTestHarness();
     new SelfNarratorProcess({

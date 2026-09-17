@@ -83,6 +83,7 @@ const autonomyWakeRowSchema = z.object({
   wake_source_type: autonomyWakeSourceTypeSchema,
   source_category: autonomyWakeSourceCategorySchema,
   outcome: autonomyWakeOutcomeSchema.nullable(),
+  preparation_failed: z.boolean(),
   outcome_detail: z.string().nullable(),
   headway_bases: autonomyWakeHeadwayBasesSchema.nullable(),
   finalizer_rounds: z.number().int().nonnegative().nullable(),
@@ -141,6 +142,8 @@ export type AutonomyWakeRecord = {
   wake_source_type: AutonomyWakeSourceType;
   source_category: AutonomyWakeSourceCategory;
   outcome: AutonomyWakeOutcome | null;
+  /** True only for a recorded preparation failure before invoking the turn. */
+  preparation_failed: boolean;
   /**
    * Why this wake ended the way it did, when the outcome had a reason to carry.
    * Null means either the outcome had no detail or the row predates the column.
@@ -196,6 +199,7 @@ function mapWakeRow(row: Record<string, unknown>): AutonomyWakeRecord {
     wake_source_type: row.wake_source_type,
     source_category: row.source_category ?? "operational",
     outcome: row.outcome ?? null,
+    preparation_failed: row.preparation_failed === 1,
     outcome_detail: row.outcome_detail === undefined ? null : (row.outcome_detail ?? null),
     headway_bases: headwayBases,
     finalizer_rounds:
@@ -241,6 +245,7 @@ export class AutonomyWakesRepository {
       wake_source_type: parsed.wake_source_type,
       source_category: parsed.source_category,
       outcome: null,
+      preparation_failed: false,
       outcome_detail: null,
       headway_bases: null,
       finalizer_rounds: null,
@@ -276,12 +281,17 @@ export class AutonomyWakesRepository {
     options: {
       sourceCategory?: AutonomyWakeSourceCategory;
       outcome?: AutonomyWakeOutcome;
+      excludePreparationFailures?: boolean;
     } = {},
   ): number {
     const categoryFilter = options.sourceCategory;
     const outcomeFilter = options.outcome;
     const conditions = ["ts >= ?"];
     const values: unknown[] = [ts];
+
+    if (options.excludePreparationFailures === true) {
+      conditions.push("preparation_failed = 0");
+    }
 
     if (categoryFilter !== undefined) {
       conditions.push("source_category = ?");
@@ -306,7 +316,7 @@ export class AutonomyWakesRepository {
       .prepare(
         `
           SELECT id, ts, trigger_name, condition_name, session_id, wake_source_type, source_category,
-                 outcome, outcome_detail, headway_bases_json, finalizer_rounds, stall_retries,
+                 outcome, preparation_failed, outcome_detail, headway_bases_json, finalizer_rounds, stall_retries,
                  selected_goal_id
           FROM autonomy_wakes
           WHERE ts >= ?
@@ -325,6 +335,7 @@ export class AutonomyWakesRepository {
     detail?: string | null,
     headwayBases?: readonly string[] | null,
     executionCounts?: AutonomyWakeExecutionCounts,
+    options: { preparationFailed?: boolean } = {},
   ): void {
     const storedHeadwayBases =
       outcome === "headway" && headwayBases !== null && headwayBases !== undefined
@@ -341,7 +352,7 @@ export class AutonomyWakesRepository {
       .prepare(
         `UPDATE autonomy_wakes
          SET outcome = ?, outcome_detail = ?, headway_bases_json = ?,
-             finalizer_rounds = ?, stall_retries = ?
+             finalizer_rounds = ?, stall_retries = ?, preparation_failed = ?
          WHERE id = ? AND outcome IS NULL`,
       )
       .run(
@@ -350,6 +361,7 @@ export class AutonomyWakesRepository {
         storedHeadwayBases === null ? null : JSON.stringify(storedHeadwayBases),
         storedExecutionCounts?.finalizer_rounds ?? null,
         storedExecutionCounts?.stall_retries ?? null,
+        outcome === "error" && options.preparationFailed === true ? 1 : 0,
         id,
       );
   }

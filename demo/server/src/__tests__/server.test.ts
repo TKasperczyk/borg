@@ -42,6 +42,7 @@ import type { ReviewQueueRepository } from "../../../../src/memory/review-queue/
 import type { TrainOfThoughtRepository } from "../../../../src/memory/train-of-thought/index.js";
 import { TestEmbeddingClient, createTestConfig } from "../../../../src/offline/test-support.js";
 import type { AuditLog } from "../../../../src/offline/audit-log.js";
+import type { AutonomyWakesRepository } from "../../../../src/autonomy/wakes-repository.js";
 import type { LanceDbTable } from "../../../../src/storage/lancedb/index.js";
 import type { StreamWriter } from "../../../../src/stream/index.js";
 import {
@@ -68,6 +69,7 @@ type BorgTestInternals = {
   deps: {
     attachmentService: AttachmentService;
     auditLog: AuditLog;
+    autonomyWakesRepository: AutonomyWakesRepository;
     createStreamWriter(sessionId: typeof DEFAULT_SESSION_ID): StreamWriter;
     creatorDirectiveRepository: CreatorDirectiveRepository;
     episodicRepository: EpisodicRepository;
@@ -4417,6 +4419,20 @@ describe("demo server", () => {
       wake_source_type: "trigger",
       source_category: "contemplative",
     });
+    const failedWake = borg.autonomy.wakes.record({
+      trigger_name: "open_question_dormant",
+      session_id: DEFAULT_SESSION_ID,
+      wake_source_type: "trigger",
+    });
+    const internal = borg as unknown as BorgTestInternals;
+    internal.deps.autonomyWakesRepository.recordOutcome(
+      failedWake.id,
+      "error",
+      "retrieval timed out",
+      null,
+      { finalizer_rounds: 0, stall_retries: 0 },
+      { preparationFailed: true },
+    );
 
     const response = await app.request("/api/autonomy");
 
@@ -4452,12 +4468,19 @@ describe("demo server", () => {
           next_due_at: null,
         }),
       ]),
-      recent_wakes: [
+      recent_wakes: expect.arrayContaining([
         expect.objectContaining({
           trigger_name: "scheduled_reflection",
           session_id: DEFAULT_SESSION_ID,
+          preparation_failed: false,
         }),
-      ],
+        expect.objectContaining({
+          id: failedWake.id,
+          outcome: "error",
+          outcome_detail: "retrieval timed out",
+          preparation_failed: true,
+        }),
+      ]),
     });
     const conditionSource = body.wake_sources.find(
       (source: { name: string }) => source.name === "commitment_revoked",

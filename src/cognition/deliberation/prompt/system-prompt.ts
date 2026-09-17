@@ -1861,6 +1861,9 @@ function renderWakeWindowRows(
     const finalizerRoundsAttribute =
       wake.finalizer_rounds === null ? "" : ` fr="${wake.finalizer_rounds}"`;
     const stallRetriesAttribute = wake.stall_retries === null ? "" : ` sr="${wake.stall_retries}"`;
+    const preparationFailureAttributes = wake.preparation_failed
+      ? ' preparation_failed="true" budgeted="false"'
+      : "";
     const answeredWindowAttribute =
       wake.answered_window === undefined
         ? ""
@@ -1868,7 +1871,7 @@ function renderWakeWindowRows(
 
     return `- <wake at="${new Date(wake.ts).toISOString()}" tr="${wake.trigger_name}" o="${
       wake.outcome ?? "in_flight"
-    }"${headwayBases}${finalizerRoundsAttribute}${stallRetriesAttribute}${answeredWindowAttribute} />`;
+    }"${preparationFailureAttributes}${headwayBases}${finalizerRoundsAttribute}${stallRetriesAttribute}${answeredWindowAttribute} />`;
   });
 
   return [

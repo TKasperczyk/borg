@@ -644,6 +644,8 @@ const configBaseSchema = z.object({
           // (~204% of budget) on eight of nine runs. See the reflector budget
           // comment for the sizing rationale.
           budget: z.number().int().positive().default(500_000),
+          // Complete input estimate: system, tool schema, and observation user message.
+          maxPromptTokens: z.number().int().positive().default(250_000),
           maxObservationsPerRun: z.number().int().positive().default(4),
           minSupportEpisodes: z.number().int().positive().default(2),
           cadenceHintDays: z.number().positive().default(7),
@@ -738,7 +740,7 @@ const configBaseSchema = z.object({
       // deployments once their records have matured.
       enabled: z.boolean().default(true),
       intervalMs: z.number().int().positive().default(60_000),
-      prepToolTimeoutMs: z.number().int().positive().default(30_000),
+      prepToolTimeoutMs: z.number().int().positive().default(90_000),
       maxWakesPerWindow: z.number().int().positive().default(6),
       goalWakeBatchMax: z.number().int().positive().default(5),
       budgetWindowMs: z.number().int().positive().default(86_400_000),
@@ -1805,6 +1807,11 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["offline", "selfNarrator", "budget"],
     readOptionalEnvNumber(env, "BORG_OFFLINE_SELF_NARRATOR_BUDGET"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "selfNarrator", "maxPromptTokens"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_SELF_NARRATOR_MAX_PROMPT_TOKENS"),
   );
   setConfigOverride(
     overrides,

@@ -2081,6 +2081,7 @@ function mapAutonomyWake(borg: Borg, wake: AutonomyWakeRecord) {
     source_category: wake.source_category,
     selected_goal_id: wake.selected_goal_id,
     outcome: wake.outcome,
+    preparation_failed: wake.preparation_failed,
     outcome_detail: wake.outcome_detail,
     headway_bases: wake.headway_bases,
     finalizer_rounds: wake.finalizer_rounds,

@@ -22,10 +22,12 @@ import {
   growthMarkerIdSchema,
   growthMarkerSchema,
   type AutobiographicalPeriod,
+  type GrowthMarker,
 } from "../../memory/self/index.js";
 import { createAutobiographicalPeriodId, createGrowthMarkerId } from "../../util/ids.js";
 import { BudgetExceededError, StorageError } from "../../util/errors.js";
 import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
+import { estimatePromptTokens, estimatePromptTokensFromLength } from "../../util/token-estimate.js";
 
 import type { ReverserRegistry } from "../audit-log.js";
 import { getBudgetErrorTokens, withBudget } from "../budget.js";
@@ -59,6 +61,10 @@ const selfNarratorObservationSchema = z.object({
   period_decision_confidence: z.number().min(0).max(1).default(0),
 });
 const SELF_NARRATOR_TOOL_NAME = "EmitSelfNarratorObservations";
+const SELF_NARRATOR_SYSTEM_PROMPT = [
+  "I identify grounded autobiographical growth markers by clustering candidate episodes thematically. I return no observations when the evidence is weak.",
+  SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE,
+].join("\n");
 export const SELF_NARRATOR_TOOL = {
   name: SELF_NARRATOR_TOOL_NAME,
   description:
@@ -193,12 +199,15 @@ function buildObservationPrompt(
   minSupportEpisodes: number,
   maxObservationsPerRun: number,
   currentPeriod: AutobiographicalPeriod | null,
-): string {
-  return [
+  priorGrowthMarkers: readonly GrowthMarker[],
+  availableMessageTokens: number,
+): { sourceEpisodes: Episode[]; prompt: string } {
+  const priorContext = [
     "I narrate my own recent experience by identifying thematic clusters and grounded autobiographical growth observations from these candidate episodes.",
     `I emit my result by calling the ${SELF_NARRATOR_TOOL_NAME} tool exactly once.`,
     "I return an empty observations array if there is no grounded growth signal.",
     SELF_NARRATOR_PERIOD_NARRATIVE_GUIDANCE,
+    "The current narrative and growth markers are prior context. When continuing this period, I revise and extend its existing story with the shown evidence, preserving earlier developments even when their episodes are omitted. I decide whether a successor period is warranted; a presentation limit is not a period boundary.",
     `${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE} I apply this to growth marker what_changed, before_description, after_description, and period_narrative fields.`,
     "I set period_decision to continue_current or open_new based on whether these observations belong in the current autobiographical period. The configured cadence remains authoritative; if I emit open_new before cadence has elapsed, the host ignores that decision.",
     "I only cite evidence_episode_ids from the provided episodes.",
@@ -219,11 +228,49 @@ function buildObservationPrompt(
             ),
           },
     ),
-    "Episodes:",
-    ...episodes.map((episode) =>
-      JSON.stringify(episodeEvidencePromptRow(episode, { start_time: episode.start_time })),
+    "Existing growth markers for the current period (prior context, not additional citable episodes):",
+    ...priorGrowthMarkers.map((marker) =>
+      JSON.stringify({
+        ...marker,
+        ...memoryDisclosurePayloadFields(marker.disclosure_label ?? unknownMemoryDisclosureLabel()),
+      }),
     ),
   ].join("\n");
+
+  // Episodes arrive chronologically. Keep a contiguous newest suffix, stopping
+  // at the first non-fitting row rather than skipping a large recent episode.
+  // Prefix end times cover overlapping episodes without inspecting their text.
+  const prefixEndTimes: number[] = [];
+  for (const episode of episodes) {
+    prefixEndTimes.push(Math.max(prefixEndTimes.at(-1) ?? -Infinity, episode.end_time));
+  }
+  const coverage = (omittedCount: number): string =>
+    omittedCount === 0
+      ? `All ${episodes.length} candidate episodes are shown; 0 earlier episodes omitted.`
+      : `${omittedCount} earlier episodes of this period are not shown due to the prompt token cap. They cover ${new Date(episodes[0]!.start_time).toISOString()} to ${new Date(prefixEndTimes[omittedCount - 1]!).toISOString()}. The newest ${episodes.length - omittedCount} episodes are shown below in chronological order.`;
+  const header = (omittedCount: number) => `${priorContext}\n${coverage(omittedCount)}\nEpisodes:`;
+  const rows: string[] = [];
+  let rowsLength = 0;
+  let omittedCount = episodes.length;
+  for (let index = episodes.length - 1; index >= 0; index -= 1) {
+    const episode = episodes[index]!;
+    const row = JSON.stringify(
+      episodeEvidencePromptRow(episode, { start_time: episode.start_time }),
+    );
+    const nextRowsLength = rowsLength + 1 + row.length;
+    if (
+      estimatePromptTokensFromLength(header(index).length + nextRowsLength) > availableMessageTokens
+    ) {
+      break;
+    }
+    rows.push(row);
+    rowsLength = nextRowsLength;
+    omittedCount = index;
+  }
+  return {
+    sourceEpisodes: episodes.slice(omittedCount),
+    prompt: [header(omittedCount), ...rows.reverse()].join("\n"),
+  };
 }
 
 function invalidObservationResponse(error: unknown): unknown {
@@ -388,7 +435,7 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
     const nowMs = ctx.clock.now();
     const configuredLabel = typeof opts.params?.label === "string" ? opts.params.label.trim() : "";
     const currentPeriod = ctx.autobiographicalRepository.currentPeriod();
-    const sourceEpisodes = (await ctx.episodicRepository.listEffectivelyVisible())
+    const candidateEpisodes = (await ctx.episodicRepository.listEffectivelyVisible())
       .filter(
         (episode) =>
           currentPeriod === null ||
@@ -398,6 +445,47 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
       .sort((left, right) => left.start_time - right.start_time || left.id.localeCompare(right.id));
     const minSupportEpisodes = ctx.config.offline.selfNarrator.minSupportEpisodes;
     const maxObservationsPerRun = ctx.config.offline.selfNarrator.maxObservationsPerRun;
+    const priorGrowthMarkers =
+      currentPeriod === null
+        ? []
+        : ctx.growthMarkersRepository.list({
+            sinceTs: currentPeriod.start_ts,
+            untilTs: currentPeriod.end_ts ?? undefined,
+            // SQLite's unbounded LIMIT: prior context must not silently lose markers.
+            limit: -1,
+          });
+    // Prior context can inform any observation, even when only shown episodes
+    // are cited and the model emits no composed period narrative.
+    const priorContextDisclosureLabels = [
+      ...(currentPeriod === null
+        ? []
+        : [currentPeriod.disclosure_label ?? unknownMemoryDisclosureLabel()]),
+      ...priorGrowthMarkers.map(
+        (marker) => marker.disclosure_label ?? unknownMemoryDisclosureLabel(),
+      ),
+    ];
+    const tools = [SELF_NARRATOR_TOOL];
+    const promptOverheadTokens =
+      estimatePromptTokens(SELF_NARRATOR_SYSTEM_PROMPT) +
+      estimatePromptTokens(JSON.stringify(tools));
+    const { sourceEpisodes, prompt } = buildObservationPrompt(
+      candidateEpisodes,
+      minSupportEpisodes,
+      maxObservationsPerRun,
+      currentPeriod,
+      priorGrowthMarkers,
+      ctx.config.offline.selfNarrator.maxPromptTokens - promptOverheadTokens,
+    );
+    if (
+      candidateEpisodes.length >= minSupportEpisodes &&
+      sourceEpisodes.length < minSupportEpisodes
+    ) {
+      errors.push({
+        process: this.name,
+        code: "SELF_NARRATOR_PROMPT_BUDGET_TOO_SMALL",
+        message: `Self-narrator prompt cap could not fit system/tool overhead, prior context and ${minSupportEpisodes} newest episodes; skipped model call.`,
+      });
+    }
     const markerCandidates: Array<z.infer<typeof serializableGrowthMarkerSchema>> = [];
     const markerThemes: string[] = [];
     const periodDecisions: Array<"continue_current" | "open_new"> = [];
@@ -416,22 +504,14 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
                 llmClient,
                 request: {
                   model: ctx.config.anthropic.models.background,
-                  system: [
-                    "I identify grounded autobiographical growth markers by clustering candidate episodes thematically. I return no observations when the evidence is weak.",
-                    SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE,
-                  ].join("\n"),
+                  system: SELF_NARRATOR_SYSTEM_PROMPT,
                   messages: [
                     {
                       role: "user",
-                      content: buildObservationPrompt(
-                        sourceEpisodes,
-                        minSupportEpisodes,
-                        maxObservationsPerRun,
-                        currentPeriod,
-                      ),
+                      content: prompt,
                     },
                   ],
-                  tools: [SELF_NARRATOR_TOOL],
+                  tools,
                   tool_choice: { type: "tool", name: SELF_NARRATOR_TOOL_NAME },
                   max_tokens: 8_000,
                   budget: "offline-self-narrator",
@@ -466,10 +546,10 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
               const evidenceEpisodeIds = observation.evidence_episode_ids.map(
                 (id) => id as Episode["id"],
               );
-              const disclosureLabel = await disclosureLabelForEpisodeIds(
-                ctx.episodicRepository,
-                evidenceEpisodeIds,
-              );
+              const disclosureLabel = combineMemoryDisclosureLabels([
+                await disclosureLabelForEpisodeIds(ctx.episodicRepository, evidenceEpisodeIds),
+                ...priorContextDisclosureLabels,
+              ]);
 
               markerCandidates.push(
                 serializableGrowthMarkerSchema.parse({
@@ -516,10 +596,15 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
     const markerDisclosureLabels = markerCandidates.map(
       (marker) => marker.disclosure_label ?? unknownMemoryDisclosureLabel(),
     );
+    const priorNarrativeDisclosureLabels =
+      periodNarratives.length === 0 ? [] : priorContextDisclosureLabels;
     const periodDisclosureLabel =
       markerCandidates.length === 0
         ? unknownMemoryDisclosureLabel()
-        : combineMemoryDisclosureLabels(markerDisclosureLabels);
+        : combineMemoryDisclosureLabels([
+            ...markerDisclosureLabels,
+            ...priorNarrativeDisclosureLabels,
+          ]);
     const themes = uniqueStrings([
       ...markerCandidates.map((marker) => marker.category),
       ...markerThemes,
@@ -587,6 +672,7 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
       const nextDisclosureLabel = combineMemoryDisclosureLabels([
         currentPeriod.disclosure_label ?? unknownMemoryDisclosureLabel(),
         ...markerDisclosureLabels,
+        ...priorNarrativeDisclosureLabels,
       ]);
 
       if (

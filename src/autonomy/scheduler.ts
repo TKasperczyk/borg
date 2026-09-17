@@ -106,6 +106,7 @@ type WakeBatch = {
 };
 
 const INITIAL_RETRY_BACKOFF_MS = 30_000;
+const INITIAL_PREPARATION_RETRY_BACKOFF_MS = 10 * 60_000;
 const MAX_RETRY_BACKOFF_MS = 3_600_000;
 const WAKE_PRUNE_SAFETY_BUFFER_MS = 7 * 24 * 60 * 60 * 1_000;
 // Autonomy wake PREPARATION runs a context-gathering tool (e.g. episodic
@@ -113,7 +114,7 @@ const WAKE_PRUNE_SAFETY_BUFFER_MS = 7 * 24 * 60 * 60 * 1_000;
 // latency-sensitive, and the dispatcher's 5s default is too tight for that
 // search under load, which made prep fail and the trigger retry-loop. Live/
 // reactive tool calls keep the 5s default; only prep gets this longer bound.
-const DEFAULT_AUTONOMY_PREP_TOOL_TIMEOUT_MS = 30_000;
+const DEFAULT_AUTONOMY_PREP_TOOL_TIMEOUT_MS = 90_000;
 const ZERO_TURN_EXECUTION_COUNTS: AutonomyWakeExecutionCounts = {
   finalizer_rounds: 0,
   stall_retries: 0,
@@ -620,7 +621,10 @@ export class AutonomyScheduler {
   private readonly retryBackoff = new Map<string, RetryBackoffState>();
   // Preparation history recovers on an empty scan or successful preparation.
   // Failed-turn history is independent and survives those recovery signals.
-  private readonly sourceRetryBackoff = new Map<AutonomyWakeSource["name"], RetryBackoffState>();
+  private readonly sourceRetryBackoff = new Map<
+    AutonomyWakeSource["name"],
+    RetryBackoffState & { initialDelayMs: number }
+  >();
   private readonly triggerErrorBackoff = new Map<AutonomyWakeSource["name"], RetryBackoffState>();
   private intervalHandle: IntervalHandle | null = null;
   private activeTick: Promise<TickResult> | null = null;
@@ -934,10 +938,12 @@ export class AutonomyScheduler {
     }
 
     const fleetBrakeMetadata = this.readFleetBrakeState();
-    const usedInCurrentWindow = this.options.wakeRepository.countSince(budgetCutoff);
+    const usedInCurrentWindow = this.options.wakeRepository.countSince(budgetCutoff, {
+      excludePreparationFailures: true,
+    });
     const currentWindowWakes = this.options.wakeRepository.listSince(
       budgetCutoff,
-      usedInCurrentWindow,
+      this.options.wakeRepository.countSince(budgetCutoff),
     );
     const wakeGroups = new Map<AutonomyWakeSource["name"], AutonomySchedulerWakeGroupDescription>();
     let oldestWakeAt: number | null = null;
@@ -971,7 +977,9 @@ export class AutonomyScheduler {
       } else {
         group.outcome_counts[wake.outcome] += 1;
       }
-      oldestWakeAt = oldestWakeAt === null ? wake.ts : Math.min(oldestWakeAt, wake.ts);
+      if (!wake.preparation_failed) {
+        oldestWakeAt = oldestWakeAt === null ? wake.ts : Math.min(oldestWakeAt, wake.ts);
+      }
     }
 
     const wakesInCurrentWindowByTrigger = AUTONOMY_WAKE_SOURCE_NAMES.flatMap((name) => {
@@ -1009,6 +1017,7 @@ export class AutonomyScheduler {
         ts: wake.ts,
         trigger_name: wake.trigger_name,
         outcome: wake.outcome,
+        preparation_failed: wake.preparation_failed,
         headway_bases: wake.headway_bases,
         finalizer_rounds: wake.finalizer_rounds,
         stall_retries: wake.stall_retries,
@@ -1024,6 +1033,7 @@ export class AutonomyScheduler {
         ),
         contemplative_used_in_current_window: this.options.wakeRepository.countSince(budgetCutoff, {
           sourceCategory: "contemplative",
+          excludePreparationFailures: true,
         }),
         wakes_in_current_window_by_trigger: wakesInCurrentWindowByTrigger,
         // countSince/listSince admit ts === cutoff, so the oldest wake remains
@@ -1223,13 +1233,16 @@ export class AutonomyScheduler {
           }
 
           const budgetCutoff = this.clock.now() - this.options.budgetWindowMs;
-          const totalWakesInWindow = this.options.wakeRepository.countSince(budgetCutoff);
+          const totalWakesInWindow = this.options.wakeRepository.countSince(budgetCutoff, {
+            excludePreparationFailures: true,
+          });
           const reservedContemplativeWakes = Math.min(
             this.options.maxWakesPerWindow,
             Math.max(0, Math.floor(this.options.reservedContemplativeWakesPerWindow ?? 0)),
           );
           const contemplativeWakesInWindow = this.options.wakeRepository.countSince(budgetCutoff, {
             sourceCategory: "contemplative",
+            excludePreparationFailures: true,
           });
           const reservedContemplativeSlotsRemaining = Math.max(
             0,
@@ -1290,7 +1303,10 @@ export class AutonomyScheduler {
           } catch (error) {
             // Install retry state before any outcome, fleet, or stream write:
             // bookkeeping failures must not turn a source error into a hot loop.
-            this.scheduleSourceRetryBackoff(dueEvent.sourceName);
+            this.scheduleSourceRetryBackoff(
+              dueEvent.sourceName,
+              INITIAL_PREPARATION_RETRY_BACKOFF_MS,
+            );
             errorCount += 1;
             sourceErrorCount += 1;
             const preparationError =
@@ -1309,12 +1325,9 @@ export class AutonomyScheduler {
               outcomeSummary,
               null,
               ZERO_TURN_EXECUTION_COUNTS,
+              { preparationFailed: true },
             );
-            this.consumeFleetFreshnessBypass(
-              dueEvent,
-              fleetAdmission.bypassKind,
-              fleetAdmission.metadata,
-            );
+            // No turn opened, so the admitted freshness bypass remains available.
             await writer.append({
               kind: "internal_event",
               content: {
@@ -2338,14 +2351,18 @@ export class AutonomyScheduler {
     return backoff !== undefined && backoff.nextEligibleTs > nowMs;
   }
 
-  private scheduleSourceRetryBackoff(sourceName: AutonomyWakeSource["name"]): void {
+  private scheduleSourceRetryBackoff(
+    sourceName: AutonomyWakeSource["name"],
+    initialDelayMs = INITIAL_RETRY_BACKOFF_MS,
+  ): void {
     const previousBackoff = this.sourceRetryBackoff.get(sourceName);
     const delayMs =
-      previousBackoff === undefined
-        ? INITIAL_RETRY_BACKOFF_MS
+      previousBackoff === undefined || previousBackoff.initialDelayMs !== initialDelayMs
+        ? initialDelayMs
         : Math.min(previousBackoff.delayMs * 2, MAX_RETRY_BACKOFF_MS);
 
     this.sourceRetryBackoff.set(sourceName, {
+      initialDelayMs,
       delayMs,
       nextEligibleTs: this.clock.now() + delayMs,
     });

@@ -65,6 +65,7 @@ describe("config", () => {
     expect(config.offline.curator.episodeHeatHalfLifeDays).toBe(7);
     expect(config.offline.curator.traitHalfLifeDays).toBe(30);
     expect(config.offline.curator.retrievalLogRetentionDays).toBe(90);
+    expect(config.offline.selfNarrator.maxPromptTokens).toBe(250_000);
     expect(config.offline.semanticExtractor).toEqual({
       maxEpisodesPerRun: 8,
       maxInputTokensPerRun: 150_000,
@@ -127,7 +128,7 @@ describe("config", () => {
     ).toBe(OFFLINE_PROCESS_NAMES.length);
     expect(config.executive.goalFocusThreshold).toBe(0.45);
     expect(config.autonomy.maxWakesPerWindow).toBe(6);
-    expect(config.autonomy.prepToolTimeoutMs).toBe(30_000);
+    expect(config.autonomy.prepToolTimeoutMs).toBe(90_000);
     expect(config.autonomy.goalWakeBatchMax).toBe(5);
     expect(config.autonomy.budgetWindowMs).toBe(24 * 60 * 60 * 1_000);
     expect(config.autonomy.reservedContemplativeWakesPerWindow).toBe(1);
@@ -771,6 +772,25 @@ describe("config", () => {
     tempDirs.push(tempDir);
 
     expect(() => loadConfig({ dataDir: tempDir, env: { [name]: value } })).toThrow(ConfigError);
+  });
+
+  it("loads and validates the self-narrator prompt cap", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    expect(
+      loadConfig({
+        dataDir: tempDir,
+        env: { BORG_OFFLINE_SELF_NARRATOR_MAX_PROMPT_TOKENS: "120000" },
+      }).offline.selfNarrator.maxPromptTokens,
+    ).toBe(120_000);
+    for (const value of ["0", "-1", "1.5"]) {
+      expect(() =>
+        loadConfig({
+          dataDir: tempDir,
+          env: { BORG_OFFLINE_SELF_NARRATOR_MAX_PROMPT_TOKENS: value },
+        }),
+      ).toThrow(ConfigError);
+    }
   });
 
   it("loads the trait decay interval from the environment", () => {
