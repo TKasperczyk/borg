@@ -3538,7 +3538,7 @@ describe("buildBaseSystemPrompt", () => {
       "trigger_name=goal_followup_due wake_count=5 in_flight=5(fired 2023-11-14T18:13:20.000Z, 2023-11-14T19:13:20.000Z, 2023-11-14T20:13:20.000Z, 2 newer not listed) outcome_counts(headway=0 silent=0 error=0 busy=0 interrupted=0)",
     );
     expect(block).toContain(
-      "A normal completion records headway, silent, error, or busy; a post-turn bookkeeping failure records interrupted, and startup reconciliation records any NULL row left by a prior process as interrupted.",
+      "A normal completion records headway, silent, error, or busy; a post-turn bookkeeping failure records interrupted, and a later start records NULL rows over an hour old as interrupted, not younger ones.",
     );
     expect(block).toContain(
       "A non-zero in_flight count can therefore be a healthy turn currently running.",

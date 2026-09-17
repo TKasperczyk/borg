@@ -2010,7 +2010,7 @@ export function summarizeAutonomySchedulerState(
       // in_flight is 0 everywhere: a rule that appeared only alongside a
       // non-zero count would make the zero read as "no such state exists"
       // rather than as "none right now".
-      "in_flight counts rows written when the wake fired whose terminal outcome has not yet been recorded, stamped with when each fired. A normal completion records headway, silent, error, or busy; a post-turn bookkeeping failure records interrupted, and startup reconciliation records any NULL row left by a prior process as interrupted. A non-zero in_flight count can therefore be a healthy turn currently running. It is taken over the rolling window named above, so a live row can also leave this display by ageing past the lower edge before it closes. The stamps support cross-read identity: one repeating across two reads is one row still open, one that changes is a different wake, and one that disappears either closed or left the window.",
+      "in_flight counts rows written when the wake fired whose terminal outcome has not yet been recorded, stamped with when each fired. A normal completion records headway, silent, error, or busy; a post-turn bookkeeping failure records interrupted, and a later start records NULL rows over an hour old as interrupted, not younger ones. A non-zero in_flight count can therefore be a healthy turn currently running. It is taken over the rolling window named above, so a live row can also leave this display by ageing past the lower edge before it closes. The stamps support cross-read identity: one repeating across two reads is one row still open, one that changes is a different wake, and one that disappears either closed or left the window.",
     );
   }
 
