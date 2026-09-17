@@ -119,6 +119,8 @@ describe("inner life internal tools", () => {
   // reader who checked the unnamed field read the write's own doing as history.
   it("names both rumination fields this write resets, not only the counter", () => {
     const tool = createOpenQuestionsResolveTool({
+      episodicRepository: { getMany: async () => [] },
+      entryIndex: { lookupEntriesById: (ids) => new Map(ids.map((id) => [id, {} as never])) },
       identityService: {
         resolveOpenQuestion: () => {
           throw new Error("not invoked");
@@ -140,6 +142,8 @@ describe("inner life internal tools", () => {
   // structural confirmation. The address is the record; the message names the arms.
   it("accepts either evidence arm alone and addresses the empty-both rejection to the record", () => {
     const tool = createOpenQuestionsResolveTool({
+      episodicRepository: { getMany: async () => [] },
+      entryIndex: { lookupEntriesById: (ids) => new Map(ids.map((id) => [id, {} as never])) },
       identityService: {
         resolveOpenQuestion: () => {
           throw new Error("not invoked");
@@ -180,14 +184,10 @@ describe("inner life internal tools", () => {
     expect(issue?.message).toContain("resolution_evidence_stream_entry_ids");
   });
 
-  // Both arms are id-shape refinements over a JSON column with no reference table,
-  // and no caller on the path dereferences a cited id. "Requires evidence" therefore
-  // reads as a check the gate does not perform: a rejection for missing ids is a
-  // rejection for an empty citation, and generalizing it into "a resolution must be
-  // grounded in a record" attributes a guarantee to the harness that only the note
-  // carries. Say which of the two the requirement is.
-  it("says the evidence requirement checks the citation rather than the evidence", () => {
+  it("distinguishes structural citation checks from relevance and disclosure", () => {
     const tool = createOpenQuestionsResolveTool({
+      episodicRepository: { getMany: async () => [] },
+      entryIndex: { lookupEntriesById: () => new Map() },
       identityService: {
         resolveOpenQuestion: () => {
           throw new Error("not invoked");
@@ -196,12 +196,11 @@ describe("inner life internal tools", () => {
       disclosureLabelForEvidence: async () => selfPrivateMemoryDisclosureLabel(),
     });
 
-    expect(tool.description).toContain(
-      "a check on the citation, not on the evidence",
-    );
-    expect(tool.description).toContain("either arm takes any well-formed id");
-    expect(tool.description).toContain("no id is checked to exist");
+    expect(tool.description).toContain("must name stored episode or stream records");
+    expect(tool.description).toContain("including archived records");
+    expect(tool.description).toContain("Existence does not establish relevance");
     expect(tool.description).toContain("never a second witness to what I concluded");
+    expect(tool.description).toContain("Stream citations retain an unknown disclosure label");
   });
 
   it("surfaces identity-governance review-required open question resolution as tool data", async () => {
@@ -211,6 +210,8 @@ describe("inner life internal tools", () => {
       current,
     }));
     const tool = createOpenQuestionsResolveTool({
+      episodicRepository: { getMany: async () => [] },
+      entryIndex: { lookupEntriesById: (ids) => new Map(ids.map((id) => [id, {} as never])) },
       identityService: { resolveOpenQuestion },
       disclosureLabelForEvidence: async () => selfPrivateMemoryDisclosureLabel(),
     });

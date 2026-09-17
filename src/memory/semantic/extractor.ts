@@ -1065,9 +1065,10 @@ export class SemanticExtractor {
   private async resolveEdgeNode(
     label: string,
     batchNodes: ReadonlyMap<string, SemanticNode>,
+    originalHandles: ReadonlyMap<string, SemanticNode>,
   ): Promise<SemanticNode | undefined> {
     const key = label.toLowerCase();
-    const localNode = batchNodes.get(key);
+    const localNode = originalHandles.get(label.trim()) ?? batchNodes.get(key);
 
     if (localNode !== undefined && this.edgeNodeCanAcceptEvidence(localNode)) {
       return localNode;
@@ -1195,6 +1196,7 @@ export class SemanticExtractor {
     const allowedEpisodeIds = new Set(episodes.map((episode) => episode.id));
     const episodeById = new Map(episodes.map((episode) => [episode.id, episode]));
     const batchNodes = new Map<string, SemanticNode>();
+    const originalHandles = new Map<string, SemanticNode>();
     const skipReasons = new Set<string>();
     let insertedNodes = 0;
     let updatedNodes = 0;
@@ -1263,6 +1265,9 @@ export class SemanticExtractor {
         }
 
         if (outcome.node !== undefined) {
+          // Model-emitted endpoint handles survive normalization only for this
+          // batch. In particular, entity ids must never become persisted aliases.
+          originalHandles.set(candidate.label.trim(), outcome.node);
           const key = outcome.node.label.toLowerCase();
           batchNodes.set(key, outcome.node);
 
@@ -1302,8 +1307,12 @@ export class SemanticExtractor {
           throw error;
         }
 
-        const fromNode = await this.resolveEdgeNode(candidate.from_label, batchNodes);
-        const toNode = await this.resolveEdgeNode(candidate.to_label, batchNodes);
+        const fromNode = await this.resolveEdgeNode(
+          candidate.from_label,
+          batchNodes,
+          originalHandles,
+        );
+        const toNode = await this.resolveEdgeNode(candidate.to_label, batchNodes, originalHandles);
 
         if (fromNode === undefined || toNode === undefined) {
           skippedEdges += 1;

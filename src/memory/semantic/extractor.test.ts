@@ -422,7 +422,7 @@ describe("semantic extractor", () => {
     expect(run.result).toMatchObject({ insertedNodes: 1, skippedNodes: 0 });
   });
 
-  it("resolves an id label through the repository when no anchor covers the entity", async () => {
+  it("resolves an off-roster id label and its incident edge without persisting id aliases", async () => {
     const selfId = createEntityId();
     const absentFriendId = createEntityId();
     const run = await runIdentityGuardExtraction({
@@ -444,19 +444,56 @@ describe("semantic extractor", () => {
           confidence: 0.7,
           source_episode_ids: [IDENTITY_GUARD_EPISODE_ID],
         },
+        {
+          kind: "self",
+          label: selfId,
+          description: "I coordinate the release workflow.",
+          domain: "people",
+          aliases: [selfId],
+          observation_metadata: null,
+          relationship_claims: [],
+          identity_entity_id: null,
+          description_perspective: "first_person",
+          confidence: 0.7,
+          source_episode_ids: [IDENTITY_GUARD_EPISODE_ID],
+        },
+      ],
+      edges: [
+        {
+          from_label: absentFriendId,
+          to_label: selfId,
+          relation: "related_to",
+          confidence: 0.7,
+          evidence_episode_ids: [IDENTITY_GUARD_EPISODE_ID],
+          valid_from_ts: null,
+          valid_to_ts: null,
+        },
       ],
     });
 
     const nodes = await run.nodeRepository.list();
+    const person = nodes.find((node) => node.label === "Marta Lis");
+    const self = nodes.find((node) => node.label === "team-agent");
 
-    expect(nodes).toEqual([
+    expect(person).toMatchObject({ kind: "person" });
+    expect(self).toMatchObject({ kind: "self" });
+    for (const node of nodes) {
+      expect(node.aliases).not.toContain(absentFriendId);
+      expect(node.aliases).not.toContain(selfId);
+    }
+    expect(run.edgeRepository.listEdges()).toEqual([
       expect.objectContaining({
-        label: "Marta Lis",
-        kind: "person",
+        from_node_id: person?.id,
+        to_node_id: self?.id,
+        relation: "related_to",
       }),
     ]);
-    expect(nodes[0]?.aliases).not.toContain(absentFriendId);
-    expect(run.result).toMatchObject({ insertedNodes: 1, skippedNodes: 0 });
+    expect(run.result).toMatchObject({
+      insertedNodes: 2,
+      skippedNodes: 0,
+      insertedEdges: 1,
+      skippedEdges: 0,
+    });
   });
 
   it("refuses a node whose label is an id the repository does not resolve", async () => {

@@ -4,6 +4,9 @@ const ID_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
 const HEX_ID_ALPHABET = "abcdef0123456789";
 const ID_LENGTH = 16;
 const DEFAULT_SESSION_LITERAL = "default";
+// Shared with the internal-ID host guard and prose-only memory renderers.
+export const INTERNAL_IDENTIFIER_PATTERN_SOURCE =
+  "(?:(?:strm|sess|ep|goal|val|trt|abp|grw|oq|semn|seme|cmt|ent|act|rslot|skl|procevi|run|exstep)_[a-z0-9]{16}|autonomy_wake_[a-f0-9]{16}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})";
 const createNanoId = customAlphabet(ID_ALPHABET, ID_LENGTH);
 const createAutonomyWakeNanoId = customAlphabet(HEX_ID_ALPHABET, ID_LENGTH);
 

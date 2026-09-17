@@ -1,3 +1,5 @@
+import { INTERNAL_IDENTIFIER_PATTERN_SOURCE } from "./ids.js";
+
 // Mechanical escaping for substrate-owned prompt tags. This only prevents
 // untrusted content from forging borg_* prompt blocks; it does not interpret
 // natural-language content.
@@ -20,6 +22,19 @@ const CREATOR_DIRECTIVE_INTERNAL_ID_PATTERN = /\b(?:cdir|ent|sess|strm|turn|dart
 
 export function scrubCreatorDirectiveInternalIds(value: string): string {
   return value.replace(CREATOR_DIRECTIVE_INTERNAL_ID_PATTERN, "[internal_id]");
+}
+
+const MEMORY_RECORD_INTERNAL_ID_PATTERN = new RegExp(
+  `(?<![\\p{L}\\p{M}\\p{N}_-])${INTERNAL_IDENTIFIER_PATTERN_SOURCE}(?![\\p{L}\\p{M}\\p{N}_-])`,
+  "gu",
+);
+
+/** Prose rendering only: reuse the host guard's ID grammar without interpreting language. */
+export function scrubMemoryRecordInternalIds(value: string): string {
+  return scrubCreatorDirectiveInternalIds(value).replace(
+    MEMORY_RECORD_INTERNAL_ID_PATTERN,
+    "[internal_id]",
+  );
 }
 
 // Mechanical removal of tool-call serialization scaffolding that a model can

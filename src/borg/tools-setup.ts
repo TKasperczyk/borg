@@ -215,6 +215,14 @@ export function buildToolDispatcher(options: BuildToolDispatcherOptions): ToolDi
             byteOffset: record.byte_offset,
           }),
         listJournalRecords: (input) => options.trainOfThoughtRepository.listForRange(input),
+        listGoalDispositionRecords: (input) =>
+          options.identityService.listGoalDispositionsInRange(input),
+        disclosureLabelsForGoalDispositions: (events) =>
+          identityEventDisclosureLabelsForCollection(
+            events,
+            options.episodicRepository,
+            options.sourceStreamAudienceDisclosureResolver,
+          ),
         clock: options.clock,
       }),
     )
@@ -259,6 +267,8 @@ export function buildToolDispatcher(options: BuildToolDispatcherOptions): ToolDi
     .register(
       createOpenQuestionsResolveTool({
         identityService: options.identityService,
+        episodicRepository: options.episodicRepository,
+        entryIndex: options.entryIndex,
         disclosureLabelForEvidence: async (episodeIds, streamEntryIds) =>
           combineMemoryDisclosureLabels([
             ...(episodeIds.length === 0
@@ -270,7 +280,7 @@ export function buildToolDispatcher(options: BuildToolDispatcherOptions): ToolDi
                   ),
                 ]),
             // The episode arm resolves its label from the store; this one does not.
-            // The callback takes no id, so the stream arm contributes one unknown per
+            // Existence was checked separately; the stream arm contributes one unknown per
             // cited entry by arity alone, and a stream-only resolution's
             // resolution_disclosure_label is that constant rather than a reading of the
             // entry it names. Failing closed is the point; it is not a derived label.

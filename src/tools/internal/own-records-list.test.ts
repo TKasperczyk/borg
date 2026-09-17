@@ -176,6 +176,8 @@ describe("tool.ownRecords.list", () => {
     ]);
     const listThoughtRecords = vi.fn(thoughtRangeLister([current, crossSession]));
     const tool = createOwnRecordsListTool({
+      listGoalDispositionRecords: () => [],
+      disclosureLabelsForGoalDispositions: async () => new Map(),
       listThoughtRecords,
       readThoughtRecord: (record) => entries.get(record.entry_id) ?? null,
       listJournalRecords: () => [],
@@ -244,6 +246,8 @@ describe("tool.ownRecords.list", () => {
       thoughts.map((record) => [record.entry_id, thoughtEntry(record, record.entry_id)]),
     );
     const tool = createOwnRecordsListTool({
+      listGoalDispositionRecords: () => [],
+      disclosureLabelsForGoalDispositions: async () => new Map(),
       listThoughtRecords: thoughtRangeLister(thoughts),
       readThoughtRecord: (record) => entries.get(record.entry_id) ?? null,
       listJournalRecords: journalRangeLister([newerJournal, equalJournal]),
@@ -285,6 +289,8 @@ describe("tool.ownRecords.list", () => {
     const oldest = journalRecord({ id: 1, createdAt: 1_000, text: "oldest" });
     const listAll = (middle: TrainOfThoughtJournalEntry) =>
       createOwnRecordsListTool({
+        listGoalDispositionRecords: () => [],
+        disclosureLabelsForGoalDispositions: async () => new Map(),
         listThoughtRecords: () => [],
         readThoughtRecord: () => null,
         listJournalRecords: journalRangeLister([newest, middle, oldest]),
@@ -331,6 +337,8 @@ describe("tool.ownRecords.list", () => {
     const correction = journalRecord({ id: 3, createdAt: 3_000, text: "entry 1 was wrong" });
     const listFrom = (middle: TrainOfThoughtJournalEntry) =>
       createOwnRecordsListTool({
+        listGoalDispositionRecords: () => [],
+        disclosureLabelsForGoalDispositions: async () => new Map(),
         listThoughtRecords: () => [],
         readThoughtRecord: () => null,
         listJournalRecords: journalRangeLister([correction, middle, target]),
@@ -399,6 +407,8 @@ describe("tool.ownRecords.list", () => {
       markerStreamEntryId: null,
     });
     const tool = createOwnRecordsListTool({
+      listGoalDispositionRecords: () => [],
+      disclosureLabelsForGoalDispositions: async () => new Map(),
       listThoughtRecords: thoughtRangeLister([exactThought, unavailableThought]),
       readThoughtRecord: (record) =>
         record.entry_id === exactThought.entry_id ? thoughtEntry(exactThought, multilingual) : null,
@@ -452,6 +462,8 @@ describe("tool.ownRecords.list", () => {
       return thoughtEntry(available, "the later row still hydrates exactly");
     });
     const tool = createOwnRecordsListTool({
+      listGoalDispositionRecords: () => [],
+      disclosureLabelsForGoalDispositions: async () => new Map(),
       listThoughtRecords: thoughtRangeLister([unavailable, available]),
       readThoughtRecord,
       listJournalRecords: () => [],
@@ -485,6 +497,8 @@ describe("tool.ownRecords.list", () => {
     const oversizedText = "界".repeat(150_000);
     const oversized = journalRecord({ id: 1, createdAt: 1_000, text: oversizedText });
     const tool = createOwnRecordsListTool({
+      listGoalDispositionRecords: () => [],
+      disclosureLabelsForGoalDispositions: async () => new Map(),
       listThoughtRecords: () => [],
       readThoughtRecord: () => null,
       listJournalRecords: journalRangeLister([small, oversized]),
@@ -554,6 +568,8 @@ describe("tool.ownRecords.list", () => {
       turnId: oversizedTurnId,
     });
     const tool = createOwnRecordsListTool({
+      listGoalDispositionRecords: () => [],
+      disclosureLabelsForGoalDispositions: async () => new Map(),
       listThoughtRecords: thoughtRangeLister([record]),
       readThoughtRecord: () => thoughtEntry(record, "small exact payload"),
       listJournalRecords: () => [],
@@ -592,6 +608,8 @@ describe("tool.ownRecords.list", () => {
 
   it("states the page-end claim once, from one authoring, on every surface that carries it", () => {
     const tool = createOwnRecordsListTool({
+      listGoalDispositionRecords: () => [],
+      disclosureLabelsForGoalDispositions: async () => new Map(),
       listThoughtRecords: () => [],
       readThoughtRecord: () => null,
       listJournalRecords: () => [],
@@ -600,11 +618,7 @@ describe("tool.ownRecords.list", () => {
 
     // The three surfaces the claim reaches: the tool schema the model is handed, the live-turn
     // read-tool menu, and the autonomous interior menu built from menuSummary.
-    const surfaces = [
-      tool.description,
-      tool.menuSummary ?? "",
-      LIVE_TURN_READ_FINALIZER_TOOL_MENU,
-    ];
+    const surfaces = [tool.description, tool.menuSummary ?? "", LIVE_TURN_READ_FINALIZER_TOOL_MENU];
 
     for (const surface of surfaces) {
       expect(countOccurrences(surface, OWN_RECORDS_PAGE_END_CLAIM)).toBe(1);

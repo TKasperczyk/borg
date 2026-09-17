@@ -1,16 +1,21 @@
 import { describe, expect, it } from "vitest";
 
+import { DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET } from "../../cognition/deliberation/constants.js";
 import { openDatabase } from "../../storage/sqlite/index.js";
 import { OpenQuestionsRepository, selfMigrations } from "../../memory/self/index.js";
 import { FixedClock } from "../../util/clock.js";
 import { createEpisodeId, createMaintenanceRunId } from "../../util/ids.js";
+import { estimatePromptTokens } from "../../util/token-estimate.js";
 
 import { createOpenQuestionsRuminationsTool } from "./open-questions-ruminations.js";
 
 const manualProvenance = { kind: "manual" } as const;
 const toolContext = { turnId: "turn_test" } as never;
 
-function openRepository(): { db: ReturnType<typeof openDatabase>; repository: OpenQuestionsRepository } {
+function openRepository(): {
+  db: ReturnType<typeof openDatabase>;
+  repository: OpenQuestionsRepository;
+} {
   const db = openDatabase(":memory:", { migrations: selfMigrations });
 
   return { db, repository: new OpenQuestionsRepository({ db, clock: new FixedClock(10_000) }) };
@@ -70,9 +75,7 @@ describe("tool.openQuestions.ruminations", () => {
 
       // The whole point of the reader: closing a question does not take its ruminations with it,
       // and the row says which way the question went so the note is legible without a second lookup.
-      expect(
-        output.ruminations.map((row) => [row.question_status, row.note]),
-      ).toEqual([
+      expect(output.ruminations.map((row) => [row.question_status, row.note])).toEqual([
         ["abandoned", "Nothing has cited this since it was written."],
         ["resolved", "The pass kept it open on one unresolved tension."],
       ]);
@@ -204,6 +207,98 @@ describe("tool.openQuestions.ruminations", () => {
       expect(output.ruminations.map((row) => row.question_recorded_rumination_notes)).toEqual([
         3, 3,
       ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it.each([50, 51])("looks ahead at the maximum page size with %i stored notes", async (count) => {
+    const { db, repository } = openRepository();
+    try {
+      const question = repository.add({
+        question: "Why?",
+        urgency: 0.4,
+        source: "reflection",
+        provenance: manualProvenance,
+      });
+      for (let index = 0; index < count; index += 1) {
+        repository.recordRumination({
+          open_question_id: question.id,
+          note: `pass-${index}`,
+          source_process: "offline_ruminator",
+          provenance: manualProvenance,
+          created_at: 11_000 + index,
+        });
+      }
+      const tool = toolFor(repository);
+      const output = await tool.invoke(
+        { since: new Date(0).toISOString(), until: new Date(20_000).toISOString(), limit: 50 },
+        toolContext,
+      );
+
+      expect(output.ruminations).toHaveLength(50);
+      expect(output.ruminations.every((row) => row.payload_status === "exact")).toBe(true);
+      expect(
+        output.ruminations.every((row) => row.question_recorded_rumination_notes === count),
+      ).toBe(true);
+      expect(output.has_more).toBe(count > 50);
+      expect(tool.outputSchema.safeParse(output).success).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("bounds the first-row fallback even when retained fields exceed the budget", async () => {
+    const { db, repository } = openRepository();
+    try {
+      const question = repository.add({
+        question: "What remains readable?",
+        urgency: 0.4,
+        source: "reflection",
+        provenance: manualProvenance,
+      });
+      const hugeField = "界".repeat(DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET * 5);
+      const connectedQuestion = repository.add({
+        question: "How does this connect?",
+        urgency: 0.4,
+        source: "reflection",
+        provenance: manualProvenance,
+      });
+      const stored = repository.recordRumination({
+        open_question_id: question.id,
+        note: "A short note.",
+        tensions: [hugeField],
+        connected_open_question_ids: [connectedQuestion.id],
+        source_process: hugeField,
+        provenance: manualProvenance,
+        created_at: 11_000,
+      });
+      expect(stored.connected_open_question_ids).toEqual([connectedQuestion.id]);
+      const tool = toolFor(repository);
+      const output = await tool.invoke(
+        { since: new Date(0).toISOString(), until: new Date(20_000).toISOString() },
+        toolContext,
+      );
+
+      expect(output.ruminations).toEqual([
+        expect.objectContaining({
+          question: null,
+          note: null,
+          tensions: [],
+          connected_open_question_ids: [],
+          source_process: null,
+          question_recorded_rumination_notes: 1,
+          payload_status: "check_not_completed_budget",
+          payload_included_chars: 0,
+          disclosure_label: expect.objectContaining({ disclosure_class: "unknown" }),
+        }),
+      ]);
+      expect(output.ruminations[0]!.payload_total_chars).toBeGreaterThan(hugeField.length);
+      expect(output.has_more).toBe(false);
+      expect(estimatePromptTokens(JSON.stringify(output))).toBeLessThanOrEqual(
+        DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET,
+      );
+      expect(tool.outputSchema.safeParse(output).success).toBe(true);
     } finally {
       db.close();
     }

@@ -802,59 +802,6 @@ describe("OpenQuestionsRepository", () => {
     }
   });
 
-  // Both evidence columns are JSON text with no reference table behind them, and
-  // resolve reads neither arm before writing it. The requirement is therefore over
-  // the citation's shape and count, never over what it names, and a rejection for
-  // an empty citation says nothing about whether a full one points at anything.
-  // Pin that as the rule rather than leaving it as a side effect of other tests.
-  it("resolves on a well-formed citation that names no stored record", () => {
-    const db = openDatabase(":memory:", {
-      migrations: selfMigrations,
-    });
-    const repository = new OpenQuestionsRepository({
-      db,
-      clock: new FixedClock(10_000),
-    });
-    const unstoredStreamEntryId = createStreamEntryId();
-    const unstoredEpisodeId = createEpisodeId();
-
-    try {
-      const streamCited = repository.add({
-        question: "What closes on a citation the store never saw?",
-        urgency: 0.5,
-        source: "reflection",
-        provenance: manualProvenance,
-      });
-      const episodeCited = repository.add({
-        question: "What closes on an episode the store never saw?",
-        urgency: 0.5,
-        source: "reflection",
-        provenance: manualProvenance,
-      });
-
-      expect(
-        repository.resolve(streamCited.id, {
-          resolution_evidence_stream_entry_ids: [unstoredStreamEntryId],
-          resolution_note: "Closed on my own assertion, cited by id.",
-        }),
-      ).toMatchObject({
-        status: "resolved",
-        resolution_evidence_stream_entry_ids: [unstoredStreamEntryId],
-      });
-      expect(
-        repository.resolve(episodeCited.id, {
-          resolution_evidence_episode_ids: [unstoredEpisodeId],
-          resolution_note: "Closed on my own assertion, cited by id.",
-        }),
-      ).toMatchObject({
-        status: "resolved",
-        resolution_evidence_episode_ids: [unstoredEpisodeId],
-      });
-    } finally {
-      db.close();
-    }
-  });
-
   it("uses the indexed dedupe key beyond the old in-memory scan window", () => {
     const db = openDatabase(":memory:", {
       migrations: selfMigrations,

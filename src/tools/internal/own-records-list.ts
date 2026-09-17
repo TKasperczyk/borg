@@ -7,6 +7,9 @@ import {
   unknownMemoryDisclosureLabel,
 } from "../../memory/common/disclosure-label.js";
 import { memoryDisclosurePayloadFields } from "../../memory/common/disclosure-serializers.js";
+import type { MemoryDisclosureLabel } from "../../memory/common/disclosure-label.js";
+import type { IdentityEvent, IdentityEventRepository } from "../../memory/identity/index.js";
+import { goalSchema } from "../../memory/self/index.js";
 import type {
   TrainOfThoughtJournalEntry,
   TrainOfThoughtRangeCursor,
@@ -17,17 +20,22 @@ import { ToolError } from "../../util/errors.js";
 import { sessionIdSchema, streamEntryIdSchema } from "../../util/id-schemas.js";
 import type { SessionId, StreamEntryId } from "../../util/ids.js";
 import { formatRelativeAge } from "../../util/relative-time.js";
+import { scrubMemoryRecordInternalIds } from "../../util/prompt-tags.js";
 import { estimatePromptTokens, stringifyPromptContent } from "../../util/token-estimate.js";
 import { OWN_RECORDS_PAGE_END_CLAIM } from "./own-records-page-end-claim.js";
 import type { ToolDefinition } from "../dispatcher.js";
 
-const OWN_RECORD_KINDS = ["thought", "journal"] as const;
+const OWN_RECORD_KINDS = ["thought", "journal", "goal_disposition"] as const;
 const OWN_RECORD_PAYLOAD_STATUSES = [
   "exact",
   "check_not_completed_budget",
   "check_not_completed_retrieval_unavailable",
 ] as const;
-const OWN_RECORD_ORIGIN_TIME_BASES = ["stream_timestamp", "journal_created_at"] as const;
+const OWN_RECORD_ORIGIN_TIME_BASES = [
+  "stream_timestamp",
+  "journal_created_at",
+  "identity_event_timestamp",
+] as const;
 const OWN_RECORDS_PAGE_END_REASONS = [
   "range_exhausted",
   "limit_reached",
@@ -72,6 +80,14 @@ const ownRecordCursorPayloadSchema = z.discriminatedUnion("kind", [
       version: z.literal(1),
       occurred_at: z.number().int().finite(),
       kind: z.literal("journal"),
+      source_id: z.number().int().positive(),
+    })
+    .strict(),
+  z
+    .object({
+      version: z.literal(1),
+      occurred_at: z.number().int().finite(),
+      kind: z.literal("goal_disposition"),
       source_id: z.number().int().positive(),
     })
     .strict(),
@@ -134,6 +150,12 @@ export type OwnRecordsListToolOptions = {
   listJournalRecords: (
     input: OwnRecordsListRange & { cursor?: TrainOfThoughtRangeCursor },
   ) => TrainOfThoughtJournalEntry[] | Promise<TrainOfThoughtJournalEntry[]>;
+  listGoalDispositionRecords: (
+    input: Parameters<IdentityEventRepository["listGoalDispositionsInRange"]>[0],
+  ) => IdentityEvent[] | Promise<IdentityEvent[]>;
+  disclosureLabelsForGoalDispositions: (
+    events: readonly IdentityEvent[],
+  ) => Promise<ReadonlyMap<number, MemoryDisclosureLabel>>;
   clock?: Clock;
 };
 
@@ -151,6 +173,12 @@ type OwnRecordCandidate =
       occurredAt: number;
       sourceId: number;
       record: TrainOfThoughtJournalEntry;
+    }
+  | {
+      kind: "goal_disposition";
+      occurredAt: number;
+      sourceId: number;
+      record: IdentityEvent;
     };
 
 type OwnRecordForCognition = z.infer<typeof ownRecordForCognitionSchema>;
@@ -175,6 +203,7 @@ function pageEndReason(input: {
 const SOURCE_ORDER = {
   thought: 0,
   journal: 1,
+  goal_disposition: 2,
 } as const satisfies Record<OwnRecordKind, number>;
 
 function encodeOwnRecordCursor(candidate: OwnRecordCandidate): string {
@@ -274,6 +303,30 @@ function withoutOversizedAnchors(row: OwnRecordForCognition): OwnRecordForCognit
   };
 }
 
+function renderGoalDisposition(event: IdentityEvent): string {
+  const goal = goalSchema
+    .pick({ description: true, status: true, block_history: true })
+    .parse(event.new_value);
+  const disposition =
+    goal.status === "abandoned" ? "retired" : goal.status === "blocked" ? "blocked" : "unblocked";
+  const block = goal.block_history?.at(-1);
+  const effectiveAt =
+    goal.status === "blocked"
+      ? block?.blocked_at
+      : goal.status === "active"
+        ? block?.unblocked_at
+        : null;
+  const effectiveTime =
+    effectiveAt == null || effectiveAt === event.ts
+      ? ""
+      : ` Effective at ${new Date(effectiveAt).toISOString()}.`;
+  // Reasons may include machine-written unblock references. Reuse ID hygiene;
+  // never infer intent or rewrite the reason's language.
+  return scrubMemoryRecordInternalIds(
+    `At ${new Date(event.ts).toISOString()}, the goal “${goal.description}” was ${disposition}.${effectiveTime} Reason: ${event.reason ?? "not recorded"}`,
+  );
+}
+
 export function createOwnRecordsListTool(
   options: OwnRecordsListToolOptions,
 ): ToolDefinition<
@@ -285,10 +338,10 @@ export function createOwnRecordsListTool(
   return {
     name: "tool.ownRecords.list",
     description:
-      "Browse my own durable thought stream and train-of-thought journal by inclusive origin-time range. This is global unless I explicitly pass session_id. It has no text query: I choose dates, kinds, and pages, then inspect exact content. " +
+      "Browse my own durable thoughts, journal, and goal dispositions by inclusive origin-time range. Goal dispositions recount retirements, blocks, and unblocks with the goal description, recorded reason, and time; internal handles in their prose are omitted. Recall is global; session_id filters thoughts and journal, while goal dispositions have no session affiliation. It has no text query: I choose dates, kinds, and pages, then inspect content. " +
       OWN_RECORDS_PAGE_END_CLAIM,
     menuSummary:
-      "Browse my own thoughts and journal globally by origin-time range, with an optional explicit session filter. " +
+      "Browse my own thoughts, journal, and goal dispositions globally by origin-time range; the optional session filter applies to thoughts and journal. " +
       OWN_RECORDS_PAGE_END_CLAIM,
     allowedOrigins: ["autonomous", "deliberator"],
     writeScope: "read",
@@ -333,19 +386,45 @@ export function createOwnRecordsListTool(
               : {}),
           })
         : [];
+      const goalDispositionRecords = selectedKinds.has("goal_disposition")
+        ? await options.listGoalDispositionRecords({
+            sinceMs,
+            untilMs: sourceUntilForCursor("goal_disposition", untilMs, cursor),
+            limit: limit + 1,
+            ...(cursor?.kind === "goal_disposition"
+              ? { cursor: { ts: cursor.occurred_at, id: cursor.source_id } }
+              : {}),
+          })
+        : [];
+      const goalDispositionLabels =
+        goalDispositionRecords.length === 0
+          ? new Map<number, MemoryDisclosureLabel>()
+          : await options.disclosureLabelsForGoalDispositions(goalDispositionRecords);
       const merged = [
-        ...thoughtRecords.map((record): OwnRecordCandidate => ({
-          kind: "thought",
-          occurredAt: record.timestamp,
-          sourceId: record.entry_id as StreamEntryId,
-          record,
-        })),
-        ...journalRecords.map((record): OwnRecordCandidate => ({
-          kind: "journal",
-          occurredAt: record.created_at,
-          sourceId: record.id,
-          record,
-        })),
+        ...thoughtRecords.map(
+          (record): OwnRecordCandidate => ({
+            kind: "thought",
+            occurredAt: record.timestamp,
+            sourceId: record.entry_id as StreamEntryId,
+            record,
+          }),
+        ),
+        ...journalRecords.map(
+          (record): OwnRecordCandidate => ({
+            kind: "journal",
+            occurredAt: record.created_at,
+            sourceId: record.id,
+            record,
+          }),
+        ),
+        ...goalDispositionRecords.map(
+          (record): OwnRecordCandidate => ({
+            kind: "goal_disposition",
+            occurredAt: record.ts,
+            sourceId: record.id,
+            record,
+          }),
+        ),
       ].sort(compareOwnRecordCandidates);
       const pageCandidates = merged.slice(0, limit);
       const moreInStore = merged.length > pageCandidates.length;
@@ -394,7 +473,7 @@ export function createOwnRecordsListTool(
             oversized_anchors_omitted: false,
             ...memoryDisclosurePayloadFields(label),
           };
-        } else {
+        } else if (candidate.kind === "journal") {
           row = {
             handle: `journal:${candidate.sourceId}`,
             kind: "journal",
@@ -414,6 +493,30 @@ export function createOwnRecordsListTool(
             self_entity_id: candidate.record.self_entity_id,
             oversized_anchors_omitted: false,
             ...memoryDisclosurePayloadFields(disclosureLabel),
+          };
+        } else {
+          const content = renderGoalDisposition(candidate.record);
+          row = {
+            handle: `goal-disposition:${encodeOwnRecordCursor(candidate)}`,
+            kind: "goal_disposition",
+            content,
+            payload_status: "exact",
+            payload_included_chars: content.length,
+            payload_total_chars: content.length,
+            occurred_at: candidate.occurredAt,
+            occurred_at_iso: new Date(candidate.occurredAt).toISOString(),
+            origin_time_basis: "identity_event_timestamp",
+            relative_age: formatRelativeAge(candidate.occurredAt, nowMs),
+            session_id: null,
+            turn_id: null,
+            stream_entry_id: null,
+            journal_entry_id: null,
+            marker_stream_entry_id: null,
+            self_entity_id: null,
+            oversized_anchors_omitted: false,
+            ...memoryDisclosurePayloadFields(
+              goalDispositionLabels.get(candidate.sourceId) ?? unknownMemoryDisclosureLabel(),
+            ),
           };
         }
 
