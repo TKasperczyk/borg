@@ -136,6 +136,7 @@ function minimalRetrievalPhaseOptions(
     },
     openQuestionsRepository: {
       list: () => [],
+      countByStatus: () => ({ open: 0, resolved: 0, abandoned: 0 }),
     },
     attachmentRepository: {
       get: () => null,
@@ -4669,6 +4670,7 @@ describe("compileSharedStateArtifactForEvidenceLedger", () => {
         get: () => null,
         resolve: () => null,
         findByHandles: () => [],
+        countByStatus: () => ({ open: 0, resolved: 0, abandoned: 0 }),
       },
       attachmentRepository: {
         get: () => null,

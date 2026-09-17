@@ -426,6 +426,7 @@ describe("runPostGenerationPhase", () => {
         openQuestionsRepository: {
           list: () => [],
           findByHandles: () => [],
+          countByStatus: () => ({ open: 0, resolved: 0, abandoned: 0 }),
         },
         attachmentRepository: {
           isActiveForStreamEntry: () => true,
