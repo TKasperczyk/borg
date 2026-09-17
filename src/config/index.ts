@@ -644,7 +644,7 @@ const configBaseSchema = z.object({
           // (~204% of budget) on eight of nine runs. See the reflector budget
           // comment for the sizing rationale.
           budget: z.number().int().positive().default(500_000),
-          // Observation user message, including prior narrative and growth markers.
+          // Complete input estimate: system, tool schema, and observation user message.
           maxPromptTokens: z.number().int().positive().default(250_000),
           maxObservationsPerRun: z.number().int().positive().default(4),
           minSupportEpisodes: z.number().int().positive().default(2),

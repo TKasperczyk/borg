@@ -1861,6 +1861,9 @@ function renderWakeWindowRows(
     const finalizerRoundsAttribute =
       wake.finalizer_rounds === null ? "" : ` fr="${wake.finalizer_rounds}"`;
     const stallRetriesAttribute = wake.stall_retries === null ? "" : ` sr="${wake.stall_retries}"`;
+    const preparationFailureAttributes = wake.preparation_failed
+      ? ' preparation_failed="true" budgeted="false"'
+      : "";
     const answeredWindowAttribute =
       wake.answered_window === undefined
         ? ""
@@ -1868,7 +1871,7 @@ function renderWakeWindowRows(
 
     return `- <wake at="${new Date(wake.ts).toISOString()}" tr="${wake.trigger_name}" o="${
       wake.outcome ?? "in_flight"
-    }"${headwayBases}${finalizerRoundsAttribute}${stallRetriesAttribute}${answeredWindowAttribute} />`;
+    }"${preparationFailureAttributes}${headwayBases}${finalizerRoundsAttribute}${stallRetriesAttribute}${answeredWindowAttribute} />`;
   });
 
   return [
@@ -1956,7 +1959,6 @@ export function summarizeAutonomySchedulerState(
         : `, ${observationLagMs}ms before the current_time_ms at the top of this prompt`
     }: every count and stamp below is as of that read, not as of now. The lag is the ledger build and shared-state compile that run in between and varies per turn, so a wake admitted inside it is not counted here.`,
     `Wake budget: used=${budget.used_in_current_window} / limit=${budget.max_wakes_per_window} / window=${formatRelativeDuration(budget.window_ms)} rolling, covering wakes stamped at or after ${new Date(budget.window_started_at).toISOString()} (the lower edge moves with every read, so counts below only compare against a read naming the same edge).`,
-    "Recorded preparation failures before a turn opens remain in the wake rows and error tallies below, but do not consume the wake budget or its contemplative reservation. The next slot-release time also excludes them. Older errors without that structural discriminator remain budgeted.",
     // The closing threshold is derived, but at reservationStillHeld === 0 it
     // takes the same value as limit, and a derived figure that coincides with
     // its own input is indistinguishable on the page from a constant. Printing

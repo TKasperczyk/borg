@@ -1017,6 +1017,7 @@ export class AutonomyScheduler {
         ts: wake.ts,
         trigger_name: wake.trigger_name,
         outcome: wake.outcome,
+        preparation_failed: wake.preparation_failed,
         headway_bases: wake.headway_bases,
         finalizer_rounds: wake.finalizer_rounds,
         stall_retries: wake.stall_retries,
@@ -1326,11 +1327,7 @@ export class AutonomyScheduler {
               ZERO_TURN_EXECUTION_COUNTS,
               { preparationFailed: true },
             );
-            this.consumeFleetFreshnessBypass(
-              dueEvent,
-              fleetAdmission.bypassKind,
-              fleetAdmission.metadata,
-            );
+            // No turn opened, so the admitted freshness bypass remains available.
             await writer.append({
               kind: "internal_event",
               content: {
