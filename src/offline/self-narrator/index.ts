@@ -526,10 +526,9 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
     ]).slice(0, 6);
     const periodDecision = periodDecisions.includes("open_new") ? "open_new" : "continue_current";
     const composedPeriodNarrative = periodNarratives[0] ?? null;
+    const nextPeriodStartTs = sourceEpisodes.at(-1)?.start_time ?? nowMs;
     const nextLabel =
-      configuredLabel.length > 0
-        ? configuredLabel
-        : (currentPeriod?.label ?? defaultQuarterLabel(nowMs));
+      configuredLabel.length > 0 ? configuredLabel : defaultQuarterLabel(nextPeriodStartTs);
     const openNewPeriod =
       periodDecision === "open_new" &&
       themes.length > 0 &&
@@ -558,7 +557,7 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
         const period = autobiographicalPeriodSchema.parse({
           id: createAutobiographicalPeriodId(),
           label: nextLabel,
-          start_ts: sourceEpisodes.at(-1)?.start_time ?? nowMs,
+          start_ts: nextPeriodStartTs,
           end_ts: null,
           narrative,
           key_episode_ids: keyEpisodeIds,

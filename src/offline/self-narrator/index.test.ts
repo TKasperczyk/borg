@@ -435,6 +435,8 @@ describe("SelfNarratorProcess", () => {
 
       const nextPeriod = plan.items.find((item) => item.action === "open_period")?.period;
 
+      expect(nextPeriod?.label).toBe("2026-Q3");
+
       await process.apply(harness.createContext(), plan);
 
       const reviewItem = harness.reviewQueueRepository.getOpen()[0];
@@ -456,6 +458,71 @@ describe("SelfNarratorProcess", () => {
       );
       expect(matchingLabels).toHaveLength(1);
       expect(matchingLabels[0]?.end_ts).toBeNull();
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("labels a successor period from its own start, not from the period it closes", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        createSelfNarratorResponse({
+          observation: {
+            category: "skill",
+            what_changed: "Atlas operations became the main focus.",
+            before_description: "Planning dominated the period.",
+            after_description: "Operational debugging dominates now.",
+            confidence: 0.8,
+            evidence_episode_ids: ["ep_aaaaaaaaaaaaaaaa", "ep_bbbbbbbbbbbbbbbb"],
+          },
+        }),
+      ],
+    });
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      clock: {
+        now: () => Date.UTC(2026, 9, 1),
+      },
+    });
+    const process = new SelfNarratorProcess({
+      autobiographicalRepository: harness.autobiographicalRepository,
+      growthMarkersRepository: harness.growthMarkersRepository,
+      registry: harness.registry,
+    });
+
+    try {
+      harness.autobiographicalRepository.upsertPeriod({
+        label: "2026-Q2",
+        start_ts: Date.UTC(2026, 5, 5),
+        narrative: "Planning quarter.",
+        themes: ["planning"],
+        provenance: { kind: "offline", process: "self-narrator" },
+      });
+      await harness.episodicRepository.createEpisode(
+        createEpisodeFixture({
+          id: "ep_aaaaaaaaaaaaaaaa" as never,
+          title: "Atlas incident",
+          narrative: "Atlas incident required live debugging.",
+          tags: ["atlas"],
+          created_at: Date.UTC(2026, 8, 10),
+          updated_at: Date.UTC(2026, 8, 10),
+        }),
+      );
+      await harness.episodicRepository.createEpisode(
+        createEpisodeFixture({
+          id: "ep_bbbbbbbbbbbbbbbb" as never,
+          title: "Atlas follow-up",
+          narrative: "Atlas debugging continued.",
+          tags: ["atlas"],
+          created_at: Date.UTC(2026, 8, 11),
+          updated_at: Date.UTC(2026, 8, 11),
+        }),
+      );
+
+      const plan = await process.plan(harness.createContext(), {});
+      const nextPeriod = plan.items.find((item) => item.action === "open_period")?.period;
+
+      expect(nextPeriod?.label).toBe("2026-Q3");
     } finally {
       await harness.cleanup();
     }
