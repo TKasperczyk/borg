@@ -423,7 +423,7 @@ describe("CorrectivePreferenceTurnService", () => {
     ]);
   });
 
-  it("keeps batch provenance and no committer when no directive source is named", async () => {
+  it("keeps batch provenance and no committer when the batch senders disagree", async () => {
     const firstEntryId = createStreamEntryId();
     const secondEntryId = createStreamEntryId();
     const llm = new FakeLLMClient({ responses: [correctivePreferenceResponse()] });
@@ -466,6 +466,96 @@ describe("CorrectivePreferenceTurnService", () => {
     expect(result.commitment).toMatchObject({
       committed_by_entity_id: null,
       source_stream_entry_ids: [firstEntryId, secondEntryId],
+    });
+  });
+
+  it("resolves the committer from the stored batch when no directive source is named", async () => {
+    const firstEntryId = createStreamEntryId();
+    const secondEntryId = createStreamEntryId();
+    const sender = createEntityId();
+    const llm = new FakeLLMClient({ responses: [correctivePreferenceResponse()] });
+    const service = new CorrectivePreferenceTurnService({
+      model: "haiku",
+      commitmentRepository: {
+        get: () => null,
+        getApplicable: () => [],
+        revoke: vi.fn(),
+        supersede: vi.fn(),
+      },
+      identityService: { addCommitment: vi.fn() },
+      relationalSlotRepository: { list: () => [], applyNegation: vi.fn() },
+      workingMemoryStore: {
+        load: () => createWorkingMemory(DEFAULT_SESSION_ID, 2_000),
+        sanitizePendingActionsForRelationalSlot: vi.fn(),
+      },
+      clock: new FixedClock(2_000),
+      tracer: { enabled: false, includePayloads: false, emit: vi.fn() },
+    });
+
+    const result = await service.extractAndApply({
+      llmClient: llm,
+      turnId: "turn-unnamed-source-single-sender",
+      ...defaultCorrectiveTurnContext,
+      userMessage: "<inbound_batch>...</inbound_batch>",
+      sourceUserEntryIds: [firstEntryId, secondEntryId],
+      senderAttribution: [
+        { entryId: firstEntryId, senderEntityId: sender },
+        { entryId: secondEntryId, senderEntityId: sender },
+      ],
+      recentHistory: [],
+      audienceEntityId: createEntityId(),
+      committedByEntityId: null,
+      sessionId: DEFAULT_SESSION_ID,
+      onHookFailure: vi.fn(),
+      trackAppliedSlotNegation: vi.fn(),
+    });
+
+    expect(result.commitment).toMatchObject({
+      committed_by_entity_id: sender,
+      source_stream_entry_ids: [firstEntryId, secondEntryId],
+    });
+  });
+
+  it("resolves the committer from the persisted entry when the turn carries no batch", async () => {
+    const userEntryId = createStreamEntryId();
+    const sender = createEntityId();
+    const llm = new FakeLLMClient({ responses: [correctivePreferenceResponse()] });
+    const service = new CorrectivePreferenceTurnService({
+      model: "haiku",
+      commitmentRepository: {
+        get: () => null,
+        getApplicable: () => [],
+        revoke: vi.fn(),
+        supersede: vi.fn(),
+      },
+      identityService: { addCommitment: vi.fn() },
+      relationalSlotRepository: { list: () => [], applyNegation: vi.fn() },
+      workingMemoryStore: {
+        load: () => createWorkingMemory(DEFAULT_SESSION_ID, 2_000),
+        sanitizePendingActionsForRelationalSlot: vi.fn(),
+      },
+      clock: new FixedClock(2_000),
+      tracer: { enabled: false, includePayloads: false, emit: vi.fn() },
+    });
+
+    const result = await service.extractAndApply({
+      llmClient: llm,
+      turnId: "turn-unnamed-source-persisted-entry",
+      ...defaultCorrectiveTurnContext,
+      userMessage: "Keep my trip tasks out of the channel.",
+      persistedUserEntryId: userEntryId,
+      senderAttribution: [{ entryId: userEntryId, senderEntityId: sender }],
+      recentHistory: [],
+      audienceEntityId: createEntityId(),
+      committedByEntityId: null,
+      sessionId: DEFAULT_SESSION_ID,
+      onHookFailure: vi.fn(),
+      trackAppliedSlotNegation: vi.fn(),
+    });
+
+    expect(result.commitment).toMatchObject({
+      committed_by_entity_id: sender,
+      source_stream_entry_ids: [userEntryId],
     });
   });
 
