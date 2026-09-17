@@ -926,16 +926,20 @@ function projectAutobiographicalRecallForResponse(
     isMemoryDisclosureLabelVisibleToAnyAudience(item.disclosureLabel, visibleAudienceEntityIds),
   );
   const included = visible.slice(0, MAX_AUTOBIOGRAPHICAL_ROWS);
+  const [window, additionalWindow] = [
+    recall.window,
+    ...(recall.window.additionalWindow === undefined ? [] : [recall.window.additionalWindow]),
+  ].map((band) => ({
+    since: band.startMs,
+    until: band.endMs,
+    label: band.label,
+    // The service names its cue source after Sol's perception; here the cue is the planner's.
+    source: band.source === "perception_temporal_cue" ? "planner_temporal_cue" : band.source,
+  }));
   return {
     window: {
-      since: recall.window.startMs,
-      until: recall.window.endMs,
-      label: recall.window.label,
-      // The service names its cue source after Sol's perception; here the cue is the planner's.
-      source:
-        recall.window.source === "perception_temporal_cue"
-          ? "planner_temporal_cue"
-          : recall.window.source,
+      ...window,
+      ...(additionalWindow === undefined ? {} : { additional_window: additionalWindow }),
     },
     evidence: included.map((item) => ({
       id: item.id,

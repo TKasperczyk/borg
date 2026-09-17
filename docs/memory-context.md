@@ -624,7 +624,7 @@ retrieval pass); the sidecar uses it in two ways:
   inside the planner's cue are ordered first and flagged `in_time_range: true`, exactly as an explicit
   `time_range` did. This keeps a caller that stops sending `time_range` (team-agent, Extension 5) on
   the same footing as before: the cue is now the range.
-- **`autobiographical`**: the memory owner's own record for the cued period, assembled by the same
+- **`autobiographical`**: the memory owner's recent record plus the cued period, assembled by the same
   `AutobiographicalRecallService` Sol's evidence ledger reads, through `borg.self.autobiographical.recall`
   (session cap 8, total cap 24 here, below Sol's defaults). The gate is the cue alone: Teams audiences
   are never the owner and an operator role is not used to open it, so a turn without a time reference
@@ -637,9 +637,13 @@ retrieval pass); the sidecar uses it in two ways:
   are filtered for the requesting audience with the record's disclosure label (public always, unknown
   never, otherwise only when one of the visible audience entities is among the entities the row is
   private to), capped at 12, and returned as
-  `{ window: { since, until, label, source: "planner_temporal_cue" }, evidence: [ { id, kind, group,
+  `{ window: { since, until, label, source: "recent_default", additional_window?:
+  { since, until, label, source: "planner_temporal_cue" } }, evidence: [ { id, kind, group,
   occurred_at, relative_age, text, source_episode_ids, disclosure } ], hidden_count, truncated_count }`
   (`hidden_count` counts rows of the returned kinds the audience may not see).
+  The outer window is always the last seven days. A cue extending earlier adds `additional_window`
+  with its own range and label; overlap is covered by the recent window and gaps are not recalled.
+  Recent rows retain priority within the same caps, and each row's `occurred_at` places it in its band.
   The recall runs as a second pass after the episodes recall with a budget of at most 1.5 s and never
   more than what the episodes pass left of the one recall deadline (default 5 s) minus 700 ms of
   headroom, because the interactive client's own timeout sits at that deadline and a second pass that

@@ -768,6 +768,127 @@ describe("AutobiographicalRecallService", () => {
     expect(legacyItem?.metadata).not.toHaveProperty("delivery_status");
   });
 
+  it.each([
+    { gapMs: 0, earlierResult: false },
+    { gapMs: 86_400_000, earlierResult: false },
+    { gapMs: 0, earlierResult: true },
+  ])(
+    "joins outbound results across bands (gap: $gapMs, earlier result: $earlierResult) within the recent-first cap",
+    async ({ gapMs, earlierResult }) => {
+      const tempDir = mkdtempSync(join(tmpdir(), "borg-autobiographical-band-join-"));
+      tempDirs.push(tempDir);
+      const sessionId = createSessionId();
+      const cutoff = NOW_MS - 7 * 86_400_000;
+      const cueEnd = cutoff - gapMs - 1;
+      const clock = new ManualClock(cueEnd - 100);
+      const writer = new StreamWriter({ dataDir: tempDir, sessionId, clock });
+      const callId = createStreamEntryId();
+      const call = await writer.append({
+        kind: "tool_call",
+        content: {
+          call_id: callId,
+          tool_name: OUTBOUND_POST_TOOL_NAME,
+          input: { channel: "release-room" },
+          origin: "autonomy",
+          turn_origin: "autonomous",
+        },
+      });
+      if (earlierResult) {
+        clock.set(cueEnd);
+        await writer.append({
+          kind: "tool_result",
+          content: { call_id: callId, ok: false, error: "delivery failed", duration_ms: 100 },
+        });
+      }
+      if (gapMs > 0) {
+        clock.set(cutoff - 1);
+        await writer.append({ kind: "thought", content: "Reflection outside both bands" });
+      }
+      clock.set(cutoff + 100);
+      const toolResult = await writer.append({
+        kind: "tool_result",
+        content: {
+          call_id: callId,
+          ok: true,
+          output: {
+            outbound: {
+              status: "completed",
+              emitted: true,
+              delivery: { status: "transported", source_type: "demo" },
+              delivery_outcome: { state: "delivered" },
+            },
+          },
+          duration_ms: clock.now() - call.timestamp,
+        },
+      });
+      clock.set(cutoff + 200);
+      const recent = await writer.append({ kind: "thought", content: "Recent reflection" });
+      clock.set(cutoff + 300);
+      const newest = await writer.append({ kind: "thought", content: "Newest reflection" });
+      writer.close();
+      const options = {
+        clock: new FixedClock(NOW_MS),
+        sessionsRepository: { list: () => [sessionRecord(sessionId, clock.now())] },
+        createStreamReader: (readerSessionId: SessionId) =>
+          new StreamReader({ dataDir: tempDir, sessionId: readerSessionId }),
+        sourceCap: 1,
+      };
+      const input = {
+        sessionId,
+        temporalCue: { sinceTs: cueEnd - 1_000, untilTs: cueEnd, label: "earlier band" },
+        isSelfAudience: false,
+        sessionAudienceRole: "operator" as const,
+        perceptionMode: "reflective" as const,
+      };
+
+      const result = await new AutobiographicalRecallService({ ...options, totalCap: 2 }).recall(
+        input,
+      );
+      expect(result?.evidence.map((item) => item.sourceStreamEntryIds)).toEqual([
+        [newest.id],
+        [call.id, toolResult.id],
+      ]);
+      expect(result?.evidence[1]?.metadata).toMatchObject({
+        call_id: callId,
+        status: "attempted",
+        outcome: "succeeded",
+        emitted: true,
+        delivery_outcome_state: "delivered",
+        delivery_status: "transported",
+        tool_result_stream_id: toolResult.id,
+      });
+      expect(result?.evidence[0]?.capMetadata?.sourceGroup).toEqual({
+        candidateCount: 2,
+        candidateScope: "scanned_sessions",
+        renderedCount: 1,
+      });
+      expect(result?.evidence.some((item) => item.sourceStreamEntryIds.includes(recent.id))).toBe(
+        false,
+      );
+      if (result === null) {
+        throw new Error("Expected autobiographical recall result");
+      }
+      const outbound = autobiographicalSection(result).entries.find(
+        (entry) => entry.state_metadata?.source_kind === "outbound_attempt",
+      );
+      expect(outbound?.state_metadata).toMatchObject({
+        source_stream_ids: [call.id, toolResult.id],
+        window_source: "perception_temporal_cue",
+        window_label: "earlier band",
+      });
+
+      const capped = await new AutobiographicalRecallService({ ...options, totalCap: 1 }).recall(
+        input,
+      );
+      expect(capped?.evidence.map((item) => item.sourceStreamEntryIds)).toEqual([[newest.id]]);
+      expect(capped?.evidence[0]?.capMetadata?.total).toEqual({
+        candidateCount: 2,
+        renderedCount: 1,
+        candidateScope: "post_source_caps",
+      });
+    },
+  );
+
   // The source cap is pooled across every stream kind and sliced by recency, so an outbound attempt
   // holds no reserved slot: later thoughts displace it long before the window closes. The section
   // framing says so, because absence here otherwise reads as "no reach was made".

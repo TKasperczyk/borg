@@ -456,6 +456,7 @@ type StreamEventCandidate = {
   entry: StreamEntry;
   kind: AutobiographicalRecallSourceKind;
   session: SessionRecord;
+  window: AutobiographicalRecallWindow;
 };
 
 function streamContentRecord(entry: StreamEntry): Record<string, unknown> | null {
@@ -608,10 +609,11 @@ export class AutobiographicalRecallService {
       }).goalTrees ?? rawGoalTrees,
     );
 
-    for (const band of [
+    const windows = [
       window,
       ...(window.additionalWindow === undefined ? [] : [window.additionalWindow]),
-    ]) {
+    ];
+    for (const band of windows) {
       const addItem = (item: AddItemInput): void => {
         if (!withinWindow(item.occurredAt, band)) {
           return;
@@ -620,7 +622,6 @@ export class AutobiographicalRecallService {
       };
       await this.collectActivity({ window: band, sourceCap, addItem, recordGroupSelection });
       this.collectSelfDecisions({ window: band, sourceCap, addItem, recordGroupSelection });
-      await this.collectStreamEvents({ window: band, sourceCap, addItem, recordGroupSelection });
       await this.collectEpisodes({ window: band, sourceCap, addItem, recordGroupSelection });
       this.collectObservedEvents({ window: band, sourceCap, addItem, recordGroupSelection });
       this.collectOpenQuestions({ window: band, sourceCap, addItem, recordGroupSelection });
@@ -633,6 +634,14 @@ export class AutobiographicalRecallService {
       });
       this.collectActions({ window: band, sourceCap, addItem, recordGroupSelection });
     }
+    await this.collectStreamEvents({
+      windows,
+      sourceCap,
+      addItem: (item) => {
+        items.push({ ...item, relativeAge: formatRelativeAge(item.occurredAt, nowMs) });
+      },
+      recordGroupSelection,
+    });
 
     const rankedCandidates = items.sort(
       (left, right) =>
@@ -838,7 +847,7 @@ export class AutobiographicalRecallService {
   }
 
   private async collectStreamEvents(input: {
-    window: AutobiographicalRecallWindow;
+    windows: readonly AutobiographicalRecallWindow[];
     sourceCap: number;
     addItem: (item: AddItemInput) => void;
     recordGroupSelection: RecordGroupSelection;
@@ -855,59 +864,70 @@ export class AutobiographicalRecallService {
       DEFAULT_AUTOBIOGRAPHICAL_RECALL_SESSION_CAP,
     );
     const sessionFetchLimit = sessionLimit + 1;
-    const fetchedSessions = this.options.sessionsRepository.list({
-      activeSince: input.window.startMs,
-      limit: sessionFetchLimit,
-    });
-    const sessions = fetchedSessions.slice(0, sessionLimit);
-    const candidates: StreamEventCandidate[] = [];
+    const selected: StreamEventCandidate[] = [];
     const toolResults = new Map<string, StreamEntry>();
 
-    for (const session of sessions) {
-      for await (const entry of this.options.createStreamReader(session.session_id).iterate({
-        sinceTs: input.window.startMs,
-        untilTs: input.window.endMs,
-        kinds: AUTOBIOGRAPHICAL_STREAM_KINDS,
-      })) {
-        if (entry.kind === "tool_result") {
-          const callId = streamToolCallId(entry);
-          if (callId !== null) {
-            toolResults.set(streamToolResultKey(session.session_id, callId), entry);
+    // Keep each band's scan and source budgets, but join results across all admitted bands
+    // before constructing evidence. A call and its result can straddle the recent cutoff.
+    for (const window of input.windows) {
+      const fetchedSessions = this.options.sessionsRepository.list({
+        activeSince: window.startMs,
+        limit: sessionFetchLimit,
+      });
+      const sessions = fetchedSessions.slice(0, sessionLimit);
+      const candidates: StreamEventCandidate[] = [];
+
+      for (const session of sessions) {
+        for await (const entry of this.options.createStreamReader(session.session_id).iterate({
+          sinceTs: window.startMs,
+          untilTs: window.endMs,
+          kinds: AUTOBIOGRAPHICAL_STREAM_KINDS,
+        })) {
+          if (entry.kind === "tool_result") {
+            const callId = streamToolCallId(entry);
+            if (callId !== null) {
+              const key = streamToolResultKey(session.session_id, callId);
+              const previous = toolResults.get(key);
+              if (previous === undefined || entry.timestamp >= previous.timestamp) {
+                toolResults.set(key, entry);
+              }
+            }
+            continue;
           }
-          continue;
-        }
-        const kind = streamItemKind(entry);
+          const kind = streamItemKind(entry);
 
-        if (kind === null) {
-          continue;
-        }
+          if (kind === null) {
+            continue;
+          }
 
-        candidates.push({ entry, kind, session });
+          candidates.push({ entry, kind, session, window });
+        }
       }
+
+      const sortedCandidates = candidates.sort(
+        (left, right) => right.entry.timestamp - left.entry.timestamp,
+      );
+      const selectedInWindow = selectWindowEligibleCandidatesWithinSourceCap(
+        sortedCandidates,
+        input.sourceCap,
+      );
+      selected.push(...selectedInWindow);
+
+      recordGroupedSelection({
+        candidates: sortedCandidates,
+        selected: selectedInWindow,
+        candidateCount: {
+          count: sortedCandidates.length,
+          precision: fetchedSessions.length < sessionFetchLimit ? "exact" : "lower_bound",
+        },
+        groupIdFor: (candidate) => streamGroupId(candidate.kind),
+        candidateScope: "scanned_sessions",
+        recordGroupSelection: input.recordGroupSelection,
+      });
     }
 
-    const sortedCandidates = candidates.sort(
-      (left, right) => right.entry.timestamp - left.entry.timestamp,
-    );
-    const selected = selectWindowEligibleCandidatesWithinSourceCap(
-      sortedCandidates,
-      input.sourceCap,
-    );
-
-    recordGroupedSelection({
-      candidates: sortedCandidates,
-      selected,
-      candidateCount: {
-        count: sortedCandidates.length,
-        precision: fetchedSessions.length < sessionFetchLimit ? "exact" : "lower_bound",
-      },
-      groupIdFor: (candidate) => streamGroupId(candidate.kind),
-      candidateScope: "scanned_sessions",
-      recordGroupSelection: input.recordGroupSelection,
-    });
-
     for (const candidate of selected) {
-      const { entry, kind, session } = candidate;
+      const { entry, kind, session, window } = candidate;
       const groupId = streamGroupId(kind);
       const callId = kind === "outbound_attempt" ? streamToolCallId(entry) : null;
       const toolResult =
@@ -920,7 +940,7 @@ export class AutobiographicalRecallService {
         groupId,
         groupLabel: stableGroupLabel(groupId),
         occurredAt: entry.timestamp,
-        score: 0.58 + recencyScore(entry.timestamp, input.window) * 0.18,
+        score: 0.58 + recencyScore(entry.timestamp, window) * 0.18,
         text: [
           `stream_kind=${entry.kind}`,
           `session_source_type=${session.source_type}`,
