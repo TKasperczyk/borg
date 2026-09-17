@@ -1218,6 +1218,34 @@ export class OpenQuestionsRepository {
     return rows.map((row) => mapOpenQuestionRow(row));
   }
 
+  // The population of the register, which every reader of it so far has had to infer from a draw.
+  // Both draws that reach a page are small and scored, so a short draw is consistent with a short
+  // register and with a long one, and nothing else in this repository answers "how many". Every
+  // status in the enum is seeded to zero so a status the table holds no rows of reads as a measured
+  // zero rather than as a key this query forgot; a row whose status the enum does not contain is
+  // skipped, which no writer here can produce because status is schema-parsed on every write.
+  countByStatus(): Record<OpenQuestionStatus, number> {
+    const counts = Object.fromEntries(OPEN_QUESTION_STATUSES.map((status) => [status, 0])) as Record<
+      OpenQuestionStatus,
+      number
+    >;
+    const rows = this.db
+      .prepare("SELECT status AS status, count(*) AS total FROM open_questions GROUP BY status")
+      .all() as { status?: unknown; total?: unknown }[];
+
+    for (const row of rows) {
+      const status = row.status as OpenQuestionStatus;
+
+      if (!(OPEN_QUESTION_STATUSES as readonly string[]).includes(status)) {
+        continue;
+      }
+
+      counts[status] = Number(row.total ?? 0);
+    }
+
+    return counts;
+  }
+
   get(id: OpenQuestionId): OpenQuestion | null {
     const row = this.db.prepare("SELECT * FROM open_questions WHERE id = ?").get(id) as
       | Record<string, unknown>

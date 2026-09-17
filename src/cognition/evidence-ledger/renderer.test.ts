@@ -1020,11 +1020,14 @@ describe("compactEvidenceLedger", () => {
     });
     const rendered = renderEvidenceLedger(compacted.ledger) ?? "";
     const admission =
-      /A status-bearing row reaches this section by one of two admissions[\s\S]*?my store holds\./.exec(
+      /A status-bearing row reaches this section by one of two admissions[\s\S]*?produced nothing here\./.exec(
         rendered,
       )?.[0] ?? "";
 
     expect(admission).not.toBe("");
+    // The clause no longer ends by calling the store's population unavailable: the section framing
+    // prints it per status, so that sentence would contradict a number two lines above it.
+    expect(rendered).not.toContain("neither admission counts");
 
     // The two sides of the sentence are derived from the admissions' own status sets rather than
     // restated, so widening either enum breaks this instead of leaving the sentence quietly false.

@@ -193,9 +193,12 @@ const DRAWN_OPEN_QUESTION_STATUSES: readonly string[] = OPEN_QUESTION_STATUSES.f
 //
 // Each opted-in section also states how a status-bearing row is admitted, because "absent from the
 // section" is only as informative as the admission that could have produced it: where two admissions
-// take disjoint status sets, an absent status reports on one of them and on neither the store's
-// population, and calling that absence one empty draw names a mechanism that never ran for half the
-// statuses in the tally.
+// take disjoint status sets, an absent status reports on one of them, and calling that absence one
+// empty draw names a mechanism that never ran for half the statuses in the tally.
+//
+// This clause used to end by saying neither admission counts what the store holds. The section's own
+// framing now prints that count per status, two lines above this breadcrumb on the same section, so
+// the sentence would tell a reader the population is unavailable here while it sits above them.
 const STATUS_COMPOSED_OMISSION_SECTIONS = new Map<EvidenceLedgerSectionId, string>([
   [
     "open_questions",
@@ -203,7 +206,7 @@ const STATUS_COMPOSED_OMISSION_SECTIONS = new Map<EvidenceLedgerSectionId, strin
       HANDLE_MATCHED_OPEN_QUESTION_STATUSES,
     )} only by handle match on this turn's stream and episode ids, ${formatStatusList(
       DRAWN_OPEN_QUESTION_STATUSES,
-    )} only by the scored retrieval draw. So an absent status reports that the one admission able to carry it produced nothing here, and neither admission counts how many rows of that status my store holds.`,
+    )} only by the scored retrieval draw. So an absent status reports that the one admission able to carry it produced nothing here.`,
   ],
 ]);
 

@@ -4671,6 +4671,7 @@ describe("EvidenceLedgerBuilder", () => {
       openQuestionsRepository: {
         findByHandles: () => [resolvedQuestion],
         countRuminations: () => 18,
+        countByStatus: () => ({ open: 104, resolved: 238, abandoned: 75 }),
       },
       currentSessionTranscriptTokenBudget: 50_000,
     });
@@ -4708,6 +4709,61 @@ describe("EvidenceLedgerBuilder", () => {
         }),
       }),
     ]);
+  });
+
+  it("prints the open-question store population even when the section draws nothing", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-open-question-population-"));
+    tempDirs.push(tempDir);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new FixedClock(NOW_MS),
+    });
+    const currentEntry = await writer.append({
+      kind: "user_msg",
+      content: "Nothing here matches any question I am carrying.",
+    });
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+      relationalSlotRepository: { list: () => [] },
+      actionRepository: { list: () => [] },
+      openQuestionsRepository: {
+        findByHandles: () => [],
+        countRuminations: () => 0,
+        countByStatus: () => ({ open: 104, resolved: 238, abandoned: 75 }),
+      },
+      currentSessionTranscriptTokenBudget: 50_000,
+    });
+
+    const ledger = await builder.build({
+      sessionId: DEFAULT_SESSION_ID,
+      audienceEntityId: null,
+      currentUserMessage: String(currentEntry.content),
+      currentUserEntry: currentEntry,
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [],
+      retrievedEpisodes: [],
+      retrievedEvidence: [],
+      retrievedSemantic: null,
+      openQuestions: [],
+      pendingCorrections: [],
+      frameAnomaly: null,
+    });
+    const section = ledger.sections.find((entry) => entry.id === "open_questions");
+
+    // The empty draw is the case this line exists for: both admissions can produce nothing while the
+    // store holds hundreds, and a page showing only "No entries." is what a register of zero looks
+    // like too. So the population has to survive the path that renders no rows at all.
+    expect(section?.entries).toEqual([]);
+
+    const rendered = renderSection(section!);
+
+    expect(rendered).toContain("my open_questions store at this read: open 104, resolved 238");
+    expect(rendered).toContain("abandoned 75");
+    expect(rendered).toContain("No entries.");
+    expect(rendered.indexOf("my open_questions store")).toBeLessThan(
+      rendered.indexOf("No entries."),
+    );
   });
 
   it("adds ISO and relative labels to open open-question metadata", async () => {

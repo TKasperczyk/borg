@@ -144,6 +144,50 @@ describe("OpenQuestionsRepository", () => {
     db.close();
   });
 
+  it("counts every status in the enum, including the ones the table holds no rows of", () => {
+    const db = openDatabase(":memory:", {
+      migrations: selfMigrations,
+    });
+    const repository = new OpenQuestionsRepository({
+      db,
+      clock: new FixedClock(10_000),
+    });
+    const episodeId = createEpisodeId();
+
+    expect(repository.countByStatus()).toEqual({ open: 0, resolved: 0, abandoned: 0 });
+
+    const first = repository.add({
+      question: "What is Atlas doing?",
+      urgency: 0.4,
+      related_episode_ids: [episodeId],
+      source: "user",
+    });
+    const second = repository.add({
+      question: "Where did the rollout stall?",
+      urgency: 0.5,
+      related_episode_ids: [episodeId],
+      source: "user",
+    });
+    repository.add({
+      question: "Who else saw the stall?",
+      urgency: 0.6,
+      related_episode_ids: [episodeId],
+      source: "user",
+    });
+
+    // Two rows leave the open set by different doors; the third stays. A status with no rows still
+    // has to print, because a caller cannot tell a key this query forgot from a measured zero.
+    repository.resolve(first.id, {
+      resolution_evidence_episode_ids: [episodeId],
+      resolution_note: "Atlas completed the rollout.",
+    });
+    repository.abandon(second.id, "Superseded by the incident review.");
+
+    expect(repository.countByStatus()).toEqual({ open: 1, resolved: 1, abandoned: 1 });
+
+    db.close();
+  });
+
   it("filters listed questions by source", () => {
     const db = openDatabase(":memory:", {
       migrations: selfMigrations,

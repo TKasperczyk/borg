@@ -12,11 +12,36 @@ import {
   relevantOpenQuestionEpisodeIds,
   relevantOpenQuestionStreamIds,
 } from "../open-question-handles.js";
-import { OPEN_QUESTION_TRUST_RANK, addEntry, cappedTrustRank } from "../section-buckets.js";
+import {
+  OPEN_QUESTION_TRUST_RANK,
+  addEntry,
+  cappedTrustRank,
+  setSectionFraming,
+} from "../section-buckets.js";
 import { persistenceClassFromProvenance } from "../scope-resolver.js";
 import { openQuestionMemoryDisclosureLabel } from "../../../memory/common/disclosure-serializers.js";
+import { OPEN_QUESTION_STATUSES } from "../../../memory/self/index.js";
+
+// Both admissions below are small: the handle match asks only about this turn's ids, and the draw
+// that carries open rows is a scored top-N. So the rows here have never been the register, and a
+// reader holding only them cannot tell a short draw from a short store -- the same page is what a
+// register of three and a register of hundreds both look like. The count is taken at build time and
+// says so, and the statuses are the enum's, so widening it cannot leave this line quietly partial.
+function storePopulationFraming(counts: Record<string, number>): string {
+  const parts = OPEN_QUESTION_STATUSES.map((status) => `${status} ${counts[status] ?? 0}`);
+
+  return `my open_questions store at this read: ${parts.join(", ")}. Rows here are this turn's admissions out of that, so a status with rows in the store can render none here.`;
+}
 
 export function addOpenQuestionsSection(context: BuilderSectionContext): void {
+  const storeCounts = context.repos.openQuestions?.countByStatus();
+
+  if (storeCounts !== undefined) {
+    setSectionFraming(context.buckets, "open_questions", {
+      text: storePopulationFraming(storeCounts),
+    });
+  }
+
   const questionsById = new Map(
     context.input.openQuestions.map((question) => [question.id, question]),
   );
