@@ -74,7 +74,6 @@ function correctivePreferenceResponse(
           directive_family: input.directiveFamily ?? "separate_trip_tasks",
           closure_pressure_relevance: "neutral",
           priority: 8,
-          reason: "The current speaker made a durable correction.",
           confidence: 0.91,
           supersedes_commitment_id: input.supersedesCommitmentId ?? null,
           retires_commitment_id: null,
@@ -87,11 +86,7 @@ function correctivePreferenceResponse(
   };
 }
 
-function retireCommitmentResponse(input: {
-  commitmentId: CommitmentId;
-  reason?: string;
-  confidence?: number;
-}) {
+function retireCommitmentResponse(input: { commitmentId: CommitmentId; confidence?: number }) {
   return {
     text: "",
     input_tokens: 6,
@@ -112,7 +107,6 @@ function retireCommitmentResponse(input: {
           directive_family: null,
           closure_pressure_relevance: null,
           priority: null,
-          reason: input.reason ?? "The model judged the active commitment no longer applicable.",
           confidence: input.confidence ?? 0.91,
           supersedes_commitment_id: null,
           retires_commitment_id: input.commitmentId,
@@ -1436,7 +1430,6 @@ describe("CorrectivePreferenceTurnService", () => {
       responses: [
         retireCommitmentResponse({
           commitmentId: retiredId,
-          reason: "The temporary audience boundary is resolved.",
         }),
       ],
     });
@@ -1457,13 +1450,13 @@ describe("CorrectivePreferenceTurnService", () => {
     expect(result.commitmentRetirement).toMatchObject({
       retiredId,
       allowedActiveCommitmentIds: [retiredId],
-      reason: "The temporary audience boundary is resolved.",
+      reason: "retired_by_corrective_preference",
       confidence: 0.91,
     });
     expect(addCommitment).not.toHaveBeenCalled();
     expect(revoke).toHaveBeenCalledWith(
       retiredId,
-      "The temporary audience boundary is resolved.",
+      "retired_by_corrective_preference",
       {
         kind: "online",
         process: "corrective-preference-extractor",
@@ -1538,7 +1531,7 @@ describe("CorrectivePreferenceTurnService", () => {
 
     expect(revoke).toHaveBeenCalledWith(
       retiredId,
-      "The model judged the active commitment no longer applicable.",
+      "retired_by_corrective_preference",
       {
         kind: "online",
         process: "corrective-preference-extractor",
@@ -1718,7 +1711,7 @@ describe("CorrectivePreferenceTurnService", () => {
 
     expect(revoke).toHaveBeenCalledWith(
       retiredId,
-      "The model judged the active commitment no longer applicable.",
+      "retired_by_corrective_preference",
       {
         kind: "online",
         process: "corrective-preference-extractor",

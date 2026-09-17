@@ -1760,7 +1760,7 @@ describe("RuminatorProcess", () => {
     }
   });
 
-  it("dismisses stale no-traction questions but keeps ones with active actions", async () => {
+  it("applies the rumination/citation timeout without claiming action progress was assessed", async () => {
     const tracer = new CaptureTracer();
     const harness = await createOfflineTestHarness({
       tracer,
@@ -1833,8 +1833,10 @@ describe("RuminatorProcess", () => {
           }),
         ]),
       );
-      expect(plan.items).not.toEqual(
-        expect.arrayContaining([expect.objectContaining({ question_id: active.id })]),
+      expect(plan.items).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ question_id: active.id, action: "abandon" }),
+        ]),
       );
 
       await process.apply(ctx, plan);
@@ -1842,9 +1844,11 @@ describe("RuminatorProcess", () => {
       expect(harness.openQuestionsRepository.get(stale.id)).toMatchObject({
         status: "abandoned",
         abandoned_reason: "stale_no_traction",
+        unresolved_rumination_ticks: 2,
+        last_ruminated_at: harness.clock.now(),
       });
       expect(harness.openQuestionsRepository.get(active.id)).toMatchObject({
-        status: "open",
+        status: "abandoned",
         unresolved_rumination_ticks: 2,
       });
       expect(tracer.events).toContainEqual({

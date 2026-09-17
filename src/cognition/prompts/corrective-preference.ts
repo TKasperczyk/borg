@@ -37,7 +37,7 @@ export const CORRECTIVE_PREFERENCE_SYSTEM_PROMPT = [
   'Emit enforcement_class as "advisory" for durable process norms and output-shape/style preferences, even when phrased as "do not": be terse, skip preamble, do not over-index, do not make this a case file, no timestamped dossier, do not write a manifesto.',
   "participant_preference / preference defaults to advisory. These are usually user-style preferences about terseness, wording, format, framing, or presentation.",
   "If the directive is a genuine named-audience forbidden disclosure, emit type=boundary. Choose kind by source/scope: boundary for a general prohibition, audience_rule for an audience-scoped rule, or participant_preference for a boundary a specific participant set about their own content. Do not wrap hard disclosure boundaries as type=preference.",
-  "For boundary / participant_preference outputs, emit a boundary only when a participant explicitly states a restriction about their own content or the addressee, and quote the exact source span supporting that restriction in reason. Never infer a restriction from a third party being mentioned or from an operator describing a decision about transport or tooling.",
+  "For boundary / participant_preference outputs, emit a boundary only when a participant explicitly states a restriction about their own content or the addressee. Never infer a restriction from a third party being mentioned or from an operator describing a decision about transport or tooling.",
   "Negative examples that are advisory, not critical:",
   '- "Lock the approval framework: thresholds, escalation path, and exception process are decided by the project owner, not by committee." => participant_preference / preference / advisory / critical_domain null.',
   '- "At natural wrap points, surface durable decisions and held context in explicit language." => process_norm / rule / advisory / critical_domain null.',
@@ -55,6 +55,6 @@ export const CORRECTIVE_PREFERENCE_SYSTEM_PROMPT = [
   "Emit critical_domain only for critical commitments. Use null for advisory commitments and none classifications.",
   "Emit directive_family as a short snake_case semantic family slug chosen by meaning, not by surface wording.",
   'Emit closure_pressure_relevance as "no_closure" for durable no-wrap-up/no-signoff/no-closure corrections, "closure_seeking" for durable requests to add closure, and "neutral" otherwise.',
-  "Keep directive and reason concise; do not explain ordinary none classifications beyond the required reason field.",
+  "Keep directive concise.",
   "When uncertain, return none. The directive must be enforceable by a later response checker without needing to remember the current phrasing.",
 ].join("\n");

@@ -16,7 +16,11 @@ import {
 } from "./memory-handler.js";
 import { MemoryTraceRegistry } from "./memory-trace.js";
 import type { Borg } from "../borg.js";
-import type { AutobiographicalRecallEvidenceItem } from "../cognition/autobiographical-recall.js";
+import {
+  AutobiographicalRecallService,
+  resolveAutobiographicalRecallWindow,
+  type AutobiographicalRecallEvidenceItem,
+} from "../cognition/autobiographical-recall.js";
 import type { TemporalCue } from "../contracts/cognitive-contracts.js";
 import type { RecallPlanOutcome } from "../retrieval/pipeline.js";
 import { BorgPool } from "../borg/pool.js";
@@ -42,12 +46,14 @@ import type {
 import { episodeParticipantEntityIdTerm, type Episode } from "../memory/episodic/index.js";
 import { QUARANTINED_USER_ENTRY_EVENT, StreamReader, type StreamEntry } from "../stream/index.js";
 import { EmbeddingError } from "../util/errors.js";
+import { FixedClock } from "../util/clock.js";
 import {
   createCommitmentId,
   createCreatorDirectiveId,
   createEntityId,
   createEpisodeId,
   createMaintenanceRunId,
+  createObservedEventId,
   parseSessionId,
   parseStreamEntryId,
   type EntityId,
@@ -547,12 +553,7 @@ function stubBorg(rec: Recorder): Borg {
             return null;
           }
           return {
-            window: {
-              startMs: input.temporalCue.sinceTs ?? 0,
-              endMs: input.temporalCue.untilTs ?? 0,
-              label: input.temporalCue.label ?? "cue",
-              source: "perception_temporal_cue" as const,
-            },
+            window: resolveAutobiographicalRecallWindow(input.temporalCue, Date.now()),
             evidence: rec.autobiographicalEvidence,
           };
         },
@@ -4827,7 +4828,18 @@ describe("memory sidecar handler", () => {
     // A planner-driven recall overfetches and defers accounting like an explicit range does.
     expect(rec.lastRecallOptions).toMatchObject({ limit: 6, recordRetrieval: false });
     expect(payload.autobiographical).toEqual({
-      window: { since: 100, until: 200, label: "wczoraj", source: "planner_temporal_cue" },
+      window: {
+        since: expect.any(Number),
+        until: expect.any(Number),
+        label: "recent default",
+        source: "recent_default",
+        additional_window: {
+          since: 100,
+          until: 200,
+          label: "wczoraj",
+          source: "planner_temporal_cue",
+        },
+      },
       evidence: [
         expect.objectContaining({
           id: publicRow.id,
@@ -4845,6 +4857,108 @@ describe("memory sidecar handler", () => {
     });
     expect(payload.degraded).toBe(false);
   });
+
+  it.each([14, 3])(
+    "projects the actual recall service's recent and cued windows for a cue %s days ago",
+    async (cueDaysAgo) => {
+      const { pool: recordedPool, rec } = recordingPool();
+      const day = 86_400_000;
+      const now = Date.now();
+      const alice = createEntityId();
+      rec.externalSenderIds.set("alice", alice);
+      rec.externalEntityIds.set("team-agent.sender\u0000alice", alice);
+      rec.plannerTemporalCue = {
+        sinceTs: now - (cueDaysAgo + 1) * day,
+        untilTs: now - (cueDaysAgo - 1) * day,
+        label: "wtedy",
+      };
+      rec.recallEpisodes = [];
+      const events = [now - day, now - cueDaysAgo * day, now - 10 * day].map((occurredAt) => ({
+        id: createObservedEventId(),
+        occurredAt,
+        lastSeenAt: occurredAt,
+        stance: "noted_frame",
+        taint: "none",
+        beliefEffect: "unchanged",
+        disclosureClass: "social_observed" as const,
+        interactionText: `Observation at ${occurredAt}`,
+        recurrenceCount: 1,
+        speakerEntityId: alice,
+        audienceEntityId: alice,
+        sourceStreamEntryIds: [],
+      }));
+      const pool: MemoryPool = {
+        ...recordedPool,
+        async withTenant(tenantId, fn, options) {
+          return recordedPool.withTenant(
+            tenantId,
+            (borg) => {
+              borg.self.autobiographical.recall = (input, recallOptions) =>
+                new AutobiographicalRecallService({
+                  clock: new FixedClock(now),
+                  ...recallOptions,
+                  observedEventRepository: {
+                    listRecentGlobal: ({ disclosureClass, sinceMs, limit }) =>
+                      events
+                        .filter(
+                          (event) =>
+                            event.disclosureClass === disclosureClass &&
+                            event.lastSeenAt >= sinceMs,
+                        )
+                        .sort((left, right) => right.lastSeenAt - left.lastSeenAt)
+                        .slice(0, limit),
+                  },
+                }).recall(input);
+              return fn(borg);
+            },
+            options,
+          );
+        },
+      };
+      const base = await start(pool);
+      const response = await post(
+        base,
+        "/memory/context",
+        {
+          tenant: "acme",
+          session: "personal-real-recall",
+          sender: { external_id: "alice", display_name: "Alice" },
+          conversation: { type: "personal", name: "Alice" },
+          focus: "Co wtedy ustaliliśmy?",
+          sections: ["episodes", "autobiographical"],
+        },
+        TOKEN,
+      );
+      const payload = (await response.json()) as Record<string, unknown>;
+
+      expect(response.status).toBe(200);
+      expect(payload.degraded).toBe(false);
+      expect(payload.autobiographical).toEqual({
+        window: {
+          since: now - 7 * day,
+          until: now,
+          label: "recent default",
+          source: "recent_default",
+          ...(cueDaysAgo > 7
+            ? {
+                additional_window: {
+                  since: rec.plannerTemporalCue.sinceTs,
+                  until: rec.plannerTemporalCue.untilTs,
+                  label: "wtedy",
+                  source: "planner_temporal_cue",
+                },
+              }
+            : {}),
+        },
+        evidence: [
+          expect.objectContaining({ occurred_at: now - day }),
+          expect.objectContaining({ occurred_at: now - cueDaysAgo * day }),
+        ],
+        hidden_count: 0,
+        truncated_count: 0,
+      });
+    },
+  );
 
   it("skips the owner's record when the episodes pass leaves no deadline budget, keeping the episodes", async () => {
     const { pool, rec } = recordingPool();

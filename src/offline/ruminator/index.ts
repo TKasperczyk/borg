@@ -65,7 +65,6 @@ import { episodeEvidencePromptRow } from "../evidence-labels.js";
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
 const GROWTH_MARKER_CONFIDENCE_CEILING = 0.6;
-const OPEN_QUESTION_ACTIVE_ACTION_STATES = ["considering", "committed_to_do", "scheduled"] as const;
 const RECENT_RUMINATIONS_PER_QUESTION = 3;
 const CONNECTED_OPEN_QUESTION_CANDIDATE_LIMIT = 8;
 const RUMINATOR_DUPLICATE_CANDIDATES_PER_QUESTION = 12;
@@ -804,35 +803,16 @@ async function hasPostCreationCitation(
   return episodes.some((episode) => episode.created_at > question.created_at);
 }
 
-function hasActiveAssociatedAction(ctx: OfflineContext, question: OpenQuestion): boolean {
-  if (
-    ctx.actionRepository.list({
-      openQuestionId: question.id,
-      states: OPEN_QUESTION_ACTIVE_ACTION_STATES,
-      limit: 1,
-    }).length > 0
-  ) {
-    return true;
-  }
-
-  return (
-    question.goal_id !== null &&
-    ctx.actionRepository.list({
-      goalId: question.goal_id,
-      states: OPEN_QUESTION_ACTIVE_ACTION_STATES,
-      limit: 1,
-    }).length > 0
-  );
-}
-
+// This is a rumination/citation timeout, not a judgment about conversational or
+// action progress. Production writers do not link active actions to questions;
+// consulting those empty links would pretend to measure traction we do not track.
 async function shouldDismissStaleNoTraction(
   ctx: OfflineContext,
   question: OpenQuestion,
 ): Promise<boolean> {
   return (
     question.unresolved_rumination_ticks >= ctx.config.offline.ruminator.staleNoTractionTicks &&
-    !(await hasPostCreationCitation(ctx, question)) &&
-    !hasActiveAssociatedAction(ctx, question)
+    !(await hasPostCreationCitation(ctx, question))
   );
 }
 

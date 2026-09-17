@@ -369,6 +369,45 @@ describe("formatRelativeAge", () => {
 });
 
 describe("buildBaseSystemPrompt", () => {
+  it.each(["candidate", "established"] as const)(
+    "renders %s traits without evidence or provenance episode ids",
+    (state) => {
+      const context = makeContext();
+      const prompt = buildBaseSystemPrompt(
+        {
+          ...context,
+          selfSnapshot: {
+            ...context.selfSnapshot,
+            traits: [
+              {
+                id: "trt_aaaaaaaaaaaaaaaa" as never,
+                label: "好奇心",
+                strength: 0.72,
+                state,
+                confidence: 0.86,
+                last_reinforced: NOW_MS,
+                last_decayed: null,
+                established_at: null,
+                last_tested_at: null,
+                last_contradicted_at: null,
+                support_count: 1,
+                contradiction_count: 0,
+                evidence_episode_ids: ["ep_aaaaaaaaaaaaaaaa" as never],
+                provenance: { kind: "episodes", episode_ids: ["ep_bbbbbbbbbbbbbbbb" as never] },
+              },
+            ],
+          },
+        },
+        PROMPT_OPTIONS,
+      );
+      expect(prompt).toContain("好奇心:0.72");
+      expect(prompt).toContain("conf 0.86");
+      expect(prompt).not.toContain("ep_aaaaaaaaaaaaaaaa");
+      expect(prompt).not.toContain("ep_bbbbbbbbbbbbbbbb");
+      expect(prompt).toContain(state === "candidate" ? "candidate, conf" : "Traits I express:");
+    },
+  );
+
   it("falls back to context time for turn-local commitment ages when option time is omitted", () => {
     const commitmentId = createCommitmentId();
     const prompt = buildBaseSystemPrompt(

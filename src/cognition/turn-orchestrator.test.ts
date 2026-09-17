@@ -791,7 +791,6 @@ function createCorrectivePreferenceResponse(input: {
             input.closure_pressure_relevance ??
             (input.classification === "corrective_preference" ? "neutral" : null),
           priority: input.priority ?? null,
-          reason: input.reason ?? "The current user turn corrected future response behavior.",
           confidence: input.confidence ?? 0.9,
           supersedes_commitment_id: input.supersedes_commitment_id ?? null,
           retires_commitment_id: input.retires_commitment_id ?? null,

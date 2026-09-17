@@ -18,7 +18,8 @@ import {
   cappedTrustRank,
   setSectionFraming,
 } from "../section-buckets.js";
-import { persistenceClassFromProvenance } from "../scope-resolver.js";
+import { persistenceClassFromProvenance, scopeFromStreamIds } from "../scope-resolver.js";
+import type { EpisodeId } from "../../../util/ids.js";
 import { openQuestionMemoryDisclosureLabel } from "../../../memory/common/disclosure-serializers.js";
 import { OPEN_QUESTION_STATUSES } from "../../../memory/self/index.js";
 
@@ -33,7 +34,7 @@ function storePopulationFraming(counts: Record<string, number>): string {
   return `my open_questions store at this read: ${parts.join(", ")}. Rows here are this turn's admissions out of that, so a status with rows in the store can render none here.`;
 }
 
-export function addOpenQuestionsSection(context: BuilderSectionContext): void {
+export async function addOpenQuestionsSection(context: BuilderSectionContext): Promise<void> {
   const storeCounts = context.repos.openQuestions?.countByStatus();
 
   if (storeCounts !== undefined) {
@@ -59,7 +60,51 @@ export function addOpenQuestionsSection(context: BuilderSectionContext): void {
     }
   }
 
+  // Resolve existing provenance in batches. Semantic IDs stay in the machinery;
+  // the prompt uses the same stream citation handles as other ledger evidence.
+  const nodeIds = [
+    ...new Set(
+      [...questionsById.values()].flatMap((question) => question.related_semantic_node_ids),
+    ),
+  ];
+  const nodes =
+    nodeIds.length === 0
+      ? []
+      : ((await context.repos.semanticNodes?.getMany?.(nodeIds, { includeArchived: true })) ?? []);
+  const semanticSourceEpisodeIdsById = new Map(
+    nodes.flatMap((node) => (node === null ? [] : [[node.id, node.source_episode_ids] as const])),
+  );
+  const episodeIds = [
+    ...new Set(
+      [...questionsById.values()].flatMap((question) =>
+        openQuestionEpisodeIds(question, semanticSourceEpisodeIdsById),
+      ),
+    ),
+  ];
+  const episodeSourceStreamIdsById = new Map(context.resolver.episodeSourceStreamIdsById);
+  const episodeScopesById = new Map(context.resolver.episodeScopesById);
+  const missingEpisodeIds = episodeIds.filter((id) => !episodeSourceStreamIdsById.has(id));
+  const episodes =
+    missingEpisodeIds.length === 0
+      ? []
+      : ((await context.repos.episodes?.getMany(missingEpisodeIds as EpisodeId[])) ?? []);
+  for (const episode of episodes) {
+    episodeSourceStreamIdsById.set(episode.id, episode.source_stream_ids);
+    episodeScopesById.set(
+      episode.id,
+      scopeFromStreamIds(episode.source_stream_ids, context.resolver),
+    );
+  }
+  const resolver = { ...context.resolver, episodeSourceStreamIdsById, episodeScopesById };
+
   for (const question of questionsById.values()) {
+    const sourceEpisodeIds = openQuestionEpisodeIds(question, semanticSourceEpisodeIdsById);
+    const sourceStreamIds = [
+      ...new Set([
+        ...openQuestionStreamEntryIds(question),
+        ...sourceEpisodeIds.flatMap((id) => episodeSourceStreamIdsById.get(id) ?? []),
+      ]),
+    ];
     const disclosureLabel = openQuestionMemoryDisclosureLabel(question);
     addEntry(
       context.buckets,
@@ -67,10 +112,11 @@ export function addOpenQuestionsSection(context: BuilderSectionContext): void {
       cappedTrustRank({
         id: `open_question:${question.id}`,
         source_type: "system_metadata",
-        session_scope: openQuestionScope(question, context.resolver),
+        session_scope: openQuestionScope(question, resolver, semanticSourceEpisodeIdsById),
         actor: "memory",
         trust_rank: OPEN_QUESTION_TRUST_RANK,
         text: question.question,
+        ...(sourceStreamIds.length === 0 ? {} : { citations: sourceStreamIds }),
         value: question.source,
         state: appendMemoryDisclosureState({
           state: question.status,
@@ -88,10 +134,10 @@ export function addOpenQuestionsSection(context: BuilderSectionContext): void {
         taint: "none",
         ...persistenceClassFromProvenance(
           {
-            streamEntryIds: openQuestionStreamEntryIds(question),
-            episodeIds: openQuestionEpisodeIds(question),
+            streamEntryIds: sourceStreamIds,
+            episodeIds: sourceEpisodeIds,
           },
-          context.resolver,
+          resolver,
         ),
       }),
     );

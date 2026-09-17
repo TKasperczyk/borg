@@ -14,7 +14,7 @@ import { SELF_DECISION_LABEL_SCOPE_FRAMING, type EvidenceLedgerSourceType } from
 
 const AUTOBIOGRAPHICAL_RECALL_FRAMING =
   "Autobiographical recall entries are past evidence for me to re-examine during this turn. I treat recalled self_decision rows as historical decisions and rationales, not standing verdicts; I revise them when current evidence warrants. " +
-  `${SELF_DECISION_LABEL_SCOPE_FRAMING} This section does carry reaches, separately, as outbound_attempt rows, so a label and an attempt from one turn appear here as two different rows. Those rows compete for recency-ordered slots shared with my thoughts and silence decisions rather than holding a reserved budget of their own, so an attempt missing from this section may simply have been outranked by later stream entries, and its absence here is not evidence that no reach was made. My window here is resolved from a temporal reference in this turn's inbound text, so a perception_temporal_cue window can close well before now, and evidence outside window_start_ms/window_end_ms is absent by that scope rather than missing from the store. A window minted from a reference the inbound text only mentions rather than asks about is that extractor missing its own instruction, not this section's intent: it is told that a quoted, cited, restated or reported window is not a cue, because a cue replaces my recent default outright instead of narrowing it. So a perception_temporal_cue window ending well before now is as consistent with a mention that should have been ignored as with a scope the sender asked for, and in the first case what the bounds cost me is my own recent record for this turn. That same reference also decides whether this section runs at all: with none in the inbound text I recall autobiographically only when the audience is myself, when the session role is operator, or when perception read this turn as reflective, so on any other turn the section's presence is itself evidence that the inbound text named a time, and its absence there is that reference missing rather than the store being empty. Apart from the reduction figures, the framing counts here are the source kinds present in the assembly, one key per kind, so they sum to rows_assembled exactly and a kind this object does not name contributed no rows to it.`;
+  `${SELF_DECISION_LABEL_SCOPE_FRAMING} This section does carry reaches, separately, as outbound_attempt rows, so a label and an attempt from one turn appear here as two different rows. Those rows compete for recency-ordered slots shared with my thoughts and silence decisions rather than holding a reserved budget of their own, so an attempt missing from this section may simply have been outranked by later stream entries, and its absence here is not evidence that no reach was made. My recent seven-day default is always recalled when this section runs. A perception_temporal_cue adds an earlier time band within the same cap, after the recent default; it never replaces my recent record or fills a gap between the bands. Each row carries its own band's window_start_ms/window_end_ms. A quoted, cited, restated or reported window is not a cue under the extractor's instruction; a spurious cue may add irrelevant older evidence but cannot remove recent evidence. That same reference also decides whether this section runs at all: with none in the inbound text I recall autobiographically only when the audience is myself, when the session role is operator, or when perception read this turn as reflective, so on any other turn the section's presence is itself evidence that the inbound text named a time, and its absence there is that reference missing rather than the store being empty. Apart from the reduction figures, the framing counts here are the source kinds present in the assembly, one key per kind, so they sum to rows_assembled exactly and a kind this object does not name contributed no rows to it.`;
 
 function sourceTypeForAutobiographicalItem(
   item: AutobiographicalRecallEvidenceItem,
@@ -71,6 +71,10 @@ export function addAutobiographicalRecallSection(context: BuilderSectionContext)
   });
 
   for (const item of recall.evidence) {
+    const window =
+      item.occurredAt < recall.window.startMs
+        ? (recall.window.additionalWindow ?? recall.window)
+        : recall.window;
     const stateMetadata = appendMemoryDisclosureStateMetadata({
       stateMetadata: {
         group_id: item.groupId,
@@ -79,10 +83,10 @@ export function addAutobiographicalRecallSection(context: BuilderSectionContext)
         // Raw epoch ms, not ISO -- see the convention note in ../recent-lived-experience.ts.
         occurred_at: item.occurredAt,
         relative_age: item.relativeAge,
-        window_start_ms: recall.window.startMs,
-        window_end_ms: recall.window.endMs,
-        window_label: recall.window.label,
-        window_source: recall.window.source,
+        window_start_ms: window.startMs,
+        window_end_ms: window.endMs,
+        window_label: window.label,
+        window_source: window.source,
         source_stream_ids: [...item.sourceStreamEntryIds],
         source_episode_ids: [...item.sourceEpisodeIds],
         ...item.metadata,

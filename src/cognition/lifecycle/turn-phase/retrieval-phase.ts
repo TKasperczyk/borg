@@ -1387,6 +1387,8 @@ export async function buildCompactedEvidenceLedgerWithoutSharedState(input: {
     sourceStreamAudienceDisclosureResolver: input.options.sourceStreamAudienceDisclosureResolver,
     goalsRepository: input.options.goalsRepository,
     openQuestionsRepository: input.options.openQuestionsRepository,
+    semanticNodeRepository: input.options.semanticNodeRepository,
+    episodicRepository: input.options.episodicRepository,
     currentSessionTranscriptTokenBudget: config.currentSessionTranscriptTokenBudget,
     actionThreadRenderLimit: config.actionThreadRenderLimit,
     actionThreadSimilarityThreshold: config.actionThreadSimilarityThreshold,

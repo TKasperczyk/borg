@@ -4812,6 +4812,65 @@ describe("EvidenceLedgerBuilder", () => {
     ]);
   });
 
+  it("resolves semantic-only question provenance to stream citations without exposing node ids", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-semantic-question-"));
+    tempDirs.push(tempDir);
+    const source = await new StreamWriter({
+      dataDir: tempDir,
+      clock: new FixedClock(NOW_MS),
+    }).append({ kind: "user_msg", content: "The source of a contradiction." });
+    const episode = createEpisodeFixture({
+      id: createEpisodeId(),
+      source_stream_ids: [source.id],
+    });
+    const node = createSemanticNodeFixture({ source_episode_ids: [episode.id], archived: true });
+    const missingNodeId = createSemanticNodeId();
+    const question: OpenQuestion = {
+      ...makeOpenQuestion(episode.id),
+      source: "contradiction",
+      related_episode_ids: [],
+      related_semantic_node_ids: [node.id, node.id, missingNodeId],
+      provenance: null,
+    };
+    const getNodes = vi.fn(async () => [node, null]);
+    const getEpisodes = vi.fn(async () => [episode]);
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+      relationalSlotRepository: { list: () => [] },
+      actionRepository: { list: () => [] },
+      semanticNodeRepository: { getMany: getNodes },
+      episodicRepository: { getMany: getEpisodes },
+      currentSessionTranscriptTokenBudget: 50_000,
+    });
+    const ledger = await builder.build({
+      sessionId: DEFAULT_SESSION_ID,
+      audienceEntityId: null,
+      nowMs: NOW_MS,
+      currentUserMessage: "Review my questions.",
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [],
+      retrievedEvidence: [],
+      retrievedEpisodes: [],
+      openQuestions: [question],
+      pendingCorrections: [],
+    });
+    expect(getNodes).toHaveBeenCalledWith([node.id, missingNodeId], { includeArchived: true });
+    expect(getEpisodes).toHaveBeenCalledWith([episode.id]);
+    expect(
+      ledger.sections.find((section) => section.id === "open_questions")?.entries[0],
+    ).toMatchObject({ citations: [source.id], session_scope: "current_session" });
+    const rendered = renderEvidenceLedger(
+      compactEvidenceLedger(ledger, {
+        targetTokens: 50_000,
+        hardCapTokens: 60_000,
+      }).ledger,
+    );
+    expect(rendered).toContain(`[citation: ${source.id}]`);
+    expect(rendered).not.toContain(node.id);
+    expect(rendered).not.toContain(missingNodeId);
+    expect(rendered).not.toContain(episode.id);
+  });
+
   it("includes old resolved open questions by handle before repository limits", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);

@@ -43,7 +43,6 @@ function correctivePreferenceResponse(
           directive_family: "private audience scope",
           closure_pressure_relevance: "neutral",
           priority: 90,
-          reason: "The sender set a durable privacy boundary.",
           confidence: 0.97,
           supersedes_commitment_id: supersedesCommitmentId,
           retires_commitment_id: null,
@@ -85,7 +84,6 @@ function noneResponse(
           directive_family: null,
           closure_pressure_relevance: null,
           priority: null,
-          reason: "This is ordinary conversation, not a durable correction.",
           confidence: 0.98,
           supersedes_commitment_id: null,
           retires_commitment_id: null,
@@ -119,7 +117,6 @@ function retirementResponse(commitmentId: CommitmentId) {
           directive_family: null,
           closure_pressure_relevance: null,
           priority: null,
-          reason: "The sender explicitly stood down the supplied rule.",
           confidence: 0.96,
           supersedes_commitment_id: null,
           retires_commitment_id: commitmentId,
@@ -378,7 +375,7 @@ describe("sidecar corrective-preference ingestion wiring", () => {
         [],
       );
       expect(borg.commitments.get(commitment.id)).toMatchObject({
-        revoked_reason: "The sender explicitly stood down the supplied rule.",
+        revoked_reason: "retired_by_corrective_preference",
         revoke_provenance: {
           kind: "online",
           process: "corrective-preference-extractor",

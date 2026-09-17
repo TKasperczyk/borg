@@ -149,10 +149,6 @@ const correctivePreferenceSchema = z
       .describe(
         "Relative enforcement priority. Use higher values for explicit prohibitions or boundaries, lower values for softer style preferences. Use null when classification is retire_commitment or none.",
       ),
-    reason: z
-      .string()
-      .min(1)
-      .describe("Brief semantic reason for the classification, grounded in the current user turn."),
     confidence: z
       .number()
       .min(0)
@@ -206,7 +202,6 @@ export type CorrectivePreferenceCandidate = {
   enforcement_class: z.infer<typeof commitmentEnforcementClassSchema>;
   critical_domain: z.infer<typeof commitmentCriticalDomainSchema> | null;
   priority: number;
-  reason: string;
   confidence: number;
   supersedes_commitment_id?: CommitmentId | null;
   applies_to_audience_entity_id: EntityId | null;
@@ -216,7 +211,6 @@ export type CorrectivePreferenceCandidate = {
 
 export type CorrectivePreferenceRetirementCandidate = {
   commitmentId: CommitmentId;
-  reason: string;
   confidence: number;
 };
 
@@ -359,9 +353,8 @@ function toCandidate(
 
   const directive = input.directive.trim();
   const directiveFamily = normalizeDirectiveFamily(input.directive_family);
-  const reason = input.reason.trim();
 
-  if (directive.length === 0 || directiveFamily.length === 0 || reason.length === 0) {
+  if (directive.length === 0 || directiveFamily.length === 0) {
     return null;
   }
 
@@ -391,7 +384,6 @@ function toCandidate(
     directive_family: directiveFamily,
     closure_pressure_relevance: input.closure_pressure_relevance,
     priority: input.priority,
-    reason,
     confidence: input.confidence,
     supersedes_commitment_id: input.supersedes_commitment_id ?? null,
     applies_to_audience_entity_id: input.applies_to_audience_entity_id ?? null,
@@ -415,15 +407,8 @@ function toRetirement(
     return null;
   }
 
-  const reason = input.reason.trim();
-
-  if (reason.length === 0) {
-    return null;
-  }
-
   return {
     commitmentId: input.retires_commitment_id,
-    reason,
     confidence: input.confidence,
   };
 }

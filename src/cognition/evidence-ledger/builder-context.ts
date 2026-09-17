@@ -27,5 +27,7 @@ export type BuilderSectionContext = {
     goals: EvidenceLedgerBuilderOptions["goalsRepository"];
     openQuestions: EvidenceLedgerBuilderOptions["openQuestionsRepository"];
     entities: EvidenceLedgerBuilderOptions["entityRepository"];
+    semanticNodes?: EvidenceLedgerBuilderOptions["semanticNodeRepository"];
+    episodes?: EvidenceLedgerBuilderOptions["episodicRepository"];
   };
 };
