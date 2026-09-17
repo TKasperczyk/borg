@@ -283,12 +283,7 @@ describe("OpenQuestionsRepository", () => {
     }
   });
 
-  // Four consecutive resolutions read back with last_ruminated_at null, which is
-  // readable as "nothing ever ruminated on these". It is not: both terminal writes
-  // clear the active-open lifecycle in the same statement that sets the status, so
-  // the null is that write's own doing and carries no history. The notes are the
-  // record that survives it, so pin both halves in one place.
-  it("clears the rumination lifecycle on terminal writes while the notes survive", () => {
+  it("retains abandonment rumination evidence while resolution clears the active lifecycle", () => {
     const db = openDatabase(":memory:", {
       migrations: selfMigrations,
     });
@@ -331,11 +326,16 @@ describe("OpenQuestionsRepository", () => {
         resolution_note: "The evidence settled it.",
         resolution_evidence_episode_ids: [createEpisodeId()],
       });
-      const afterAbandon = repository.abandon(abandoned.id, "No traction.");
+      const afterAbandon = repository.abandon(abandoned.id, "stale_no_traction");
 
-      for (const record of [afterResolve, afterAbandon]) {
-        expect(record.unresolved_rumination_ticks).toBe(0);
-        expect(record.last_ruminated_at).toBeNull();
+      expect(afterResolve.unresolved_rumination_ticks).toBe(0);
+      expect(afterResolve.last_ruminated_at).toBeNull();
+      for (const record of [afterAbandon, repository.get(abandoned.id)]) {
+        expect(record).toMatchObject({
+          abandoned_reason: "stale_no_traction",
+          unresolved_rumination_ticks: 3,
+          last_ruminated_at: 10_000,
+        });
       }
 
       for (const question of [resolved, abandoned]) {

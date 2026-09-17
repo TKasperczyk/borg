@@ -1,6 +1,7 @@
 import type { OpenQuestion, OpenQuestionStatus } from "../../memory/self/index.js";
 import { formatRelativeAge } from "../../util/relative-time.js";
 import type { EvidenceLedgerBuildInput } from "./builder-types.js";
+import type { EpisodeId } from "../../util/ids.js";
 import {
   combineScopes,
   scopeFromEpisodeIds,
@@ -17,10 +18,11 @@ export const LIFECYCLE_OPEN_QUESTION_STATUSES = [
 export function openQuestionScope(
   question: OpenQuestion,
   resolver: ScopeResolver,
+  semanticSourceEpisodeIdsById?: ReadonlyMap<string, readonly EpisodeId[]>,
 ): EvidenceLedgerSessionScope {
   return combineScopes([
     scopeFromStreamIds(openQuestionStreamEntryIds(question), resolver),
-    scopeFromEpisodeIds(openQuestionEpisodeIds(question), resolver),
+    scopeFromEpisodeIds(openQuestionEpisodeIds(question, semanticSourceEpisodeIdsById), resolver),
   ]);
 }
 
@@ -49,11 +51,17 @@ export function openQuestionStreamEntryIds(question: OpenQuestion): readonly str
   ];
 }
 
-export function openQuestionEpisodeIds(question: OpenQuestion): readonly string[] {
+export function openQuestionEpisodeIds(
+  question: OpenQuestion,
+  semanticSourceEpisodeIdsById?: ReadonlyMap<string, readonly EpisodeId[]>,
+): readonly string[] {
   return [
     ...question.related_episode_ids,
     ...question.resolution_evidence_episode_ids,
     ...openQuestionProvenanceEpisodeIds(question),
+    ...question.related_semantic_node_ids.flatMap(
+      (nodeId) => semanticSourceEpisodeIdsById?.get(nodeId) ?? [],
+    ),
   ];
 }
 
@@ -136,7 +144,7 @@ function ruminationTicksNoteFor(
 
   return {
     unresolved_rumination_ticks_note:
-      "Note-bearing offline passes counted on this row while open, which is not recorded_rumination_notes beside it: a merge hands a duplicate's notes over without its ticks, so either can be larger. A pass that recorded no note stamps the schedule without advancing it, so a last_ruminated_at later than the newest note tool.openQuestions.ruminations returns is evidence of at least one such pass, though how many is recoverable from neither. The count on its own does not close it, and a count already past the threshold does not mean the other conditions are what kept it open: the dismissal is not evaluated at all on a pass that called the model for this question, so the model's still-open judgment stands and the count advances unchecked. Where it is evaluated, it also requires no episode created after the question citing it and no active action against it.",
+      "Note-bearing offline passes counted on this row while open, which is not recorded_rumination_notes beside it: a merge hands a duplicate's notes over without its ticks, so either can be larger. A pass that recorded no note stamps the schedule without advancing it, so a last_ruminated_at later than the newest note tool.openQuestions.ruminations returns is evidence of at least one such pass, though how many is recoverable from neither. The count on its own does not close it, and a count already past the threshold does not mean the other conditions are what kept it open: the dismissal is not evaluated at all on a pass that called the model for this question, so the model's still-open judgment stands and the count advances unchecked. Where it is evaluated, it also requires no cited episode created after the question; action and conversational progress are not measured by this predicate.",
   };
 }
 
@@ -184,8 +192,8 @@ export function openQuestionStateMetadata(
     };
   }
 
-  // Closing a question zeroes unresolved_rumination_ticks and nulls last_ruminated_at in the same
-  // write, so on a closed row those two fields record the closure rather than the work, and reading
+  // Resolving a question zeroes unresolved_rumination_ticks and nulls last_ruminated_at in the same
+  // write, so on a resolved row those two fields record the closure rather than the work, and reading
   // a null there as "never ruminated" is reading the write's own echo. The rumination notes are the
   // durable record: they are append-only and status-blind, so they outlive the row's closure, and
   // recorded_rumination_notes is their count where the repository was available to take it.
@@ -207,8 +215,14 @@ export function openQuestionStateMetadata(
     return {
       abandoned_reason: question.abandoned_reason,
       abandoned_at: question.abandoned_at,
+      unresolved_rumination_ticks: question.unresolved_rumination_ticks,
+      last_ruminated_at:
+        question.last_ruminated_at === null
+          ? null
+          : new Date(question.last_ruminated_at).toISOString(),
       ...recordedNotes,
-      rumination_record_note: closedRuminationNote,
+      rumination_record_note:
+        "Abandonment retains the rumination counter and last-pass stamp. Legacy closures may have cleared them; a zero or null on an abandoned row does not prove no rumination occurred. stale_no_traction means the tick threshold was met without a newer cited episode, not that action or conversational progress was assessed.",
     };
   }
 

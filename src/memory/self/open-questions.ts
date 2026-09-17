@@ -2135,8 +2135,7 @@ export class OpenQuestionsRepository {
 
     const abandonedAt = this.clock.now();
     const expectedVersion = expectedRecordVersion(existing, options);
-    // Rumination counters describe the active open lifecycle. Terminal states
-    // keep their own timestamps/events, so reset the active-loop metadata.
+    // Preserve the counter and last pass that explain the abandonment decision.
     const result = this.db
       .prepare(
         `
@@ -2145,7 +2144,6 @@ export class OpenQuestionsRepository {
               resolution_evidence_episode_ids = '[]', resolution_evidence_stream_entry_ids = '[]',
               resolution_disclosure_label = ?, resolution_note = NULL, resolved_at = NULL, last_touched = ?,
               resolved_by_artifact_entry_id = NULL,
-              unresolved_rumination_ticks = 0, last_ruminated_at = NULL,
               record_version = record_version + 1
           WHERE id = ? AND record_version = ?
         `,
@@ -2178,8 +2176,6 @@ export class OpenQuestionsRepository {
       abandoned_at: abandonedAt,
       resolved_by_artifact_entry_id: null,
       last_touched: abandonedAt,
-      unresolved_rumination_ticks: 0,
-      last_ruminated_at: null,
     };
 
     this.scheduleQuestionVectorUpsert(abandoned, "metadata_sync", {

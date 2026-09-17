@@ -41,7 +41,8 @@ import { createSectionBuckets, finalSections } from "./evidence-ledger/section-b
 import { renderSection } from "./evidence-ledger/section-rendering.js";
 import { addAutobiographicalRecallSection } from "./evidence-ledger/sections/autobiographical-recall.js";
 
-const NOW_MS = 10_000;
+// Existing historical-band cases remain outside the always-present recent week.
+const NOW_MS = 8 * 86_400_000 + 10_000;
 const tempDirs: string[] = [];
 
 afterEach(() => {
@@ -889,6 +890,67 @@ describe("AutobiographicalRecallService", () => {
         renderedCount: 1,
       },
     });
+  });
+
+  it.each([1, 2, 48])(
+    "keeps recent evidence and adds only the cued band within cap %s",
+    async (totalCap) => {
+      const day = 86_400_000;
+      const now = 30 * day;
+      const recent = goalNode(101, { last_progress_ts: now - day, priority: 0.1 });
+      const historical = goalNode(102, { last_progress_ts: now - 14 * day, priority: 1 });
+      const gap = goalNode(103, { last_progress_ts: now - 10 * day, priority: 1 });
+      const service = new AutobiographicalRecallService({
+        clock: new FixedClock(now),
+        goalsRepository: { list: () => [historical, gap, recent] },
+        totalCap,
+      });
+      const input = {
+        sessionId: createSessionId(),
+        isSelfAudience: true,
+        sessionAudienceRole: "operator" as const,
+        perceptionMode: "reflective" as const,
+      };
+      const baseline = await service.recall({ ...input, temporalCue: null });
+      const recalled = await service.recall({
+        ...input,
+        temporalCue: {
+          sinceTs: now - 15 * day,
+          untilTs: now - 13 * day,
+          label: "a past band",
+        },
+      });
+      expect(recalled?.evidence[0]).toMatchObject({ id: `goal:${recent.id}` });
+      expect(recalled?.evidence.slice(0, baseline!.evidence.length).map((item) => item.id)).toEqual(
+        baseline!.evidence.map((item) => item.id),
+      );
+      expect(recalled?.evidence.map((item) => item.id)).toEqual(
+        totalCap === 1 ? [`goal:${recent.id}`] : [`goal:${recent.id}`, `goal:${historical.id}`],
+      );
+      expect(recalled!.evidence.length).toBeLessThanOrEqual(totalCap);
+    },
+  );
+
+  it("deduplicates overlapping recent and cue bands by time bounds", async () => {
+    const day = 86_400_000;
+    const now = 30 * day;
+    const shared = goalNode(101, { last_progress_ts: now - 6 * day });
+    const older = goalNode(102, { last_progress_ts: now - 8 * day });
+    const service = new AutobiographicalRecallService({
+      clock: new FixedClock(now),
+      goalsRepository: { list: () => [shared, older] },
+    });
+    const recalled = await service.recall({
+      sessionId: createSessionId(),
+      isSelfAudience: false,
+      sessionAudienceRole: "operator",
+      perceptionMode: "reflective",
+      temporalCue: { sinceTs: now - 9 * day, untilTs: now - 5 * day, label: "overlapping band" },
+    });
+    expect(recalled?.evidence.map((item) => item.id)).toEqual([
+      `goal:${shared.id}`,
+      `goal:${older.id}`,
+    ]);
   });
 
   it("filters window eligibility before slicing the per-source cap", async () => {

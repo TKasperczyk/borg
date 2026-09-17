@@ -83,12 +83,14 @@ describe("openQuestionStateMetadata", () => {
 
     expect(inert).not.toHaveProperty("unresolved_rumination_ticks_note");
     expect(live?.unresolved_rumination_ticks_note).toContain("does not close it");
-    // The count alone never closes a question -- the two structural conditions are the rest of
+    // The count alone never closes a question -- the citation condition is the rest of
     // the predicate, and a page that printed the count without them would read as a countdown.
     expect(live?.unresolved_rumination_ticks_note).toContain(
-      "no episode created after the question citing it",
+      "no cited episode created after the question",
     );
-    expect(live?.unresolved_rumination_ticks_note).toContain("no active action against it");
+    expect(live?.unresolved_rumination_ticks_note).toContain(
+      "action and conversational progress are not measured",
+    );
     // A count past the threshold on an open row is the ordinary case, not a puzzle: the pass that
     // raised it called the model, and that path returns before shouldDismissStaleNoTraction is
     // reached. Naming only the two conjuncts invites reading an over-threshold row as evidence
@@ -170,25 +172,29 @@ describe("openQuestionStateMetadata", () => {
     });
   });
 
-  it("counts the record a closed row's notes outlived, which its zeroed counter cannot", () => {
+  it("renders retained abandonment evidence and explains legacy cleared counters", () => {
     const abandoned = openQuestionStateMetadata(
       openQuestion({
         status: "abandoned",
         abandoned_reason: "stale",
         abandoned_at: NOW_MS,
-        unresolved_rumination_ticks: 0,
-        last_ruminated_at: null,
+        unresolved_rumination_ticks: 4,
+        last_ruminated_at: NOW_MS - 1_000,
       }),
       NOW_MS,
       4,
       18,
     );
 
-    // The closure zeroes the counter and nulls the stamp, so the note count is the only quantity
-    // left that distinguishes a question worked eighteen times from one never worked at all.
-    expect(abandoned).toMatchObject({ recorded_rumination_notes: 18 });
-    expect(abandoned?.rumination_record_note).toContain("recorded_rumination_notes");
-    expect(abandoned).not.toHaveProperty("unresolved_rumination_ticks");
+    expect(abandoned).toMatchObject({
+      recorded_rumination_notes: 18,
+      unresolved_rumination_ticks: 4,
+      last_ruminated_at: new Date(NOW_MS - 1_000).toISOString(),
+    });
+    expect(abandoned?.rumination_record_note).toContain("Legacy closures may have cleared them");
+    expect(abandoned?.rumination_record_note).toContain(
+      "not that action or conversational progress was assessed",
+    );
   });
 
   it("omits the threshold rather than inventing one when it was not supplied", () => {

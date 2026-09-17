@@ -1,4 +1,6 @@
 import type { ActionRepository } from "../../memory/actions/index.js";
+import type { EpisodicRepository } from "../../memory/episodic/index.js";
+import type { SemanticNodeRepository } from "../../memory/semantic/index.js";
 import type { SourceStreamAudienceDisclosureResolver } from "../../memory/common/index.js";
 import type { CommitmentRecord, CommitmentRepository } from "../../memory/commitments/index.js";
 import type { EntityRepository } from "../../memory/commitments/index.js";
@@ -35,6 +37,8 @@ export type EvidenceLedgerBuilderOptions = {
   createStreamReader: (sessionId: SessionId) => StreamReader;
   relationalSlotRepository: Pick<RelationalSlotRepository, "list">;
   actionRepository: ActionLedgerRepository;
+  semanticNodeRepository?: Partial<Pick<SemanticNodeRepository, "getMany">>;
+  episodicRepository?: Pick<EpisodicRepository, "getMany">;
   commitmentRepository?: CommitmentLedgerRepository;
   sourceStreamAudienceDisclosureResolver?: SourceStreamAudienceDisclosureResolver;
   goalsRepository?: GoalLedgerRepository;

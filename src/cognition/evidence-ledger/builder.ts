@@ -222,6 +222,8 @@ export class EvidenceLedgerBuilder {
         goals: goalsRepository,
         openQuestions: this.options.openQuestionsRepository,
         entities: this.options.entityRepository,
+        semanticNodes: this.options.semanticNodeRepository,
+        episodes: this.options.episodicRepository,
       },
     };
 
@@ -245,7 +247,7 @@ export class EvidenceLedgerBuilder {
     addRetrievedStructuredEvidenceSection(context);
     addEpisodesSection(context);
     addSemanticGraphSection(context);
-    addOpenQuestionsSection(context);
+    await addOpenQuestionsSection(context);
     addRecentLivedExperienceSection(context);
     addAutobiographicalRecallSection(context);
 

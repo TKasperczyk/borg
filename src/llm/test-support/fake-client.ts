@@ -698,7 +698,6 @@ function defaultCorrectivePreferenceResponse(): LLMCompleteResult {
           directive_family: null,
           closure_pressure_relevance: null,
           priority: null,
-          reason: "No durable correction detected.",
           confidence: 0,
           supersedes_commitment_id: null,
           retires_commitment_id: null,

@@ -64,6 +64,7 @@ export type AutobiographicalRecallWindow = {
   endMs: number;
   label: string;
   source: AutobiographicalRecallWindowSource;
+  additionalWindow?: Omit<AutobiographicalRecallWindow, "additionalWindow">;
 };
 
 export type AutobiographicalRecallSourceKind =
@@ -346,23 +347,33 @@ export function resolveAutobiographicalRecallWindow(
   temporalCue: TemporalCue | null,
   nowMs: number,
 ): AutobiographicalRecallWindow {
+  const recent: AutobiographicalRecallWindow = {
+    startMs: nowMs - DEFAULT_AUTOBIOGRAPHICAL_RECALL_WINDOW_MS,
+    endMs: nowMs,
+    label: "recent default",
+    source: "recent_default",
+  };
   if (temporalCue === null) {
-    return {
-      startMs: nowMs - DEFAULT_AUTOBIOGRAPHICAL_RECALL_WINDOW_MS,
-      endMs: nowMs,
-      label: "recent default",
-      source: "recent_default",
-    };
+    return recent;
   }
 
   const endMs = Math.min(temporalCue.untilTs ?? nowMs, nowMs);
   const startMs = temporalCue.sinceTs ?? endMs - DEFAULT_AUTOBIOGRAPHICAL_RECALL_WINDOW_MS;
-
+  // Union the two time bands mechanically: overlap is already in the recent
+  // default, and a disjoint cue must not admit the intervening gap.
+  const additionalEndMs = Math.min(endMs, recent.startMs - 1);
   return {
-    startMs,
-    endMs,
-    label: temporalCue.label ?? "perception temporal cue",
-    source: "perception_temporal_cue",
+    ...recent,
+    ...(startMs > additionalEndMs
+      ? {}
+      : {
+          additionalWindow: {
+            startMs,
+            endMs: additionalEndMs,
+            label: temporalCue.label ?? "perception temporal cue",
+            source: "perception_temporal_cue",
+          },
+        }),
   };
 }
 
@@ -561,10 +572,6 @@ export class AutobiographicalRecallService {
     const nowMs = this.options.clock.now();
     const window = resolveAutobiographicalRecallWindow(input.temporalCue, nowMs);
 
-    if (window.startMs > window.endMs) {
-      return { window, evidence: [] };
-    }
-
     const sourceCap = boundedCap(
       this.options.sourceCap,
       DEFAULT_AUTOBIOGRAPHICAL_RECALL_SOURCE_CAP,
@@ -594,16 +601,6 @@ export class AutobiographicalRecallService {
           : { candidateScope: current.candidateScope ?? selection.candidateScope }),
       });
     };
-    const addItem = (item: AddItemInput): void => {
-      if (!withinWindow(item.occurredAt, window)) {
-        return;
-      }
-
-      items.push({
-        ...item,
-        relativeAge: formatRelativeAge(item.occurredAt, nowMs),
-      });
-    };
     const rawGoalTrees = this.options.goalsRepository?.list({}) ?? [];
     const goals = flattenGoalsPreorder(
       this.options.sourceStreamAudienceDisclosureResolver?.resolve({
@@ -611,18 +608,38 @@ export class AutobiographicalRecallService {
       }).goalTrees ?? rawGoalTrees,
     );
 
-    await this.collectActivity({ window, sourceCap, addItem, recordGroupSelection });
-    this.collectSelfDecisions({ window, sourceCap, addItem, recordGroupSelection });
-    await this.collectStreamEvents({ window, sourceCap, addItem, recordGroupSelection });
-    await this.collectEpisodes({ window, sourceCap, addItem, recordGroupSelection });
-    this.collectObservedEvents({ window, sourceCap, addItem, recordGroupSelection });
-    this.collectOpenQuestions({ window, sourceCap, addItem, recordGroupSelection });
-    this.collectGoals({ window, sourceCap, addItem, recordGroupSelection, goals });
-    this.collectAutobiographicalPeriods({ window, sourceCap, addItem, recordGroupSelection });
-    this.collectActions({ window, sourceCap, addItem, recordGroupSelection });
+    for (const band of [
+      window,
+      ...(window.additionalWindow === undefined ? [] : [window.additionalWindow]),
+    ]) {
+      const addItem = (item: AddItemInput): void => {
+        if (!withinWindow(item.occurredAt, band)) {
+          return;
+        }
+        items.push({ ...item, relativeAge: formatRelativeAge(item.occurredAt, nowMs) });
+      };
+      await this.collectActivity({ window: band, sourceCap, addItem, recordGroupSelection });
+      this.collectSelfDecisions({ window: band, sourceCap, addItem, recordGroupSelection });
+      await this.collectStreamEvents({ window: band, sourceCap, addItem, recordGroupSelection });
+      await this.collectEpisodes({ window: band, sourceCap, addItem, recordGroupSelection });
+      this.collectObservedEvents({ window: band, sourceCap, addItem, recordGroupSelection });
+      this.collectOpenQuestions({ window: band, sourceCap, addItem, recordGroupSelection });
+      this.collectGoals({ window: band, sourceCap, addItem, recordGroupSelection, goals });
+      this.collectAutobiographicalPeriods({
+        window: band,
+        sourceCap,
+        addItem,
+        recordGroupSelection,
+      });
+      this.collectActions({ window: band, sourceCap, addItem, recordGroupSelection });
+    }
 
     const rankedCandidates = items.sort(
       (left, right) =>
+        // A cue adds evidence within the existing cap; it cannot evict the
+        // baseline recent record. Within each band keep the existing ranking.
+        Number(withinWindow(right.occurredAt, window)) -
+          Number(withinWindow(left.occurredAt, window)) ||
         right.score - left.score ||
         right.occurredAt - left.occurredAt ||
         left.kind.localeCompare(right.kind) ||
@@ -765,7 +782,7 @@ export class AutobiographicalRecallService {
             limit: fetchLimit,
           })
         : [];
-    const events = fetchedEvents.filter((item) => item.occurredAt <= input.window.endMs);
+    const events = fetchedEvents.filter((item) => withinWindow(item.occurredAt, input.window));
     const selected = selectWindowEligibleCandidatesWithinSourceCap(events, input.sourceCap);
     const candidateCount =
       repository !== undefined &&
@@ -1002,7 +1019,7 @@ export class AutobiographicalRecallService {
     );
     const events = fetchedByDisclosureClass
       .flat()
-      .filter((event) => event.lastSeenAt <= input.window.endMs)
+      .filter((event) => withinWindow(event.lastSeenAt, input.window))
       .sort((left, right) => right.lastSeenAt - left.lastSeenAt);
     const selected = selectWindowEligibleCandidatesWithinSourceCap(events, input.sourceCap);
 

@@ -12,19 +12,20 @@ import { createSectionBuckets } from "../section-buckets.js";
 import { addAutobiographicalRecallSection } from "./autobiographical-recall.js";
 
 const NOW_MS = 1_788_302_709_101;
-// The cue the perception judge minted on 2026-09-01 from an inbound message that merely
-// quoted the instant: a full 24h band closing 30h before the read.
-const CUE_END_MS = 1_788_193_260_000;
+// A historical band outside the seven-day recent default.
+const CUE_END_MS = NOW_MS - 14 * 86_400_000;
 const CUE_START_MS = CUE_END_MS - 86_400_000;
 
 function recallFixture(): AutobiographicalRecallResult {
   return {
-    window: {
-      startMs: CUE_START_MS,
-      endMs: CUE_END_MS,
-      label: "24h window ending 2026-08-31 16:21Z",
-      source: "perception_temporal_cue",
-    },
+    window: resolveAutobiographicalRecallWindow(
+      {
+        sinceTs: CUE_START_MS,
+        untilTs: CUE_END_MS,
+        label: "historical band",
+      },
+      NOW_MS,
+    ),
     evidence: [
       {
         id: "stream_reflection_1",
@@ -65,41 +66,22 @@ function buildSection(recall: AutobiographicalRecallResult) {
 }
 
 describe("evidence-ledger autobiographical recall section", () => {
-  it("names the window's provenance, so a cue-scoped past band is not read as the present", () => {
+  it("describes additive time bands and the unchanged recent default", () => {
     const framing = buildSection(recallFixture()).get("autobiographical_recall")?.framing;
-
+    expect(framing?.text).toContain("My recent seven-day default is always recalled");
     expect(framing?.text).toContain(
-      "My window here is resolved from a temporal reference in this turn's inbound text, so a perception_temporal_cue window can close well before now, and evidence outside window_start_ms/window_end_ms is absent by that scope rather than missing from the store.",
-    );
-  });
-
-  it("reads a merely-mentioned window as the extractor's miss, not as the section's intent", () => {
-    // The framing used to say the window resolves from a reference "including one the text only
-    // mentions rather than asks about" -- describing as intent the exact case the judge is told to
-    // return has_cue=false on. That left a spurious window indistinguishable from a scope the
-    // sender asked for: on a cue-gated turn the section is present either way, the bounds look the
-    // same either way, and nothing on the page said one of the two readings is a defect.
-    const framing = buildSection(recallFixture()).get("autobiographical_recall")?.framing;
-
-    expect(framing?.text).toContain(
-      "A window minted from a reference the inbound text only mentions rather than asks about is that extractor missing its own instruction, not this section's intent: it is told that a quoted, cited, restated or reported window is not a cue, because a cue replaces my recent default outright instead of narrowing it.",
+      "never replaces my recent record or fills a gap between the bands",
     );
     expect(framing?.text).toContain(
-      "So a perception_temporal_cue window ending well before now is as consistent with a mention that should have been ignored as with a scope the sender asked for, and in the first case what the bounds cost me is my own recent record for this turn.",
+      "spurious cue may add irrelevant older evidence but cannot remove recent evidence",
     );
   });
 
   it("keeps the framing's account of the judge true to the judge's own prompt", () => {
-    // The framing above is a claim about a different module's prompt copy. Pin the two together:
-    // if the judge stops being told that a merely-reported window is not a cue, or stops being
-    // told the replacement asymmetry that makes the miss expensive, this section's framing becomes
-    // a description of a prompt that no longer exists -- and the reader has no way to notice.
     expect(TEMPORAL_CUE_JUDGE_SYSTEM_PROMPT).toContain(
       "quoted, cited, restated or reported windows return has_cue=false",
     );
-    expect(TEMPORAL_CUE_JUDGE_SYSTEM_PROMPT).toContain(
-      "replaces the default recent window outright rather than adding to it",
-    );
+    expect(TEMPORAL_CUE_JUDGE_SYSTEM_PROMPT).toContain("does not replace recent evidence");
   });
 
   it("names the cue as the gate on the section, not only as the bound on its window", () => {
@@ -137,20 +119,25 @@ describe("evidence-ledger autobiographical recall section", () => {
     expect(entry?.state_metadata).toMatchObject({
       window_start_ms: CUE_START_MS,
       window_end_ms: CUE_END_MS,
-      window_label: "24h window ending 2026-08-31 16:21Z",
+      window_label: "historical band",
       window_source: "perception_temporal_cue",
     });
     expect(NOW_MS - CUE_END_MS).toBeGreaterThan(24 * 60 * 60 * 1000);
   });
 
-  it("keeps a cue window in the past rather than extending it to the read", () => {
+  it("retains the recent default and adds a disjoint historical cue", () => {
     const window = resolveAutobiographicalRecallWindow(
       { sinceTs: CUE_START_MS, untilTs: CUE_END_MS, label: "24h window ending 2026-08-31 16:21Z" },
       NOW_MS,
     );
 
-    expect(window.source).toBe("perception_temporal_cue");
-    expect(window.endMs).toBe(CUE_END_MS);
-    expect(window.endMs).toBeLessThan(NOW_MS);
+    expect(window.source).toBe("recent_default");
+    expect(window.startMs).toBe(NOW_MS - 7 * 86_400_000);
+    expect(window.endMs).toBe(NOW_MS);
+    expect(window.additionalWindow).toMatchObject({
+      source: "perception_temporal_cue",
+      startMs: CUE_START_MS,
+      endMs: CUE_END_MS,
+    });
   });
 });

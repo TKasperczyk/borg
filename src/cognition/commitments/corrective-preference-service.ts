@@ -206,7 +206,7 @@ function buildCorrectivePreferenceRetirementClaim(input: {
   return {
     retiredId: input.retirement.commitmentId,
     allowedActiveCommitmentIds: input.activeCommitments.map((commitment) => commitment.id),
-    reason: input.retirement.reason,
+    reason: "retired_by_corrective_preference",
     confidence: input.retirement.confidence,
   };
 }

@@ -123,7 +123,8 @@ export type TurnPhaseCoordinatorOptions = {
   semanticNodeRepository?: Pick<
     SemanticNodeRepository,
     "searchByVector" | "markSuperseded" | "markContradicted"
-  >;
+  > &
+    Partial<Pick<SemanticNodeRepository, "getMany">>;
   workingMemoryStore: WorkingMemoryStore;
   entityRepository: EntityRepository;
   socialRepository: SocialRepository;

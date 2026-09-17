@@ -1547,7 +1547,7 @@ function summarizeIdentity(selfSnapshot: SelfSnapshot, turnCounter: number): str
     .filter((trait) => trait.state !== "established")
     .map(
       (trait) =>
-        `${trait.label}:${trait.strength.toFixed(2)} (${trait.state}, conf ${getPreferenceConfidence(trait).toFixed(2)}) ${summarizePreferenceEvidence(trait)}`,
+        `${trait.label}:${trait.strength.toFixed(2)} (${trait.state}, conf ${getPreferenceConfidence(trait).toFixed(2)})`,
     );
 
   if (values.length === 0 && goals.length === 0 && traits.length === 0) {
@@ -1744,7 +1744,7 @@ function summarizeHeldPreferences(selfSnapshot: SelfSnapshot): string | null {
       `Traits I express: ${heldTraits
         .map(
           (trait) =>
-            `${trait.label}:${trait.strength.toFixed(2)} (conf ${getPreferenceConfidence(trait).toFixed(2)}, ${summarizePreferenceEvidence(trait).slice(1, -1)})`,
+            `${trait.label}:${trait.strength.toFixed(2)} (conf ${getPreferenceConfidence(trait).toFixed(2)})`,
         )
         .join(", ")}`,
     );
