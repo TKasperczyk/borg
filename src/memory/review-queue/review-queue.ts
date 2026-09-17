@@ -354,7 +354,7 @@ export function commitmentReconciliationReviewDisclosureLabel(
   return combineMemoryDisclosureLabels(labels);
 }
 
-function mapReviewRow(row: Record<string, unknown>): ReviewQueueItem {
+export function mapReviewRow(row: Record<string, unknown>): ReviewQueueItem {
   const parsed = reviewQueueItemSchema.safeParse({
     id: Number(row.id),
     kind: row.kind,

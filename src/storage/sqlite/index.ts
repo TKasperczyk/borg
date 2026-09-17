@@ -306,7 +306,11 @@ function validateMigrations(migrations: readonly Migration[]): void {
   }
 }
 
-function runMigrations(db: SqliteDatabase, migrations: readonly Migration[]): void {
+export function runMigrations(
+  db: SqliteDatabase,
+  migrations: readonly Migration[],
+  appliedAt = Date.now(),
+): void {
   validateMigrations(migrations);
   ensureMigrationTable(db);
 
@@ -327,7 +331,7 @@ function runMigrations(db: SqliteDatabase, migrations: readonly Migration[]): vo
         migration.up(db);
       }
 
-      insertMigration.run(migration.id, migration.name, Date.now());
+      insertMigration.run(migration.id, migration.name, appliedAt);
     });
 
     applyMigration();
@@ -340,9 +344,7 @@ export function openDatabase(path: string, options: OpenDatabaseOptions = {}): S
   try {
     mkdirSync(dirname(path), { recursive: true });
 
-    raw = new SqliteRawDatabase(
-      new DatabaseSync(path, { enableDoubleQuotedStringLiterals: true }),
-    );
+    raw = new SqliteRawDatabase(new DatabaseSync(path, { enableDoubleQuotedStringLiterals: true }));
     const db = new SqliteDatabase(raw);
 
     try {

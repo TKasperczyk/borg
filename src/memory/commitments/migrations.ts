@@ -108,4 +108,28 @@ export const commitmentMigrations = [
       `);
     },
   },
+  {
+    id: 4,
+    name: "entity_identity_redirects",
+    up: (db) => {
+      db.exec(`
+        ALTER TABLE entities ADD COLUMN merged_into TEXT NULL
+          REFERENCES entities(id) CHECK (merged_into IS NULL OR merged_into != id);
+        CREATE INDEX entities_merged_into_idx ON entities(merged_into);
+        CREATE UNIQUE INDEX entities_single_self_idx ON entities(kind)
+          WHERE kind = 'self' AND merged_into IS NULL;
+        CREATE VIEW resolved_entities AS
+          WITH RECURSIVE redirects(lookup_id, id) AS (
+            SELECT id, id FROM entities
+            UNION
+            SELECT redirects.lookup_id, entities.merged_into
+            FROM redirects JOIN entities ON entities.id = redirects.id
+            WHERE entities.merged_into IS NOT NULL
+          )
+          SELECT redirects.lookup_id, entities.*
+          FROM redirects JOIN entities ON entities.id = redirects.id
+          WHERE entities.merged_into IS NULL;
+      `);
+    },
+  },
 ] as const satisfies readonly Migration[];

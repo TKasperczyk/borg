@@ -1,3 +1,4 @@
+import { EntityRepository } from "../memory/commitments/repository.js";
 // Borg.open composition root: orders storage, repositories, tools, offline work, turns, and autonomy.
 
 import { SystemClock } from "../util/clock.js";
@@ -95,6 +96,7 @@ export async function openBorgDependencies(
     });
     const attachmentRepository = new AttachmentRepository(sqlite);
     const entryIndex = new StreamEntryIndexRepository({
+      entityRepository: new EntityRepository({ db: sqlite }),
       db: sqlite,
       dataDir: config.dataDir,
     });

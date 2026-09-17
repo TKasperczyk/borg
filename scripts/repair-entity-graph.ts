@@ -1,50 +1,54 @@
-/** Offline only: stop every writer first. Dry-run never opens Borg or runs migrations. */
-import { existsSync, readFileSync, renameSync } from "node:fs";
+import { quoteSqlString } from "../src/storage/codecs.js";
+import { planEntityGraphReversal } from "./repair-entity-graph-reversal.js";
+export { planEntityGraphReversal };
+/** Offline only. Stop all writers. Source streams, working files and their index are immutable. */
+import { existsSync, readFileSync, renameSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-
-import { createEmbeddingClient } from "../src/borg/clients.js";
-import { loadConfig } from "../src/config/index.js";
-import type { EmbeddingClient } from "../src/embeddings/index.js";
-import { IdentityEventRepository } from "../src/memory/identity/repository.js";
-import { buildNodeEmbeddingText } from "../src/memory/semantic/extractor.js";
+import { createMigrations } from "../src/borg/storage-setup.js";
 import { SemanticNodeRepository } from "../src/memory/semantic/repository.js";
-import { semanticObservationMetadataSchema } from "../src/memory/semantic/types.js";
 import { AuditLog } from "../src/offline/audit-log.js";
 import { LanceDbTable } from "../src/storage/lancedb/index.js";
-import { quoteSqlString } from "../src/storage/codecs.js";
-import { writeJsonFileAtomic, writeFileAtomic, syncDirectory } from "../src/util/atomic-write.js";
-import {
-  createMaintenanceRunId,
-  parseSemanticNodeId,
-  type MaintenanceRunId,
-} from "../src/util/ids.js";
-import type { JsonValue } from "../src/util/json-value.js";
+import { runMigrations, type SqliteDatabase } from "../src/storage/sqlite/index.js";
+import { writeJsonFileAtomic, syncDirectory } from "../src/util/atomic-write.js";
+import { parseSemanticNodeId, type MaintenanceRunId } from "../src/util/ids.js";
 import {
   type RepairInput,
   type RepairPlan,
   type Merge,
   planEntityGraphRepair,
+  protectedFiles,
 } from "./repair-entity-graph-plan.js";
 import {
   type Row,
+  type SqlChange,
   fail,
   same,
   changedFields,
   openRepairDatabase,
   quoteIdentifier,
   applySqlChanges,
-  digest,
   openLance,
+  sqlInventory,
+  digest,
 } from "./repair-entity-graph-storage.js";
+import { validateSqlChanges } from "./repair-entity-graph-validation.js";
 
 export { planEntityGraphRepair };
 export type { RepairInput, RepairPlan };
-
-type Journal = { version: 1; runId: MaintenanceRunId; plan: RepairPlan };
+export type RepairCheckpoint =
+  | "after_journal"
+  | "after_sqlite"
+  | `after_lance:${string}`
+  | `during_outbox:${string}`
+  | "before_completion"
+  | "after_completion"
+  | "before_archive"
+  | "after_archive";
+export type RepairOptions = { checkpoint?: (point: RepairCheckpoint) => void | Promise<void> };
+type Journal = { version: 2; plan: RepairPlan };
 const JOURNAL_DIRECTORY = "entity-graph-repair";
-
-function pendingPath(dataDir: string): string {
+export function pendingPath(dataDir: string): string {
   return join(dataDir, JOURNAL_DIRECTORY, "pending.json");
 }
 
@@ -58,189 +62,77 @@ function grouped<T extends { table: string }>(items: T[]): Map<string, T[]> {
   return result;
 }
 
-async function prepareJournal(
-  plan: RepairPlan,
-  embeddingClient?: EmbeddingClient,
-): Promise<Journal> {
-  if (existsSync(pendingPath(plan.input.dataDir)))
-    fail("A repair is pending; use --resume while writers remain stopped");
-  const connection = await openLance(plan.input.dataDir);
-  try {
-    const client =
-      embeddingClient ??
-      (plan.touchedNodes.length === 0
-        ? undefined
-        : createEmbeddingClient(loadConfig({ dataDir: plan.input.dataDir })));
-    for (const [name, changes] of grouped(plan.lance)) {
-      if (connection === null) fail("Lance directory disappeared");
-      const table = new LanceDbTable(await connection.openTable(name));
-      try {
-        for (const change of changes.filter((item) => item.reembed)) {
-          const [row] = await table.list({ where: `id = ${quoteSqlString(change.id)}`, limit: 1 });
-          if (row === undefined) fail(`Missing Lance row ${change.id}`);
-          const { embedding, ...metadata } = row;
-          if (!same(metadata, change.before))
-            fail(`Lance row changed since planning: ${change.id}`);
-          change.before.embedding = Array.from(embedding as Iterable<number>);
-          const vector = await client!.embed(
-            buildNodeEmbeddingText({
-              label: String(change.after.label),
-              description: String(change.after.description),
-              aliases: JSON.parse(String(change.after.aliases)) as string[],
-              observationMetadata: semanticObservationMetadataSchema
-                .nullable()
-                .parse(JSON.parse(String(change.after.observation_metadata ?? "null"))),
-            }),
-          );
-          if (
-            vector.length !== (change.before.embedding as number[]).length ||
-            !vector.every(Number.isFinite)
-          )
-            fail(`Embedding shape changed for ${change.id}`);
-          change.after.embedding = Array.from(vector);
-        }
-      } finally {
-        table.close();
-      }
-    }
-  } finally {
-    connection?.close();
+function assertRows(db: SqliteDatabase, changes: SqlChange[], side: "before" | "after"): void {
+  for (const change of changes) {
+    const current =
+      db
+        .prepare(`SELECT * FROM ${quoteIdentifier(change.table)} WHERE rowid = ?`)
+        .get(change.rowid) ?? null;
+    if (!same(current, change[side]))
+      fail(`SQL row changed since planning (${side}): ${change.table}/${change.rowid}`);
   }
-  const journal: Journal = { version: 1, runId: createMaintenanceRunId(), plan };
-  writeJsonFileAtomic(pendingPath(plan.input.dataDir), journal, { space: 0, mode: 0o600 });
-  return journal;
 }
 
-async function finishJournal(journal: Journal): Promise<void> {
-  const { plan, runId } = journal;
+function assertProtected(plan: RepairPlan): void {
+  if (!same(protectedFiles(plan.input.dataDir), plan.protectedFiles))
+    fail("Protected stream/working files changed since planning");
+  const db = openRepairDatabase(plan.input.dataDir);
+  try {
+    if (
+      digest(JSON.stringify(sqlInventory(db, ["stream_entry_index"]).get("stream_entry_index"))) !==
+      plan.protectedIndexHash
+    )
+      fail("Protected stream entry index changed since planning");
+  } finally {
+    db.close();
+  }
+}
+
+async function finishJournal(journal: Journal, options: RepairOptions = {}): Promise<void> {
+  const { plan } = journal;
+  const runId = plan.runId ?? fail("Empty repair cannot have a journal");
+  assertProtected(plan);
   const db = openRepairDatabase(plan.input.dataDir, false);
   const connection = await openLance(plan.input.dataDir);
   const audit = new AuditLog({ db });
   try {
-    const committed = audit
-      .list({ run_id: runId })
-      .some((row) => row.action === "entity_graph_sql_committed");
+    const committed =
+      db
+        .prepare(
+          "SELECT 1 FROM maintenance_audit WHERE run_id = ? AND action = 'entity_graph_sql_committed'",
+        )
+        .get(runId) !== undefined;
     if (!committed) {
+      validateSqlChanges([...plan.sql, ...plan.additionalSql, ...plan.completionSql]);
       db.transaction(() => {
         db.pragma("defer_foreign_keys = ON");
-        for (const change of plan.sql) {
-          const current = db
-            .prepare(`SELECT * FROM ${quoteIdentifier(change.table)} WHERE rowid = ?`)
-            .get(change.rowid);
-          if (!same(current, change.before))
-            fail(`SQL row changed since planning: ${change.table}/${change.rowid}`);
-        }
+        const migrations = createMigrations().filter((item) =>
+          plan.migrations.some((pending) => pending.id === item.id && pending.name === item.name),
+        );
+        runMigrations(db, migrations, plan.plannedAt);
+        assertRows(db, plan.migrationSql, "after");
+        assertRows(db, plan.sql, "before");
         applySqlChanges(db, plan.sql);
-        for (const [table, changes] of grouped(plan.sql)) {
-          audit.record({
-            run_id: runId,
-            process: "correction",
-            action: "entity_graph_sql_rows",
-            targets: {
-              table,
-              rows: changes.map((row) => ({ rowid: row.rowid, after: row.after })),
-            },
-            reversal: {
-              table,
-              rows: changes.map((row) => ({ rowid: row.rowid, before: row.before })),
-            },
-          });
-        }
-        const identity = new IdentityEventRepository({ db });
-        for (const gap of plan.goals) {
-          const event = identity.record({
-            record_type: "goal",
-            record_id: gap.id,
-            action: "repair_missing_update",
-            old_value: gap.before as JsonValue,
-            new_value: gap.after as JsonValue,
-            reason: gap.reason,
-            ts: gap.ts,
-            provenance: { kind: "manual" },
-          });
-          audit.record({
-            run_id: runId,
-            process: "correction",
-            action: "entity_graph_goal_audit",
-            targets: { goal_id: gap.id, version: gap.version, identity_event_id: event.id },
-            reversal: { delete_identity_event_id: event.id },
-          });
-        }
-        // Same UPSERT/generation protocol as SemanticNodeRepository.enqueueVectorSyncRow.
-        for (const nodeId of plan.touchedNodes) {
-          const before =
-            db
-              .prepare("SELECT * FROM semantic_node_vector_sync_outbox WHERE node_id = ?")
-              .get(nodeId) ?? null;
-          db.prepare(
-            `INSERT INTO semantic_node_vector_sync_outbox
-            (node_id, reason, created_at, generation, attempts, last_attempt_at, last_error)
-            VALUES (?, 'entity_graph_repair', ?, 1, 0, NULL, NULL)
-            ON CONFLICT(node_id) DO UPDATE SET reason = excluded.reason, created_at = excluded.created_at,
-              generation = semantic_node_vector_sync_outbox.generation + 1, attempts = 0,
-              last_attempt_at = NULL, last_error = NULL`,
-          ).run(nodeId, plan.plannedAt);
-          audit.record({
-            run_id: runId,
-            process: "correction",
-            action: "entity_graph_outbox",
-            targets: { node_id: nodeId },
-            reversal: { before },
-          });
-        }
-        for (const [table, changes] of grouped(plan.lance))
-          audit.record({
-            run_id: runId,
-            process: "correction",
-            action: "entity_graph_lance_rows",
-            targets: {
-              table,
-              rows: changes.map((row) => ({
-                id: row.id,
-                after: changedFields(row.before, row.after),
-              })),
-            },
-            reversal: { table, rows: changes.map((row) => ({ id: row.id, before: row.before })) },
-          });
-        for (const file of plan.files)
-          audit.record({
-            run_id: runId,
-            process: "correction",
-            action: "entity_graph_file",
-            targets: { path: file.path, hash: file.afterHash },
-            reversal: { path: file.path, hash: file.hash, lines: file.lines },
-          });
-        audit.record({
-          run_id: runId,
-          process: "correction",
-          action: "entity_graph_sql_committed",
-          targets: { input: plan.input, journal: pendingPath(plan.input.dataDir) },
-          reversal: { restore_run_id: runId },
-        });
+        assertRows(db, plan.sql, "after");
+        assertRows(db, plan.additionalSql, "before");
+        applySqlChanges(db, plan.additionalSql);
+        assertRows(db, plan.additionalSql, "after");
         const violations = db.prepare("PRAGMA foreign_key_check").all();
-        if (violations.length > 0) fail(`Foreign key violations: ${JSON.stringify(violations)}`);
+        if (violations.length) fail(`Foreign key violations: ${JSON.stringify(violations)}`);
       }).immediate();
     }
-    // Each external write is idempotent and checked against before/after. The
-    // durable journal survives a kill between SQLite, file, and Lance commits.
-    for (const file of plan.files) {
-      const path = join(plan.input.dataDir, file.path);
-      const raw = readFileSync(path, "utf8");
-      if (digest(raw) === file.afterHash) continue;
-      if (digest(raw) !== file.hash) fail(`File changed since planning: ${file.path}`);
-      const separator = file.path.endsWith(".jsonl") ? "\n" : "";
-      const lines = separator === "" ? [raw] : raw.split(separator);
-      for (const line of file.lines) lines[line.index] = line.after;
-      const after = lines.join(separator);
-      if (digest(after) !== file.afterHash) fail(`Invalid file journal: ${file.path}`);
-      writeFileAtomic(path, after, { mode: 0o600 });
-    }
+    await options.checkpoint?.("after_sqlite");
     for (const [name, changes] of grouped(plan.lance)) {
       if (connection === null) fail("Lance directory disappeared");
       const table = new LanceDbTable(await connection.openTable(name));
       try {
-        // One mergeInsert per table, not one new Lance version per row.
-        const current = new Map((await table.list()).map((row) => [String(row.id), row]));
+        const current = new Map(
+          (
+            await table.list({
+              where: `id IN (${changes.map((change) => quoteSqlString(change.id)).join(",")})`,
+            })
+          ).map((row) => [String(row.id), row]),
+        );
         const updates: Row[] = [];
         for (const change of changes) {
           const row = current.get(change.id) ?? fail(`Missing Lance row ${change.id}`);
@@ -255,31 +147,52 @@ async function finishJournal(journal: Journal): Promise<void> {
             fail(`Lance row changed since planning: ${name}/${change.id}`);
           updates.push({ ...row, ...change.after });
         }
-        await table.upsert(updates, { on: "id" });
-        if (name === "semantic_nodes") {
-          const repository = new SemanticNodeRepository({ db, table });
+        if (updates.length) await table.upsert(updates, { on: "id" });
+      } finally {
+        table.close();
+      }
+      await options.checkpoint?.(`after_lance:${name}`);
+    }
+    if (plan.touchedNodes.length) {
+      if (connection === null) fail("Lance directory disappeared");
+      const table = new LanceDbTable(await connection.openTable("semantic_nodes"));
+      try {
+        const repository = new SemanticNodeRepository({ db, table });
+        for (const id of plan.touchedNodes) {
           const result = await repository.syncPendingVectorUpdates({
-            nodeIds: plan.touchedNodes.map(parseSemanticNodeId),
-            limit: Math.max(1, plan.touchedNodes.length),
+            nodeIds: [parseSemanticNodeId(id)],
+            limit: 1,
           });
-          if (result.failed.length > 0 || result.pending > 0)
+          if (result.failed.length || result.pending)
             fail(`Vector outbox not drained: ${JSON.stringify(result)}`);
+          await options.checkpoint?.(`during_outbox:${id}`);
         }
       } finally {
         table.close();
       }
     }
-    if (!audit.list({ run_id: runId }).some((row) => row.action === "entity_graph_complete"))
-      audit.record({
-        run_id: runId,
-        process: "correction",
-        action: "entity_graph_complete",
-        targets: { input: plan.input },
-        reversal: { restore_run_id: runId },
-      });
-    const completedPath = join(plan.input.dataDir, JOURNAL_DIRECTORY, `${runId}.json`);
-    renameSync(pendingPath(plan.input.dataDir), completedPath);
+    assertProtected(plan);
+    await options.checkpoint?.("before_completion");
+    if (
+      db
+        .prepare(
+          "SELECT 1 FROM maintenance_audit WHERE run_id = ? AND action = 'entity_graph_complete'",
+        )
+        .get(runId) === undefined
+    )
+      db.transaction(() => {
+        assertRows(db, plan.completionSql, "before");
+        applySqlChanges(db, plan.completionSql);
+        assertRows(db, plan.completionSql, "after");
+      }).immediate();
+    await options.checkpoint?.("after_completion");
+    await options.checkpoint?.("before_archive");
+    renameSync(
+      pendingPath(plan.input.dataDir),
+      join(plan.input.dataDir, JOURNAL_DIRECTORY, `${runId}.json`),
+    );
     syncDirectory(join(plan.input.dataDir, JOURNAL_DIRECTORY));
+    await options.checkpoint?.("after_archive");
   } finally {
     connection?.close();
     db.close();
@@ -288,116 +201,162 @@ async function finishJournal(journal: Journal): Promise<void> {
 
 export async function applyEntityGraphRepair(
   plan: RepairPlan,
-  embeddingClient?: EmbeddingClient,
+  options: RepairOptions = {},
 ): Promise<void> {
-  const journal = await prepareJournal(plan, embeddingClient);
-  await finishJournal(journal);
+  // In particular: don't mkdir, create a journal, open a writable DB, or insert audit markers.
+  if (plan.runId === null) return;
+  if (existsSync(pendingPath(plan.input.dataDir)))
+    fail("A repair is pending; use --resume while writers remain stopped");
+  assertProtected(plan);
+  const journal: Journal = { version: 2, plan };
+  writeJsonFileAtomic(pendingPath(plan.input.dataDir), journal, { space: 0, mode: 0o600 });
+  await options.checkpoint?.("after_journal");
+  await finishJournal(journal, options);
 }
 
-export async function resumeEntityGraphRepair(dataDir: string): Promise<void> {
-  const journal = JSON.parse(readFileSync(pendingPath(dataDir), "utf8")) as Journal;
-  if (journal.version !== 1 || journal.plan.input.dataDir !== resolve(dataDir))
+export async function resumeEntityGraphRepair(
+  dataDir: string,
+  options: RepairOptions = {},
+): Promise<void> {
+  const path = pendingPath(dataDir);
+  if (!existsSync(path)) {
+    // A crash just after atomic journal archival is already complete. Verify its
+    // durable completion marker and return without creating another journal.
+    const directory = join(dataDir, JOURNAL_DIRECTORY);
+    const archived = existsSync(directory)
+      ? readdirSync(directory).filter((file) => file.endsWith(".json"))
+      : [];
+    const db = openRepairDatabase(dataDir);
+    try {
+      if (
+        archived.some((file) => {
+          const journal = JSON.parse(readFileSync(join(directory, file), "utf8")) as Journal;
+          return (
+            journal.version === 2 &&
+            journal.plan.runId !== null &&
+            new AuditLog({ db })
+              .list({ run_id: journal.plan.runId })
+              .some((row) => row.action === "entity_graph_complete")
+          );
+        })
+      )
+        return;
+    } finally {
+      db.close();
+    }
+    fail("No pending or completed repair journal");
+  }
+  const journal = JSON.parse(readFileSync(path, "utf8")) as Journal;
+  if (journal.version !== 2 || journal.plan.input.dataDir !== resolve(dataDir))
     fail("Journal version or data directory mismatch");
-  await finishJournal(journal);
+  await finishJournal(journal, options);
 }
 
+/** Complete JSONL, including exact audit/outbox/event writes and both vector values when changed. */
 export function formatRepairPlan(plan: RepairPlan): string {
-  const lines: string[] = [];
-  lines.push(
-    JSON.stringify({
+  const lines: unknown[] = [
+    {
       input: plan.input,
+      run_id: plan.runId,
+      embedding: plan.embedding,
+      migrations: plan.migrations,
       sqlite_tables_scanned: Object.keys(plan.inventory.sqlite).length,
       lance_tables_scanned: Object.keys(plan.inventory.lance).length,
-    }),
-  );
+    },
+  ];
   for (const [table, columns] of Object.entries(plan.inventory.sqlite)) {
     const rows = plan.sql.filter((row) => row.table === table);
-    const fields: Record<string, number> = {};
+    lines.push({
+      store: "sqlite",
+      table,
+      scanned_columns: columns,
+      updates: rows.filter((row) => row.after !== null && row.before !== null).length,
+      deletes: rows.filter((row) => row.after === null).length,
+      inserts: rows.filter((row) => row.before === null).length,
+    });
     for (const row of rows)
-      for (const key of Object.keys(
-        row.after === null ? row.before : changedFields(row.before, row.after),
-      ))
-        fields[key] = (fields[key] ?? 0) + 1;
-    lines.push(
-      JSON.stringify({
+      lines.push({
         store: "sqlite",
-        table,
-        scanned_columns: columns,
-        updates: rows.filter((row) => row.after !== null).length,
-        deletes: rows.filter((row) => row.after === null).length,
-        fields,
-      }),
-    );
-    if (["entities", "semantic_nodes", "semantic_edges"].includes(table)) {
-      for (const row of rows)
-        lines.push(
-          JSON.stringify({ table, rowid: row.rowid, before: row.before, after: row.after }),
-        );
-    }
+        ...row,
+        changed_values:
+          row.before !== null && row.after !== null
+            ? changedFields(row.before, row.after)
+            : row.after,
+      });
   }
-  for (const [table, columns] of Object.entries(plan.inventory.lance))
-    lines.push(
-      JSON.stringify({
+  for (const [table, columns] of Object.entries(plan.inventory.lance)) {
+    lines.push({
+      store: "lance",
+      table,
+      scanned_columns: columns,
+      updates: plan.lance.filter((row) => row.table === table).length,
+    });
+    for (const row of plan.lance.filter((row) => row.table === table))
+      lines.push({
         store: "lance",
-        table,
-        scanned_columns: columns,
-        updates: plan.lance.filter((row) => row.table === table).length,
-      }),
-    );
-  for (const file of plan.files)
-    lines.push(
-      JSON.stringify({
-        store: "file",
-        path: file.path,
-        changed_records: file.lines.length,
-        before_sha256: file.hash,
-        after_sha256: file.afterHash,
-      }),
-    );
-  for (const gap of plan.goals) lines.push(JSON.stringify({ goal_audit_backfill: gap }));
-  lines.push(
-    JSON.stringify({
-      additional_writes: {
-        identity_events_inserts: plan.goals.length,
-        semantic_node_vector_sync_outbox_enqueues_then_drains: plan.touchedNodes.length,
-        maintenance_audit_inserts:
-          grouped(plan.sql).size +
-          plan.goals.length +
-          plan.touchedNodes.length +
-          grouped(plan.lance).size +
-          plan.files.length +
-          2,
-        journal: pendingPath(plan.input.dataDir),
-      },
-    }),
-  );
+        ...row,
+        embedding_unchanged: same(row.before.embedding, row.after.embedding),
+      });
+  }
+  for (const change of plan.schemaChanges) lines.push({ store: "sqlite_schema", ...change });
+  for (const row of plan.migrationSql) lines.push({ store: "sqlite", phase: "migration", ...row });
+  for (const row of plan.drainSql)
+    lines.push({ store: "sqlite", phase: "outbox_drain_after_lance_commit", ...row });
+  for (const row of plan.additionalSql)
+    lines.push({ store: "sqlite", phase: "additional_transactional_write", ...row });
+  for (const row of plan.completionSql)
+    lines.push({ store: "sqlite", phase: "completion_after_external_commits", ...row });
+  for (const file of plan.protectedFiles)
+    lines.push({
+      store: "file",
+      path: file.path,
+      changed_fields: [],
+      before_sha256: file.sha256,
+      after_sha256: file.sha256,
+    });
+  lines.push({
+    additional_writes: {
+      identity_events_inserts: plan.goals.length,
+      semantic_node_vector_sync_outbox_enqueues_then_drains: plan.touchedNodes,
+      maintenance_audit_inserts: [...plan.additionalSql, ...plan.completionSql].filter(
+        (row) => row.table === "maintenance_audit" && row.before === null,
+      ).length,
+      journal:
+        plan.runId === null
+          ? null
+          : {
+              create: pendingPath(plan.input.dataDir),
+              archive: join(plan.input.dataDir, JOURNAL_DIRECTORY, `${plan.runId}.json`),
+              format: "version 2; contains this complete plan",
+            },
+    },
+  });
   for (const report of plan.reports)
-    lines.push(
-      JSON.stringify({ report: report.category, count: report.rows.length, rows: report.rows }),
-    );
-  lines.push(
-    JSON.stringify({
-      summary: {
-        sqlite_changes: plan.sql.length,
-        lance_changes: plan.lance.length,
-        changed_files: plan.files.length,
-        semantic_reembeddings: plan.touchedNodes.length,
-        goal_audit_backfills: plan.goals.length,
-      },
-    }),
-  );
-  return `${lines.join("\n")}\n`;
+    lines.push({ report: report.category, count: report.rows.length, rows: report.rows });
+  lines.push({
+    summary: {
+      sqlite_changes: plan.sql.length,
+      lance_changes: plan.lance.length,
+      changed_files: 0,
+      stream_changes: 0,
+      working_changes: 0,
+      stream_entry_index_changes: 0,
+      semantic_reembeddings: plan.touchedNodes.length,
+      goal_audit_backfills: plan.goals.length,
+    },
+  });
+  return lines.map((line) => JSON.stringify(line)).join("\n") + "\n";
 }
-
 export function parseRepairArgs(
   argv: readonly string[],
-): RepairInput & { apply: boolean; resume: boolean; help: boolean } {
+): RepairInput & { apply: boolean; resume: boolean; reverse: string | null; help: boolean } {
   const result = {
     dataDir: "",
     merges: [] as Merge[],
     nodeMerges: [] as Merge[],
     apply: false,
     resume: false,
+    reverse: null as string | null,
     help: false,
   };
   for (let i = 0; i < argv.length; i++) {
@@ -416,6 +375,10 @@ export function parseRepairArgs(
     }
     const value = argv[++i];
     if (value === undefined || value.startsWith("--")) fail(`${flag} requires a value`);
+    if (flag === "--reverse") {
+      result.reverse = value;
+      continue;
+    }
     if (flag === "--data-dir") {
       result.dataDir = resolve(value);
       continue;
@@ -438,9 +401,15 @@ export function parseRepairArgs(
     fail(`Unknown argument ${flag}`);
   }
   if (!result.dataDir) fail("--data-dir is required");
-  if (!result.resume && result.merges.length === 0) fail("At least one --merge is required");
+  if (!result.resume && result.reverse === null && result.merges.length === 0)
+    fail("At least one --merge is required");
   if (result.resume && (!result.apply || result.merges.length > 0 || result.nodeMerges.length > 0))
     fail("Use --data-dir <dir> --apply --resume without merge arguments");
+  if (
+    result.reverse !== null &&
+    (result.resume || result.merges.length || result.nodeMerges.length)
+  )
+    fail("--reverse takes a run ID without merge/resume flags");
   return result;
 }
 
@@ -464,11 +433,16 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     merges: args.merges,
     nodeMerges: args.nodeMerges,
   };
-  const plan = await planEntityGraphRepair(input);
-  process.stdout.write(`mode=${args.apply ? "apply" : "dry-run"}\n${formatRepairPlan(plan)}`);
+  const plan =
+    args.reverse === null
+      ? await planEntityGraphRepair(input)
+      : await planEntityGraphReversal(args.dataDir, args.reverse);
+  process.stdout.write(
+    JSON.stringify({ mode: args.apply ? "apply" : "dry-run" }) + "\n" + formatRepairPlan(plan),
+  );
   if (args.apply) {
     await applyEntityGraphRepair(plan);
-    process.stdout.write("Repair complete; semantic embeddings refreshed and outbox drained.\n");
+    process.stdout.write(JSON.stringify({ complete: true, run_id: plan.runId }) + "\n");
   }
 }
 

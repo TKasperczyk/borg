@@ -56,7 +56,7 @@ describe("entity identity resolution", () => {
     try {
       const self = entities.add({ canonicalName: "Initial identity", kind: "self" });
       entities.rename(self.id, "Chosen identity");
-      expect(entities.resolve("Initial identity", { kind: "self" })).toBe(self.id);
+      expect(entities.resolveAudienceLabel("Initial identity")).toBe(self.id);
       expect(entities.getSelf()?.canonical_name).toBe("Chosen identity");
       expect(() => entities.add({ canonicalName: "Another identity", kind: "self" })).toThrow(
         "already has",
@@ -83,6 +83,73 @@ describe("entity identity resolution", () => {
         kind: "self",
         canonical_name: "Chosen identity",
       });
+    } finally {
+      db.close();
+    }
+  });
+  it("keeps redirect chains readable and excludes tombstones from every name lookup", () => {
+    const db = openDatabase(":memory:", { migrations: commitmentMigrations });
+    const entities = new EntityRepository({ db });
+    try {
+      const sourceId = entities.resolveExternal({
+        source: "fixture",
+        externalId: "old",
+        canonicalName: "Transport placeholder",
+      });
+      const intermediate = entities.add({
+        canonicalName: "Middle placeholder",
+        aliases: ["middle:alias"],
+      });
+      const survivor = entities.add({ canonicalName: "Final placeholder", kind: "self" });
+      entities.merge(sourceId, intermediate.id);
+      entities.merge(intermediate.id, survivor.id);
+      expect(entities.get(sourceId)?.id).toBe(survivor.id);
+      expect(entities.get(intermediate.id)?.id).toBe(survivor.id);
+      expect(entities.findByExternalId("fixture", "old")).toBe(survivor.id);
+      expect(entities.resolveAudienceLabel("Transport placeholder", sourceId)).toBe(survivor.id);
+      expect(entities.findByNames([sourceId, "Transport placeholder", "middle:alias"])).toEqual(
+        new Map([
+          [sourceId, survivor.id],
+          ["Transport placeholder", survivor.id],
+          ["middle:alias", survivor.id],
+        ]),
+      );
+      expect(entities.list()).toHaveLength(1);
+      expect(db.prepare("SELECT count(*) AS n FROM entities").get()).toEqual({ n: 3 });
+      entities.rename(sourceId, "Renamed placeholder");
+      expect(entities.getSelf()?.canonical_name).toBe("Renamed placeholder");
+      expect(entities.resolveAudienceLabel("Final placeholder")).toBe(survivor.id);
+      expect(
+        entities.resolveReferences({
+          sender_entity_id: sourceId,
+          reply_target_entity_id: intermediate.id,
+          tuple: [sourceId, survivor.id],
+        }),
+      ).toEqual({
+        sender_entity_id: survivor.id,
+        reply_target_entity_id: survivor.id,
+        tuple: [survivor.id, survivor.id],
+      });
+      expect(
+        db
+          .prepare("SELECT canonical_name FROM resolved_entities WHERE lookup_id = ?")
+          .get(sourceId),
+      ).toEqual({ canonical_name: "Renamed placeholder" });
+      db.prepare("UPDATE entities SET merged_into = ? WHERE id = ?").run(sourceId, survivor.id);
+      expect(() => entities.get(sourceId)).toThrow("cycle");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("retains a renamed person's old transport label", () => {
+    const db = openDatabase(":memory:", { migrations: commitmentMigrations });
+    try {
+      const entities = new EntityRepository({ db });
+      const id = entities.resolveAudienceLabel("transport:placeholder");
+      entities.rename(id, "Declared placeholder");
+      expect(entities.resolveAudienceLabel("transport:placeholder")).toBe(id);
+      expect(entities.list()).toHaveLength(1);
     } finally {
       db.close();
     }

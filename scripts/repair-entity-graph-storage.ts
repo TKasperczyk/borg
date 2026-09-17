@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
@@ -17,17 +17,11 @@ export type Row = Record<string, unknown>;
 export type SqlChange = {
   table: string;
   rowid: number;
-  before: Row;
+  before: Row | null;
   after: Row | null;
   reason: string;
 };
 export type LanceChange = { table: string; id: string; before: Row; after: Row; reembed?: boolean };
-export type FileChange = {
-  path: string;
-  hash: string;
-  afterHash: string;
-  lines: Array<{ index: number; before: string; after: string }>;
-};
 
 export function fail(message: string): never {
   throw new StorageError(message, { code: "ENTITY_GRAPH_REPAIR_INVALID" });
@@ -64,12 +58,19 @@ export function remap(value: unknown, ids: ReadonlyMap<string, string>): unknown
   if (typeof value === "string") {
     const direct = ids.get(value);
     if (direct !== undefined) return direct;
+    for (const prefix of ["semantic_node:", "semantic_edge:"]) {
+      if (value.startsWith(prefix) && ids.has(value.slice(prefix.length)))
+        return prefix + ids.get(value.slice(prefix.length));
+    }
     const participant = episodeParticipantEntityId(value);
     if (participant !== null && ids.has(participant)) {
       return episodeParticipantEntityIdTerm(parseEntityId(ids.get(participant)!));
     }
     // Stored JSON is often nested inside SQL text or stream metadata.
-    if (value.startsWith("{") || value.startsWith("[")) {
+    if (
+      (value.startsWith("{") || value.startsWith("[")) &&
+      [...ids.keys()].some((id) => value.includes(id))
+    ) {
       let parsed: unknown;
       try {
         parsed = JSON.parse(value);
@@ -81,24 +82,21 @@ export function remap(value: unknown, ids: ReadonlyMap<string, string>): unknown
     }
     return value;
   }
-  if (Array.isArray(value)) {
-    const next = value.map((item) => remap(item, ids));
-    if (same(value, next)) return value;
-    // Handle arrays are sets; do not deduplicate unrelated arrays or object evidence.
-    return next.filter(
-      (item, index) =>
-        typeof item !== "string" ||
-        ![...ids.values()].some((id) => item === id || item === `entity_id:${id}`) ||
-        next.indexOf(item) === index,
-    );
-  }
+  if (Array.isArray(value)) return value.map((item) => remap(item, ids));
   if (value !== null && typeof value === "object") {
     const result: Row = {};
     for (const [key, item] of Object.entries(value)) {
-      const nextKey = ids.get(key) ?? key;
+      const nextKey = String(remap(key, ids));
       // Stream text remains source evidence even when an author pasted JSON.
       const next = key === "content" && typeof item === "string" ? item : remap(item, ids);
       if (Object.hasOwn(result, nextKey) && !same(result[nextKey], next)) {
+        // Recall suppression expiries retain the later turn, as in open-question reparenting.
+        if (key.startsWith("semantic_node:") || key.startsWith("semantic_edge:")) {
+          if (typeof next === "number" && typeof result[nextKey] === "number") {
+            result[nextKey] = Math.max(Number(result[nextKey]), next);
+            continue;
+          }
+        }
         fail(`Conflicting JSON map keys after remapping ${key}`);
       }
       result[nextKey] = next;
@@ -108,19 +106,26 @@ export function remap(value: unknown, ids: ReadonlyMap<string, string>): unknown
   return value;
 }
 
-export function sqlInventory(db: SqliteDatabase): Map<string, Array<{ rowid: number; row: Row }>> {
+export function sqlInventory(
+  db: SqliteDatabase,
+  onlyTables?: readonly string[],
+): Map<string, Array<{ rowid: number; row: Row }>> {
   const tables = db
     .prepare(
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
     )
     .all() as Array<{ name: string }>;
   return new Map(
-    tables.map(({ name }) => [
-      name,
-      (
-        db.prepare(`SELECT rowid AS __repair_rowid, * FROM ${quoteIdentifier(name)}`).all() as Row[]
-      ).map(({ __repair_rowid, ...row }) => ({ rowid: Number(__repair_rowid), row })),
-    ]),
+    tables
+      .filter(({ name }) => onlyTables === undefined || onlyTables.includes(name))
+      .map(({ name }) => [
+        name,
+        (
+          db
+            .prepare(`SELECT rowid AS __repair_rowid, * FROM ${quoteIdentifier(name)}`)
+            .all() as Row[]
+        ).map(({ __repair_rowid, ...row }) => ({ rowid: Number(__repair_rowid), row })),
+      ]),
   );
 }
 
@@ -130,76 +135,148 @@ export function changedFields(before: Row, after: Row): Row {
   );
 }
 
-export function applySqlChanges(db: SqliteDatabase, changes: SqlChange[]): void {
-  // Link-table collisions are removed before retargeting. Entity deletion comes last.
-  for (const change of changes.filter((item) => item.after === null && item.table !== "entities")) {
-    db.prepare(`DELETE FROM ${quoteIdentifier(change.table)} WHERE rowid = ?`).run(change.rowid);
+/** Only explicitly planned leaf deletions may precede updates. Never delete a parent. */
+export function assertLeafDeletion(db: SqliteDatabase, table: string): void {
+  for (const { name } of db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
+    .all()) {
+    const keys = db.prepare(`PRAGMA foreign_key_list(${quoteIdentifier(String(name))})`).all();
+    if (keys.some((key) => key.table === table))
+      fail(`Parent collision/deletion in ${table}; dependent ${name} requires an explicit repair`);
   }
-  for (const change of changes.filter((item) => item.after !== null)) {
+}
+
+export function assertOne(result: { changes: number }, label: string): void {
+  if (result.changes !== 1) fail(`Expected one affected row for ${label}; got ${result.changes}`);
+}
+
+export function applySqlChanges(db: SqliteDatabase, changes: SqlChange[]): void {
+  for (const change of changes.filter((item) => item.after === null)) {
+    assertLeafDeletion(db, change.table);
+    assertOne(
+      db.prepare(`DELETE FROM ${quoteIdentifier(change.table)} WHERE rowid = ?`).run(change.rowid),
+      `${change.table}/${change.rowid}`,
+    );
+  }
+  // Closed edges release the partial unique key before any endpoint moves.
+  const updates = changes
+    .filter((item) => item.after !== null)
+    .sort(
+      (a, b) =>
+        Number(a.before === null) - Number(b.before === null) ||
+        Number(b.table === "semantic_edges" && b.after?.valid_to !== null) -
+          Number(a.table === "semantic_edges" && a.after?.valid_to !== null),
+    );
+  for (const change of updates) {
+    if (change.before === null) {
+      const current = db
+        .prepare(`SELECT * FROM ${quoteIdentifier(change.table)} WHERE rowid = ?`)
+        .get(change.rowid);
+      // SQLite triggers are part of the projected plan, and already executed by the parent update.
+      if (current !== undefined) {
+        if (!same(current, change.after))
+          fail(`Unexpected trigger row ${change.table}/${change.rowid}`);
+        continue;
+      }
+      insertRow(db, change.table, change.rowid, change.after!);
+      continue;
+    }
     const fields = changedFields(change.before, change.after!);
     const keys = Object.keys(fields);
     if (keys.length > 0)
-      db.prepare(
-        `UPDATE ${quoteIdentifier(change.table)} SET ${keys.map((key) => `${quoteIdentifier(key)} = ?`).join(", ")} WHERE rowid = ?`,
-      ).run(...Object.values(fields), change.rowid);
-  }
-  for (const change of changes.filter((item) => item.after === null && item.table === "entities")) {
-    db.prepare("DELETE FROM entities WHERE rowid = ?").run(change.rowid);
+      assertOne(
+        db
+          .prepare(
+            `UPDATE ${quoteIdentifier(change.table)} SET ${keys.map((key) => `${quoteIdentifier(key)} = ?`).join(", ")} WHERE rowid = ?`,
+          )
+          .run(...Object.values(fields), change.rowid),
+        `${change.table}/${change.rowid}`,
+      );
   }
 }
 
-export function digest(value: string): string {
+export function insertRow(db: SqliteDatabase, table: string, rowid: number, row: Row): void {
+  const keys = Object.keys(row);
+  assertOne(
+    db
+      .prepare(
+        `INSERT INTO ${quoteIdentifier(table)} (rowid, ${keys.map(quoteIdentifier).join(",")}) VALUES (?, ${keys.map(() => "?").join(",")})`,
+      )
+      .run(rowid, ...Object.values(row)),
+    `${table}/${rowid}`,
+  );
+}
+
+export function digest(value: string | Uint8Array): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-export function planFiles(
-  dataDir: string,
-  ids: ReadonlyMap<string, string>,
-): { files: FileChange[]; offsets: Map<string, number> } {
-  const files: FileChange[] = [];
-  const offsets = new Map<string, number>();
-  // These are the authoritative non-SQL state files. Traces/blobs/config backups
-  // are historical evidence or opaque attachment bytes, not identity indexes.
-  for (const directory of ["stream", "working"]) {
-    const root = join(dataDir, directory);
-    if (!existsSync(root)) continue;
-    for (const file of readdirSync(root).sort()) {
-      if (!(directory === "stream" ? file.endsWith(".jsonl") : file.endsWith(".json"))) continue;
-      const path = join(directory, file);
-      const raw = readFileSync(join(dataDir, path), "utf8");
-      const lines = directory === "stream" ? raw.split("\n") : [raw];
-      const changes: FileChange["lines"] = [];
-      let offset = 0;
-      const streamOffsets: Array<[string, number]> = [];
-      for (let index = 0; index < lines.length; index++) {
-        const line = lines[index]!;
-        if (line.trim() === "") {
-          offset += Buffer.byteLength(line) + 1;
-          continue;
-        }
-        const entry = JSON.parse(line) as Row;
-        const next = remap(entry, ids) as Row;
-        const after = same(entry, next) ? line : JSON.stringify(next);
-        if (after !== line) {
-          changes.push({ index, before: line, after });
-          lines[index] = after;
-        }
-        if (directory === "stream" && typeof entry.id === "string")
-          streamOffsets.push([entry.id, offset]);
-        offset += Buffer.byteLength(after) + 1;
-      }
-      if (changes.length > 0) {
-        files.push({
-          path,
-          hash: digest(raw),
-          afterHash: digest(lines.join(directory === "stream" ? "\n" : "")),
-          lines: changes,
+/** A private in-memory projection exercises the real schema, constraints and triggers. */
+export function cloneDatabase(source: SqliteDatabase): SqliteDatabase {
+  const db = new SqliteDatabase(
+    new SqliteRawDatabase(new DatabaseSync(":memory:", { enableDoubleQuotedStringLiterals: true })),
+  );
+  try {
+    db.pragma("foreign_keys = OFF");
+    const schema = source
+      .prepare(
+        "SELECT type, name, sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY rowid",
+      )
+      .all();
+    for (const row of schema.filter((row) => row.type === "table")) db.exec(String(row.sql));
+    db.transaction(() => {
+      for (const [table, rows] of sqlInventory(source))
+        for (const { rowid, row } of rows) insertRow(db, table, rowid, row);
+    })();
+    if (
+      source.prepare("SELECT 1 FROM sqlite_master WHERE name = 'sqlite_sequence'").get() !==
+      undefined
+    ) {
+      db.exec("DELETE FROM sqlite_sequence");
+      for (const row of source.prepare("SELECT name, seq FROM sqlite_sequence").all())
+        assertOne(
+          db
+            .prepare("INSERT INTO sqlite_sequence (name, seq) VALUES (?, ?)")
+            .run(row.name, row.seq),
+          "sqlite_sequence projection",
+        );
+    }
+    for (const row of schema.filter((row) => row.type !== "table")) db.exec(String(row.sql));
+    db.pragma("foreign_keys = ON");
+    return db;
+  } catch (error) {
+    db.close();
+    throw error;
+  }
+}
+
+export function diffSql(
+  before: ReturnType<typeof sqlInventory>,
+  after: ReturnType<typeof sqlInventory>,
+): SqlChange[] {
+  const changes: SqlChange[] = [];
+  for (const table of new Set([...before.keys(), ...after.keys()])) {
+    const oldRows = new Map((before.get(table) ?? []).map(({ rowid, row }) => [rowid, row]));
+    const newRows = new Map((after.get(table) ?? []).map(({ rowid, row }) => [rowid, row]));
+    for (const rowid of new Set([...oldRows.keys(), ...newRows.keys()])) {
+      const oldRow = oldRows.get(rowid) ?? null,
+        newRow = newRows.get(rowid) ?? null;
+      if (!same(oldRow, newRow))
+        changes.push({
+          table,
+          rowid,
+          before: oldRow,
+          after: newRow,
+          reason:
+            newRow === null
+              ? "coalesce identical leaf reference"
+              : oldRow === null
+                ? "repository/trigger insert"
+                : "repair structural references",
         });
-        for (const [id, position] of streamOffsets) offsets.set(id, position);
-      }
     }
   }
-  return { files, offsets };
+  return changes;
 }
 
 export async function openLance(dataDir: string): Promise<Connection | null> {

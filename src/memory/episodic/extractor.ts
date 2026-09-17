@@ -1194,6 +1194,7 @@ export class EpisodicExtractor {
   ): Promise<ExtractFromStreamResult> {
     const session = extractOptions.session ?? DEFAULT_SESSION_ID;
     const reader = new StreamReader({
+      entityRepository: this.options.entityRepository,
       dataDir: this.options.dataDir,
       sessionId: session,
     });

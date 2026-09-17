@@ -1,3 +1,4 @@
+import type { EntityRepository } from "../commitments/repository.js";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
@@ -16,6 +17,7 @@ import {
 } from "./types.js";
 
 export type WorkingMemoryStoreOptions = {
+  entityRepository?: Pick<EntityRepository, "resolveReferences">;
   dataDir?: string;
   clock?: Clock;
 };
@@ -247,7 +249,7 @@ export class WorkingMemoryStore {
   load(sessionId: SessionId): WorkingMemory {
     const persisted = this.readPersisted(sessionId);
     const state = persisted ?? createWorkingMemory(sessionId, this.clock.now());
-    return cloneWorkingMemory(state);
+    return cloneWorkingMemory(this.options.entityRepository?.resolveReferences(state) ?? state);
   }
 
   save(state: WorkingMemory): WorkingMemory {

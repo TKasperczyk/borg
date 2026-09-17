@@ -103,7 +103,7 @@ function uniqueStreamEntryIds(values: readonly StreamEntryId[]): StreamEntryId[]
   return dedupePreservingOrder(values);
 }
 
-function mapActivityRow(row: Record<string, unknown>): ActivityEvent {
+export function mapActivityRow(row: Record<string, unknown>): ActivityEvent {
   const parsed = activityEventSchema.safeParse({
     id: row.id,
     kind: row.kind,
@@ -382,8 +382,8 @@ export class ActivityRepository {
               AS participant_label
           FROM activity_events e
           INNER JOIN sessions s ON s.session_id = e.session_id
-          LEFT JOIN entities speaker ON speaker.id = e.speaker_entity_id
-          LEFT JOIN entities audience ON audience.id = e.audience_entity_id
+          LEFT JOIN resolved_entities speaker ON speaker.lookup_id = e.speaker_entity_id
+          LEFT JOIN resolved_entities audience ON audience.lookup_id = e.audience_entity_id
           WHERE
             e.status = 'active'
             AND s.status = 'active'
@@ -424,7 +424,7 @@ export class ActivityRepository {
         `
           SELECT DISTINCT e.audience_entity_id
           FROM activity_events e
-          INNER JOIN entities audience ON audience.id = e.audience_entity_id
+          INNER JOIN resolved_entities audience ON audience.lookup_id = e.audience_entity_id
           WHERE
             e.status = 'active'
             AND e.kind = 'user_contact'
@@ -481,8 +481,8 @@ export class ActivityRepository {
             END AS participant_label
           FROM activity_events e
           INNER JOIN sessions s ON s.session_id = e.session_id
-          LEFT JOIN entities speaker ON speaker.id = e.speaker_entity_id
-          LEFT JOIN entities audience ON audience.id = e.audience_entity_id
+          LEFT JOIN resolved_entities speaker ON speaker.lookup_id = e.speaker_entity_id
+          LEFT JOIN resolved_entities audience ON audience.lookup_id = e.audience_entity_id
           WHERE
             e.status = 'active'
             AND s.status = 'active'
@@ -698,8 +698,8 @@ export class ActivityRepository {
               AS participant_label
           FROM activity_events e
           INNER JOIN sessions s ON s.session_id = e.session_id
-          LEFT JOIN entities speaker ON speaker.id = e.speaker_entity_id
-          LEFT JOIN entities audience ON audience.id = e.audience_entity_id
+          LEFT JOIN resolved_entities speaker ON speaker.lookup_id = e.speaker_entity_id
+          LEFT JOIN resolved_entities audience ON audience.lookup_id = e.audience_entity_id
           WHERE ${filters.join(" AND ")}
           ORDER BY e.occurred_at DESC, e.id ASC
           LIMIT ?

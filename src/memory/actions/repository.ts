@@ -48,7 +48,7 @@ const ACTION_JSON_ARRAY_CODEC = {
   errorMessage: (label: string) => `Failed to parse action record ${label}`,
 } satisfies JsonArrayCodecOptions;
 
-function mapActionRow(row: Record<string, unknown>): ActionRecord {
+export function mapActionRow(row: Record<string, unknown>): ActionRecord {
   const parsed = actionRecordSchema.safeParse({
     id: row.id,
     description: row.description,

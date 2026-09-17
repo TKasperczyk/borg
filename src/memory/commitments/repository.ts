@@ -93,7 +93,7 @@ const COMMITMENT_JSON_ARRAY_CODEC = {
   createError: (message, options) => new CommitmentError(message, options),
 } satisfies JsonArrayCodecOptions;
 
-function mapEntityRow(row: Record<string, unknown>): EntityRecord {
+export function mapEntityRow(row: Record<string, unknown>): EntityRecord {
   return entityRecordSchema.parse({
     id: row.id,
     canonical_name: row.canonical_name,
@@ -106,11 +106,12 @@ function mapEntityRow(row: Record<string, unknown>): EntityRecord {
         ? null
         : borgRoleSchema.parse(row.borg_role),
     name_provenance: nameProvenanceSchema.parse(row.name_provenance ?? "unknown"),
+    merged_into: row.merged_into ?? null,
     created_at: Number(row.created_at),
   });
 }
 
-function mapCommitmentRow(row: Record<string, unknown>): CommitmentRecord {
+export function mapCommitmentRow(row: Record<string, unknown>): CommitmentRecord {
   const kind = commitmentKindSchema.parse(row.kind ?? "assistant_commitment");
   const enforcementClass =
     row.enforcement_class === null || row.enforcement_class === undefined
@@ -320,6 +321,7 @@ export class EntityRepository {
               `
                 SELECT id, canonical_name, aliases, kind, borg_role, name_provenance, created_at
                 FROM entities
+                WHERE merged_into IS NULL
                 ORDER BY created_at ASC
               `,
             )
@@ -329,7 +331,7 @@ export class EntityRepository {
               `
                 SELECT id, canonical_name, aliases, kind, borg_role, name_provenance, created_at
                 FROM entities
-                WHERE kind = ?
+                WHERE kind = ? AND merged_into IS NULL
                 ORDER BY created_at ASC
               `,
             )
@@ -401,6 +403,12 @@ export class EntityRepository {
   }
 
   findAllByName(name: string, options: EntityListOptions = {}): EntityId[] {
+    if (entityIdHelpers.is(name)) {
+      const entity = this.get(name);
+      return entity !== null && (options.kind === undefined || entity.kind === options.kind)
+        ? [entity.id]
+        : [];
+    }
     const normalized = normalizeName(name);
 
     if (normalized.length === 0) {
@@ -433,6 +441,10 @@ export class EntityRepository {
     const results = new Map<string, EntityId | null>(uniqueNames.map((name) => [name, null]));
 
     for (const name of uniqueNames) {
+      if (entityIdHelpers.is(name)) {
+        results.set(name, this.findByName(name, options));
+        continue;
+      }
       const normalized = normalizeName(name);
 
       if (normalized.length === 0) {
@@ -528,13 +540,14 @@ export class EntityRepository {
     }
     const existing = byId?.id ?? this.findByName(name);
     if (boundEntityId !== undefined) {
-      if (this.get(boundEntityId) === null || (existing !== null && existing !== boundEntityId)) {
+      const bound = this.get(boundEntityId);
+      if (bound === null || (existing !== null && existing !== bound.id)) {
         throw new CommitmentError("Audience label conflicts with its entity binding", {
           code: "ENTITY_AUDIENCE_CONFLICT",
         });
       }
-      if (existing === null) this.addAlias(boundEntityId, name);
-      return boundEntityId;
+      if (existing === null) this.addAlias(bound.id, name);
+      return bound.id;
     }
     // Do not upgrade a canonical name's provenance merely by seeing a transport alias.
     return existing ?? this.resolve(name, { provenance: "transport_audience_label" });
@@ -558,7 +571,7 @@ export class EntityRepository {
       )
       .get(normalizedSource, normalizedExternalId) as { entity_id: string } | undefined;
 
-    return row === undefined ? null : parseEntityId(row.entity_id);
+    return row === undefined ? null : (this.get(parseEntityId(row.entity_id))?.id ?? null);
   }
 
   resolveExternal(input: EntityResolveExternalInput): EntityId {
@@ -674,11 +687,95 @@ export class EntityRepository {
   }
 
   get(id: EntityId): EntityRecord | null {
-    const row = this.db.prepare("SELECT * FROM entities WHERE id = ?").get(id) as
-      | Record<string, unknown>
-      | undefined;
+    const visited = new Set<EntityId>();
+    let current = parseEntityId(id);
+    for (;;) {
+      if (visited.has(current)) {
+        throw new CommitmentError("Entity redirect cycle", { code: "ENTITY_REDIRECT_INVALID" });
+      }
+      visited.add(current);
+      const row = this.db.prepare("SELECT * FROM entities WHERE id = ?").get(current);
+      if (row === undefined) {
+        if (visited.size === 1) return null;
+        throw new CommitmentError("Dangling entity redirect", { code: "ENTITY_REDIRECT_INVALID" });
+      }
+      const entity = mapEntityRow(row);
+      if (entity.merged_into == null) return entity;
+      current = entity.merged_into;
+    }
+  }
 
-    return row === undefined ? null : mapEntityRow(row);
+  /** Project structured historical handles at read time; source bytes stay immutable. */
+  resolveReferences<T>(value: T): T {
+    const visit = (item: unknown): unknown => {
+      if (typeof item === "string")
+        return entityIdHelpers.is(item) ? (this.get(item)?.id ?? item) : item;
+      if (Array.isArray(item)) return item.map(visit);
+      if (item !== null && typeof item === "object" && !ArrayBuffer.isView(item))
+        return Object.fromEntries(
+          Object.entries(item).map(([key, nested]) => [key, visit(nested)]),
+        );
+      return item;
+    };
+    return visit(value) as T;
+  }
+
+  /** An identity merge retains the old handle so append-only provenance stays readable. */
+  merge(from: EntityId, into: EntityId, options: { renameInto?: string } = {}): EntityRecord {
+    return this.db
+      .transaction(() => {
+        const source = this.get(from);
+        const target = this.get(into);
+        if (source === null || target === null)
+          throw new CommitmentError("Missing merge entity", { code: "ENTITY_REDIRECT_INVALID" });
+        if (source.id === target.id) return target;
+        if (
+          source.id !== from ||
+          target.id !== into ||
+          (source.kind === "self" && target.kind !== "self")
+        )
+          throw new CommitmentError("Merge requires live handles and must retain the self entity", {
+            code: "ENTITY_REDIRECT_INVALID",
+          });
+        const canonical = options.renameInto?.trim() ?? target.canonical_name;
+        if (options.renameInto !== undefined && canonical !== source.canonical_name)
+          throw new CommitmentError("Rename must adopt the source canonical name", {
+            code: "ENTITY_REDIRECT_INVALID",
+          });
+        const next = entityRecordSchema.parse({
+          ...target,
+          canonical_name: canonical,
+          aliases: uniqueStrings([
+            ...target.aliases,
+            target.canonical_name,
+            source.canonical_name,
+            ...source.aliases,
+          ]).filter((name) => normalizeName(name) !== normalizeName(canonical)),
+          name_provenance:
+            options.renameInto === undefined ? target.name_provenance : source.name_provenance,
+          borg_role: target.borg_role ?? source.borg_role,
+        });
+        const updated = this.db
+          .prepare(
+            "UPDATE entities SET canonical_name = ?, aliases = ?, name_provenance = ?, borg_role = ? WHERE id = ? AND merged_into IS NULL",
+          )
+          .run(
+            next.canonical_name,
+            serializeJsonValue(next.aliases),
+            next.name_provenance,
+            next.borg_role,
+            into,
+          );
+        const redirected = this.db
+          .prepare("UPDATE entities SET merged_into = ? WHERE id = ? AND merged_into IS NULL")
+          .run(into, from);
+        if (updated.changes !== 1 || redirected.changes !== 1)
+          throw new CommitmentError("Entity merge changed unexpectedly", {
+            code: "ENTITY_REDIRECT_INVALID",
+          });
+        return next;
+      })
+      .immediate();
   }
 
   getCreator(): EntityRecord | null {
@@ -687,7 +784,7 @@ export class EntityRepository {
         `
           SELECT *
           FROM entities
-          WHERE borg_role = 'creator'
+          WHERE borg_role = 'creator' AND merged_into IS NULL
           ORDER BY created_at ASC
           LIMIT 1
         `,
@@ -774,10 +871,10 @@ export class EntityRepository {
       if (parsedRole === "creator") {
         this.db
           .prepare("UPDATE entities SET borg_role = NULL WHERE borg_role = 'creator' AND id != ?")
-          .run(parsedId);
+          .run(current.id);
       }
 
-      this.db.prepare("UPDATE entities SET borg_role = ? WHERE id = ?").run(parsedRole, parsedId);
+      this.db.prepare("UPDATE entities SET borg_role = ? WHERE id = ?").run(parsedRole, current.id);
 
       return this.get(parsedId);
     });
@@ -795,11 +892,14 @@ export class EntityRepository {
     const next = entityRecordSchema.parse({
       ...current,
       canonical_name: canonicalName.trim(),
+      aliases: uniqueStrings([...current.aliases, current.canonical_name]).filter(
+        (name) => normalizeName(name) !== normalizeName(canonicalName),
+      ),
     });
 
     this.db
       .prepare("UPDATE entities SET canonical_name = ?, aliases = ? WHERE id = ?")
-      .run(next.canonical_name, serializeJsonValue(next.aliases), id);
+      .run(next.canonical_name, serializeJsonValue(next.aliases), current.id);
 
     return next;
   }
@@ -818,7 +918,7 @@ export class EntityRepository {
 
     this.db
       .prepare("UPDATE entities SET aliases = ? WHERE id = ?")
-      .run(serializeJsonValue(next.aliases), id);
+      .run(serializeJsonValue(next.aliases), current.id);
 
     return next;
   }

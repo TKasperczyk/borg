@@ -514,7 +514,7 @@ function originAudienceEntityIdsFromRow(row: Record<string, unknown>): EntityId[
   return [...new Set(parsed)];
 }
 
-function fromEpisodeRow(row: Record<string, unknown>): Episode {
+export function fromEpisodeRow(row: Record<string, unknown>): Episode {
   const originAudienceEntityIds = originAudienceEntityIdsFromRow(row);
   const emotionalArc = (() => {
     if (row.emotional_arc === null || row.emotional_arc === undefined || row.emotional_arc === "") {
@@ -653,7 +653,7 @@ function applyHotLaneCooldownPenalty(
     .map((entry) => entry.candidate);
 }
 
-function fromEpisodeStatsRow(row: Record<string, unknown>): EpisodeStats {
+export function fromEpisodeStatsRow(row: Record<string, unknown>): EpisodeStats {
   const parsed = episodeStatsSchema.safeParse({
     episode_id: row.episode_id,
     retrieval_count: Number(row.retrieval_count),

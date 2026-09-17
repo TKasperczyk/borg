@@ -198,6 +198,7 @@ export async function buildBorgRepositories(
   const entryIndex =
     options.entryIndex ??
     new StreamEntryIndexRepository({
+      entityRepository,
       db: sqlite,
       dataDir: config.dataDir,
     });
@@ -336,6 +337,7 @@ export async function buildBorgRepositories(
     clock,
   });
   const socialRepository = new SocialRepository({
+    entityRepository,
     db: sqlite,
     clock,
   });
@@ -592,6 +594,7 @@ export async function buildBorgRepositories(
   });
   applyCorrectionReview = (item) => correctionService.applyCorrectionReview(item);
   const workingMemoryStore = new WorkingMemoryStore({
+    entityRepository,
     dataDir: config.dataDir,
     clock,
   });

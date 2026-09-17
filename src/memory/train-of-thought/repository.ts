@@ -58,7 +58,7 @@ function mapTrainOfThoughtRow(row: Record<string, unknown>): TrainOfThought {
   return parsed.data;
 }
 
-function mapTrainOfThoughtJournalEntryRow(
+export function mapTrainOfThoughtJournalEntryRow(
   row: Record<string, unknown>,
 ): TrainOfThoughtJournalEntry {
   const parsed = trainOfThoughtJournalEntrySchema.safeParse({

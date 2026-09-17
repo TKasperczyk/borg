@@ -116,6 +116,7 @@ export const entityRecordSchema = z.object({
   kind: entityKindSchema.nullable(),
   borg_role: borgRoleSchema.nullable(),
   name_provenance: nameProvenanceSchema.optional(),
+  merged_into: entityIdSchema.nullable().optional(),
   created_at: z.number().finite(),
 });
 

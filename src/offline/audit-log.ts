@@ -77,7 +77,7 @@ function parseJsonRecord(value: string, label: string): Record<string, unknown> 
   }
 }
 
-function mapAuditRow(row: Record<string, unknown>): MaintenanceAuditRecord {
+export function mapAuditRow(row: Record<string, unknown>): MaintenanceAuditRecord {
   const parsed = maintenanceAuditSchema.safeParse({
     id: Number(row.id),
     run_id: row.run_id,
