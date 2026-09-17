@@ -172,9 +172,17 @@ export async function buildBorgRepositories(
     db: sqlite,
     clock,
   });
+  const entityRepository = new EntityRepository({
+    db: sqlite,
+    clock,
+  });
+  if (entityRepository.getSelf() === null) {
+    entityRepository.add({ canonicalName: "self", kind: "self", provenance: "assistant_seeded" });
+  }
   const sessionsRepository = new SessionsRepository({
     db: sqlite,
     clock,
+    entityRepository,
   });
   const episodicRepository = new EpisodicRepository({
     table: options.episodesTable,
@@ -324,10 +332,6 @@ export async function buildBorgRepositories(
   });
 
   const growthMarkersRepository = new GrowthMarkersRepository({
-    db: sqlite,
-    clock,
-  });
-  const entityRepository = new EntityRepository({
     db: sqlite,
     clock,
   });

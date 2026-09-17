@@ -850,7 +850,10 @@ function resolveTurnAudienceEntityId(
   },
 ): EntityId | null {
   if (input.explicitAudienceEntityId !== undefined) {
-    return parseKnownEntityId(borg, input.explicitAudienceEntityId, "audience");
+    return borg.entities.resolveAudienceLabel(
+      input.audienceLabel,
+      parseKnownEntityId(borg, input.explicitAudienceEntityId, "audience"),
+    );
   }
 
   if (input.existingAudienceEntityId !== undefined && input.existingAudienceEntityId !== null) {
@@ -858,13 +861,10 @@ function resolveTurnAudienceEntityId(
       throw new HTTPException(400, { message: "audience entity not found" });
     }
 
-    return input.existingAudienceEntityId;
+    return borg.entities.resolveAudienceLabel(input.audienceLabel, input.existingAudienceEntityId);
   }
 
-  return borg.entities.resolve(input.audienceLabel, {
-    kind: "person",
-    provenance: "transport_audience_label",
-  });
+  return borg.entities.resolveAudienceLabel(input.audienceLabel);
 }
 
 function resolveTurnSenderEntityId(

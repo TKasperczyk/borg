@@ -453,7 +453,7 @@ function mergeAliases(left: readonly string[], right: readonly string[]): string
   ];
 }
 
-function buildNodeEmbeddingText(input: {
+export function buildNodeEmbeddingText(input: {
   label: string;
   description: string;
   aliases: readonly string[];

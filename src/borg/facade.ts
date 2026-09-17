@@ -473,9 +473,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
       return null;
     }
 
-    return deps.entityRepository.resolve(options.audience, {
-      provenance: "transport_audience_label",
-    });
+    return deps.entityRepository.resolveAudienceLabel(options.audience);
   };
 
   const resolveEpisodeAudienceTerms = (
@@ -874,6 +872,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
         deps.socialRepository.adjustTrust(deps.entityRepository.resolve(entity), delta, provenance),
     },
     entities: {
+      resolveAudienceLabel: (...args) => deps.entityRepository.resolveAudienceLabel(...args),
       resolve: (...args) => deps.entityRepository.resolve(...args),
       resolveExternal: (...args) => deps.entityRepository.resolveExternal(...args),
       findByExternalId: (...args) => deps.entityRepository.findByExternalId(...args),

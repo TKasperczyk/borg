@@ -956,22 +956,7 @@ export class EpisodicExtractor {
     canonicalLabel: string;
   } {
     const trimmed = audience.trim();
-
-    if (entityIdHelpers.is(trimmed)) {
-      const existing = this.options.entityRepository.get(trimmed as EntityId);
-
-      if (existing !== null) {
-        return {
-          entityId: existing.id,
-          canonicalLabel: existing.canonical_name,
-        };
-      }
-    }
-
-    const entityId = this.options.entityRepository.resolve(trimmed, {
-      ...(trimmed === "self" ? { kind: "self" as const } : {}),
-      provenance: "transport_audience_label",
-    });
+    const entityId = this.options.entityRepository.resolveAudienceLabel(trimmed);
     const entity = this.options.entityRepository.get(entityId);
 
     return {

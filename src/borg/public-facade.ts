@@ -700,6 +700,7 @@ export type BorgEntityResolveExternalInput = Pick<
 };
 
 export type BorgEntitiesFacade = {
+  resolveAudienceLabel(label: string, boundEntityId?: EntityId): EntityId;
   resolve(name: string, options?: BorgEntityResolveOptions): EntityId;
   resolveExternal(input: BorgEntityResolveExternalInput): EntityId;
   findByExternalId(source: string, externalId: string): EntityId | null;

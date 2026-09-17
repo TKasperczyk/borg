@@ -6,6 +6,7 @@ import { serializeJsonValue } from "../../util/json-value.js";
 import {
   createCommitmentId,
   createEntityId,
+  entityIdHelpers,
   parseCommitmentId,
   parseEntityId,
   type CommitmentId,
@@ -371,6 +372,11 @@ export class EntityRepository {
     );
 
     const insertEntity = () => {
+      if (entity.kind === "self" && this.getSelf() !== null) {
+        throw new CommitmentError("The store already has a self entity", {
+          code: "ENTITY_SELF_EXISTS",
+        });
+      }
       insert.run(
         entity.id,
         entity.canonical_name,
@@ -481,10 +487,10 @@ export class EntityRepository {
       });
     }
 
-    const existing = this.findByName(
-      name,
-      options.kind === undefined ? {} : { kind: options.kind },
-    );
+    const existing =
+      options.kind === "self"
+        ? (this.getSelf()?.id ?? null)
+        : this.findByName(name, options.kind === undefined ? {} : { kind: options.kind });
 
     if (existing !== null) {
       const current = this.get(existing);
@@ -506,6 +512,32 @@ export class EntityRepository {
     });
 
     return entity.id;
+  }
+
+  /** Transport labels are already-known handles, regardless of entity kind. */
+  resolveAudienceLabel(label: string, boundEntityId?: EntityId): EntityId {
+    const name = label.trim();
+    if (name.length === 0) {
+      throw new CommitmentError("Entity name is required", { code: "ENTITY_NAME_REQUIRED" });
+    }
+    const byId = entityIdHelpers.is(name) ? this.get(name) : null;
+    if (entityIdHelpers.is(name) && byId === null) {
+      throw new CommitmentError(`Unknown audience entity ${name}`, {
+        code: "ENTITY_AUDIENCE_MISSING",
+      });
+    }
+    const existing = byId?.id ?? this.findByName(name);
+    if (boundEntityId !== undefined) {
+      if (this.get(boundEntityId) === null || (existing !== null && existing !== boundEntityId)) {
+        throw new CommitmentError("Audience label conflicts with its entity binding", {
+          code: "ENTITY_AUDIENCE_CONFLICT",
+        });
+      }
+      if (existing === null) this.addAlias(boundEntityId, name);
+      return boundEntityId;
+    }
+    // Do not upgrade a canonical name's provenance merely by seeing a transport alias.
+    return existing ?? this.resolve(name, { provenance: "transport_audience_label" });
   }
 
   findByExternalId(source: string, externalId: string): EntityId | null {
@@ -567,6 +599,13 @@ export class EntityRepository {
           });
         }
 
+        const self = kind === "self" ? this.getSelf() : null;
+        if (self !== null && self.id !== current.id) {
+          throw new CommitmentError("The store already has a self entity", {
+            code: "ENTITY_SELF_EXISTS",
+          });
+        }
+
         const nextProvenance = strongerNameProvenance(current.name_provenance, provenance);
         const canonicalChanged =
           normalizeName(current.canonical_name) !== normalizeName(canonicalName);
@@ -579,7 +618,7 @@ export class EntityRepository {
           ...current,
           canonical_name: canonicalName,
           aliases,
-          kind,
+          kind: current.kind === "self" ? "self" : kind,
           name_provenance: nextProvenance,
         });
 
@@ -659,19 +698,13 @@ export class EntityRepository {
   }
 
   getSelf(): EntityRecord | null {
-    const row = this.db
-      .prepare(
-        `
-          SELECT *
-          FROM entities
-          WHERE kind = 'self'
-          ORDER BY created_at ASC
-          LIMIT 1
-        `,
-      )
-      .get() as Record<string, unknown> | undefined;
-
-    return row === undefined ? null : mapEntityRow(row);
+    const selves = this.listEntities({ kind: "self" });
+    if (selves.length > 1) {
+      throw new CommitmentError("Multiple self entities require offline repair", {
+        code: "ENTITY_SELF_AMBIGUOUS",
+      });
+    }
+    return selves[0] ?? null;
   }
 
   ensureSelf(canonicalName: string, options: EntityEnsureSelfOptions = {}): EntityRecord {
@@ -685,31 +718,24 @@ export class EntityRepository {
 
     const provenance = options.provenance ?? "config_default_user";
     const ensure = this.db.transaction(() => {
-      const current = this.getSelf();
-
-      if (current === null) {
-        return this.add({
-          canonicalName: name,
-          aliases: ["self"],
+      const current =
+        this.getSelf() ??
+        this.add({
+          canonicalName: "self",
           kind: "self",
-          provenance,
+          provenance: "assistant_seeded",
         });
-      }
 
       const canonical = normalizeName(name);
       const aliases: string[] = [];
       const seen = new Set<string>();
-      for (const candidate of [...current.aliases, current.canonical_name, "self"]) {
+      for (const candidate of [...current.aliases, current.canonical_name]) {
         const normalized = normalizeName(candidate);
-        if (
-          normalized.length === 0 ||
-          (normalized === canonical && normalized !== "self") ||
-          seen.has(normalized)
-        ) {
+        if (normalized.length === 0 || normalized === canonical || seen.has(normalized)) {
           continue;
         }
         seen.add(normalized);
-        aliases.push(normalized === "self" ? "self" : candidate.trim());
+        aliases.push(candidate.trim());
       }
 
       const next = entityRecordSchema.parse({

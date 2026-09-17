@@ -326,6 +326,7 @@ export function buildToolDispatcher(options: BuildToolDispatcherOptions): ToolDi
     .register(
       createJournalAppendTool({
         resolveSelfEntityId: () =>
+          options.entityRepository.getSelf()?.id ??
           options.entityRepository.resolve("self", {
             kind: "self",
             provenance: "assistant_seeded",

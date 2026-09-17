@@ -1948,6 +1948,9 @@ describe("episodic extractor", () => {
 
   it("keeps current-sender relational slot subject refs on the default user for self audience", async () => {
     const harness = await createRelationalExtractorHarness();
+    // Composition seeds self before extraction; the transport label is an alias
+    // after a rename, never a rule for inferring entity kind.
+    harness.entityRepository.ensureSelf("Identity placeholder");
     const user = await harness.writer.append({
       kind: "user_msg",
       content: "My dog's name is Otto.",

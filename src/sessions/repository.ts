@@ -1,4 +1,5 @@
 import type { SqliteDatabase } from "../storage/sqlite/index.js";
+import type { EntityRepository } from "../memory/commitments/repository.js";
 import { SystemClock, type Clock } from "../util/clock.js";
 import { StorageError } from "../util/errors.js";
 import type { SessionId } from "../util/ids.js";
@@ -48,6 +49,7 @@ type CountRow = {
 export type SessionsRepositoryOptions = {
   db: SqliteDatabase;
   clock?: Clock;
+  entityRepository?: Pick<EntityRepository, "resolveAudienceLabel">;
 };
 
 function mapSessionRow(row: SessionRow): SessionRecord {
@@ -113,14 +115,21 @@ export class SessionsRepository {
 
   ensure(input: SessionEnsureInput): SessionRecord {
     const parsed = sessionEnsureInputSchema.parse(input);
-    const nowMs = this.clock.now();
-    const createdAt = parsed.created_at ?? nowMs;
-    const lastActivityAt = parsed.last_activity_at ?? createdAt;
-    const audienceRoleSupplied = "audience_role" in parsed;
+    return this.db.transaction(() => {
+      if (this.options.entityRepository !== undefined && parsed.audience_entity_id !== null) {
+        parsed.audience_entity_id = this.options.entityRepository.resolveAudienceLabel(
+          parsed.audience_label,
+          parsed.audience_entity_id ?? this.get(parsed.session_id)?.audience_entity_id ?? undefined,
+        );
+      }
+      const nowMs = this.clock.now();
+      const createdAt = parsed.created_at ?? nowMs;
+      const lastActivityAt = parsed.last_activity_at ?? createdAt;
+      const audienceRoleSupplied = "audience_role" in parsed;
 
-    this.db
-      .prepare(
-        `
+      this.db
+        .prepare(
+          `
           INSERT INTO sessions (
             session_id, source_type, source_external_id, source_url, label, audience_label,
             audience_entity_id, conversation_kind, created_at, last_activity_at, last_turn_id,
@@ -140,33 +149,34 @@ export class SessionsRepository {
             privacy_level = excluded.privacy_level,
             audience_role = CASE WHEN ? = 1 THEN excluded.audience_role ELSE sessions.audience_role END
         `,
-      )
-      .run(
-        parsed.session_id,
-        parsed.source_type,
-        parsed.source_external_id ?? null,
-        parsed.source_url ?? null,
-        parsed.label,
-        parsed.audience_label,
-        parsed.audience_entity_id ?? null,
-        parsed.conversation_kind,
-        createdAt,
-        lastActivityAt,
-        parsed.last_turn_id ?? null,
-        parsed.status ?? "active",
-        parsed.privacy_level ?? "payload_off",
-        parsed.audience_role ?? "participant",
-        audienceRoleSupplied ? 1 : 0,
-      );
+        )
+        .run(
+          parsed.session_id,
+          parsed.source_type,
+          parsed.source_external_id ?? null,
+          parsed.source_url ?? null,
+          parsed.label,
+          parsed.audience_label,
+          parsed.audience_entity_id ?? null,
+          parsed.conversation_kind,
+          createdAt,
+          lastActivityAt,
+          parsed.last_turn_id ?? null,
+          parsed.status ?? "active",
+          parsed.privacy_level ?? "payload_off",
+          parsed.audience_role ?? "participant",
+          audienceRoleSupplied ? 1 : 0,
+        );
 
-    const record = this.get(parsed.session_id);
-    if (record === null) {
-      throw new StorageError(`Session ${parsed.session_id} was not stored`, {
-        code: "SESSION_ENSURE_FAILED",
-      });
-    }
+      const record = this.get(parsed.session_id);
+      if (record === null) {
+        throw new StorageError(`Session ${parsed.session_id} was not stored`, {
+          code: "SESSION_ENSURE_FAILED",
+        });
+      }
 
-    return record;
+      return record;
+    })();
   }
 
   touch(sessionId: SessionId, update?: SessionTouchUpdate): SessionRecord | null {
