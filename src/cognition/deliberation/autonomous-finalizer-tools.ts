@@ -13,7 +13,7 @@ export const LIVE_TURN_READ_FINALIZER_TOOL_MENU = [
   "<borg_live_turn_read_tools>",
   "Read tools available inside every live turn, including ordinary user turns:",
   `- tool.ownRecords.list: Browse my own durable thoughts and journal globally by inclusive origin-time range, with an optional explicit session filter. ${OWN_RECORDS_PAGE_END_CLAIM}`,
-  "- tool.openQuestions.ruminations: Browse the rumination notes my offline mind-maintenance wrote against my open questions, by inclusive created-at range and optionally one question id. A note outlives its question, so this reaches ones I later resolved and ones the loop abandoned for me -- which it does only on a pass where it did not ask me, when a question's still-open passes reach the no-traction threshold and no episode created after it cites it and no action against it is active; nothing else in my turn carries those notes, and a pass can write none, so an empty range counts notes, not passes.",
+  "- tool.openQuestions.ruminations: Browse the rumination notes my offline mind-maintenance wrote against my open questions, by inclusive created-at range and optionally one question id. A note outlives its question, so this reaches ones I later resolved and ones the loop abandoned for me -- which it does only on a pass where it did not ask me, when a question's still-open passes reach the no-traction threshold and no episode created after it cites it; nothing else in my turn carries those notes, and a pass can write none, so an empty range counts notes, not passes.",
   "I may use these at my own initiative when I need to check what I thought or noticed at an earlier time. They are structural time-range browses, not text search.",
   "</borg_live_turn_read_tools>",
 ].join("\n");

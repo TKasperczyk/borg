@@ -255,7 +255,10 @@ describe("tool.openQuestions.ruminations", () => {
 
       expect(description).toContain("still-open passes reach the no-traction threshold");
       expect(description).toContain("no episode created after it cites it");
-      expect(description).toContain("no action against it is active");
+      // 27716714 dropped hasActiveAssociatedAction from shouldDismissStaleNoTraction
+      // (src/offline/ruminator/index.ts), leaving two conjuncts. A description naming a third
+      // makes a still-open row past the threshold readable as an active action holding it open.
+      expect(description).not.toContain("no action against it is active");
       // The conjuncts alone read as a test every pass applies. Both call sites reach
       // shouldDismissStaleNoTraction only where the model was not consulted for this question:
       // planResolution's two null returns are both upstream of onLlmVisit, and the sweep over the
