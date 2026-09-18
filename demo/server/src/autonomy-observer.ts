@@ -20,7 +20,16 @@ export function wireAutonomySchedulerObserver(
     onTick: (result: TickResult) => {
       const hasErrors =
         result.errorCount > 0 || result.sourceErrorCount > 0 || result.bookkeepingErrorCount > 0;
-      if (result.dueEvents === 0 && result.budgetSkipped === 0 && !hasErrors) return;
+      // A tick that refused interval fires overran the loop by at least that
+      // many intervals, and the scheduler zeroes the count when the next tick
+      // starts. Emit even when nothing was due, or the overrun is gone.
+      if (
+        result.dueEvents === 0 &&
+        result.budgetSkipped === 0 &&
+        result.droppedIntervalFires === 0 &&
+        !hasErrors
+      )
+        return;
 
       // Count events that passed admission, including failed preparation/turns
       // and busy attempts. Coalesced events can share one fired wake/turn.
@@ -39,6 +48,7 @@ export function wireAutonomySchedulerObserver(
         fleetCooldownSkipped: result.fleetCooldownSkipped,
         errorCircuitSkipped: result.errorCircuitSkipped,
         busySkipped: result.busySkipped,
+        droppedIntervalFires: result.droppedIntervalFires,
         errorCount: result.errorCount,
         sourceErrorCount: result.sourceErrorCount,
         bookkeepingErrorCount: result.bookkeepingErrorCount,

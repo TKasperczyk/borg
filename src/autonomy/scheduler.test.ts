@@ -33,7 +33,7 @@ import {
   turnEmittedHeadway,
   type AutonomySchedulerOptions,
 } from "./scheduler.js";
-import type { AutonomyWakeSource } from "./types.js";
+import type { AutonomyWakeSource, TickResult } from "./types.js";
 import {
   AUTONOMY_WAKE_OUTCOME_DETAIL_MAX_LENGTH,
   AutonomyWakesRepository,
@@ -6329,6 +6329,13 @@ describe("AutonomyScheduler", () => {
       clearIntervalFn: vi.fn(),
     });
 
+    const observedTicks: TickResult[] = [];
+    scheduler.setObserver({
+      onTick: (result) => {
+        observedTicks.push(result);
+      },
+    });
+
     scheduler.start();
     await expect(scheduler.describe()).resolves.toMatchObject({
       interval_ms: 1_000,
@@ -6385,11 +6392,25 @@ describe("AutonomyScheduler", () => {
       expect((await scheduler.describe()).tick_in_flight).toBe(false);
     });
 
+    // The completing tick carries its own overrun out to the observer, which is
+    // the only record of it that outlives the process: the page can only show
+    // the count to a turn that happens to read while the freeze is still on.
+    expect(observedTicks).toHaveLength(1);
+    expect(observedTicks[0]?.droppedIntervalFires).toBe(3);
+
     // The running total survives the tick that earned it; the per-tick count
     // goes null rather than holding a figure that would read as a live cost.
     await expect(scheduler.describe()).resolves.toMatchObject({
       dropped_interval_fires: { since_interval_armed: 3, current_tick: null },
     });
+
+    // The next tick reports its own overrun, not the previous tick's.
+    clock.advance(1_000);
+    intervalCallback?.();
+    await vi.waitFor(() => {
+      expect(observedTicks).toHaveLength(2);
+    });
+    expect(observedTicks[1]?.droppedIntervalFires).toBe(0);
 
     await scheduler.stop();
     await expect(scheduler.describe()).resolves.toMatchObject({

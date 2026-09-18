@@ -445,6 +445,11 @@ export type TickResult = {
   fleetCooldownSkipped: number;
   errorCircuitSkipped: number;
   busySkipped: number;
+  /**
+   * Interval fires refused because this tick was still running. Reset when the
+   * next tracked tick starts, so it is this tick's overrun and not a total.
+   */
+  droppedIntervalFires: number;
   errorCount: number;
   sourceErrorCount: number;
   /** Scan/preparation failures, including sources that produced no due event. */

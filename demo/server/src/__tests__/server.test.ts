@@ -5251,6 +5251,7 @@ describe("demo server", () => {
         fleetCooldownSkipped: 0,
         errorCircuitSkipped: 0,
         busySkipped: 0,
+        droppedIntervalFires: 0,
         errorCount: 0,
         sourceErrorCount: 0,
         bookkeepingErrorCount: 0,
