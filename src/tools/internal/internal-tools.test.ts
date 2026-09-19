@@ -425,7 +425,7 @@ describe("internal tools", () => {
     }
   });
 
-  it("omits corrected_by from semantic walk node output", async () => {
+  it("carries corrected_by on semantic walk node output", async () => {
     const rootId = createSemanticNodeId();
     const correctedBy = createSemanticNodeId();
     const node = createSemanticNodeFixture({
@@ -459,7 +459,7 @@ describe("internal tools", () => {
 
     expect(result.steps[0]?.node.status).toBe("superseded");
     expect(result.steps[0]?.node.superseded_at).toBe(1_250);
-    expect(result.steps[0]?.node).not.toHaveProperty("corrected_by");
+    expect(result.steps[0]?.node.corrected_by).toBe(correctedBy);
     expect(result.steps[0]?.node.disclosure_label).toEqual({
       disclosure_class: "unknown",
       origin_audience_entity_ids: [],
