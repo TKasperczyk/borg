@@ -18,7 +18,7 @@ import type { StreamEntry, StreamEntryIndexRecord } from "../../stream/index.js"
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { ToolError } from "../../util/errors.js";
 import { sessionIdSchema, streamEntryIdSchema } from "../../util/id-schemas.js";
-import type { SessionId, StreamEntryId } from "../../util/ids.js";
+import { goalIdHelpers, type SessionId, type StreamEntryId } from "../../util/ids.js";
 import { formatRelativeAge } from "../../util/relative-time.js";
 import { scrubMemoryRecordInternalIds } from "../../util/prompt-tags.js";
 import { estimatePromptTokens, stringifyPromptContent } from "../../util/token-estimate.js";
@@ -303,6 +303,14 @@ function withoutOversizedAnchors(row: OwnRecordForCognition): OwnRecordForCognit
   };
 }
 
+// GoalsRepository.reconcileBlocks writes this fixed machine format. Parse it
+// only for a system unblock with the matching structured goal dependency; a
+// bare number in an authored reason is not an audit handle.
+const SYSTEM_GOAL_DEPENDENCY_UNBLOCK_REASON_PATTERN = new RegExp(
+  `^blocker goal (${goalIdHelpers.pattern.source.slice(1, -1)}) is (done|abandoned); identity event (\\d+|unrecorded) at (-?\\d+(?:\\.\\d+)?); observed at (-?\\d+(?:\\.\\d+)?)$`,
+  "u",
+);
+
 function renderGoalDisposition(event: IdentityEvent): string {
   const goal = goalSchema
     .pick({ description: true, status: true, block_history: true })
@@ -320,10 +328,22 @@ function renderGoalDisposition(event: IdentityEvent): string {
     effectiveAt == null || effectiveAt === event.ts
       ? ""
       : ` Effective at ${new Date(effectiveAt).toISOString()}.`;
-  // Reasons may include machine-written unblock references. Reuse ID hygiene;
-  // never infer intent or rewrite the reason's language.
+  let reason = event.reason ?? "not recorded";
+  if (
+    event.provenance.kind === "system" &&
+    event.action === "unblock" &&
+    goal.status === "active" &&
+    block?.blocker.kind === "goal"
+  ) {
+    const fields = SYSTEM_GOAL_DEPENDENCY_UNBLOCK_REASON_PATTERN.exec(reason);
+    if (fields !== null && fields[1] === block.blocker.goal_id) {
+      const auditReference = fields[3] === "unrecorded" ? "unrecorded" : "[internal_id]";
+      reason = `blocker goal ${fields[1]} is ${fields[2]}; identity event ${auditReference} at ${fields[4]}; observed at ${fields[5]}`;
+    }
+  }
+  // The remaining scrub keys on canonical ID structure, never the prose's language.
   return scrubMemoryRecordInternalIds(
-    `At ${new Date(event.ts).toISOString()}, the goal “${goal.description}” was ${disposition}.${effectiveTime} Reason: ${event.reason ?? "not recorded"}`,
+    `At ${new Date(event.ts).toISOString()}, the goal “${goal.description}” was ${disposition}.${effectiveTime} Reason: ${reason}`,
   );
 }
 
@@ -559,12 +579,36 @@ export function createOwnRecordsListTool(
           return payloadlessOutput;
         }
 
-        return {
+        const anchorlessOutput = {
           records: [withoutOversizedAnchors(row)],
           has_more: hasMoreAfterCandidate,
           page_end_reason: budgetCutReason,
           next_cursor: hasMoreAfterCandidate ? encodeOwnRecordCursor(candidate) : null,
-        };
+        } satisfies OwnRecordsListOutput;
+
+        if (resultFitsBudget(anchorlessOutput, DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET)) {
+          return anchorlessOutput;
+        }
+
+        // Audience arrays and their prose rendering are unbounded too. Losing
+        // detailed policy must fail closed, never imply that the record is public.
+        const boundedOutput = {
+          ...anchorlessOutput,
+          records: [
+            {
+              ...anchorlessOutput.records[0]!,
+              ...memoryDisclosurePayloadFields(unknownMemoryDisclosureLabel()),
+            },
+          ],
+        } satisfies OwnRecordsListOutput;
+
+        if (!resultFitsBudget(boundedOutput, DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET)) {
+          throw new ToolError("Own-record metadata exceeds the result budget", {
+            code: "OWN_RECORDS_RESULT_BUDGET_EXCEEDED",
+          });
+        }
+
+        return boundedOutput;
       }
 
       const consumedAllCandidates = records.length === pageCandidates.length;

@@ -617,7 +617,9 @@ function identityAnchorForCandidate(
     return {
       anchor: anchor ?? null,
       invalidExplicitRef:
-        anchor === undefined || (labelAnchor !== null && labelAnchor.id !== anchor.id),
+        anchor === undefined ||
+        (entityIdHelpers.is(label) && label !== anchor.id) ||
+        (labelAnchor !== null && labelAnchor.id !== anchor.id),
       ambiguousKnownLabel: false,
     };
   }
@@ -630,7 +632,9 @@ function identityAnchorForCandidate(
   return {
     anchor:
       labelAnchor ??
-      (isStructurallySelfReferential && selfAnchors.length === 1 ? (selfAnchors[0] ?? null) : null),
+      (isStructurallySelfReferential && !entityIdHelpers.is(label) && selfAnchors.length === 1
+        ? (selfAnchors[0] ?? null)
+        : null),
     invalidExplicitRef: false,
     ambiguousKnownLabel: labelMatches.length > 1,
   };
@@ -826,6 +830,13 @@ export class SemanticExtractor {
       };
     }
 
+    // A model-emitted entity handle must resolve on its own before any self
+    // normalization. An upsert through the self fallback is not reference proof.
+    const resolvedLabel = resolveNameSlotLabel(candidate.label, this.options.entityRepository);
+    if (resolvedLabel === null) {
+      return { status: "skipped", reason: "invalid_ref" };
+    }
+
     const identityResolution = identityAnchorForCandidate(candidate, identityAnchors);
 
     if (identityResolution.invalidExplicitRef) {
@@ -856,16 +867,7 @@ export class SemanticExtractor {
       };
     }
 
-    const candidateLabel =
-      identityAnchor?.canonical_name ??
-      resolveNameSlotLabel(candidate.label, this.options.entityRepository);
-
-    if (candidateLabel === null) {
-      return {
-        status: "skipped",
-        reason: "invalid_ref",
-      };
-    }
+    const candidateLabel = identityAnchor?.canonical_name ?? resolvedLabel;
 
     try {
       const candidateDescription = candidate.description.trim();

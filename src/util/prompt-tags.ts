@@ -1,4 +1,4 @@
-import { INTERNAL_IDENTIFIER_PATTERN_SOURCE } from "./ids.js";
+import { INTERNAL_IDENTIFIER_TOKEN_PATTERN_SOURCE } from "./ids.js";
 
 // Mechanical escaping for substrate-owned prompt tags. This only prevents
 // untrusted content from forging borg_* prompt blocks; it does not interpret
@@ -25,7 +25,7 @@ export function scrubCreatorDirectiveInternalIds(value: string): string {
 }
 
 const MEMORY_RECORD_INTERNAL_ID_PATTERN = new RegExp(
-  `(?<![\\p{L}\\p{M}\\p{N}_-])${INTERNAL_IDENTIFIER_PATTERN_SOURCE}(?![\\p{L}\\p{M}\\p{N}_-])`,
+  INTERNAL_IDENTIFIER_TOKEN_PATTERN_SOURCE,
   "gu",
 );
 

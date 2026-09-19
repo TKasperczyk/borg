@@ -496,33 +496,77 @@ describe("semantic extractor", () => {
     });
   });
 
-  it("refuses a node whose label is an id the repository does not resolve", async () => {
-    const selfId = createEntityId();
-    const unknownId = createEntityId();
-    const run = await runIdentityGuardExtraction({
-      cleanup,
-      records: [identityEntity(selfId, "team-agent", "self", ["self"])],
-      selfEntityId: selfId,
-      nodes: [
-        {
-          kind: "person",
-          label: unknownId,
-          description: "Runs the Tuesday retro.",
-          domain: "people",
-          aliases: [],
-          observation_metadata: null,
-          relationship_claims: [],
-          identity_entity_id: null,
-          description_perspective: "third_person",
-          confidence: 0.7,
-          source_episode_ids: [IDENTITY_GUARD_EPISODE_ID],
-        },
-      ],
-    });
+  it.each([
+    { kind: "person", perspective: "third_person", explicitSelf: false },
+    { kind: "self", perspective: "first_person", explicitSelf: false },
+    { kind: "agent", perspective: "first_person", explicitSelf: false },
+    { kind: "self", perspective: "first_person", explicitSelf: true },
+  ])(
+    "rejects an unresolved id and its edge before $kind normalization (explicitSelf=$explicitSelf)",
+    async ({ kind, perspective, explicitSelf }) => {
+      const selfId = createEntityId();
+      const unknownId = createEntityId();
+      const personId = createEntityId();
+      const run = await runIdentityGuardExtraction({
+        cleanup,
+        records: [
+          identityEntity(selfId, "team-agent", "self", ["self"]),
+          identityEntity(personId, "Marta Lis", "person"),
+        ],
+        selfEntityId: selfId,
+        nodes: [
+          {
+            kind,
+            label: unknownId,
+            description: "Coordinates the release workflow.",
+            domain: "people",
+            aliases: [],
+            observation_metadata: null,
+            relationship_claims: [],
+            identity_entity_id: explicitSelf ? selfId : null,
+            description_perspective: perspective,
+            confidence: 0.7,
+            source_episode_ids: [IDENTITY_GUARD_EPISODE_ID],
+          },
+          {
+            kind: "person",
+            label: "Marta Lis",
+            description: "Runs the Tuesday retro.",
+            domain: "people",
+            aliases: [],
+            observation_metadata: null,
+            relationship_claims: [],
+            identity_entity_id: null,
+            description_perspective: "third_person",
+            confidence: 0.7,
+            source_episode_ids: [IDENTITY_GUARD_EPISODE_ID],
+          },
+        ],
+        edges: [
+          {
+            from_label: unknownId,
+            to_label: "Marta Lis",
+            relation: "related_to",
+            confidence: 0.7,
+            evidence_episode_ids: [IDENTITY_GUARD_EPISODE_ID],
+            valid_from_ts: null,
+            valid_to_ts: null,
+          },
+        ],
+      });
 
-    await expect(run.nodeRepository.list()).resolves.toEqual([]);
-    expect(run.result).toMatchObject({ insertedNodes: 0, skippedNodes: 1 });
-  });
+      await expect(run.nodeRepository.list()).resolves.toEqual([
+        expect.objectContaining({ label: "Marta Lis", kind: "person" }),
+      ]);
+      expect(run.edgeRepository.listEdges()).toEqual([]);
+      expect(run.result).toMatchObject({
+        insertedNodes: 1,
+        skippedNodes: 1,
+        insertedEdges: 0,
+        skippedEdges: 1,
+      });
+    },
+  );
 
   it("rejects a name-only identity candidate when two people share that display name", async () => {
     const selfId = createEntityId();

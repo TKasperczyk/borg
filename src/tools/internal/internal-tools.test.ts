@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { Borg, DEFAULT_SESSION_ID } from "../../index.js";
 import { ScheduledWakesRepository } from "../../autonomy/index.js";
+import { DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET } from "../../cognition/deliberation/constants.js";
 import { PromptSurfaceHistoryRepository } from "../../cognition/prompts/prompt-surface-history.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { buildToolDispatcher } from "../../borg/tools-setup.js";
@@ -32,9 +33,12 @@ import {
   createSkillsListTool,
 } from "../../tools/index.js";
 import { ManualClock } from "../../util/clock.js";
+import { estimatePromptTokens } from "../../util/token-estimate.js";
 import {
+  createAttachmentId,
   createEntityId,
   createEpisodeId,
+  createScheduledWakeId,
   createSemanticNodeId,
   createSessionId,
   createStreamEntryId,
@@ -1105,6 +1109,199 @@ describe("internal tools", () => {
               occurred_at: clock.now(),
               content: `At ${new Date(clock.now()).toISOString()}, the goal “${goal.description}” was unblocked. Effective at ${new Date(effectiveAt).toISOString()}. Reason: until timestamp ${effectiveAt} passed; observed at ${clock.now()}`,
               disclosure_label: { disclosure_class: "unknown" },
+            },
+          ],
+        },
+      });
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("bounds oversized disposition disclosure labels and still advances the cursor", async () => {
+    const clock = new ManualClock(1_000_100);
+    const harness = await createOfflineTestHarness({ clock });
+    try {
+      const dispatcher = createHarnessToolDispatcher(harness);
+      const earlier = harness.goalsRepository.add({
+        description: "Earlier goal",
+        priority: 5,
+        provenance: { kind: "manual" },
+      });
+      harness.goalsRepository.retire(earlier.id, "Finished earlier.", { kind: "manual" });
+      const audience = Array.from({ length: 2_000 }, () => createEntityId());
+      const episode = createEpisodeFixture({
+        audience_entity_id: audience[0]!,
+        origin_audience_entity_ids: audience,
+        shared: false,
+      });
+      await harness.episodicRepository.createEpisode(episode);
+      const goal = harness.goalsRepository.add({
+        description: "Goal with a large source audience",
+        priority: 5,
+        provenance: { kind: "episodes", episode_ids: [episode.id] },
+      });
+      expect(
+        await dispatcher.dispatch({
+          toolName: "tool.goals.retire",
+          input: { goal_id: goal.id, reason: "Finished." },
+          origin: "autonomous",
+        }),
+      ).toMatchObject({ ok: true });
+      const range = {
+        since: new Date(clock.now()).toISOString(),
+        until: new Date(clock.now()).toISOString(),
+        kinds: ["goal_disposition"],
+        limit: 1,
+      };
+      const first = await dispatcher.dispatch({
+        toolName: "tool.ownRecords.list",
+        input: range,
+        origin: "deliberator",
+      });
+      if (!first.ok) throw new Error(first.error);
+      expect(estimatePromptTokens(JSON.stringify(first.output))).toBeLessThanOrEqual(
+        DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET,
+      );
+      expect(first.output).toMatchObject({
+        records: [
+          {
+            kind: "goal_disposition",
+            content: null,
+            payload_status: "check_not_completed_budget",
+            oversized_anchors_omitted: true,
+            disclosure_label: {
+              disclosure_class: "unknown",
+              origin_audience_entity_ids: [],
+              private_to_entity_ids: [],
+            },
+          },
+        ],
+        has_more: true,
+        page_end_reason: "context_budget",
+        next_cursor: expect.any(String),
+      });
+      expect(JSON.stringify(first.output)).not.toContain(audience[0]);
+      const second = await dispatcher.dispatch({
+        toolName: "tool.ownRecords.list",
+        input: { ...range, cursor: (first.output as { next_cursor: string }).next_cursor },
+        origin: "deliberator",
+      });
+      expect(second).toMatchObject({
+        ok: true,
+        output: {
+          records: [
+            { content: expect.stringContaining(earlier.description), payload_status: "exact" },
+          ],
+          has_more: false,
+          next_cursor: null,
+        },
+      });
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("scrubs scheduled-wake, attachment, and Unicode-adjacent goal ids from disposition prose", async () => {
+    const clock = new ManualClock(1_000_100);
+    const harness = await createOfflineTestHarness({ clock });
+    try {
+      const dispatcher = createHarnessToolDispatcher(harness);
+      const attachmentId = createAttachmentId();
+      const wakeId = createScheduledWakeId();
+      const goal = harness.goalsRepository.add({
+        description: `检查${attachmentId}文档`,
+        priority: 5,
+        provenance: { kind: "manual" },
+      });
+      expect(
+        await dispatcher.dispatch({
+          toolName: "tool.goals.retire",
+          input: {
+            goal_id: goal.id,
+            reason: `已完成${goal.id}，无需继续；${wakeId}已处理。保留8和1000100。`,
+          },
+          origin: "autonomous",
+        }),
+      ).toMatchObject({ ok: true });
+      const result = await dispatcher.dispatch({
+        toolName: "tool.ownRecords.list",
+        input: {
+          since: new Date(clock.now()).toISOString(),
+          until: new Date(clock.now()).toISOString(),
+          kinds: ["goal_disposition"],
+        },
+        origin: "deliberator",
+      });
+      expect(result).toMatchObject({
+        ok: true,
+        output: {
+          records: [
+            {
+              content: `At ${new Date(clock.now()).toISOString()}, the goal “检查[internal_id]文档” was retired. Reason: 已完成[internal_id]，无需继续；[internal_id]已处理。保留8和1000100。`,
+            },
+          ],
+        },
+      });
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("renders automatic dependency audit references without hiding ordinary numbers or times", async () => {
+    const clock = new ManualClock(1_000_000);
+    const harness = await createOfflineTestHarness({ clock });
+    try {
+      const dispatcher = createHarnessToolDispatcher(harness);
+      const dependency = harness.goalsRepository.add({
+        description: "Prepare 8 checks",
+        priority: 5,
+        provenance: { kind: "manual" },
+      });
+      const goal = harness.goalsRepository.add({
+        description: "Complete 8 checks at 1000100",
+        priority: 5,
+        provenance: { kind: "manual" },
+      });
+      harness.goalsRepository.block(
+        goal.id,
+        {
+          blocker: { kind: "goal", goal_id: dependency.id },
+          attempt_status: "attempted_unavailable",
+          reason: "Tried 8 times at 1000000.",
+        },
+        { kind: "manual" },
+      );
+      clock.advance(100);
+      harness.goalsRepository.retire(dependency.id, "After 8 checks at 1000100.", {
+        kind: "manual",
+      });
+      const event = harness.identityEventRepository
+        .listGoalDispositionsInRange({
+          sinceMs: clock.now(),
+          untilMs: clock.now(),
+          limit: 10,
+        })
+        .find((entry) => entry.action === "unblock");
+      expect(event?.reason).toMatch(/identity event \d+ at 1000100/);
+      const result = await dispatcher.dispatch({
+        toolName: "tool.ownRecords.list",
+        input: {
+          since: new Date(clock.now()).toISOString(),
+          until: new Date(clock.now()).toISOString(),
+          kinds: ["goal_disposition"],
+        },
+        origin: "deliberator",
+      });
+      expect(result).toMatchObject({
+        ok: true,
+        output: {
+          records: [
+            {
+              content: `At ${new Date(clock.now()).toISOString()}, the goal “${goal.description}” was unblocked. Reason: blocker goal [internal_id] is abandoned; identity event [internal_id] at 1000100; observed at 1000100`,
+            },
+            {
+              content: `At ${new Date(clock.now()).toISOString()}, the goal “${dependency.description}” was retired. Reason: After 8 checks at 1000100.`,
             },
           ],
         },
