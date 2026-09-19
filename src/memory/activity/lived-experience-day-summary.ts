@@ -175,7 +175,7 @@ function parseStringArray<T>(value: unknown, schema: z.ZodType<T>, label: string
   return result.data;
 }
 
-function mapDaySummaryRow(row: Record<string, unknown>): LivedExperienceDaySummary {
+export function mapDaySummaryRow(row: Record<string, unknown>): LivedExperienceDaySummary {
   const parsed = livedExperienceDaySummarySchema.safeParse({
     id: row.id,
     self_entity_id: row.self_entity_id,

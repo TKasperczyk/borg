@@ -762,9 +762,8 @@ export function ensureDemoSession(
     source_external_id: sourceExternalId,
     source_url: existing?.source_url ?? null,
     label: input.label ?? existing?.label ?? demoSessionLabel(input.sessionId),
-    // sessions.ensure() overwrites both audience columns unconditionally, so a caller
-    // that does not name an audience must adopt the stored one rather than re-stamp the
-    // demo default over it -- the same adoption the source/label fields above rely on.
+    // Keep the stored label when the request omits it; sessions.ensure retains an
+    // established entity binding even when the transport label resolves elsewhere.
     audience_label: input.audienceLabel ?? existing?.audience_label ?? DEMO_DEFAULT_AUDIENCE_LABEL,
     audience_entity_id: input.audienceEntityId ?? existing?.audience_entity_id ?? null,
     conversation_kind: existing?.conversation_kind ?? DEMO_CONVERSATION_KIND,
@@ -834,14 +833,15 @@ export function ensureDemoOperatorSession(borg: Borg) {
 function parseKnownEntityId(borg: Borg, value: string, label: string): EntityId {
   const entityId = parseRequest(entityParamSchema, { id: value }).id;
 
-  if (borg.entities.get(entityId) === null) {
+  const entity = borg.entities.get(entityId);
+  if (entity === null) {
     throw new HTTPException(400, { message: `${label} entity not found` });
   }
 
-  return entityId;
+  return entity.id;
 }
 
-function resolveTurnAudienceEntityId(
+export function resolveTurnAudienceEntityId(
   borg: Borg,
   input: {
     audienceLabel: string;
@@ -849,22 +849,18 @@ function resolveTurnAudienceEntityId(
     existingAudienceEntityId?: EntityId | null;
   },
 ): EntityId | null {
+  // The persisted room binding wins over transport labels and incoming handles.
+  if (input.existingAudienceEntityId != null) {
+    return borg.entities.resolveAudienceLabel(input.audienceLabel, input.existingAudienceEntityId);
+  }
   if (input.explicitAudienceEntityId !== undefined) {
-    return parseKnownEntityId(borg, input.explicitAudienceEntityId, "audience");
+    return borg.entities.resolveAudienceLabel(
+      input.audienceLabel,
+      parseKnownEntityId(borg, input.explicitAudienceEntityId, "audience"),
+    );
   }
 
-  if (input.existingAudienceEntityId !== undefined && input.existingAudienceEntityId !== null) {
-    if (borg.entities.get(input.existingAudienceEntityId) === null) {
-      throw new HTTPException(400, { message: "audience entity not found" });
-    }
-
-    return input.existingAudienceEntityId;
-  }
-
-  return borg.entities.resolve(input.audienceLabel, {
-    kind: "person",
-    provenance: "transport_audience_label",
-  });
+  return borg.entities.resolveAudienceLabel(input.audienceLabel);
 }
 
 function resolveTurnSenderEntityId(

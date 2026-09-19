@@ -5,6 +5,7 @@ import {
   type StreamEntry,
   type StreamResponseTo,
   type StreamWatermarkRepository,
+  type StreamEntryIndexRepository,
 } from "../../stream/index.js";
 import { BorgError, CognitionError } from "../../util/errors.js";
 import { type Clock, SystemClock } from "../../util/clock.js";
@@ -51,6 +52,7 @@ export type StreamIngestionCoordinatorOptions = {
     "compareCursors" | "cursorEntryIndex" | "reconcile"
   >;
   dataDir: string;
+  entryIndex?: StreamEntryIndexRepository;
   /**
    * Minimum number of new stream entries past the watermark required before
    * live extraction fires. Defaults to 2 (one user/agent pair). Below this,
@@ -742,6 +744,7 @@ export class StreamIngestionCoordinator {
     const reader = new StreamReader({
       dataDir: this.options.dataDir,
       sessionId,
+      entryIndex: this.options.entryIndex,
     });
     const entries: StreamEntry[] = [];
 
@@ -864,6 +867,7 @@ export class StreamIngestionCoordinator {
     const reader = new StreamReader({
       dataDir: this.options.dataDir,
       sessionId,
+      entryIndex: this.options.entryIndex,
     });
 
     try {

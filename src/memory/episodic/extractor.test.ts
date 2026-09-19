@@ -1946,8 +1946,51 @@ describe("episodic extractor", () => {
     );
   });
 
+  it("stamps an old transport label with the renamed person's existing ID", async () => {
+    const harness = await createRelationalExtractorHarness();
+    const audience = harness.entityRepository.resolveAudienceLabel("transport:placeholder");
+    harness.entityRepository.rename(audience, "Declared placeholder");
+    const entry = await harness.writer.append({
+      kind: "user_msg",
+      content: "A fixture message",
+      audience: "transport:placeholder",
+    });
+    const extractor = new EpisodicExtractor({
+      dataDir: harness.tempDir,
+      episodicRepository: harness.repo,
+      embeddingClient: new TitleEmbeddingClient(),
+      llmClient: new FakeLLMClient({
+        responses: [
+          createEpisodeToolResponse([
+            {
+              title: "Fixture title",
+              narrative: "Fixture narrative",
+              source_stream_ids: [entry.id],
+              participants: [],
+              tags: [],
+              confidence: 0.8,
+              significance: 0.5,
+            },
+          ]),
+        ],
+      }),
+      model: "fixture",
+      entityRepository: harness.entityRepository,
+      clock: harness.clock,
+    });
+    await extractor.extractFromStream();
+    const episodes = await harness.repo.listAll();
+    expect(episodes).toHaveLength(1);
+    expect(episodes[0]?.audience_entity_id).toBe(audience);
+    expect(harness.entityRepository.resolveAudienceLabel("transport:placeholder")).toBe(audience);
+    expect(harness.entityRepository.findAllByName("transport:placeholder")).toEqual([audience]);
+  });
+
   it("keeps current-sender relational slot subject refs on the default user for self audience", async () => {
     const harness = await createRelationalExtractorHarness();
+    // Composition seeds self before extraction; the transport label is an alias
+    // after a rename, never a rule for inferring entity kind.
+    harness.entityRepository.ensureSelf("Identity placeholder");
     const user = await harness.writer.append({
       kind: "user_msg",
       content: "My dog's name is Otto.",

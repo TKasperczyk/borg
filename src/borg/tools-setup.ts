@@ -209,11 +209,13 @@ export function buildToolDispatcher(options: BuildToolDispatcherOptions): ToolDi
             ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
           }),
         readThoughtRecord: (record) =>
-          readStreamEntryAtOffset({
-            dataDir: options.dataDir,
-            sessionId: record.session_id,
-            byteOffset: record.byte_offset,
-          }),
+          options.entryIndex.resolveEntityReferences(
+            readStreamEntryAtOffset({
+              dataDir: options.dataDir,
+              sessionId: record.session_id,
+              byteOffset: record.byte_offset,
+            }),
+          ),
         listJournalRecords: (input) => options.trainOfThoughtRepository.listForRange(input),
         listGoalDispositionRecords: (input) =>
           options.identityService.listGoalDispositionsInRange(input),
@@ -326,6 +328,7 @@ export function buildToolDispatcher(options: BuildToolDispatcherOptions): ToolDi
     .register(
       createJournalAppendTool({
         resolveSelfEntityId: () =>
+          options.entityRepository.getSelf()?.id ??
           options.entityRepository.resolve("self", {
             kind: "self",
             provenance: "assistant_seeded",

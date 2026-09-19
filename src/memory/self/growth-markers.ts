@@ -109,7 +109,7 @@ function parseEvidenceIds(value: string) {
   return result.data;
 }
 
-function mapGrowthMarkerRow(row: Record<string, unknown>): GrowthMarker {
+export function mapGrowthMarkerRow(row: Record<string, unknown>): GrowthMarker {
   const parsed = growthMarkerSchema.safeParse({
     id: row.id,
     record_version: Number(row.record_version ?? 1),

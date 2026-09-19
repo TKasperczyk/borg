@@ -172,11 +172,20 @@ export async function buildBorgRepositories(
     db: sqlite,
     clock,
   });
-  const sessionsRepository = new SessionsRepository({
+  const entityRepository = new EntityRepository({
     db: sqlite,
     clock,
   });
+  if (entityRepository.getSelf() === null) {
+    entityRepository.add({ canonicalName: "self", kind: "self", provenance: "assistant_seeded" });
+  }
+  const sessionsRepository = new SessionsRepository({
+    db: sqlite,
+    clock,
+    entityRepository,
+  });
   const episodicRepository = new EpisodicRepository({
+    entityRepository,
     table: options.episodesTable,
     db: sqlite,
     clock,
@@ -190,6 +199,7 @@ export async function buildBorgRepositories(
   const entryIndex =
     options.entryIndex ??
     new StreamEntryIndexRepository({
+      entityRepository,
       db: sqlite,
       dataDir: config.dataDir,
     });
@@ -327,11 +337,8 @@ export async function buildBorgRepositories(
     db: sqlite,
     clock,
   });
-  const entityRepository = new EntityRepository({
-    db: sqlite,
-    clock,
-  });
   const socialRepository = new SocialRepository({
+    entityRepository,
     db: sqlite,
     clock,
   });
@@ -355,6 +362,7 @@ export async function buildBorgRepositories(
     clock,
   });
   const activityRepository = new ActivityRepository({
+    entityRepository,
     db: sqlite,
     clock,
   });
@@ -588,6 +596,7 @@ export async function buildBorgRepositories(
   });
   applyCorrectionReview = (item) => correctionService.applyCorrectionReview(item);
   const workingMemoryStore = new WorkingMemoryStore({
+    entityRepository,
     dataDir: config.dataDir,
     clock,
   });

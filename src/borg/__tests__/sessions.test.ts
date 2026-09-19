@@ -54,6 +54,37 @@ describe("sessions facade", () => {
     });
   }
 
+  it("binds transport aliases once for sessions and later audience stamping", async () => {
+    const borg = await openTestBorg();
+    try {
+      const id = borg.entities.resolve("Participant placeholder", {
+        kind: "group",
+        provenance: "user_declared",
+      });
+      const session = borg.sessions.ensure({
+        session_id: DEFAULT_SESSION_ID,
+        source_type: "demo",
+        label: "Transport session",
+        audience_label: "transport:placeholder",
+        audience_entity_id: id,
+        conversation_kind: "demo",
+      });
+      expect(session.audience_entity_id).toBe(id);
+      expect(borg.entities.resolveAudienceLabel("transport:placeholder")).toBe(id);
+      expect(
+        borg.sessions.ensure({
+          session_id: DEFAULT_SESSION_ID,
+          source_type: "demo",
+          label: "Transport session",
+          audience_label: "transport:placeholder",
+          conversation_kind: "demo",
+        }).audience_entity_id,
+      ).toBe(id);
+    } finally {
+      await borg.close();
+    }
+  });
+
   it("sets participation policy and appends an audit event", async () => {
     const borg = await openTestBorg();
 

@@ -168,7 +168,7 @@ function nullableRowValue(value: unknown): unknown {
   return value === null || value === undefined ? null : value;
 }
 
-function mapObservedEventRow(row: Record<string, unknown>): ObservedEvent {
+export function mapObservedEventRow(row: Record<string, unknown>): ObservedEvent {
   const parsed = observedEventSchema.safeParse({
     id: row.id,
     occurred_at: Number(row.occurred_at),

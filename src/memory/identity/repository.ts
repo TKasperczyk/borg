@@ -38,7 +38,7 @@ function parseJsonValue(value: unknown, label: string): JsonValue | null {
   }
 }
 
-function mapRow(row: Record<string, unknown>): IdentityEvent {
+export function mapRow(row: Record<string, unknown>): IdentityEvent {
   const parsed = identityEventSchema.safeParse({
     id: Number(row.id),
     record_type: row.record_type,

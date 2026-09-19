@@ -339,7 +339,7 @@ export function buildOpenQuestionDedupeKey(input: {
   return `v2:${questionHash}|${relatedHash}`;
 }
 
-function mapOpenQuestionRow(row: Record<string, unknown>): OpenQuestion {
+export function mapOpenQuestionRow(row: Record<string, unknown>): OpenQuestion {
   const disclosureLabel =
     row.disclosure_label === null ||
     row.disclosure_label === undefined ||
@@ -426,7 +426,7 @@ function mapOpenQuestionRow(row: Record<string, unknown>): OpenQuestion {
   return parsed.data;
 }
 
-function mapOpenQuestionRuminationRow(row: Record<string, unknown>): OpenQuestionRumination {
+export function mapOpenQuestionRuminationRow(row: Record<string, unknown>): OpenQuestionRumination {
   const parsed = z
     .object({
       id: z.number().int().positive(),
@@ -1225,10 +1225,9 @@ export class OpenQuestionsRepository {
   // zero rather than as a key this query forgot; a row whose status the enum does not contain is
   // skipped, which no writer here can produce because status is schema-parsed on every write.
   countByStatus(): Record<OpenQuestionStatus, number> {
-    const counts = Object.fromEntries(OPEN_QUESTION_STATUSES.map((status) => [status, 0])) as Record<
-      OpenQuestionStatus,
-      number
-    >;
+    const counts = Object.fromEntries(
+      OPEN_QUESTION_STATUSES.map((status) => [status, 0]),
+    ) as Record<OpenQuestionStatus, number>;
     const rows = this.db
       .prepare("SELECT status AS status, count(*) AS total FROM open_questions GROUP BY status")
       .all() as { status?: unknown; total?: unknown }[];

@@ -1,4 +1,5 @@
 import type { SqliteDatabase } from "../storage/sqlite/index.js";
+import type { EntityRepository } from "../memory/commitments/repository.js";
 import { SystemClock, type Clock } from "../util/clock.js";
 import { StorageError } from "../util/errors.js";
 import type { SessionId } from "../util/ids.js";
@@ -48,6 +49,7 @@ type CountRow = {
 export type SessionsRepositoryOptions = {
   db: SqliteDatabase;
   clock?: Clock;
+  entityRepository?: Pick<EntityRepository, "resolveAudienceLabel" | "get">;
 };
 
 function mapSessionRow(row: SessionRow): SessionRecord {
@@ -113,14 +115,23 @@ export class SessionsRepository {
 
   ensure(input: SessionEnsureInput): SessionRecord {
     const parsed = sessionEnsureInputSchema.parse(input);
-    const nowMs = this.clock.now();
-    const createdAt = parsed.created_at ?? nowMs;
-    const lastActivityAt = parsed.last_activity_at ?? createdAt;
-    const audienceRoleSupplied = "audience_role" in parsed;
+    return this.db.transaction(() => {
+      const established = this.get(parsed.session_id)?.audience_entity_id;
+      if (established != null) parsed.audience_entity_id = established;
+      if (this.options.entityRepository !== undefined && parsed.audience_entity_id !== null) {
+        parsed.audience_entity_id = this.options.entityRepository.resolveAudienceLabel(
+          parsed.audience_label,
+          parsed.audience_entity_id ?? this.get(parsed.session_id)?.audience_entity_id ?? undefined,
+        );
+      }
+      const nowMs = this.clock.now();
+      const createdAt = parsed.created_at ?? nowMs;
+      const lastActivityAt = parsed.last_activity_at ?? createdAt;
+      const audienceRoleSupplied = "audience_role" in parsed;
 
-    this.db
-      .prepare(
-        `
+      this.db
+        .prepare(
+          `
           INSERT INTO sessions (
             session_id, source_type, source_external_id, source_url, label, audience_label,
             audience_entity_id, conversation_kind, created_at, last_activity_at, last_turn_id,
@@ -132,7 +143,7 @@ export class SessionsRepository {
             source_url = excluded.source_url,
             label = excluded.label,
             audience_label = excluded.audience_label,
-            audience_entity_id = excluded.audience_entity_id,
+            audience_entity_id = COALESCE(sessions.audience_entity_id, excluded.audience_entity_id),
             conversation_kind = excluded.conversation_kind,
             last_activity_at = MAX(sessions.last_activity_at, excluded.last_activity_at),
             last_turn_id = COALESCE(excluded.last_turn_id, sessions.last_turn_id),
@@ -140,33 +151,34 @@ export class SessionsRepository {
             privacy_level = excluded.privacy_level,
             audience_role = CASE WHEN ? = 1 THEN excluded.audience_role ELSE sessions.audience_role END
         `,
-      )
-      .run(
-        parsed.session_id,
-        parsed.source_type,
-        parsed.source_external_id ?? null,
-        parsed.source_url ?? null,
-        parsed.label,
-        parsed.audience_label,
-        parsed.audience_entity_id ?? null,
-        parsed.conversation_kind,
-        createdAt,
-        lastActivityAt,
-        parsed.last_turn_id ?? null,
-        parsed.status ?? "active",
-        parsed.privacy_level ?? "payload_off",
-        parsed.audience_role ?? "participant",
-        audienceRoleSupplied ? 1 : 0,
-      );
+        )
+        .run(
+          parsed.session_id,
+          parsed.source_type,
+          parsed.source_external_id ?? null,
+          parsed.source_url ?? null,
+          parsed.label,
+          parsed.audience_label,
+          parsed.audience_entity_id ?? null,
+          parsed.conversation_kind,
+          createdAt,
+          lastActivityAt,
+          parsed.last_turn_id ?? null,
+          parsed.status ?? "active",
+          parsed.privacy_level ?? "payload_off",
+          parsed.audience_role ?? "participant",
+          audienceRoleSupplied ? 1 : 0,
+        );
 
-    const record = this.get(parsed.session_id);
-    if (record === null) {
-      throw new StorageError(`Session ${parsed.session_id} was not stored`, {
-        code: "SESSION_ENSURE_FAILED",
-      });
-    }
+      const record = this.get(parsed.session_id);
+      if (record === null) {
+        throw new StorageError(`Session ${parsed.session_id} was not stored`, {
+          code: "SESSION_ENSURE_FAILED",
+        });
+      }
 
-    return record;
+      return record;
+    })();
   }
 
   touch(sessionId: SessionId, update?: SessionTouchUpdate): SessionRecord | null {
@@ -214,6 +226,15 @@ export class SessionsRepository {
     return this.get(parsedSessionId);
   }
 
+  private project(row: SessionRow): SessionRecord {
+    const record = mapSessionRow(row);
+    if (record.audience_entity_id !== null)
+      record.audience_entity_id =
+        this.options.entityRepository?.get(record.audience_entity_id)?.id ??
+        record.audience_entity_id;
+    return record;
+  }
+
   get(sessionId: SessionId): SessionRecord | null {
     const parsedSessionId = sessionIdSchema.parse(sessionId);
     const row = this.db
@@ -229,7 +250,7 @@ export class SessionsRepository {
       )
       .get(parsedSessionId) as SessionRow | undefined;
 
-    return row === undefined ? null : mapSessionRow(row);
+    return row === undefined ? null : this.project(row);
   }
 
   getMany(sessionIds: readonly SessionId[]): SessionRecord[] {
@@ -253,7 +274,7 @@ export class SessionsRepository {
         `,
       )
       .all(...uniqueSessionIds) as SessionRow[];
-    const recordsById = new Map(rows.map((row) => [row.session_id, mapSessionRow(row)]));
+    const recordsById = new Map(rows.map((row) => [row.session_id, this.project(row)]));
 
     return uniqueSessionIds.flatMap((sessionId) => {
       const record = recordsById.get(sessionId);
@@ -283,7 +304,7 @@ export class SessionsRepository {
       )
       .all(...values) as SessionRow[];
 
-    return rows.map(mapSessionRow);
+    return rows.map((row) => this.project(row));
   }
 
   count(options?: SessionQueryOptions): number {

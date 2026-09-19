@@ -1,3 +1,4 @@
+import type { EntityRepository } from "../commitments/repository.js";
 import { parseJsonArray, type JsonArrayCodecOptions } from "../../storage/codecs.js";
 import type { SqliteDatabase } from "../../storage/sqlite/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
@@ -81,6 +82,7 @@ export type ActivityGlobalDailyDensityRow = {
 };
 
 export type ActivityRepositoryOptions = {
+  entityRepository?: Pick<EntityRepository, "get" | "resolveReferences">;
   db: SqliteDatabase;
   clock?: Clock;
 };
@@ -103,7 +105,7 @@ function uniqueStreamEntryIds(values: readonly StreamEntryId[]): StreamEntryId[]
   return dedupePreservingOrder(values);
 }
 
-function mapActivityRow(row: Record<string, unknown>): ActivityEvent {
+export function mapActivityRow(row: Record<string, unknown>): ActivityEvent {
   const parsed = activityEventSchema.safeParse({
     id: row.id,
     kind: row.kind,
@@ -249,9 +251,15 @@ function mapGlobalDailyDensityRow(row: Record<string, unknown>): ActivityGlobalD
 
 export class ActivityRepository {
   private readonly clock: Clock;
+  private readonly entities: ActivityRepositoryOptions["entityRepository"];
 
   constructor(private readonly options: ActivityRepositoryOptions) {
     this.clock = options.clock ?? new SystemClock();
+    this.entities = options.entityRepository;
+  }
+
+  private project<T>(value: T): T {
+    return this.entities?.resolveReferences(value) ?? value;
   }
 
   private get db(): SqliteDatabase {
@@ -259,6 +267,7 @@ export class ActivityRepository {
   }
 
   record(input: ActivityEventRecordInput): ActivityEvent {
+    input = this.project(input);
     const sourceStreamEntryIds = uniqueStreamEntryIds(input.sourceStreamEntryIds);
 
     if (sourceStreamEntryIds.length === 0) {
@@ -339,7 +348,7 @@ export class ActivityRepository {
       )
       .get(parseActivityEventId(id)) as Record<string, unknown> | undefined;
 
-    return row === undefined ? null : mapActivityRow(row);
+    return row === undefined ? null : this.project(mapActivityRow(row));
   }
 
   getByKindAndSource(
@@ -361,7 +370,7 @@ export class ActivityRepository {
       | Record<string, unknown>
       | undefined;
 
-    return row === undefined ? null : mapActivityRow(row);
+    return row === undefined ? null : this.project(mapActivityRow(row));
   }
 
   listRecentOtherActiveSessionEvents(input: {
@@ -382,8 +391,8 @@ export class ActivityRepository {
               AS participant_label
           FROM activity_events e
           INNER JOIN sessions s ON s.session_id = e.session_id
-          LEFT JOIN entities speaker ON speaker.id = e.speaker_entity_id
-          LEFT JOIN entities audience ON audience.id = e.audience_entity_id
+          LEFT JOIN resolved_entities speaker ON speaker.lookup_id = e.speaker_entity_id
+          LEFT JOIN resolved_entities audience ON audience.lookup_id = e.audience_entity_id
           WHERE
             e.status = 'active'
             AND s.status = 'active'
@@ -415,25 +424,27 @@ export class ActivityRepository {
       )
       .all(input.currentSessionId, input.sinceMs, input.limit) as Record<string, unknown>[];
 
-    return rows.map(mapProjectionRow);
+    return rows.map((row) => this.project(mapProjectionRow(row)));
   }
 
   listObservedGroupAudienceEntityIdsForSpeaker(speakerEntityId: EntityId): EntityId[] {
     const rows = this.db
       .prepare(
         `
-          SELECT DISTINCT e.audience_entity_id
+          SELECT DISTINCT audience.id AS audience_entity_id
           FROM activity_events e
-          INNER JOIN entities audience ON audience.id = e.audience_entity_id
+          INNER JOIN resolved_entities audience ON audience.lookup_id = e.audience_entity_id
           WHERE
             e.status = 'active'
             AND e.kind = 'user_contact'
-            AND e.speaker_entity_id = ?
+            AND COALESCE((SELECT id FROM resolved_entities WHERE lookup_id = e.speaker_entity_id), e.speaker_entity_id) = ?
             AND audience.kind = 'group'
           ORDER BY e.audience_entity_id ASC
         `,
       )
-      .all(speakerEntityId) as Array<{ audience_entity_id: EntityId }>;
+      .all(this.entities?.get(speakerEntityId)?.id ?? speakerEntityId) as Array<{
+      audience_entity_id: EntityId;
+    }>;
 
     return rows.map((row) => row.audience_entity_id);
   }
@@ -445,7 +456,9 @@ export class ActivityRepository {
     limit: number;
     kinds?: readonly ActivityVisibleSessionEvent["kind"][];
   }): ActivityVisibleSessionEvent[] {
-    const audienceEntityIds = uniqueEntityIds(input.audienceEntityIds);
+    const audienceEntityIds = uniqueEntityIds(
+      input.audienceEntityIds.map((id) => this.entities?.get(id)?.id ?? id),
+    );
 
     if (audienceEntityIds.length === 0) {
       return [];
@@ -481,15 +494,15 @@ export class ActivityRepository {
             END AS participant_label
           FROM activity_events e
           INNER JOIN sessions s ON s.session_id = e.session_id
-          LEFT JOIN entities speaker ON speaker.id = e.speaker_entity_id
-          LEFT JOIN entities audience ON audience.id = e.audience_entity_id
+          LEFT JOIN resolved_entities speaker ON speaker.lookup_id = e.speaker_entity_id
+          LEFT JOIN resolved_entities audience ON audience.lookup_id = e.audience_entity_id
           WHERE
             e.status = 'active'
             AND s.status = 'active'
             AND e.session_id <> ?
             AND e.occurred_at >= ?
             AND e.kind IN (${kindPlaceholders})
-            AND e.audience_entity_id IN (${audiencePlaceholders})
+            AND COALESCE(audience.id, e.audience_entity_id) IN (${audiencePlaceholders})
           ORDER BY e.occurred_at DESC, e.id ASC
           LIMIT ?
         `,
@@ -502,7 +515,7 @@ export class ActivityRepository {
         Math.max(1, Math.floor(input.limit)),
       ) as Record<string, unknown>[];
 
-    return rows.map(mapVisibleSessionEventRow);
+    return rows.map((row) => this.project(mapVisibleSessionEventRow(row)));
   }
 
   getMostRecentOtherActiveSessionEventOccurredAt(input: {
@@ -578,7 +591,7 @@ export class ActivityRepository {
       )
       .all(...values) as Record<string, unknown>[];
 
-    return rows.map(mapDailyDensityRow);
+    return rows.map((row) => this.project(mapDailyDensityRow(row)));
   }
 
   countOtherActiveSessionConversationTurns(input: {
@@ -698,8 +711,8 @@ export class ActivityRepository {
               AS participant_label
           FROM activity_events e
           INNER JOIN sessions s ON s.session_id = e.session_id
-          LEFT JOIN entities speaker ON speaker.id = e.speaker_entity_id
-          LEFT JOIN entities audience ON audience.id = e.audience_entity_id
+          LEFT JOIN resolved_entities speaker ON speaker.lookup_id = e.speaker_entity_id
+          LEFT JOIN resolved_entities audience ON audience.lookup_id = e.audience_entity_id
           WHERE ${filters.join(" AND ")}
           ORDER BY e.occurred_at DESC, e.id ASC
           LIMIT ?
@@ -707,6 +720,6 @@ export class ActivityRepository {
       )
       .all(...values) as Record<string, unknown>[];
 
-    return rows.map(mapAutobiographicalRow);
+    return rows.map((row) => this.project(mapAutobiographicalRow(row)));
   }
 }

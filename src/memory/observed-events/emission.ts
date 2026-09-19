@@ -15,6 +15,15 @@ export type BuildObservedEventEmissionInput = {
   sourceUserEntryIds: readonly StreamEntryId[];
 };
 
+/** Stable recurrence identity; the text of the event is not part of this key. */
+export function buildObservedEventRecurrenceKey(input: {
+  sessionId: SessionId;
+  speakerEntityId: EntityId | null;
+  classificationKind: string;
+}): string {
+  return `${input.sessionId}:${input.speakerEntityId ?? OBSERVED_EVENT_UNKNOWN_SPEAKER_SENTINEL}:${input.classificationKind}`;
+}
+
 export function buildObservedEventEmission(
   input: BuildObservedEventEmissionInput,
 ): ObservedEventRecordInput | null {
@@ -27,7 +36,6 @@ export function buildObservedEventEmission(
     disposition: input.disposition,
     classificationKind: actionable.kind,
   });
-  const speakerKey = input.speakerEntityId ?? OBSERVED_EVENT_UNKNOWN_SPEAKER_SENTINEL;
   // Fire-once key anchors on the EARLIEST pending source entry (sourceUserEntryIds[0]), NOT the
   // full set. The backlog prefix is built earliest-first from the (stuck) watermark and always
   // includes that first entry; a crash-replay may EXPAND the prefix ([A] -> [A, B]) but never
@@ -46,7 +54,10 @@ export function buildObservedEventEmission(
     classificationKind: dimensions.classificationKind,
     disclosureClass: "social_observed",
     interactionText: actionable.rationale,
-    recurrenceKey: `${input.sessionId}:${speakerKey}:${actionable.kind}`,
+    recurrenceKey: buildObservedEventRecurrenceKey({
+      ...input,
+      classificationKind: actionable.kind,
+    }),
     fireDedupKey:
       anchorSourceEntryId === undefined
         ? undefined

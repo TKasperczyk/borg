@@ -1,3 +1,4 @@
+import type { EntityRepository } from "../memory/commitments/repository.js";
 import { closeSync, existsSync, fstatSync, openSync, readSync } from "node:fs";
 
 import { type Migration, type SqliteDatabase } from "../storage/sqlite/index.js";
@@ -159,10 +160,7 @@ export const streamEntryIndexMigrations: Migration[] = [
   },
 ];
 
-export type CorrectivePreferenceIngestionReceiptStatus =
-  | "processed"
-  | "retryable"
-  | "dead_letter";
+export type CorrectivePreferenceIngestionReceiptStatus = "processed" | "retryable" | "dead_letter";
 
 export type CorrectivePreferenceIngestionReceipt = {
   source_entry_id: StreamEntryId;
@@ -263,6 +261,7 @@ export type StreamEntryIndexRepositoryOptions = {
   db: SqliteDatabase;
   dataDir: string;
   logger?: LoggerLike;
+  entityRepository?: Pick<EntityRepository, "resolveReferences">;
 };
 
 export type LegacyMissingKindRowsReport = {
@@ -552,12 +551,22 @@ export class StreamEntryIndexRepository {
   private readonly db: SqliteDatabase;
   private readonly dataDir: string;
   private readonly logger: LoggerLike;
+  private readonly entityRepository?: Pick<EntityRepository, "resolveReferences">;
   private readonly poisonedSessions = new Set<SessionId>();
 
   constructor(options: StreamEntryIndexRepositoryOptions) {
+    this.entityRepository = options.entityRepository;
     this.db = options.db;
     this.dataDir = options.dataDir;
     this.logger = options.logger ?? console;
+  }
+
+  resolveEntityReferences<T>(value: T): T {
+    return this.entityRepository?.resolveReferences(value) ?? value;
+  }
+
+  private recordFromRow(row: StreamEntryIndexRow): StreamEntryIndexRecord {
+    return this.resolveEntityReferences(recordFromRow(row));
   }
 
   getCorrectivePreferenceIngestionReceipt(
@@ -884,7 +893,7 @@ export class StreamEntryIndexRepository {
       )
       .get(entryId) as StreamEntryIndexRow | undefined;
 
-    return row === undefined ? null : recordFromRow(row);
+    return row === undefined ? null : this.recordFromRow(row);
   }
 
   lookupBySourceMessageKey(key: StreamSourceMessageKey): StreamEntryIndexRecord | null {
@@ -911,7 +920,7 @@ export class StreamEntryIndexRepository {
       return null;
     }
 
-    const record = recordFromRow(row);
+    const record = this.recordFromRow(row);
 
     if (
       record.kind !== "user_msg" ||
@@ -960,7 +969,7 @@ export class StreamEntryIndexRepository {
       )
       .all(...uniqueIds) as StreamEntryIndexRow[];
 
-    return new Map(rows.map((row) => [row.entry_id, recordFromRow(row)]));
+    return new Map(rows.map((row) => [row.entry_id, this.recordFromRow(row)]));
   }
 
   lookupEntriesById(entryIds: readonly string[]): Map<string, IndexedEntryFacts> {
@@ -1020,7 +1029,7 @@ export class StreamEntryIndexRepository {
       )
       .all(...values) as StreamEntryIndexRow[];
 
-    return rows.map(recordFromRow);
+    return rows.map((row) => this.recordFromRow(row));
   }
 
   lookupSessionEntriesByKind(input: {
@@ -1042,7 +1051,7 @@ export class StreamEntryIndexRepository {
       )
       .all(input.sessionId, input.kind) as StreamEntryIndexRow[];
 
-    return rows.map(recordFromRow);
+    return rows.map((row) => this.recordFromRow(row));
   }
 
   lookupSessionStreamBacklogResponseStamps(
@@ -1071,7 +1080,7 @@ export class StreamEntryIndexRepository {
       )
       .all(input.sessionId, ...terminalKinds) as StreamEntryIndexRow[];
 
-    return rows.map(recordFromRow);
+    return rows.map((row) => this.recordFromRow(row));
   }
 
   /** Exact durable basis and counts; no payload scan, cap, or estimated census. */
@@ -1118,7 +1127,7 @@ export class StreamEntryIndexRepository {
         },
       };
     }
-    const stamp = recordFromRow(response);
+    const stamp = this.recordFromRow(response);
     if (
       stamp.response_to_source_entry_ids === null ||
       stamp.response_to_through_cursor_entry_id === null
@@ -1256,7 +1265,7 @@ export class StreamEntryIndexRepository {
               input.count,
             ) as StreamEntryIndexRow | undefined);
 
-    return row === undefined ? null : recordFromRow(row);
+    return row === undefined ? null : this.recordFromRow(row);
   }
 
   quarantinedSharedStateArtifactRefs(): ReadonlySet<StreamEntryId> {

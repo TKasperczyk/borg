@@ -335,6 +335,9 @@ export type BorgSocialFacade = {
 };
 
 export type BorgEntitiesFacade = {
+  resolveAudienceLabel: (
+    ...args: Parameters<EntityRepository["resolveAudienceLabel"]>
+  ) => ReturnType<EntityRepository["resolveAudienceLabel"]>;
   resolve: (
     ...args: Parameters<EntityRepository["resolve"]>
   ) => ReturnType<EntityRepository["resolve"]>;

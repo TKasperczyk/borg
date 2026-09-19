@@ -651,9 +651,9 @@ export class GoalsRepository {
           } else if (blocker.kind === "entity") {
             const entry = this.db
               .prepare(
-                `SELECT entry_id, timestamp FROM stream_entry_index WHERE sender_entity_id = ? AND timestamp > ? AND timestamp <= ? AND active = 1 AND receipt_pending = 0 AND kind IN ('user_msg', 'user_image_attachment', 'agent_observed') ORDER BY timestamp, byte_offset LIMIT 1`,
+                `SELECT entry_id, timestamp FROM stream_entry_index WHERE COALESCE((SELECT id FROM resolved_entities WHERE lookup_id = sender_entity_id), sender_entity_id) = COALESCE((SELECT id FROM resolved_entities WHERE lookup_id = ?), ?) AND timestamp > ? AND timestamp <= ? AND active = 1 AND receipt_pending = 0 AND kind IN ('user_msg', 'user_image_attachment', 'agent_observed') ORDER BY timestamp, byte_offset LIMIT 1`,
               )
-              .get(blocker.entity_id, block.blocked_at, nowMs) as
+              .get(blocker.entity_id, blocker.entity_id, block.blocked_at, nowMs) as
               | { entry_id: string; timestamp: number }
               | undefined;
             if (entry !== undefined) {

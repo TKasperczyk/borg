@@ -1,10 +1,13 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ABORTED_TURN_EVENT, StreamWriter } from "../stream/index.js";
+import { ABORTED_TURN_EVENT, StreamWriter, StreamEntryIndexRepository } from "../stream/index.js";
+import { createMigrations } from "../borg/storage-setup.js";
+import { openDatabase } from "../storage/sqlite/index.js";
+import { EntityRepository } from "../memory/commitments/repository.js";
 import { ManualClock } from "../util/clock.js";
 import { createSessionId } from "../util/ids.js";
 
@@ -26,6 +29,51 @@ afterEach(() => {
 });
 
 describe("RawStreamAdapter", () => {
+  it("resolves historical entity handles in recency, indexed citations and fallback scans", async () => {
+    const dataDir = tempDir();
+    const db = openDatabase(join(dataDir, "borg.db"), { migrations: createMigrations() });
+    const entities = new EntityRepository({ db });
+    const source = entities.add({ canonicalName: "Earlier identity" });
+    const target = entities.add({ canonicalName: "Surviving identity" });
+    const entryIndex = new StreamEntryIndexRepository({ db, dataDir, entityRepository: entities });
+    const writer = new StreamWriter({ dataDir, entryIndex });
+    try {
+      const entry = await writer.append({
+        kind: "user_msg",
+        content: "Historical message",
+        sender_entity_id: source.id,
+        reply_target_entity_id: source.id,
+      });
+      const bytes = readFileSync(join(dataDir, "stream", "default.jsonl"));
+      entities.merge(source.id, target.id);
+      const adapter = new RawStreamAdapter({ dataDir, entryIndex });
+      expect(adapter.recent()[0]).toMatchObject({
+        sender_entity_id: target.id,
+        reply_target_entity_id: target.id,
+      });
+      expect((await adapter.resolveSourceIds([entry.id])).get(entry.id)).toMatchObject({
+        sender_entity_id: target.id,
+      });
+      const lookup = vi.spyOn(entryIndex, "lookupMany").mockReturnValue(new Map());
+      try {
+        expect((await adapter.resolveSourceIds([entry.id])).get(entry.id)).toMatchObject({
+          sender_entity_id: target.id,
+        });
+      } finally {
+        lookup.mockRestore();
+      }
+      expect(readFileSync(join(dataDir, "stream", "default.jsonl"))).toEqual(bytes);
+      expect(
+        db
+          .prepare("SELECT sender_entity_id FROM stream_entry_index WHERE entry_id = ?")
+          .get(entry.id),
+      ).toEqual({ sender_entity_id: source.id });
+    } finally {
+      writer.close();
+      db.close();
+    }
+  });
+
   it("scopes recent entries to the requested session file", async () => {
     const dir = tempDir();
     const clock = new ManualClock();

@@ -813,6 +813,7 @@ describe("Borg", () => {
     const searchEpisodesForDisclosure = vi.fn(async () => []);
     const facades = createBorgFacades({
       actionRepository: {},
+      entityRepository: { resolveReferences: (value: unknown) => value },
       retrievalPipeline: { searchEpisodesForDisclosure },
       // The weights are deployment-tunable via config.retrieval.attentionWeights,
       // so the facade reads them from config rather than inlining literals; the
@@ -851,6 +852,7 @@ describe("Borg", () => {
     const searchEpisodesForDisclosure = vi.fn(async () => []);
     const facades = createBorgFacades({
       actionRepository: {},
+      entityRepository: { resolveReferences: (value: unknown) => value },
       retrievalPipeline: { searchEpisodesForDisclosure },
       config: {
         ...DEFAULT_CONFIG,

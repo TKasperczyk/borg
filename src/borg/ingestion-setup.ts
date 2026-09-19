@@ -117,6 +117,7 @@ export function buildStreamIngestionCoordinator(
   // watermark in place; durable per-entry receipts prevent successful entries
   // from being replayed while the poison entry approaches its retry ceiling.
   return new StreamIngestionCoordinator({
+    entryIndex: options.entryIndex,
     extractor: new EpisodicExtractor({
       dataDir: options.config.dataDir,
       episodicRepository: options.episodicRepository,
