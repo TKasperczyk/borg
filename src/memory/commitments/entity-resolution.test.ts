@@ -105,6 +105,8 @@ describe("entity identity resolution", () => {
       entities.merge(intermediate.id, survivor.id);
       expect(entities.get(sourceId)?.id).toBe(survivor.id);
       expect(entities.get(intermediate.id)?.id).toBe(survivor.id);
+      expect(entities.merge(sourceId, survivor.id).id).toBe(survivor.id);
+      expect(() => entities.merge(sourceId, intermediate.id)).toThrow("live handle");
       expect(entities.findByExternalId("fixture", "old")).toBe(survivor.id);
       expect(entities.resolveAudienceLabel("Transport placeholder", sourceId)).toBe(survivor.id);
       expect(entities.findByNames([sourceId, "Transport placeholder", "middle:alias"])).toEqual(

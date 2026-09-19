@@ -14,13 +14,12 @@ import {
   same,
   cloneDatabase,
   sqlInventory,
-  diffSql,
   applySqlChanges,
   quoteIdentifier,
   openLance,
   digest,
 } from "./repair-entity-graph-storage.js";
-import { validateSqlChanges } from "./repair-entity-graph-validation.js";
+import { validateSqlChanges, validateLanceChanges } from "./repair-entity-graph-validation.js";
 
 /** Read reversal payloads from maintenance_audit, independently of the forward journal. */
 export async function planEntityGraphReversal(
@@ -39,7 +38,23 @@ export async function planEntityGraphReversal(
       fail("Reversal requires a completed audited repair");
     if (records.some((row) => row.reverted_at !== null)) fail("Repair has already been reversed");
     const input = commit.targets.input as RepairInput;
-    const before = sqlInventory(db);
+    const protectedIndexHash = digest(
+      JSON.stringify(sqlInventory(db, ["stream_entry_index"]).get("stream_entry_index")),
+    );
+    const sqliteInventory = Object.fromEntries(
+      db
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+        )
+        .all()
+        .map(({ name }) => [
+          String(name),
+          db
+            .prepare(`PRAGMA table_info(${quoteIdentifier(String(name))})`)
+            .all()
+            .map((column) => String(column.name)),
+        ]),
+    );
     const sql: SqlChange[] = [];
     const lance: LanceChange[] = [];
     for (const record of records) {
@@ -89,61 +104,98 @@ export async function planEntityGraphReversal(
     }).immediate();
     if (db.prepare("PRAGMA foreign_key_check").all().length)
       fail("Reversal projection violates foreign keys");
+    validateLanceChanges(
+      lance,
+      new Map(
+        [...sqlInventory(db, [...new Set(lance.map((row) => row.table))])].map(([table, rows]) => [
+          table,
+          new Map(rows.map(({ row }) => [String(row.id), row])),
+        ]),
+      ),
+    );
     // The additive redirect migration remains installed. Reversal restores its
     // nullable data; removing a deployed schema migration would break current readers.
     const now = Date.now(),
       runId = createMaintenanceRunId();
     const config = loadConfig({ dataDir });
     const audit = new AuditLog({ db, clock: new ManualClock(now) });
-    const extrasBefore = sqlInventory(db);
+    const additionalSql: SqlChange[] = [];
+    const completionSql: SqlChange[] = [];
+    const recordAudit = (input: Parameters<AuditLog["record"]>[0], destination: SqlChange[]) => {
+      const record = audit.record(input);
+      destination.push({
+        table: "maintenance_audit",
+        rowid: record.id,
+        before: null,
+        after: db.prepare("SELECT * FROM maintenance_audit WHERE id = ?").get(record.id)!,
+        reason: "maintenance audit with reversal payload",
+      });
+    };
     for (const table of new Set(sql.map((change) => change.table))) {
       const changes = sql.filter((change) => change.table === table);
-      audit.record({
-        run_id: runId,
-        process: "correction",
-        action: "entity_graph_sql_rows",
-        targets: { table, rows: changes.map(({ rowid, after }) => ({ rowid, after })) },
-        reversal: {
-          table,
-          rows: changes.map(({ rowid, before: old }) => ({ rowid, before: old })),
+      recordAudit(
+        {
+          run_id: runId,
+          process: "correction",
+          action: "entity_graph_sql_rows",
+          targets: { table, rows: changes.map(({ rowid, after }) => ({ rowid, after })) },
+          reversal: {
+            table,
+            rows: changes.map(({ rowid, before: old }) => ({ rowid, before: old })),
+          },
         },
-      });
+        additionalSql,
+      );
     }
     for (const table of new Set(lance.map((change) => change.table))) {
       const changes = lance.filter((change) => change.table === table);
-      audit.record({
+      recordAudit(
+        {
+          run_id: runId,
+          process: "correction",
+          action: "entity_graph_lance_rows",
+          targets: { table, rows: changes.map(({ id, after }) => ({ id, after })) },
+          reversal: { table, rows: changes.map(({ id, before: old }) => ({ id, before: old })) },
+        },
+        additionalSql,
+      );
+    }
+    recordAudit(
+      {
         run_id: runId,
         process: "correction",
-        action: "entity_graph_lance_rows",
-        targets: { table, rows: changes.map(({ id, after }) => ({ id, after })) },
-        reversal: { table, rows: changes.map(({ id, before: old }) => ({ id, before: old })) },
-      });
-    }
-    audit.record({
-      run_id: runId,
-      process: "correction",
-      action: "entity_graph_sql_committed",
-      targets: { input: { ...input, dataDir }, reverses: originalRunId },
-      reversal: { restore_run_id: runId },
-    });
-    const additionalSql = diffSql(extrasBefore, sqlInventory(db));
-    const completionBefore = sqlInventory(db);
+        action: "entity_graph_sql_committed",
+        targets: { input: { ...input, dataDir }, reverses: originalRunId },
+        reversal: { restore_run_id: runId },
+      },
+      additionalSql,
+    );
     for (const record of records) {
+      const before = db.prepare("SELECT * FROM maintenance_audit WHERE id = ?").get(record.id)!;
       const result = db
         .prepare(
           "UPDATE maintenance_audit SET reverted_at = ?, reverted_by = ? WHERE id = ? AND reverted_at IS NULL",
         )
         .run(now, runId, record.id);
       if (result.changes !== 1) fail(`Cannot mark audit ${record.id} reversed`);
+      completionSql.push({
+        table: "maintenance_audit",
+        rowid: record.id,
+        before,
+        after: db.prepare("SELECT * FROM maintenance_audit WHERE id = ?").get(record.id)!,
+        reason: "mark original audit reversed",
+      });
     }
-    audit.record({
-      run_id: runId,
-      process: "correction",
-      action: "entity_graph_complete",
-      targets: { input: { ...input, dataDir }, reverses: originalRunId },
-      reversal: { restore_run_id: runId },
-    });
-    const completionSql = diffSql(completionBefore, sqlInventory(db));
+    recordAudit(
+      {
+        run_id: runId,
+        process: "correction",
+        action: "entity_graph_complete",
+        targets: { input: { ...input, dataDir }, reverses: originalRunId },
+        reversal: { restore_run_id: runId },
+      },
+      completionSql,
+    );
     validateSqlChanges([...additionalSql, ...completionSql]);
     return {
       input: { ...input, dataDir },
@@ -152,7 +204,7 @@ export async function planEntityGraphReversal(
       migrations: [],
       migrationSql: [],
       schemaChanges: [],
-      protectedIndexHash: digest(JSON.stringify(before.get("stream_entry_index"))),
+      protectedIndexHash,
       drainSql: [],
       sql,
       additionalSql,
@@ -169,9 +221,7 @@ export async function planEntityGraphReversal(
       goals: [],
       touchedNodes: [],
       inventory: {
-        sqlite: Object.fromEntries(
-          [...before].map(([table, rows]) => [table, rows[0] ? Object.keys(rows[0].row) : []]),
-        ),
+        sqlite: sqliteInventory,
         lance: Object.fromEntries(
           await Promise.all(
             ((await connection?.tableNames()) ?? []).map(async (name) => {

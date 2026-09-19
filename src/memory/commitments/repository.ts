@@ -728,12 +728,12 @@ export class EntityRepository {
         const target = this.get(into);
         if (source === null || target === null)
           throw new CommitmentError("Missing merge entity", { code: "ENTITY_REDIRECT_INVALID" });
+        if (target.id !== into)
+          throw new CommitmentError("Merge survivor must be a live handle", {
+            code: "ENTITY_REDIRECT_INVALID",
+          });
         if (source.id === target.id) return target;
-        if (
-          source.id !== from ||
-          target.id !== into ||
-          (source.kind === "self" && target.kind !== "self")
-        )
+        if (source.id !== from || (source.kind === "self" && target.kind !== "self"))
           throw new CommitmentError("Merge requires live handles and must retain the self entity", {
             code: "ENTITY_REDIRECT_INVALID",
           });

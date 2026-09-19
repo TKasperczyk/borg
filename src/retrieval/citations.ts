@@ -127,7 +127,7 @@ export class CitationResolver {
           continue;
         }
 
-        entries.set(entryId, entry);
+        entries.set(entryId, this.options.entryIndex.resolveEntityReferences(entry));
         pendingIds.delete(entryId);
       }
     }
@@ -263,6 +263,7 @@ export class CitationResolver {
       const reader = new StreamReader({
         dataDir: this.options.dataDir,
         sessionId,
+        entryIndex: this.options.entryIndex,
       });
 
       for await (const entry of reader.iterate()) {

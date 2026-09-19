@@ -1,8 +1,8 @@
 # Offline entity graph repair
 
-Opus 5.0: in-scope because entity duplication, divergent audience bindings, and stale stored references are structural persistence errors.
+Opus 5.0: in-scope because duplicate identities and stale stored references are structural persistence errors.
 
-Run `scripts/repair-entity-graph.ts` with all writers stopped and a verified full backup. The default is a read-only plan; `--apply` performs the repair. The script opens the existing SQLite database without migrations and inspects existing Lance tables without creating any. It never opens Borg, starts cognition, or calls an LLM. Only apply calls the configured embedding service.
+Stop every writer and retain a verified backup before applying. `scripts/repair-entity-graph.ts` defaults to a read-only plan. `--apply` persists that plan. It opens existing SQLite and Lance stores without starting Borg, cognition, or an LLM. Planning calls the configured embedding endpoint when semantic rows change, so the complete plan contains the actual replacement vectors before any store mutation.
 
 ```sh
 pnpm tsx scripts/repair-entity-graph.ts \
@@ -12,105 +12,238 @@ pnpm tsx scripts/repair-entity-graph.ts \
   --merge-node <duplicate-node-id>=<survivor-node-id>
 ```
 
-Repeat `--merge` and `--merge-node` as needed. `--rename-into` applies to the preceding entity merge, must equal that source's canonical name, and transfers its name provenance. Without it, the survivor keeps its canonical name and provenance. Old canonical names and aliases become survivor aliases. The self entity must survive. Chains, cycles, absent IDs, ambiguous primary-key collisions, and incompatible node kinds are rejected.
+Repeat the merge flags as needed. `--rename-into` applies to its preceding entity merge, must equal the source's canonical name, and transfers its name provenance. Otherwise the survivor keeps its name and provenance. Both entities' other names become aliases. The survivor must be a live handle; the self entity must survive. Entity and node identities are selected explicitly, never inferred from names, descriptions, or leaked ID aliases.
 
-Node merges require explicit operator-selected IDs. Equal names, leaked ID aliases, and similar descriptions are never treated as evidence of identity. This prevents a wrongly attached ID alias from driving a wrong-person merge. The survivor unions aliases and source episodes; duplicate nodes retain their original descriptions as archived, superseded records pointing to the survivor. Edges and belief dependencies are redirected. Colliding open edge triples union evidence with the same confidence/time policy as `mergeOpenEdgeEvidence`; redundant edge/dependency rows are removed with reversal snapshots.
+## Redirects and readers
 
-The plan prints every scanned SQL table and column, per-table update/delete counts, detailed entity/node/edge before/after rows, reconstructed goal events, file hashes and record counts, Lance counts, outbox/audit writes, and unresolved action/history reports. No real store names or IDs are compiled into the script or its tests.
+Merged entity rows remain in `entities`, with `merged_into` pointing to the survivor. The normal `entity_identity_redirects` migration (7,000,004 in the composed migration list) adds that nullable foreign key, its index, a unique live-self index, and the recursive `resolved_entities` view. The offline planner permits this reviewed additive migration only; other pending migrations require a separate review. Its exact DDL and migration row are included in the plan.
 
-## Why resolution diverged
+`EntityRepository.get` follows redirect chains and rejects cycles or dangling destinations. Name/alias searches and entity listings exclude redirected rows; raw-ID and external-ID lookups resolve the survivor. `resolveAudienceLabel` uses the same mechanism for session binding and episode stamping, across entity kinds. Explicit bindings retain their transport labels as aliases. `rename` retains the prior canonical name. Self lookup uses kind; the literal seed name is used only when creating an absent self identity.
 
-The demo's `resolveTurnAudienceEntityId` searched with `kind: "person"`, while `EpisodicExtractor.resolveStreamAudience` searched names/aliases across kinds and inferred self from a literal label. An explicit session binding also did not register its transport label as an alias. Consequently, a session could bind an existing participant while later extraction minted a room identity from the label. The journal tool separately looked up self by name, making renames unsafe. Ordinary label resolution could also promote the provenance of the canonical name just because a transport alias appeared.
+Read-time projection leaves historical files untouched:
 
-`EntityRepository.resolveAudienceLabel` now resolves existing IDs, canonical names, and aliases without a kind filter. Explicit bindings register their labels and reject conflicting bindings. Production `SessionsRepository` uses that resolver for every binding caller, including ingestion and activity projection; extraction, turn coordination, and the public facade use the same method. Existing canonical-name provenance is preserved.
+- `StreamEntryIndexRepository` resolves returned entity handles without changing its stored rows or byte offsets.
+- `StreamReader` and indexed hydration resolve structured handles through the repository/index. Composition supplies the resolver to production readers. Episodic and offline semantic extraction also supply it directly.
+- Recent raw-stream recall, indexed and fallback citation lookup, live ingestion scans, and thought-record tools use the same projection.
+- `WorkingMemoryStore.load` projects persisted handles in memory. Production composition injects the entity repository.
+- `SocialRepository` canonicalizes incoming entity handles for profile/event reads and attribution writes. Activity display joins use `resolved_entities`.
+- Existing facade, participant, speaker, and disclosure-label consumers already call `get`, `findByNames`, or external/name resolution; these now follow redirects.
 
-Composition seeds self only when no self-kind row exists. Self resolution uses kind, rejects multiple self rows, and preserves the ID across renames. `ensureSelf` preserves previous canonical names as aliases instead of continually injecting a literal name.
+The original divergence was between the demo's person-only audience lookup and extraction's across-kind lookup. An explicit session binding did not register its transport alias. The shared resolver closes both paths. Looking up self by a literal name was a separate source of rename instability.
 
-## Coverage and recovery
+## Store repair and validation
 
-The planner discovers all SQLite tables/columns and all Lance tables, then follows exact IDs, participant terms, JSON values, JSON map keys, and nested serialized JSON. This covers sessions; episode audience/origin/participant indexes and mirrors; all four commitment entity fields; goal ownership/audience/counterparty/block history; identity-event snapshots; actions; open questions; disclosure labels; social state; external mappings; shared state; train-of-thought and lived-experience records; semantic graph references; review and existing maintenance records; attachment/perception metadata; and extension tables. Traits/values currently have episode evidence rather than direct entity columns, but are included in the scan.
+The planner discovers all SQLite tables/columns and Lance schemas. It moves exact machine handles, participant terms, JSON values, JSON keys, and nested serialized JSON. It never substitutes inside prose. Changed records pass the repositories' existing decoders/Zod schemas; an unknown changed table fails closed until its adapter is supplied. A private SQLite projection runs actual constraints, triggers, and foreign-key checks before target writes.
 
-Structured stream metadata and working-memory files are included. Stream text and prose retain their historical wording. Modified stream files get matching byte offsets in `stream_entry_index`. Trace logs, binary attachment blobs, configuration backups, and this repair's reversal records remain historical artifacts. Raw entity-ID tokens in semantic labels resolve through entity records; ID-bearing aliases are discarded, including incorrect bindings. Descriptions are retained.
+Encoded-key searches covered the repositories, retrieval, cognition, autonomy, and offline processes:
 
-There is no atomic transaction spanning SQLite, Lance, and JSONL files. Before modifying the store, apply generates embeddings and fsyncs a journal at `entity-graph-repair/pending.json`. SQLite changes, outbox entries, and maintenance audits commit together. External writes check before/after snapshots and can resume idempotently. Completion archives the journal under its run ID.
+| Key family | Treatment |
+| --- | --- |
+| Observed-event recurrence | Rebuilt with `buildObservedEventRecurrenceKey` from session, speaker and classification fields; collisions rejected. |
+| Recall suppression `semantic_node:` / `semantic_edge:` | Handle keys are redirected; colliding expiry turns retain the later value. Scope key and serialized state must agree. |
+| Episode participant `entity_id:` | Rebuilt with the existing participant-term codec. |
+| Open-question dedupe | Rebuilt with `buildOpenQuestionDedupeKey` when audience or related nodes change; conflicting rows rejected. |
+| Commitment reconciliation scope/detection keys | Stored JSON objects or serialized JSON; the structural walker handles these. |
+| Procedural context keys | Derived from problem kind, domain tags and audience category, with no entity/node/edge ID input. Unchanged. |
+| Observed-event fire keys, action/goal wake keys, lived-experience bucket keys | Stream, goal/step, day and session handles are unchanged by this repair. |
+| Semantic revision verdict cache and retrieval evidence keys | Process-local caches/derived render objects, rebuilt after the stopped service restarts. No persisted cache to rewrite. |
+| Open-question merge/suppression keys | Open-question IDs are not merged. |
 
-After an interruption, keep every writer stopped and run:
+Source streams, working files, and `stream_entry_index` are protected, with zero planned writes. Every file under `stream/` and `working/` has a SHA-256 in the plan. Their bytes and the entire stream index are checked before and after persistence. Trace logs, configuration, and binary attachments remain unchanged.
+
+Semantic node merges union aliases/source episodes and archive duplicates as superseded, preserving their descriptions. Raw entity IDs are removed from every alias; ID-bearing labels use the referenced entity's canonical name. A wrong ID alias is discarded without treating it as identity evidence.
+
+Open-edge collisions transfer evidence through `SemanticEdgeRepository.mergeOpenEdgeEvidence` and retain the redundant edge as closed. Edges whose endpoints coalesce are closed while retaining their historical endpoints, preventing self-edges. Pair-review arrays retain their two-element shape; obsolete pairs are explicitly dismissed. Arrays are not generically deduplicated.
+
+Parent collisions are rejected before any deletion, even if deleting the parent would satisfy a later foreign-key check through cascades. Only identical leaf references may coalesce. Every deletion, trigger insertion, changed field, and affected row count is checked and represented in the plan and reversal payloads.
+
+## Plan, persistence and recovery
+
+The JSONL plan contains every table's scanned columns and counts, every changed SQLite row/key/value, every changed Lance row/value, replacement and prior vectors, exact schema changes, identity-event inserts, outbox enqueues/drains and mirror upserts, audit rows, protected file hashes, journal paths, and embedding model/dimensions/endpoint. CLI apply waits until the whole plan has been emitted before mutation. Plans can be large because audit payloads contain complete reversal snapshots.
+
+Persistence boundaries are:
+
+1. Fsync the complete version-2 journal at `entity-graph-repair/pending.json`.
+2. Commit the reviewed migration, SQLite changes, goal events, outbox enqueues and audit records in one transaction. Assert before/after rows and affected counts.
+3. Commit each changed Lance table, preserving all untouched vectors. Before/after comparisons make completed commits idempotent on resume.
+4. Drain the touched semantic nodes with the repository's generation-guarded outbox path. The service drains this outbox from belief revision, not boot, so the offline repair completes it itself.
+5. Commit the completion marker; atomically archive and fsync the journal as `<run-id>.json`.
 
 ```sh
 pnpm tsx scripts/repair-entity-graph.ts --data-dir /path/to/stopped-bank --apply --resume
 ```
 
-Do not restart until completion. If the SQLite phase rejected a stale plan, no store changes from that run committed: preserve the pending journal elsewhere and create a fresh plan. If it committed, use resume or restore the verified full backup. Audit reversal payloads and the completed journal contain SQL row snapshots, external row metadata, replaced embeddings, and file-line originals; these offline operations are not registered with the running service's `audit.revert` API.
+Keep writers stopped until resume completes. An interruption after journal archival is recognized from the durable completion marker. Outbox errors retain the pending operation for retry. A zero-change rerun creates no journal, audit, migration, embedding request, SQLite write, or Lance commit.
 
-`syncPendingVectorUpdates` is called from belief revision, not boot, and retains existing embeddings. Consequently the script cannot merely enqueue work. It generates new vectors using the configured client and the extractor's embedding-text builder, writes touched semantic mirrors (including archived duplicates), then drains those node IDs with the repository. A failed drain leaves the repair pending.
+Reversal is an offline operation built from `maintenance_audit` rows, independently of the forward journal:
 
-Missing goal audit versions are reconstructed only when adjacent stored snapshots exist. `IdentityEventRepository.record` writes manual `repair_missing_update` events without changing goal contents or versions. Their reasons record the actual repair time and identify the historical ordering timestamp as a placeholder; neither the original author nor exact write time is invented. Gaps without adequate snapshots are reported.
+```sh
+pnpm tsx scripts/repair-entity-graph.ts --data-dir /path/to/stopped-bank --reverse <run-id>
+pnpm tsx scripts/repair-entity-graph.ts --data-dir /path/to/stopped-bank --reverse <run-id> --apply
+```
 
-Scheduled actions are reported with their complete stored rows. `classifyActionArchiveCandidate` explicitly excludes scheduled actions; their schedule stamps are state-entry timestamps, not due dates. That explains accumulation but cannot establish completion, cancellation, or continued validity of an individual action. This repair does not infer lifecycle outcomes from descriptions or deployed commit names.
+Reversal refuses intervening modifications to affected rows. It restores prior SQLite data, deleted leaf rows, original Lance metadata/vectors and prior outbox state, then marks the original audit records reversed. It retains the additive schema migration, monotonic SQLite sequence counters, and repair/reversal audit history. The generic online `audit.revert` dispatcher does not implement this cross-store operation.
 
-## Existing utilities and new code
+Missing goal events are reconstructed only from adjacent stored snapshots. `IdentityEventRepository.record` writes manual `repair_missing_update` events without changing goal content or versions. Reasons identify the repair time and historical ordering timestamp as a placeholder, since the original author and exact write time are unknown. Unreconstructable gaps are reported.
 
-Searches covered the entity and semantic repositories, consolidator/review resolver, identity repositories, offline audit log, embedding setup, and existing `scripts/repair-*` utilities. Reused:
+Scheduled actions are reported unchanged except for structural references. The existing archive policy excludes scheduled actions; their stamps record state entry, not a deadline. Neither a stale deployment claim nor an old stamp proves completion or cancellation. Lifecycle changes require outcome evidence or an explicit policy decision.
 
-- `getSelf`, name/alias lookup, and existing entity persistence conventions.
-- `SqliteDatabase`/`SqliteRawDatabase`; the existing repair scripts' read-only, no-migration open pattern.
-- `GoalsRepository.get`, `IdentityEventRepository.record`, and `AuditLog.record`.
-- Semantic lifecycle fields and open-edge evidence-union SQL conventions. The consolidator merges episodes, not entity graphs.
-- `SemanticNodeRepository.syncPendingVectorUpdates` and its outbox generation UPSERT.
-- `buildNodeEmbeddingText` (now exported), `createEmbeddingClient`, and `LanceDbTable` materialization/upserts.
-- Branded-ID validators, participant-term codecs, and fsync/rename atomic-file helpers.
+## Reused utilities and additions
 
-No existing utility merges entity references across SQL, Lance, and files. The new planner, structural ID walker, collision checks, and resumable journal are script-local to support that operation. Existing goal repair scripts handle different defects and do not reconstruct missing versions. No dependencies were added.
+Searches covered entity/semantic repositories, consolidator and review handlers, existing `scripts/repair-*` code, identity/audit repositories, key builders, embedding setup, and atomic-file helpers.
 
-## Backup validation (2026-09-17)
+Reused directly: `EntityRepository` name/alias/self resolution; `runMigrations`; `SqliteDatabase`/`SqliteRawDatabase`; repository row decoders and schemas; `buildObservedEventRecurrenceKey`; `buildOpenQuestionDedupeKey`; participant-term codecs; `GoalsRepository.get`; `IdentityEventRepository.record`; `AuditLog.record`; `SemanticEdgeRepository.mergeOpenEdgeEvidence`; `SemanticNodeRepository.enqueueVectorSyncRow` and `syncPendingVectorUpdates`; `buildNodeEmbeddingText`; configured embedding client; `LanceDbTable`; branded IDs; and atomic fsync/rename helpers.
 
-The required backup `demo-20260916-074852` was copied to `/tmp/repair-dryrun-data`. The real dry run inspected 67 SQLite tables and seven Lance tables. Full output is at `/tmp/repair-entity-graph-dryrun.jsonl`. The database, WAL, and three affected JSON/JSONL files were byte-identical to the backup afterward; SQLite `quick_check` returned `ok`. No live-store writes were made.
+No existing utility performed an entity merge through redirects or coordinated a reversible SQLite/Lance repair. The added repository redirect mechanism serves ordinary readers. Script-local inventory/projection, validation adapters, complete-plan formatting, resume journal and audit-based reversal coordinate the offline operation. No dependency was added. The consolidator's episode merge is not an entity-graph merge; its archive/supersession conventions are retained here.
 
-| SQLite table | Updates | Deletes |
-| --- | ---: | ---: |
-| action_records | 1,935 | 0 |
-| activity_events | 959 | 0 |
-| commitments | 6 | 0 |
-| entities | 2 | 2 |
-| episode_index | 793 | 0 |
-| episode_participants | 1 | 1 |
-| goals | 6 | 0 |
-| growth_markers | 29 | 0 |
-| identity_events | 319 | 0 |
-| lived_experience_day_summaries | 37 | 0 |
-| maintenance_audit | 139 | 0 |
-| observed_events | 4 | 0 |
-| open_questions | 104 | 0 |
-| procedural_evidence | 2 | 0 |
-| review_queue | 207 | 0 |
-| semantic_belief_dependencies | 0 | 16 |
-| semantic_edges | 80 | 17 |
-| semantic_nodes | 16 | 0 |
-| shared_state_artifacts | 1 | 0 |
-| shared_state_entries | 45 | 0 |
-| social_events | 405 | 0 |
-| social_profiles | 1 | 0 |
-| stream_entry_index | 6,674 | 0 |
+## Fresh backup rehearsal
 
-Other scanned tables have zero changes, including sessions: the supplied session already points at the selected survivor. Of the 793 affected episode rows, 785 change the primary audience and 793 change origin audiences. The totals are 11,801 existing SQLite row changes, plus five identity-event inserts, 16 outbox enqueues/drains, and 53 new maintenance-audit rows.
+The operator prepared `/home/luth/tmp/repair-dryrun-data` from `demo-20260917-224047`. It was neither recopied nor deleted. A separate interruption copy was created with the requested `cp -r` command at `/home/luth/tmp/repair-resume-d2aaf222`.
 
-Lance changes: 1,935 action records, 793 episodes, four observed events, and 16 semantic nodes (2,748 total). Five semantic duplicates are archived; 17 colliding edges and 16 duplicate belief dependencies are removed. The semantic cleanup changes five ID-bearing labels and removes IDs from nine stored alias lists; merging contributes the remaining alias change.
+The fresh dry run scanned 67 SQLite tables and seven Lance tables; all 7,290 target files retained their hashes. Machine-readable plans, per-row checksum manifests, verification results and logs are under `/home/luth/tmp/entity-graph-rehearsal-d2aaf222/`.
 
-Files: 755 structured records in `stream/default.jsonl`, 163 in the supplied counterpart session stream, and one working-memory file. Their changed byte lengths account for the 6,674 stream index offset updates.
+| SQLite table | Updates | Inserts | Deletes |
+| --- | ---: | ---: | ---: |
+| action_records | 2,034 | 0 | 0 |
+| activity_events | 993 | 0 | 0 |
+| commitments | 6 | 0 | 0 |
+| entities | 4 | 0 | 0 |
+| episode_index | 830 | 0 | 0 |
+| episode_participants | 1 | 0 | 1 |
+| goals | 6 | 0 | 0 |
+| growth_markers | 29 | 0 | 0 |
+| identity_events | 325 | 0 | 0 |
+| lived_experience_day_summaries | 38 | 0 | 0 |
+| maintenance_audit | 141 | 0 | 0 |
+| observed_events | 4 | 0 | 0 |
+| open_questions | 106 | 0 | 0 |
+| procedural_evidence | 2 | 0 | 0 |
+| review_queue | 210 | 0 | 0 |
+| semantic_belief_dependencies | 0 | 0 | 16 |
+| semantic_edge_invalidation_events | 0 | 17 | 0 |
+| semantic_edges | 97 | 0 | 0 |
+| semantic_nodes | 16 | 0 | 0 |
+| shared_state_artifacts | 1 | 0 | 0 |
+| shared_state_entries | 44 | 0 | 0 |
+| social_events | 418 | 0 | 0 |
+| social_profiles | 1 | 0 | 0 |
+| stream_entry_index | 0 | 0 | 0 |
 
-All five reported goal gaps are reconstructable: `goal_rgj15to5kj4b2zge` version 2, `goal_2cg2qiub7x8yz2tx` version 2, `goal_2g6jc2cjri8745mc` version 19, `goal_om4jgqz4rafgj2pr` version 8, and `goal_805c16bdu93n8fy6` version 7. No unreconstructable gap was found.
+All other scanned tables, including sessions, have zero base changes. Total: 5,340 base SQLite changes. Additional writes: five identity events, 16 outbox enqueues followed by 16 drains, 31 maintenance-audit rows, and one migration row. Lance: 2,034 actions, 830 episodes, four observed events, 16 semantic nodes; 2,884 rows total. Both entity sources remain as redirects. Five node duplicates are archived, 17 redundant open edges are closed, and 17 duplicate leaf references are deleted with reversal snapshots.
 
-The backup contains 245 scheduled actions, predating the later 247-row census. `act_n3drktjsrrip1c49` remains scheduled and retains its historical deployment claim. Correcting that claim or retiring those actions requires outcome evidence or an explicit lifecycle-policy decision; their audience references are still repaired.
+The embedding configuration is `text-embedding-qwen3-8b-text-embedding`, 4,096 dimensions, `http://localhost:1234/v1`. There are five reconstructable goal gaps and zero unsupported gaps. The fresh backup has 256 scheduled actions whose outcomes remain unresolved.
 
-Focused validation: nine test files, 222 passing tests. Tests use temporary stores constructed through repositories and fake embeddings, covering cross-kind resolution, renamed self, session aliases, external IDs, commitment fields, nested/extension JSON, stream offsets, duplicate graph dependencies, existing outbox work, goal backfills, idempotence, stale-plan rejection, and interrupted-apply recovery.
+The preserved outbox-failure test was already present and passed. This continuation finished missing reader wiring, remaining built-in reference validation, bounded-memory reversal planning, stdout completion before writes, migration/sequence tests, documentation, and the full backup rehearsal.
 
-The single required `pnpm typecheck` run passed. A separate strict TypeScript check of the repair scripts and tests passed, as did `pnpm heuristics:guard` and `git diff --check`. The full test suite was not run.
+Both copies verified 5,392 planned SQL row operations and 2,884 Lance changes. Independent scans of 218,103 post-apply SQLite rows and all 12,932 Lance rows found zero unexpected source handles. Two entity definitions remain as redirects and five node definitions remain archived. All 12,916 untouched vectors matched their baseline hashes; 16 semantic vectors matched the replacement vectors in the plan. All 18 protected files and all 44,034 index rows remained unchanged. `quick_check` returned `ok`; `foreign_key_check` returned zero violations.
 
-## File inventory
+The normal no-op checked all 7,370 files; the interrupted copy's no-op checked all 7,373 files. Both formatted plans had a null run/journal and zero changes, and applying them wrote nothing. The extra three files are Lance history from replaying the interrupted outbox mirror commit.
 
-- Resolution and binding: `src/memory/commitments/repository.ts`, `src/sessions/repository.ts`, `src/memory/episodic/extractor.ts`, `src/cognition/lifecycle/turn-phase-coordinator.ts`, `demo/server/src/app.ts`.
-- Composition and public API: `src/borg/repositories.ts`, `src/borg/tools-setup.ts`, `src/borg/facade.ts`, `src/borg/facade-types.ts`, `src/borg/public-facade.ts`.
-- Existing embedding-text builder export: `src/memory/semantic/extractor.ts`.
-- Offline repair: `scripts/repair-entity-graph.ts`, `scripts/repair-entity-graph-plan.ts`, `scripts/repair-entity-graph-storage.ts`.
-- Tests: `scripts/repair-entity-graph.test.ts`, `src/memory/commitments/entity-resolution.test.ts`, `src/memory/episodic/extractor.test.ts`, `src/borg/__tests__/sessions.test.ts`.
-- Operator report and instructions: `docs/repair-entity-graph.md`.
+The interruption copy deliberately exited with code 86 at 12 boundaries: after journaling; after SQLite; after each of four Lance commits; inside the first outbox item after its Lance commit but before SQLite acknowledgement; after its acknowledgement; before and after completion; before and after journal archival. Every resume succeeded. Pending outbox counts progressed 16 → 15 → 0; the audit count progressed 30 → 31 with exactly one completion marker. The final resume exited 0 and left no pending journal.
+
+Audit-based reversal restored all 218,066 original SQLite rows and all 12,932 Lance rows, including original vectors, metadata, deleted leaf references and affected historical audit payloads. Reversal performs 5,345 base SQL row operations and 2,884 Lance restorations. The final store has 218,127 rows: the original population plus one migration row and 60 repair/reversal audit rows (31 forward, 29 reverse). `maintenance_audit` therefore has 18,244 rows, including all 18,184 original rows unchanged. No entity redirect remains after reversal. The additive schema and sequence high-water marks intentionally remain.
+
+## Review finding closeout
+
+| Finding | Result and verification |
+| --- | --- |
+| 1. Immutable provenance / redirects | Normal migration; redirect chains, live-only name lookup and reader projection. All source hashes and 44,034 index rows unchanged through apply, 12 interruptions and reversal. |
+| 2. Encoded keys | Four real recurrence keys rebuilt. Suppression handles and open-question keys tested with collisions; key-builder inventory above. |
+| 3. Cascades and row counts | Parent collisions reject before mutation. Leaf deletions, trigger inserts and every update have exact plans/reversal data and affected-row assertions. Shared-state child-loss regression passes. |
+| 4. Tuple/self-edge validation | Arrays preserve shape; obsolete pairs dismissed; collapsing edges retained closed with historical endpoints. Existing repository schemas and SQLite constraints validate projected records. |
+| 5. Rename aliases | Old label retained and tested through shared audience resolution and episode extraction. Redirected handles also rename the survivor. |
+| 6. Complete machine plan | Every affected row/value and extra write included, with vectors/configuration. CLI waits for stdout before applying. |
+| 7. Failure/reversal coverage | Outbox write-before-ack failure test, all persistence boundaries, whole-copy checks and audit-based reversal all pass. |
+| 8. Zero-write reruns / reuse | Both physical file manifests unchanged on rerun; no journal/audits. Existing outbox enqueue and open-edge evidence merge methods reused directly. |
+
+## Checksums and restored counts
+
+Checksums below are SHA-256 over deterministic JSON row-hash manifests; entity rows normalize the newly added nullable `merged_into` field, and the additive migration/new audit rows are excluded from the original-row comparison. Each individual protected file uses SHA-256 of its raw bytes. Complete per-row baselines and after-state manifests are retained with the rehearsal artifacts.
+
+
+| Manifest | Before and after SHA-256 |
+| --- | --- |
+| All original SQLite rows | `19fd4b1ac5048d5455f294f868c227aaea49344768b6949d92f6a441e511c796` |
+| Affected SQLite tables | `b3ffbf19fe4f23143c51e329fdea732b6aa78ea0e500d3155e2e776bdd4ad8fb` |
+| All Lance rows and vectors | `42b57fe461434d74590b05900eb33ed1a85055faebf2fec0b180cf30f606e7c7` |
+| Protected file manifest | `c74f9cbb96a2ceebcd6f6df14d70aa470da44b8b6b0775e5e4ebe0d0a7222b98` |
+| Stream entry index | `6313bd6a38ef9e70c59b11b77edfe3629011154d30077877789c8b8d47482434` |
+
+| Affected table | Original / restored rows | Original / restored checksum |
+| --- | ---: | --- |
+| action_records | 4,448 / 4,448 | `62ebaa2f23d9eefc02ab13fa0d15303d664bc702d1b3ddfdbf88aba536e166af` |
+| activity_events | 8,853 / 8,853 | `b73063c85063fef234d808acf350b8ab3c1f1d96056bfdaf25765b7f6ea4c2c1` |
+| commitments | 251 / 251 | `6f76a6584f162e1a427406bed089f9920c461ffade796cbb32221fd658712e25` |
+| entities | 37 / 37 | `a574041ec3343c7818cf580f1ce244f0a3e93bc8444e17cdf93c1d5d54c65e22` |
+| episode_index | 2,310 / 2,310 | `bf04402e8ba40a0a0c8c36ee4946fbebfd8fe1bae5c44e624b63284ff3ee44c4` |
+| episode_participants | 6,640 / 6,640 | `31d464f54904749ba4f773f0d612c21416d69590900354d772859cf4f7532a91` |
+| goals | 238 / 238 | `5367499eb701b79a4c7d616c028093a144a9fbb3b6c0960b4bf8e47c213660ce` |
+| growth_markers | 104 / 104 | `6a506be9e1faa41284489079fa186dd89a2b0e066f857a71a33e06f56b386108` |
+| identity_events | 19,188 / 19,188 | `f0946f40ce96f0cee9b3668549abaa5db220256e174be914941fd888c8c6018d` |
+| lived_experience_day_summaries | 92 / 92 | `e866524f16fbc1b4c2731c911ce64aa721e697949fbccababf7bcaaf00e623f5` |
+| maintenance_audit | 18,184 / 18,184 | `45eb7eb98b41f69273d65d4d8d0d29aaf1d49db506978370ae0faee806eb5ca6` |
+| observed_events | 22 / 22 | `5c3552631e1972ac71ef971d0b080dbd08cf983b8ae4da1ecfe11cbbcb72a006` |
+| open_questions | 417 / 417 | `ad0a7c2c3ec9ee473ff76dbc4df0624ccff2cb28ca88a38a2bee457e3c2ecab4` |
+| procedural_evidence | 49 / 49 | `ec2e0d01bfa973b86fb1d3fe96ba433acbfe2c61b54029211fc62b89531a35d4` |
+| review_queue | 631 / 631 | `c08076da92db5b793655297167103961aea3981e40f1cdc4769a5c11a608ae45` |
+| semantic_belief_dependencies | 9,401 / 9,401 | `5be14d7e498c9d96e8fbd67aa1ab693443a2c43b6d9bff9acecd156023e8a0c6` |
+| semantic_edge_invalidation_events | 0 / 0 | `44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a` |
+| semantic_edges | 12,225 / 12,225 | `779477d0bfdc00e92e1cf25c7a609ee8b0097ca83bce26e10fb21cf6fc8e180b` |
+| semantic_nodes | 5,733 / 5,733 | `3a22af7319d93863fd6fb45caa38721fa2f5f63e10759353fdde3d5ccefab95e` |
+| shared_state_artifacts | 10 / 10 | `d5aac7df7240b5330163ba822c2384c0a18357e9f2a783fab609270b6f74c4d1` |
+| shared_state_entries | 324 / 324 | `1f389d88bf9d4bfbd6ab6856016350ec07dc2baa4f6bd20930f1e27160acfdee` |
+| social_events | 1,642 / 1,642 | `15ebed15d863f02b599f3dc7ac698861ead1f9e31b025e05170ef0736d32b3e7` |
+| social_profiles | 16 / 16 | `513acbbc20ba9f1c92ff556ad366620883b0d93df7cc253ced3d33bd7f4092d4` |
+
+| Protected file | Unchanged SHA-256 |
+| --- | --- |
+| `stream/default.jsonl` | `b92de3a409566ed36f6e36f1641ec1ab93973a3bee8db1af90941fd1c49ccf0d` |
+| `stream/sess_1i51d9mjoclmehci.jsonl` | `14fe3beed4632ab9e8300cd7a7614ee00e5ee2a4efc638b8d4e96d15c12f4a8f` |
+| `stream/sess_41uuw7ztyzh00kjc.jsonl` | `8244531eef8993b98d567ae2c48b073c72fe40bb0b3036890a3354c19088ce89` |
+| `stream/sess_82frs56mddjq0nid.jsonl` | `51945ee426ba00ea67c7f6a159c869f0189bd15a382df5cccc02a0fa0ac9bfee` |
+| `stream/sess_8kaz38dcaprbvr94.jsonl` | `2464dc6e2a827afa4045fd40d93bbd03482eda5e1f29d0403fbe862e076b8345` |
+| `stream/sess_fxpnxgatoohv3zr5.jsonl` | `e77a340e59715faf1ee3c5c422cd7cdb58846518611ee29a4111d89031b1236c` |
+| `stream/sess_o389mso29rjpd7dq.jsonl` | `c6eb08c57b76e7176a34912ea98fc66504a66f9b1ea501072cf9cc1511af8f78` |
+| `stream/sess_pszptntooo5ak910.jsonl` | `2ebd4ca6f3f56ad61ec3f1121b3d178dc2de6a7a07926de45cd2c96111b2f604` |
+| `stream/sess_xi61nkgcuaakdnqc.jsonl` | `c979c76463a0deb1978958246bf8109a1b703693660ca37cb9ed7e7b47074905` |
+| `working/default.json` | `dc196bb3c91a4ecac961a5a4eb450b1f0dc4cdbde7d85e89b08716d0cbdcd4d6` |
+| `working/sess_1i51d9mjoclmehci.json` | `fe599d63348ae400131bc22b1e53af49ccd16c59895ca730c24283a158bc0460` |
+| `working/sess_41uuw7ztyzh00kjc.json` | `d471cb5bab6e6320f57af7485ad371db9d143aab78c20358acdc17a0dd858e9e` |
+| `working/sess_82frs56mddjq0nid.json` | `6501c4878279ed437f8d8aea9f7465085e2d82e72037630a6947265c54ec92bd` |
+| `working/sess_8kaz38dcaprbvr94.json` | `b41efe9b552274b9a43a193e2b9387ec9e71bb21560041ed6797d5e52c980f92` |
+| `working/sess_fxpnxgatoohv3zr5.json` | `356bd5b4fa16482aace05b507e0dd4e9cefbcc9a1a9871e2046f2dacbbe3c311` |
+| `working/sess_o389mso29rjpd7dq.json` | `3ed0f672f795f18fd95dacdb0cc023c767269464e730594d449e73d90e235c6b` |
+| `working/sess_pszptntooo5ak910.json` | `5546092d012c264184bd96ac17bb876152a8a582864d365ac2eae83fa1feffb7` |
+| `working/sess_xi61nkgcuaakdnqc.json` | `eeb9b5a7f31ae36f04f4e44e798e19223c6ebf6e3372a7ebc1d347e5b7959d35` |
+
+## Validation and artifact paths
+
+The final focused run passed 259 tests in 16 files. The subsequent repair-file run passed all 21 tests, including the additional attachment/perception/operator-attention case (260 distinct tests overall). Tests build temporary stores through repositories and use fake embeddings. The real rehearsal uses the configured local embedding endpoint. The single final `pnpm typecheck` passed. A separate strict TypeScript check of scripts/tests passed after fixing two fixture literal types; those files are excluded by the package typecheck. `pnpm heuristics:guard` and `git diff --check` passed. The full test suite was not run.
+
+Created top-level paths under `/home/luth/tmp`:
+
+- `/home/luth/tmp/entity-graph-rehearsal-d2aaf222/`: helper, complete plans, baseline/after-state row hashes, summaries, logs, checksum manifests, and `test-tmp/` for test fixtures and tsx cache. `normal/` and `interrupted/` hold the two runs. Tests remove their own temporary fixtures.
+- `/home/luth/tmp/repair-resume-d2aaf222/`: the one additional backup copy, retained after reversal.
+
+The operator-provided `/home/luth/tmp/repair-dryrun-data/` was used in place and retained after reversal. Its new journal/Lance-history files are listed separately in `created-paths.txt` alongside a recursive inventory of the created paths. No files were written under `/tmp`, no disposable copy was deleted, and the live data directory was never opened.
+
+Open operational question: the 256 scheduled actions, including the reported stale action, need outcome evidence or an explicit lifecycle decision. The repair preserves their state/stamps and reports their complete rows. No unresolved structural repair finding remains in the rehearsed backup.
+
+## Changed files in this continuation
+
+- `docs/repair-entity-graph.md`
+- `scripts/repair-entity-graph-plan.ts`
+- `scripts/repair-entity-graph-reversal.ts`
+- `scripts/repair-entity-graph-validation.ts`
+- `scripts/repair-entity-graph.test.ts`
+- `scripts/repair-entity-graph.ts`
+- `src/borg/ingestion-setup.ts`
+- `src/borg/tools-setup.ts`
+- `src/cognition/ingestion/coordinator.ts`
+- `src/memory/commitments/entity-resolution.test.ts`
+- `src/memory/commitments/repository.ts`
+- `src/retrieval/citations.ts`
+- `src/retrieval/raw-stream-adapter.test.ts`
+- `src/retrieval/raw-stream-adapter.ts`
+
+The preserved redirect migration, core readers, repair planner/storage and repository decoder exports remain in `b86869c4`. The complete review-to-final file inventory is in `review-changed-files.txt` under the artifact directory.

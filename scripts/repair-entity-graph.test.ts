@@ -30,6 +30,14 @@ import { TraitsRepository } from "../src/memory/self/traits-repository.js";
 import { ValuesRepository } from "../src/memory/self/values-repository.js";
 import { relationshipPrivateMemoryDisclosureLabel } from "../src/memory/common/disclosure-label.js";
 import { createActionId } from "../src/util/ids.js";
+import { createAttachmentId, createImagePerceptionId } from "../src/util/ids.js";
+import { AttachmentRepository } from "../src/attachments/repository.js";
+import {
+  ImagePerceptionRepository,
+  createImagePerceptionTableSchema,
+  type ImagePerceptionRecord,
+} from "../src/attachments/perception.js";
+import { OperatorAttentionRepository } from "../src/memory/operator-attention/repository.js";
 import { StreamReader, hydrateStreamEntriesById } from "../src/stream/index.js";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -336,9 +344,9 @@ async function addReferenceClasses(f: Awaited<ReturnType<typeof fixture>>) {
   const eventInput = {
     occurredAt: 1000,
     sessionId: DEFAULT_SESSION_ID,
-    stance: "rejected_frame",
-    taint: "quarantined",
-    beliefEffect: "unchanged",
+    stance: "rejected_frame" as const,
+    taint: "quarantined" as const,
+    beliefEffect: "unchanged" as const,
     classificationKind: "frame_assignment_claim",
     disclosureClass: "social_observed" as const,
     interactionText: "Observed placeholder",
@@ -501,7 +509,7 @@ describe("offline entity graph repair", () => {
     });
   });
 
-  it("plans read-only, then repairs SQL, nested JSON, streams, mirrors, graph dependencies, and goal history", async () => {
+  it("plans read-only, then repairs SQL, nested JSON, mirrors, graph dependencies, and goal history while preserving streams", async () => {
     const f = await fixture();
     const beforeStream = readFileSync(join(f.dataDir, "stream", "default.jsonl"), "utf8");
     const beforeDb = digest(readFileSync(join(f.dataDir, "borg.db")).toString("base64"));
@@ -590,6 +598,28 @@ describe("offline entity graph repair", () => {
       ["borg.db", "borg.db-wal"].map((file) => digest(readFileSync(join(f.dataDir, file)))),
     ).toEqual(hashesBefore);
     expect(f.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+  });
+
+  it("plans the normal redirect migration and preserves SQLite sequence high-water marks", async () => {
+    const f = await fixture();
+    f.db.exec(
+      "DROP VIEW resolved_entities; DROP INDEX entities_single_self_idx; DROP INDEX entities_merged_into_idx; ALTER TABLE entities DROP COLUMN merged_into;",
+    );
+    f.db.prepare("DELETE FROM _migrations WHERE name = 'entity_identity_redirects'").run();
+    f.db.prepare("UPDATE sqlite_sequence SET seq = 9000 WHERE name = 'identity_events'").run();
+    const plan = await planEntityGraphRepair(f.input);
+    expect(plan.migrations).toEqual([{ id: 7_000_004, name: "entity_identity_redirects" }]);
+    expect(plan.schemaChanges.map((row) => row.name)).toContain("resolved_entities");
+    expect(plan.additionalSql.find((row) => row.table === "identity_events")?.rowid).toBe(9001);
+    await applyEntityGraphRepair(plan);
+    expect(f.entities.get(f.named.id)?.id).toBe(f.self.id);
+    expect(f.db.prepare("SELECT * FROM identity_events WHERE id = 9001").get()).toBeDefined();
+    await applyEntityGraphRepair(await planEntityGraphReversal(f.dataDir, plan.runId!));
+    expect(f.entities.get(f.named.id)?.id).toBe(f.named.id);
+    expect(f.db.prepare("SELECT * FROM identity_events WHERE id = 9001").get()).toBeUndefined();
+    expect(
+      f.db.prepare("SELECT * FROM _migrations WHERE name = 'entity_identity_redirects'").get(),
+    ).toBeDefined();
   });
 
   it("covers derived keys, every reference class, immutable provenance, tuple retirement and untouched vectors", async () => {
@@ -745,6 +775,97 @@ describe("offline entity graph repair", () => {
     expect(refs.shared.get(f.room.id)?.entries).toHaveLength(1);
   });
 
+  it("repairs attachment, image-perception and operator-attention audience references", async () => {
+    const f = await fixture();
+    const attachments = new AttachmentRepository(f.db);
+    const attachmentId = createAttachmentId();
+    attachments.insert({
+      attachment_id: attachmentId,
+      sha256: "fixture",
+      media_type: "image/png",
+      byte_size: 12,
+      width: 1,
+      height: 1,
+      storage_ref: "blobs/fixture.png",
+      thumbnail_ref: null,
+      perception_id: null,
+      text_embedding_ref: null,
+      visual_embedding_ref: null,
+      active: true,
+      audience: "transport:placeholder",
+      audience_entity_id: f.room.id,
+      created_turn_global: 1,
+      parent_entry_id: f.entry.id,
+      stream_entry_id: f.nextEntry.id,
+      parent_turn_id: null,
+      created_at: 1000,
+    });
+    const table = await f.store.openTable({
+      name: "image_perception_embeddings",
+      schema: createImagePerceptionTableSchema(4),
+    });
+    const perceptions = new ImagePerceptionRepository(f.db, table);
+    const record: ImagePerceptionRecord = {
+      perception_id: createImagePerceptionId(),
+      payload_id: createImagePerceptionId(),
+      attachment_id: attachmentId,
+      parent_entry_id: f.entry.id,
+      stream_entry_id: f.nextEntry.id,
+      parent_turn_id: null,
+      sha256: "fixture",
+      media_type: "image/png",
+      perception_prompt_version: "fixture",
+      model: "fixture",
+      caption: "Image placeholder",
+      image_kind: "other",
+      visible_text: [],
+      objects: [],
+      people_or_roles: [],
+      scene: "",
+      colors_and_visual_attributes: [],
+      spatial_relationships: [],
+      possible_user_relevant_details: [],
+      search_terms: [],
+      uncertainties: [],
+      audience: "transport:placeholder",
+      audience_entity_id: f.room.id,
+      active: true,
+      created_turn_global: 1,
+      created_at: 1000,
+      text_embedding_ref: null,
+      embedding_text: "Image placeholder",
+      embedding_status: "complete",
+    };
+    perceptions.insertPayloadAndUpsertArtifact(record);
+    await perceptions.upsertEmbedding(record, new Float32Array([1, 0, 0, 0]));
+    const attention = new OperatorAttentionRepository({ db: f.db });
+    attention.record({
+      record_key: "fixture:1",
+      filed_at: 1000,
+      filer_entity_id: f.named.id,
+      subject: "Fixture",
+    });
+    const before = sqlInventory(f.db);
+    const vector = await table.list();
+    const plan = await planEntityGraphRepair(f.input);
+    await applyEntityGraphRepair(plan);
+    expect(attachments.get(attachmentId)?.audience_entity_id).toBe(f.participant.id);
+    expect(perceptions.get(record.perception_id)?.audience_entity_id).toBe(f.participant.id);
+    expect(f.db.prepare("SELECT filer_entity_id FROM operator_attention_records").get()).toEqual({
+      filer_entity_id: f.self.id,
+    });
+    await table.checkoutLatest();
+    expect(await table.list()).toEqual(vector);
+    await applyEntityGraphRepair(await planEntityGraphReversal(f.dataDir, plan.runId!));
+    for (const name of [
+      "stream_attachments",
+      "image_perception_artifacts",
+      "image_perception_payloads",
+      "operator_attention_records",
+    ])
+      expect(sqlInventory(f.db, [name]).get(name), name).toEqual(before.get(name));
+  });
+
   it("rejects open-question key collisions", async () => {
     const f = await fixture();
     const questions = new OpenQuestionsRepository({ db: f.db, clock: f.clock });
@@ -820,9 +941,9 @@ describe("offline entity graph repair", () => {
       const input = {
         occurredAt: 1000,
         sessionId: DEFAULT_SESSION_ID,
-        stance: "rejected_frame",
-        taint: "quarantined",
-        beliefEffect: "unchanged",
+        stance: "rejected_frame" as const,
+        taint: "quarantined" as const,
+        beliefEffect: "unchanged" as const,
         classificationKind: "frame_assignment_claim",
         disclosureClass: "social_observed" as const,
         interactionText: "Fixture",

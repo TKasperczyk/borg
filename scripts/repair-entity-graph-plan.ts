@@ -501,6 +501,7 @@ export async function planEntityGraphRepair(
             );
             if (
               next.length !== (change.before.embedding as number[]).length ||
+              (embeddingClient === undefined && next.length !== config.embedding.dims) ||
               !next.every(Number.isFinite)
             )
               fail(`Embedding shape changed for ${change.id}`);

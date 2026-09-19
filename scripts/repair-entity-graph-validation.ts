@@ -31,6 +31,10 @@ import { episodeSchema } from "../src/memory/episodic/types.js";
 import { mapAuditRow } from "../src/offline/audit-log.js";
 import { sessionRecordSchema } from "../src/sessions/types.js";
 import { recallStateSchema } from "../src/retrieval/recall-state.js";
+import { attachmentIdSchema, imageMediaTypeSchema } from "../src/attachments/types.js";
+import { imagePerceptionIdHelpers } from "../src/util/ids.js";
+import { streamEntryIdSchema } from "../src/stream/types.js";
+import { operatorAttentionRecordSchema } from "../src/memory/operator-attention/types.js";
 import {
   mapReviewRow,
   ReviewQueueHandlerRegistry,
@@ -69,7 +73,12 @@ const decoders: Record<string, (row: Row) => unknown> = {
   train_of_thought_journal_entries: mapTrainOfThoughtJournalEntryRow,
   maintenance_audit: mapAuditRow,
   sessions: (row) => sessionRecordSchema.parse(row),
-  recall_state: (row) => recallStateSchema.parse(JSON.parse(String(row.state_json))),
+  operator_attention_records: (row) => operatorAttentionRecordSchema.parse(row),
+  recall_state: (row) => {
+    const state = recallStateSchema.parse(JSON.parse(String(row.state_json)));
+    if (state.scopeKey !== row.scope_key) fail("Recall state scope key mismatch");
+    return state;
+  },
   review_queue: (row) => {
     const item = mapReviewRow(row);
     const handler = handlers.get(item.kind);
@@ -89,6 +98,21 @@ const decoders: Record<string, (row: Row) => unknown> = {
   },
   // These link/outbox tables have SQL schemas, not record codecs. Reuse the
   // repositories' branded handle schemas in addition to the projected SQL constraints.
+  stream_attachments: (row) => {
+    attachmentIdSchema.parse(row.attachment_id);
+    imageMediaTypeSchema.parse(row.media_type);
+    streamEntryIdSchema.parse(row.parent_entry_id);
+    streamEntryIdSchema.nullable().parse(row.stream_entry_id);
+    entityIdSchema.nullable().parse(row.audience_entity_id);
+  },
+  image_perception_artifacts: (row) => {
+    imagePerceptionIdHelpers.parse(z.string().parse(row.artifact_id));
+    imagePerceptionIdHelpers.parse(z.string().parse(row.payload_id));
+    attachmentIdSchema.parse(row.attachment_id);
+    streamEntryIdSchema.parse(row.parent_entry_id);
+    streamEntryIdSchema.nullable().parse(row.stream_entry_id);
+    entityIdSchema.nullable().parse(row.audience_entity_id);
+  },
   episode_participants: (row) => {
     episodeIdSchema.parse(row.episode_id);
     z.string().min(1).parse(row.term);

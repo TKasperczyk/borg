@@ -7,7 +7,6 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createMigrations } from "../src/borg/storage-setup.js";
 import { SemanticNodeRepository } from "../src/memory/semantic/repository.js";
-import { AuditLog } from "../src/offline/audit-log.js";
 import { LanceDbTable } from "../src/storage/lancedb/index.js";
 import { runMigrations, type SqliteDatabase } from "../src/storage/sqlite/index.js";
 import { writeJsonFileAtomic, syncDirectory } from "../src/util/atomic-write.js";
@@ -94,7 +93,6 @@ async function finishJournal(journal: Journal, options: RepairOptions = {}): Pro
   assertProtected(plan);
   const db = openRepairDatabase(plan.input.dataDir, false);
   const connection = await openLance(plan.input.dataDir);
-  const audit = new AuditLog({ db });
   try {
     const committed =
       db
@@ -234,9 +232,11 @@ export async function resumeEntityGraphRepair(
           return (
             journal.version === 2 &&
             journal.plan.runId !== null &&
-            new AuditLog({ db })
-              .list({ run_id: journal.plan.runId })
-              .some((row) => row.action === "entity_graph_complete")
+            db
+              .prepare(
+                "SELECT 1 FROM maintenance_audit WHERE run_id = ? AND action = 'entity_graph_complete'",
+              )
+              .get(journal.plan.runId) !== undefined
           );
         })
       )
@@ -318,6 +318,11 @@ export function formatRepairPlan(plan: RepairPlan): string {
     additional_writes: {
       identity_events_inserts: plan.goals.length,
       semantic_node_vector_sync_outbox_enqueues_then_drains: plan.touchedNodes,
+      outbox_mirror_upserts: plan.touchedNodes.map((id) => ({
+        table: "semantic_nodes",
+        id,
+        after: plan.lance.find((row) => row.table === "semantic_nodes" && row.id === id)?.after,
+      })),
       maintenance_audit_inserts: [...plan.additionalSql, ...plan.completionSql].filter(
         (row) => row.table === "maintenance_audit" && row.before === null,
       ).length,
@@ -437,8 +442,12 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     args.reverse === null
       ? await planEntityGraphRepair(input)
       : await planEntityGraphReversal(args.dataDir, args.reverse);
-  process.stdout.write(
-    JSON.stringify({ mode: args.apply ? "apply" : "dry-run" }) + "\n" + formatRepairPlan(plan),
+  // Wait for the complete reviewable plan to reach stdout before any store mutation.
+  await new Promise<void>((done, reject) =>
+    process.stdout.write(
+      JSON.stringify({ mode: args.apply ? "apply" : "dry-run" }) + "\n" + formatRepairPlan(plan),
+      (error) => (error ? reject(error) : done()),
+    ),
   );
   if (args.apply) {
     await applyEntityGraphRepair(plan);
