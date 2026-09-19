@@ -15,6 +15,7 @@ import {
   type OpenQuestionRumination,
 } from "../../memory/self/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
+import { ToolError } from "../../util/errors.js";
 import type { OpenQuestionId } from "../../util/ids.js";
 import { formatRelativeAge } from "../../util/relative-time.js";
 import { estimatePromptTokens } from "../../util/token-estimate.js";
@@ -61,7 +62,7 @@ const ruminationForCognitionSchema = z
     payload_total_chars: z.number().int().nonnegative(),
     tensions: z.array(z.string()),
     connected_open_question_ids: z.array(openQuestionIdSchema),
-    source_process: z.string().min(1),
+    source_process: z.string().min(1).nullable(),
     created_at: z.number().int().finite(),
     created_at_iso: z.iso.datetime({ offset: true }),
     relative_age: z.string().min(1),
@@ -101,8 +102,14 @@ function withoutPayload(row: RuminationForCognition): RuminationForCognition {
     ...row,
     question: null,
     note: null,
+    tensions: [],
+    connected_open_question_ids: [],
+    source_process: null,
     payload_status: "check_not_completed_budget",
     payload_included_chars: 0,
+    // Source labels can themselves hold unbounded audience lists. Omitting them
+    // must fail closed, never imply that the omitted material became public.
+    ...memoryDisclosurePayloadFields(unknownMemoryDisclosureLabel()),
   };
 }
 
@@ -131,9 +138,7 @@ export function createOpenQuestionsRuminationsTool(
       const candidates = await options.listRuminations({
         sinceMs,
         untilMs,
-        ...(input.open_question_id === undefined
-          ? {}
-          : { openQuestionId: input.open_question_id }),
+        ...(input.open_question_id === undefined ? {} : { openQuestionId: input.open_question_id }),
         limit: limit + 1,
       });
       const pageCandidates = candidates.slice(0, limit);
@@ -154,7 +159,12 @@ export function createOpenQuestionsRuminationsTool(
             : openQuestionMemoryDisclosureLabel(question),
         ]);
         const recordedRuminationNotes = await options.countRuminations(candidate.open_question_id);
-        const payloadChars = candidate.note.length + (question?.question.length ?? 0);
+        const payloadChars =
+          candidate.note.length +
+          (question?.question.length ?? 0) +
+          candidate.tensions.reduce((total, tension) => total + tension.length, 0) +
+          candidate.connected_open_question_ids.reduce((total, id) => total + id.length, 0) +
+          candidate.source_process.length;
         const row: RuminationForCognition = {
           handle: `rumination:${candidate.id}`,
           open_question_id: candidate.open_question_id,
@@ -189,7 +199,16 @@ export function createOpenQuestionsRuminationsTool(
           return { ruminations, has_more: true };
         }
 
-        return { ruminations: [withoutPayload(row)], has_more: hasMoreAfterCandidate };
+        const metadataOutput = {
+          ruminations: [withoutPayload(row)],
+          has_more: hasMoreAfterCandidate,
+        };
+        if (!resultFitsBudget(metadataOutput, DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET)) {
+          throw new ToolError("Rumination metadata exceeds the result budget", {
+            code: "RUMINATION_METADATA_BUDGET_EXCEEDED",
+          });
+        }
+        return metadataOutput;
       }
 
       return {

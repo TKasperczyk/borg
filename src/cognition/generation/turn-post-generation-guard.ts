@@ -19,7 +19,11 @@ import {
   type StreamReader,
 } from "../../stream/index.js";
 import type { Clock } from "../../util/clock.js";
-import type { EntityId, SessionId } from "../../util/ids.js";
+import {
+  INTERNAL_IDENTIFIER_PATTERN_SOURCE,
+  type EntityId,
+  type SessionId,
+} from "../../util/ids.js";
 import { listActionCandidatesForCognition } from "../evidence-ledger/action-threads.js";
 import type { TurnTracer } from "../../tracing/tracer.js";
 import type { ClosureLoopDialogueAct } from "./closure-loop.js";
@@ -30,8 +34,6 @@ const COMPLETED_ACTION_LIMIT = 8;
 const RELATIONAL_SLOT_GUARD_LIMIT = 64;
 const INTERNAL_IDENTIFIER_RECENT_STREAM_MAX_ENTRIES = 512;
 const INTERNAL_IDENTIFIER_RECENT_STREAM_MAX_BYTES = 4 * 1024 * 1024;
-const INTERNAL_IDENTIFIER_PATTERN_SOURCE =
-  "(?:(?:strm|sess|ep|goal|val|trt|abp|grw|oq|semn|seme|cmt|ent|act|rslot|skl|procevi|run|exstep)_[a-z0-9]{16}|autonomy_wake_[a-f0-9]{16}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})";
 const INTERNAL_IDENTIFIER_EXACT_PATTERN = new RegExp(`^${INTERNAL_IDENTIFIER_PATTERN_SOURCE}$`);
 const INTERNAL_IDENTIFIER_TOKEN_PATTERN = new RegExp(
   `(?<![\\p{L}\\p{M}\\p{N}_-])${INTERNAL_IDENTIFIER_PATTERN_SOURCE}(?![\\p{L}\\p{M}\\p{N}_-])`,

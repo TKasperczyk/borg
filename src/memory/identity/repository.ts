@@ -186,6 +186,45 @@ export class IdentityEventRepository {
     return rows.map((row) => mapRow(row));
   }
 
+  /** Historical goal transitions, independent of the goal's current state or audience. */
+  listGoalDispositionsInRange(input: {
+    sinceMs: number;
+    untilMs: number;
+    limit: number;
+    cursor?: { ts: number; id: number };
+  }): IdentityEvent[] {
+    const sinceMs = z.number().int().finite().parse(input.sinceMs);
+    const untilMs = z.number().int().finite().parse(input.untilMs);
+    const limit = z.number().int().positive().parse(input.limit);
+    const cursorTs = input.cursor === undefined ? null : z.number().int().parse(input.cursor.ts);
+    const cursorId =
+      input.cursor === undefined ? null : z.number().int().positive().parse(input.cursor.id);
+    // Read the recorded status transition, not the writer's free-text reason or
+    // process name. This also reaches automatic unblocks and historical retirements.
+    const rows = this.db
+      .prepare(
+        `
+          SELECT * FROM identity_events
+          WHERE record_type = 'goal' AND ts >= ? AND ts <= ?
+            AND json_extract(old_value_json, '$.status') != json_extract(new_value_json, '$.status')
+            AND (
+              json_extract(new_value_json, '$.status') IN ('abandoned', 'blocked')
+              OR (json_extract(old_value_json, '$.status') = 'blocked'
+                AND json_extract(new_value_json, '$.status') = 'active')
+            )
+            AND (? IS NULL OR ts < ? OR (ts = ? AND id < ?))
+          ORDER BY ts DESC, id DESC
+          LIMIT ?
+        `,
+      )
+      .all(sinceMs, untilMs, cursorTs, cursorTs, cursorTs, cursorId, limit) as Record<
+      string,
+      unknown
+    >[];
+
+    return rows.map(mapRow);
+  }
+
   findByReviewKey(input: {
     reviewItemId: number;
     recordType: IdentityRecordType;

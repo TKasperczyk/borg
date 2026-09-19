@@ -4,8 +4,7 @@ const ID_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
 const HEX_ID_ALPHABET = "abcdef0123456789";
 const ID_LENGTH = 16;
 const DEFAULT_SESSION_LITERAL = "default";
-const createNanoId = customAlphabet(ID_ALPHABET, ID_LENGTH);
-const createAutonomyWakeNanoId = customAlphabet(HEX_ID_ALPHABET, ID_LENGTH);
+const identifierPatternSources: string[] = [];
 
 export type BrandedId<BrandName extends string> = string & {
   readonly __brand: BrandName;
@@ -61,9 +60,15 @@ export type IdKindDescriptor<TKind extends string, TId extends string> = {
   readonly parse: (raw: string) => TId;
 };
 
-export function createIdHelpers<BrandName extends string>(prefix: string): IdHelpers<BrandName> {
+export function createIdHelpers<BrandName extends string>(
+  prefix: string,
+  alphabet = ID_ALPHABET,
+): IdHelpers<BrandName> {
   const fullPrefix = `${prefix}_`;
-  const pattern = new RegExp(`^${fullPrefix}[${ID_ALPHABET}]{${ID_LENGTH}}$`);
+  const source = `${fullPrefix}[${alphabet}]{${ID_LENGTH}}`;
+  const pattern = new RegExp(`^${source}$`);
+  const createNanoId = customAlphabet(alphabet, ID_LENGTH);
+  identifierPatternSources.push(source);
 
   return {
     prefix: fullPrefix,
@@ -105,37 +110,26 @@ export const livedExperienceDaySummaryIdHelpers =
 export const observedEventIdHelpers = createIdHelpers<"ObservedEventId">("obsevt");
 export const scheduledWakeIdHelpers = createIdHelpers<"ScheduledWakeId">("swake");
 export const skillIdHelpers = createIdHelpers<"SkillId">("skl");
-export const proceduralEvidenceIdHelpers: IdHelpers<"ProceduralEvidenceId"> = {
-  prefix: "procevi_",
-  pattern: new RegExp(`^procevi_[${HEX_ID_ALPHABET}]{${ID_LENGTH}}$`),
-  create: () => `procevi_${createAutonomyWakeNanoId()}` as ProceduralEvidenceId,
-  is: (value: string): value is ProceduralEvidenceId =>
-    proceduralEvidenceIdHelpers.pattern.test(value),
-  parse: (value: string): ProceduralEvidenceId => {
-    if (!proceduralEvidenceIdHelpers.pattern.test(value)) {
-      throw new TypeError(`Invalid procevi identifier: ${value}`);
-    }
-
-    return value as ProceduralEvidenceId;
-  },
-};
+export const proceduralEvidenceIdHelpers = createIdHelpers<"ProceduralEvidenceId">(
+  "procevi",
+  HEX_ID_ALPHABET,
+);
 export const maintenanceRunIdHelpers = createIdHelpers<"MaintenanceRunId">("run");
 export const executiveStepIdHelpers = createIdHelpers<"ExecutiveStepId">("exstep");
 export const attachmentIdHelpers = createIdHelpers<"AttachmentId">("att");
 export const imagePerceptionIdHelpers = createIdHelpers<"ImagePerceptionId">("imgp");
-export const autonomyWakeIdHelpers: IdHelpers<"AutonomyWakeId"> = {
-  prefix: "autonomy_wake_",
-  pattern: new RegExp(`^autonomy_wake_[${HEX_ID_ALPHABET}]{${ID_LENGTH}}$`),
-  create: () => `autonomy_wake_${createAutonomyWakeNanoId()}` as AutonomyWakeId,
-  is: (value: string): value is AutonomyWakeId => autonomyWakeIdHelpers.pattern.test(value),
-  parse: (value: string): AutonomyWakeId => {
-    if (!autonomyWakeIdHelpers.pattern.test(value)) {
-      throw new TypeError(`Invalid autonomy_wake identifier: ${value}`);
-    }
+export const autonomyWakeIdHelpers = createIdHelpers<"AutonomyWakeId">(
+  "autonomy_wake",
+  HEX_ID_ALPHABET,
+);
 
-    return value as AutonomyWakeId;
-  },
-};
+// Snapshot the built-in helpers after their declarations: the host guard and
+// prose renderers share the canonical grammar, without a second prefix list.
+export const INTERNAL_IDENTIFIER_PATTERN_SOURCE = `(?:${identifierPatternSources.join("|")}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})`;
+
+// Boundaries follow the machine identifier alphabet, not Unicode word/letter
+// boundaries: adjacent non-Latin prose must not conceal a valid identifier.
+export const INTERNAL_IDENTIFIER_TOKEN_PATTERN_SOURCE = `(?<![${ID_ALPHABET}_-])${INTERNAL_IDENTIFIER_PATTERN_SOURCE}(?![${ID_ALPHABET}_-])`;
 
 export const createStreamEntryId = (): StreamEntryId => streamEntryIdHelpers.create();
 export const createSessionId = (): SessionId => sessionIdHelpers.create();

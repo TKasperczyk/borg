@@ -199,6 +199,12 @@ export class IdentityService {
       .filter((event) => isIdentityEventVisible(event, audienceEntityId ?? null));
   }
 
+  listGoalDispositionsInRange(
+    input: Parameters<IdentityEventRepository["listGoalDispositionsInRange"]>[0],
+  ): ReturnType<IdentityEventRepository["listGoalDispositionsInRange"]> {
+    return this.options.identityEventRepository.listGoalDispositionsInRange(input);
+  }
+
   addValue(input: Parameters<ValuesRepository["add"]>[0]): ValueRecord {
     const decision = this.guard.evaluateChange({
       current: null,

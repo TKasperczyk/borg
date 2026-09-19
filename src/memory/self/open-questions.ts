@@ -1388,7 +1388,12 @@ export class OpenQuestionsRepository {
   listRuminationsInRange(options: OpenQuestionRuminationRangeOptions): OpenQuestionRumination[] {
     const sinceMs = z.number().int().finite().parse(options.sinceMs);
     const untilMs = z.number().int().finite().parse(options.untilMs);
-    const limit = Math.max(1, Math.min(50, Math.floor(options.limit ?? 20)));
+    // The tool caps its page size, but requests one extra row for lookahead.
+    const limit = z
+      .number()
+      .int()
+      .positive()
+      .parse(options.limit ?? 20);
     const openQuestionId =
       options.openQuestionId === undefined
         ? null
