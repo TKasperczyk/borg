@@ -88,8 +88,17 @@ export class MessageEnqueuer {
     const sourceMessageKey = this.parseSourceMessageKey(input.sourceMessageKey);
     this.validateSourceMessageKeyForInputSession(sourceMessageKey, input.session);
     const arrivedAt = this.resolveArrivedAt(input.arrivedAt);
-    this.requireKnownSender(input.senderEntityId);
+    input = { ...input, senderEntityId: this.requireKnownSender(input.senderEntityId) };
+    if (input.audienceEntityId != null) {
+      const audience = this.options.entityRepository.get(input.audienceEntityId);
+      if (audience === null)
+        throw new CognitionError("enqueueMessage audienceEntityId is unknown", {
+          code: "ENQUEUE_AUDIENCE_UNKNOWN",
+        });
+      input.audienceEntityId = audience.id;
+    }
     const session = this.options.sessionsRepository.ensure(input.session);
+    input = { ...input, audienceEntityId: session.audience_entity_id ?? input.audienceEntityId };
 
     return this.runForSession(session.session_id, async () => {
       if (this.options.entryIndex.isPoisoned(session.session_id)) {
@@ -364,12 +373,14 @@ export class MessageEnqueuer {
     return parsed.data;
   }
 
-  private requireKnownSender(senderEntityId: EntityId): void {
-    if (this.options.entityRepository.get(senderEntityId) === null) {
+  private requireKnownSender(senderEntityId: EntityId): EntityId {
+    const entity = this.options.entityRepository.get(senderEntityId);
+    if (entity === null) {
       throw new CognitionError("enqueueMessage senderEntityId is unknown", {
         code: "ENQUEUE_SENDER_UNKNOWN",
       });
     }
+    return entity.id;
   }
 
   private validateSourceMessageKeyForInputSession(

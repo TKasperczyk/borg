@@ -38,6 +38,14 @@ import {
   type ImagePerceptionRecord,
 } from "../src/attachments/perception.js";
 import { OperatorAttentionRepository } from "../src/memory/operator-attention/repository.js";
+import { RetrievalPipeline } from "../src/retrieval/pipeline.js";
+import * as atomicWrite from "../src/util/atomic-write.js";
+import { resolveTurnAudienceEntityId } from "../demo/server/src/app.js";
+import type { Borg } from "../src/index.js";
+import {
+  resolveActiveParticipants,
+  resolveEpisodeSourceParticipants,
+} from "../src/cognition/participants.js";
 import { StreamReader, hydrateStreamEntriesById } from "../src/stream/index.js";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -65,7 +73,12 @@ import { StreamWriter, StreamEntryIndexRepository } from "../src/stream/index.js
 import { LanceDbStore, LanceDbTable } from "../src/storage/lancedb/index.js";
 import { openDatabase } from "../src/storage/sqlite/index.js";
 import { ManualClock } from "../src/util/clock.js";
-import { createEpisodeId, createSemanticNodeId, DEFAULT_SESSION_ID } from "../src/util/ids.js";
+import {
+  createEpisodeId,
+  createSemanticNodeId,
+  createSessionId,
+  DEFAULT_SESSION_ID,
+} from "../src/util/ids.js";
 import { writeJsonFileAtomic } from "../src/util/atomic-write.js";
 import {
   applyEntityGraphRepair,
@@ -186,7 +199,12 @@ async function fixture() {
     audience: room.id,
     nodes: [duplicate.id],
   });
-  const episodes = new EpisodicRepository({ db, table: episodesTable, clock });
+  const episodes = new EpisodicRepository({
+    db,
+    table: episodesTable,
+    clock,
+    entityRepository: entities,
+  });
   await episodes.createEpisode({
     id: episodeId,
     title: "Episode placeholder",
@@ -864,6 +882,267 @@ describe("offline entity graph repair", () => {
       "operator_attention_records",
     ])
       expect(sqlInventory(f.db, [name]).get(name), name).toEqual(before.get(name));
+  });
+
+  it("preflights mismatched sessions and keeps ingress/ensure bindings before and after redirect", async () => {
+    const f = await fixture();
+    f.db.prepare("UPDATE sessions SET audience_entity_id = ?").run(f.participant.id);
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const sessions = new SessionsRepository({
+      db: f.db,
+      clock: f.clock,
+      entityRepository: f.entities,
+    });
+    const session = sessions.get(DEFAULT_SESSION_ID)!;
+    const borg = { entities: f.entities } as unknown as Borg;
+    expect(
+      resolveTurnAudienceEntityId(borg, {
+        audienceLabel: session.audience_label,
+        existingAudienceEntityId: f.participant.id,
+        explicitAudienceEntityId: f.room.id,
+      }),
+    ).toBe(f.participant.id);
+    expect(sessions.ensure({ ...session, audience_entity_id: f.room.id }).audience_entity_id).toBe(
+      f.participant.id,
+    );
+    expect(warning).toHaveBeenCalled();
+    const plan = await planEntityGraphRepair(f.input);
+    expect(
+      plan.reports.find((report) => report.category === "session_audience_preflight")?.rows,
+    ).toEqual([
+      expect.objectContaining({
+        mismatch: true,
+        bound: expect.objectContaining({
+          entity: expect.objectContaining({ id: f.participant.id }),
+        }),
+        label: expect.objectContaining({
+          entity: expect.objectContaining({ id: f.room.id }),
+          origin_episodes: 1,
+        }),
+        projected_label: f.participant.id,
+        projected_binding: f.participant.id,
+      }),
+    ]);
+    await applyEntityGraphRepair(plan);
+    const pipeline = new RetrievalPipeline({
+      dataDir: f.dataDir,
+      episodicRepository: f.episodes,
+      entityRepository: f.entities,
+      embeddingClient: new FakeEmbeddingClient(4),
+      clock: f.clock,
+    });
+    for (const id of [f.room.id, f.participant.id]) {
+      expect(
+        resolveTurnAudienceEntityId(borg, {
+          audienceLabel: session.audience_label,
+          explicitAudienceEntityId: id,
+        }),
+      ).toBe(f.participant.id);
+      expect(sessions.ensure({ ...session, audience_entity_id: id }).audience_entity_id).toBe(
+        f.participant.id,
+      );
+      expect(sessions.get(DEFAULT_SESSION_ID)?.audience_entity_id).toBe(f.participant.id);
+      expect(sessions.getMany([DEFAULT_SESSION_ID])[0]?.audience_entity_id).toBe(f.participant.id);
+      expect(sessions.list()[0]?.audience_entity_id).toBe(f.participant.id);
+      expect((await pipeline.getEpisode(f.episodeId, { audienceEntityId: id }))?.episode.id).toBe(
+        f.episodeId,
+      );
+      expect(
+        (await pipeline.getEpisode(f.episodeId, { visibleAudienceEntityIds: [id] }))?.episode.id,
+      ).toBe(f.episodeId);
+      expect(
+        (await f.episodes.listRecentForDisclosure({ audienceEntityId: id })).map(
+          (row) => row.episode.id,
+        ),
+      ).toContain(f.episodeId);
+    }
+    f.db.prepare("UPDATE sessions SET audience_entity_id = ?").run(f.room.id);
+    expect(sessions.get(DEFAULT_SESSION_ID)?.audience_entity_id).toBe(f.participant.id);
+    expect(sessions.getMany([DEFAULT_SESSION_ID])[0]?.audience_entity_id).toBe(f.participant.id);
+    expect(sessions.list()[0]?.audience_entity_id).toBe(f.participant.id);
+    expect(
+      resolveActiveParticipants({
+        audienceEntityId: f.room.id,
+        senderEntityId: f.participant.id,
+        streamEntries: [],
+        entityRepository: f.entities,
+      }),
+    ).toEqual([expect.objectContaining({ entityId: f.participant.id, role: "speaker" })]);
+    expect(
+      resolveEpisodeSourceParticipants({
+        episodes: [
+          {
+            participants: [`entity_id:${f.room.id}`, `entity_id:${f.participant.id}`],
+            source_stream_ids: [],
+          },
+        ],
+        entryIndex: { lookupMany: () => new Map() },
+        entityRepository: f.entities,
+      }),
+    ).toEqual([expect.objectContaining({ entityId: f.participant.id })]);
+  });
+
+  it("canonicalizes activity identities on inputs, outputs and disclosure comparisons", async () => {
+    const f = await fixture();
+    f.db.prepare("UPDATE entities SET kind = 'group' WHERE id = ?").run(f.participant.id);
+    const activity = new ActivityRepository({
+      db: f.db,
+      clock: f.clock,
+      entityRepository: f.entities,
+    });
+    f.entities.merge(f.room.id, f.participant.id);
+    f.entities.merge(f.named.id, f.self.id);
+    const row = activity.record({
+      kind: "user_contact",
+      occurredAt: 1000,
+      sessionId: DEFAULT_SESSION_ID,
+      speakerEntityId: f.named.id,
+      audienceEntityId: f.room.id,
+      sourceStreamEntryIds: [f.entry.id],
+    });
+    expect(row).toMatchObject({
+      speaker_entity_id: f.self.id,
+      audience_entity_id: f.participant.id,
+    });
+    f.db
+      .prepare(
+        "UPDATE activity_events SET speaker_entity_id = ?, audience_entity_id = ? WHERE id = ?",
+      )
+      .run(f.named.id, f.room.id, row.id);
+    for (const id of [f.named.id, f.self.id])
+      expect(activity.listObservedGroupAudienceEntityIdsForSpeaker(id)).toEqual([f.participant.id]);
+    for (const id of [f.room.id, f.participant.id])
+      expect(
+        activity.listRecentVisibleOtherSessionEvents({
+          currentSessionId: createSessionId(),
+          audienceEntityIds: [id],
+          sinceMs: 0,
+          limit: 10,
+        }),
+      ).toEqual([expect.objectContaining({ audienceEntityId: f.participant.id })]);
+    expect(activity.get(row.id)).toMatchObject({
+      speaker_entity_id: f.self.id,
+      audience_entity_id: f.participant.id,
+    });
+  });
+
+  it("reconciles an entity blocker across retained stream-index handles in either direction", async () => {
+    const f = await fixture();
+    const goals = new GoalsRepository({ db: f.db, clock: f.clock });
+    f.entities.merge(f.room.id, f.participant.id);
+    for (const [blocker, sender] of [
+      [f.room.id, f.participant.id],
+      [f.participant.id, f.room.id],
+    ] as const) {
+      const goal = goals.add({
+        description: "Block placeholder",
+        priority: 5,
+        provenance: { kind: "manual" },
+      });
+      goals.block(
+        goal.id,
+        {
+          blocker: { kind: "entity", entity_id: blocker },
+          attempt_status: "attempted_unavailable",
+          reason: "Pending reply",
+        },
+        { kind: "manual" },
+      );
+      f.clock.advance(10);
+      const index = new StreamEntryIndexRepository({ db: f.db, dataDir: f.dataDir });
+      const writer = new StreamWriter({ dataDir: f.dataDir, entryIndex: index, clock: f.clock });
+      await writer.append({
+        kind: "user_msg",
+        sender_entity_id: sender,
+        content: "Reply placeholder",
+      });
+      await writer.close();
+      const before = sqlInventory(f.db, ["stream_entry_index"]);
+      goals.reconcileBlocks();
+      expect(goals.get(goal.id)?.status).toBe("active");
+      expect(sqlInventory(f.db, ["stream_entry_index"])).toEqual(before);
+    }
+  });
+
+  it.each(["metadata", "embedding"])(
+    "rejects stale Lance %s before reversal writes, even after a reversal plan was made",
+    async (field) => {
+      const f = await fixture();
+      const plan = await planEntityGraphRepair(f.input);
+      await applyEntityGraphRepair(plan);
+      const reverse = await planEntityGraphReversal(f.dataDir, plan.runId!);
+      const before = sqlInventory(f.db);
+      const files = readdirSync(join(f.dataDir, "entity-graph-repair"));
+      await f.episodesTable.checkoutLatest();
+      const row = (await f.episodesTable.list())[0]!;
+      await f.episodesTable.upsert(
+        [
+          {
+            ...row,
+            ...(field === "embedding"
+              ? { embedding: [0, 1, 0, 0] }
+              : { narrative: "Intervening change" }),
+          },
+        ],
+        { on: "id" },
+      );
+      await expect(planEntityGraphReversal(f.dataDir, plan.runId!)).rejects.toThrow(
+        "Lance row changed",
+      );
+      await expect(applyEntityGraphRepair(reverse)).rejects.toThrow("Lance row changed");
+      expect(sqlInventory(f.db)).toEqual(before);
+      expect(readdirSync(join(f.dataDir, "entity-graph-repair"))).toEqual(files);
+    },
+  );
+
+  it("syncs journal reachability before SQLite, and fails without a commit if parent sync fails", async () => {
+    const f = await fixture();
+    const plan = await planEntityGraphRepair(f.input);
+    const before = sqlInventory(f.db);
+    const sync = vi.spyOn(atomicWrite, "syncDirectory").mockImplementation((path) => {
+      if (path === f.dataDir) throw new Error("parent sync failed");
+    });
+    await expect(applyEntityGraphRepair(plan)).rejects.toThrow("parent sync failed");
+    expect(sync).toHaveBeenCalledWith(f.dataDir);
+    expect(sqlInventory(f.db)).toEqual(before);
+    expect(readdirSync(join(f.dataDir, "entity-graph-repair"))).toEqual([]);
+  });
+
+  it("keeps new-insight reviews active when node references collapse", async () => {
+    const f = await fixture();
+    const reviews = new ReviewQueueRepository({ db: f.db, clock: f.clock });
+    const item = reviews.enqueue({
+      kind: "new_insight",
+      reason: "Insight placeholder",
+      refs: {
+        node_ids: [f.duplicate.id, f.survivor.id],
+        episode_ids: [f.episodeId],
+        evidence_cluster_key: "fixture",
+        evidence_cluster_size: 1,
+        reflector_pending_insight: {
+          target: {
+            mode: "update",
+            node_id: f.survivor.id,
+            patch: {
+              description: "Insight placeholder",
+              confidence: 0.8,
+              source_episode_ids: [f.episodeId],
+              last_verified_at: 1000,
+              embedding: [1, 0, 0, 0],
+              archived: false,
+            },
+          },
+          candidate_support_edges: [],
+          evidence_cluster: { key: "fixture", episode_ids: [f.episodeId], size: 1 },
+        },
+      },
+    });
+    await applyEntityGraphRepair(await planEntityGraphRepair(f.input));
+    expect(reviews.get(item.id)).toMatchObject({
+      resolved_at: null,
+      resolution: null,
+      refs: { node_ids: [f.survivor.id, f.survivor.id] },
+    });
   });
 
   it("rejects open-question key collisions", async () => {

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { projectMachineReferences } from "../common/reference-projection.js";
 
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { CommitmentError, ProvenanceError } from "../../util/errors.js";
@@ -219,6 +220,11 @@ function nextCommitmentUpdatedAt(current: CommitmentRecord, timestamp: number): 
 export type EntityRepositoryOptions = {
   db: SqliteDatabase;
   clock?: Clock;
+  onAudienceMismatch?: (mismatch: {
+    label: string;
+    boundEntityId: EntityId;
+    labelEntityId: EntityId;
+  }) => void;
 };
 
 export type EntityListOptions = {
@@ -533,21 +539,26 @@ export class EntityRepository {
       throw new CommitmentError("Entity name is required", { code: "ENTITY_NAME_REQUIRED" });
     }
     const byId = entityIdHelpers.is(name) ? this.get(name) : null;
+    const existing = byId?.id ?? this.findByName(name);
+    if (boundEntityId !== undefined) {
+      const bound = this.get(boundEntityId);
+      if (bound === null) {
+        throw new CommitmentError("Audience binding points to a missing entity", {
+          code: "ENTITY_AUDIENCE_MISSING",
+        });
+      }
+      if (existing !== null && existing !== bound.id) {
+        const mismatch = { label: name, boundEntityId: bound.id, labelEntityId: existing };
+        if (this.options.onAudienceMismatch) this.options.onAudienceMismatch(mismatch);
+        else console.warn("entity.audience_binding_mismatch", mismatch);
+      }
+      if (existing === null && !entityIdHelpers.is(name)) this.addAlias(bound.id, name);
+      return bound.id;
+    }
     if (entityIdHelpers.is(name) && byId === null) {
       throw new CommitmentError(`Unknown audience entity ${name}`, {
         code: "ENTITY_AUDIENCE_MISSING",
       });
-    }
-    const existing = byId?.id ?? this.findByName(name);
-    if (boundEntityId !== undefined) {
-      const bound = this.get(boundEntityId);
-      if (bound === null || (existing !== null && existing !== bound.id)) {
-        throw new CommitmentError("Audience label conflicts with its entity binding", {
-          code: "ENTITY_AUDIENCE_CONFLICT",
-        });
-      }
-      if (existing === null) this.addAlias(bound.id, name);
-      return bound.id;
     }
     // Do not upgrade a canonical name's provenance merely by seeing a transport alias.
     return existing ?? this.resolve(name, { provenance: "transport_audience_label" });
@@ -707,17 +718,9 @@ export class EntityRepository {
 
   /** Project structured historical handles at read time; source bytes stay immutable. */
   resolveReferences<T>(value: T): T {
-    const visit = (item: unknown): unknown => {
-      if (typeof item === "string")
-        return entityIdHelpers.is(item) ? (this.get(item)?.id ?? item) : item;
-      if (Array.isArray(item)) return item.map(visit);
-      if (item !== null && typeof item === "object" && !ArrayBuffer.isView(item))
-        return Object.fromEntries(
-          Object.entries(item).map(([key, nested]) => [key, visit(nested)]),
-        );
-      return item;
-    };
-    return visit(value) as T;
+    return projectMachineReferences(value, (id) =>
+      entityIdHelpers.is(id) ? (this.get(id)?.id ?? id) : id,
+    );
   }
 
   /** An identity merge retains the old handle so append-only provenance stays readable. */

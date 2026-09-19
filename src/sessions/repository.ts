@@ -49,7 +49,7 @@ type CountRow = {
 export type SessionsRepositoryOptions = {
   db: SqliteDatabase;
   clock?: Clock;
-  entityRepository?: Pick<EntityRepository, "resolveAudienceLabel">;
+  entityRepository?: Pick<EntityRepository, "resolveAudienceLabel" | "get">;
 };
 
 function mapSessionRow(row: SessionRow): SessionRecord {
@@ -116,6 +116,8 @@ export class SessionsRepository {
   ensure(input: SessionEnsureInput): SessionRecord {
     const parsed = sessionEnsureInputSchema.parse(input);
     return this.db.transaction(() => {
+      const established = this.get(parsed.session_id)?.audience_entity_id;
+      if (established != null) parsed.audience_entity_id = established;
       if (this.options.entityRepository !== undefined && parsed.audience_entity_id !== null) {
         parsed.audience_entity_id = this.options.entityRepository.resolveAudienceLabel(
           parsed.audience_label,
@@ -141,7 +143,7 @@ export class SessionsRepository {
             source_url = excluded.source_url,
             label = excluded.label,
             audience_label = excluded.audience_label,
-            audience_entity_id = excluded.audience_entity_id,
+            audience_entity_id = COALESCE(sessions.audience_entity_id, excluded.audience_entity_id),
             conversation_kind = excluded.conversation_kind,
             last_activity_at = MAX(sessions.last_activity_at, excluded.last_activity_at),
             last_turn_id = COALESCE(excluded.last_turn_id, sessions.last_turn_id),
@@ -224,6 +226,15 @@ export class SessionsRepository {
     return this.get(parsedSessionId);
   }
 
+  private project(row: SessionRow): SessionRecord {
+    const record = mapSessionRow(row);
+    if (record.audience_entity_id !== null)
+      record.audience_entity_id =
+        this.options.entityRepository?.get(record.audience_entity_id)?.id ??
+        record.audience_entity_id;
+    return record;
+  }
+
   get(sessionId: SessionId): SessionRecord | null {
     const parsedSessionId = sessionIdSchema.parse(sessionId);
     const row = this.db
@@ -239,7 +250,7 @@ export class SessionsRepository {
       )
       .get(parsedSessionId) as SessionRow | undefined;
 
-    return row === undefined ? null : mapSessionRow(row);
+    return row === undefined ? null : this.project(row);
   }
 
   getMany(sessionIds: readonly SessionId[]): SessionRecord[] {
@@ -263,7 +274,7 @@ export class SessionsRepository {
         `,
       )
       .all(...uniqueSessionIds) as SessionRow[];
-    const recordsById = new Map(rows.map((row) => [row.session_id, mapSessionRow(row)]));
+    const recordsById = new Map(rows.map((row) => [row.session_id, this.project(row)]));
 
     return uniqueSessionIds.flatMap((sessionId) => {
       const record = recordsById.get(sessionId);
@@ -293,7 +304,7 @@ export class SessionsRepository {
       )
       .all(...values) as SessionRow[];
 
-    return rows.map(mapSessionRow);
+    return rows.map((row) => this.project(row));
   }
 
   count(options?: SessionQueryOptions): number {

@@ -1,5 +1,6 @@
 /** Offline projection validation uses the same decoders as repository reads. */
 import { z } from "zod";
+import { mapPeriodRow } from "../src/memory/self/autobiographical.js";
 import { mapEntityRow, mapCommitmentRow } from "../src/memory/commitments/repository.js";
 import { entityIdSchema } from "../src/memory/commitments/types.js";
 import { mapActionRow } from "../src/memory/actions/repository.js";
@@ -62,6 +63,7 @@ const decoders: Record<string, (row: Row) => unknown> = {
   skill_context_stats: skillContextStatsFromRow,
   growth_markers: mapGrowthMarkerRow,
   goals: mapGoalRow,
+  autobiographical_periods: mapPeriodRow,
   traits: mapTraitRow,
   values: mapValueRow,
   open_questions: mapOpenQuestionRow,

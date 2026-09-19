@@ -2,7 +2,7 @@ import { quoteSqlString } from "../src/storage/codecs.js";
 import { planEntityGraphReversal } from "./repair-entity-graph-reversal.js";
 export { planEntityGraphReversal };
 /** Offline only. Stop all writers. Source streams, working files and their index are immutable. */
-import { existsSync, readFileSync, renameSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, readdirSync, mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createMigrations } from "../src/borg/storage-setup.js";
@@ -30,6 +30,8 @@ import {
   openLance,
   sqlInventory,
   digest,
+  preflightLance,
+  lanceRowMatches,
 } from "./repair-entity-graph-storage.js";
 import { validateSqlChanges } from "./repair-entity-graph-validation.js";
 
@@ -100,6 +102,7 @@ async function finishJournal(journal: Journal, options: RepairOptions = {}): Pro
           "SELECT 1 FROM maintenance_audit WHERE run_id = ? AND action = 'entity_graph_sql_committed'",
         )
         .get(runId) !== undefined;
+    await preflightLance(connection, plan.lance, committed);
     if (!committed) {
       validateSqlChanges([...plan.sql, ...plan.additionalSql, ...plan.completionSql]);
       db.transaction(() => {
@@ -134,14 +137,8 @@ async function finishJournal(journal: Journal, options: RepairOptions = {}): Pro
         const updates: Row[] = [];
         for (const change of changes) {
           const row = current.get(change.id) ?? fail(`Missing Lance row ${change.id}`);
-          const comparable = Object.fromEntries(
-            Object.keys(change.before).map((key) => [
-              key,
-              key === "embedding" ? Array.from(row[key] as Iterable<number>) : row[key],
-            ]),
-          );
-          if (same(comparable, change.after)) continue;
-          if (!same(comparable, change.before))
+          if (lanceRowMatches(row, change, "after")) continue;
+          if (!lanceRowMatches(row, change, "before"))
             fail(`Lance row changed since planning: ${name}/${change.id}`);
           updates.push({ ...row, ...change.after });
         }
@@ -206,6 +203,15 @@ export async function applyEntityGraphRepair(
   if (existsSync(pendingPath(plan.input.dataDir)))
     fail("A repair is pending; use --resume while writers remain stopped");
   assertProtected(plan);
+  const connection = await openLance(plan.input.dataDir);
+  try {
+    await preflightLance(connection, plan.lance);
+  } finally {
+    connection?.close();
+  }
+  // The journal's directory entry must be durable before committing SQLite.
+  mkdirSync(join(plan.input.dataDir, JOURNAL_DIRECTORY), { recursive: true });
+  syncDirectory(plan.input.dataDir);
   const journal: Journal = { version: 2, plan };
   writeJsonFileAtomic(pendingPath(plan.input.dataDir), journal, { space: 0, mode: 0o600 });
   await options.checkpoint?.("after_journal");

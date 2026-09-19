@@ -228,18 +228,26 @@ export function resolveActiveParticipants(
     input.audienceEntityId === null ? null : input.entityRepository.get(input.audienceEntityId);
   const audienceKind = audienceEntity?.kind ?? null;
 
-  appendParticipant(participants, seen, input.senderEntityId, "speaker");
+  const canonical = (id: EntityId | null | undefined) =>
+    id == null ? id : (input.entityRepository.get(id)?.id ?? id);
+  appendParticipant(participants, seen, canonical(input.senderEntityId), "speaker");
 
   if (audienceKind === "group") {
-    for (const senderEntityId of recentSenderEntityIds(input.streamEntries, limit)) {
-      appendParticipant(participants, seen, senderEntityId, "participant");
+    for (const senderEntityId of recentSenderEntityIds(
+      input.streamEntries.map((entry) => ({
+        ...entry,
+        sender_entity_id: canonical(entry.sender_entity_id) ?? null,
+      })),
+      limit,
+    )) {
+      appendParticipant(participants, seen, canonical(senderEntityId), "participant");
     }
 
     if (participants.length <= 1) {
-      appendParticipant(participants, seen, input.audienceEntityId, "audience");
+      appendParticipant(participants, seen, canonical(input.audienceEntityId), "audience");
     }
   } else if (input.audienceEntityId !== null) {
-    appendParticipant(participants, seen, input.audienceEntityId, "audience");
+    appendParticipant(participants, seen, canonical(input.audienceEntityId), "audience");
   }
 
   return participants.slice(0, limit).map((participant) => ({
@@ -267,19 +275,15 @@ export function resolveEpisodeSourceParticipants(
   ];
 
   for (const senderEntityId of senderEntityIds) {
-    if (seen.has(senderEntityId)) {
-      continue;
-    }
-
     const entity = input.entityRepository.get(senderEntityId);
 
-    if (entity === null) {
+    if (entity === null || seen.has(entity.id)) {
       continue;
     }
 
-    seen.add(senderEntityId);
+    seen.add(entity.id);
     participants.push({
-      entityId: senderEntityId,
+      entityId: entity.id,
       displayName: entity.canonical_name,
       role: "participant",
     });

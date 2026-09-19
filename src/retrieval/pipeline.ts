@@ -19,7 +19,7 @@ import {
   isEpisodeVisibleToCapability,
   resolveViewerCapability,
 } from "../memory/episodic/access.js";
-import { parseEpisodeParticipantEntityIdTerm } from "../memory/episodic/participant-terms.js";
+import { episodeParticipantEntityId } from "../memory/episodic/participant-terms.js";
 import type { EpisodicRepository } from "../memory/episodic/repository.js";
 import type {
   Episode,
@@ -179,7 +179,8 @@ export type RetrievalPipelineOptions = {
   >;
   openQuestionsRepository?: OpenQuestionsRepository;
   imagePerceptionRepository?: ImagePerceptionRepository;
-  entityRepository?: Pick<EntityRepository, "findByName">;
+  entityRepository?: Pick<EntityRepository, "findByName"> &
+    Partial<Pick<EntityRepository, "get" | "resolveReferences">>;
   commitmentRepository?: Pick<CommitmentRepository, "get" | "list">;
   recallStateRepository?: Pick<RecallStateRepository, "load" | "save">;
   clock?: Clock;
@@ -586,6 +587,7 @@ export class RetrievalPipeline {
     expansionOverride?: ExpansionOutcome,
     intentQueryVectorsOverride?: IntentQueryVectorMemo,
   ): Promise<RetrievedContext> {
+    options = this.options.entityRepository?.resolveReferences?.(options) ?? options;
     if (this.tracer.enabled && options.traceTurnId !== undefined) {
       this.tracer.emit("retrieval.started", {
         turnId: options.traceTurnId,
@@ -2202,6 +2204,7 @@ export class RetrievalPipeline {
     id: Episode["id"],
     options: RetrievalGetEpisodeOptions = {},
   ): Promise<RetrievedEpisode | null> {
+    options = this.options.entityRepository?.resolveReferences?.(options) ?? options;
     const episode = await this.options.episodicRepository.get(id);
 
     if (episode === null) {
@@ -2294,10 +2297,12 @@ export class RetrievalPipeline {
           continue;
         }
 
+        const id =
+          episodeParticipantEntityId(participant) ??
+          this.options.entityRepository.findByName(participant);
         participantEntityIds.set(
           key,
-          parseEpisodeParticipantEntityIdTerm(participant) ??
-            this.options.entityRepository.findByName(participant),
+          id === null ? null : (this.options.entityRepository.get?.(id)?.id ?? id),
         );
       }
     }

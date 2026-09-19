@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { openDatabase } from "../../storage/sqlite/index.js";
 import { createEntityId } from "../../util/ids.js";
 import { commitmentMigrations } from "./migrations.js";
@@ -41,9 +41,14 @@ describe("entity identity resolution", () => {
       );
       expect(entities.resolveAudienceLabel("transport:channel")).toBe(participant.id);
       const other = entities.add({ canonicalName: "Other participant" });
-      expect(() => entities.resolveAudienceLabel("transport:channel", other.id)).toThrow(
-        "conflicts",
-      );
+      const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+      expect(entities.resolveAudienceLabel("transport:channel", other.id)).toBe(other.id);
+      expect(warning).toHaveBeenCalledWith("entity.audience_binding_mismatch", {
+        label: "transport:channel",
+        boundEntityId: other.id,
+        labelEntityId: participant.id,
+      });
+      warning.mockRestore();
       expect(entities.list()).toHaveLength(2);
     } finally {
       db.close();
@@ -125,12 +130,12 @@ describe("entity identity resolution", () => {
         entities.resolveReferences({
           sender_entity_id: sourceId,
           reply_target_entity_id: intermediate.id,
-          tuple: [sourceId, survivor.id],
+          entity_ids: [sourceId, survivor.id],
         }),
       ).toEqual({
         sender_entity_id: survivor.id,
         reply_target_entity_id: survivor.id,
-        tuple: [survivor.id, survivor.id],
+        entity_ids: [survivor.id, survivor.id],
       });
       expect(
         db

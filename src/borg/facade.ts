@@ -462,7 +462,9 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
       | undefined,
   ): EntityId | null | undefined => {
     if (options?.audienceEntityId !== undefined) {
-      return options.audienceEntityId;
+      return options.audienceEntityId === null
+        ? null
+        : (deps.entityRepository.get(options.audienceEntityId)?.id ?? options.audienceEntityId);
     }
 
     if (options?.audience === undefined) {
@@ -504,6 +506,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
   const resolveEpisodeSearchOptions = (
     options: BorgEpisodeSearchOptions | undefined,
   ): DisclosureRetrievalOptions => {
+    options = options === undefined ? undefined : deps.entityRepository.resolveReferences(options);
     const audienceEntityId = resolveEpisodeAudienceEntityId(options);
     const audienceProfile =
       options?.audienceProfile !== undefined
@@ -690,7 +693,9 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
       get: (id, options = {}) =>
         deps.retrievalPipeline.getEpisode(id, {
           audienceEntityId: resolveEpisodeAudienceEntityId(options),
-          visibleAudienceEntityIds: options.visibleAudienceEntityIds,
+          visibleAudienceEntityIds: options.visibleAudienceEntityIds?.map(
+            (id) => deps.entityRepository.get(id)?.id ?? id,
+          ),
           crossAudience: options.crossAudience,
         }),
       inspect: (id) => deps.episodicRepository.get(id, { includeArchived: true }),
@@ -1118,7 +1123,10 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
             activeOnly: options.activeOnly,
             audience:
               options.audienceEntityId !== undefined
-                ? options.audienceEntityId
+                ? options.audienceEntityId === null
+                  ? null
+                  : (deps.entityRepository.get(options.audienceEntityId)?.id ??
+                    options.audienceEntityId)
                 : options.audience === undefined
                   ? undefined
                   : options.audience === null

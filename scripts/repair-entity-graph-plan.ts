@@ -52,6 +52,7 @@ import {
   assertLeafDeletion,
   diffSql,
   digest,
+  vectorHash,
   assertOne,
 } from "./repair-entity-graph-storage.js";
 import { validateSqlChanges, validateLanceChanges } from "./repair-entity-graph-validation.js";
@@ -185,6 +186,55 @@ export function protectedFiles(dataDir: string): RepairPlan["protectedFiles"] {
   return files.sort((a, b) => a.path.localeCompare(b.path));
 }
 
+/** Read-only: enumerate every room before any projected merge or alias change. */
+export function preflightSessionAudiences(db: SqliteDatabase, merges: Merge[]): Row[] {
+  const entities = new EntityRepository({ db });
+  const ids = new Map(merges.map(({ from, into }) => [from, into]));
+  return db
+    .prepare(
+      "SELECT session_id, audience_label, audience_entity_id FROM sessions ORDER BY session_id",
+    )
+    .all()
+    .map((session) => {
+      const label = String(session.audience_label);
+      const labelId = entityIdHelpers.is(label)
+        ? (entities.get(label)?.id ?? null)
+        : entities.findByName(label);
+      const bound =
+        session.audience_entity_id == null
+          ? null
+          : entities.get(parseEntityId(String(session.audience_entity_id)));
+      const describe = (id: string | null): Row | null => {
+        if (id === null) return null;
+        const entity = entities.get(parseEntityId(id));
+        return {
+          entity,
+          episodes: db
+            .prepare("SELECT count(*) AS count FROM episode_index WHERE audience_entity_id = ?")
+            .get(id)!.count,
+          origin_episodes: db
+            .prepare(
+              "SELECT count(*) AS count FROM episode_index WHERE EXISTS (SELECT 1 FROM json_each(origin_audience_entity_ids) WHERE value = ?)",
+            )
+            .get(id)!.count,
+          session_episodes: db
+            .prepare(
+              "SELECT count(*) AS count FROM episode_index ep WHERE audience_entity_id = ? AND EXISTS (SELECT 1 FROM json_each(ep.source_stream_ids) source JOIN stream_entry_index si ON si.entry_id = source.value WHERE si.session_id = ?)",
+            )
+            .get(id, session.session_id)!.count,
+        };
+      };
+      return {
+        ...session,
+        mismatch: bound !== null && labelId !== null && bound.id !== labelId,
+        bound: describe(bound?.id ?? null),
+        label: describe(labelId),
+        projected_binding: bound === null ? null : (ids.get(bound.id) ?? bound.id),
+        projected_label: labelId === null ? null : (ids.get(labelId) ?? labelId),
+      };
+    });
+}
+
 export async function planEntityGraphRepair(
   input: RepairInput,
   embeddingClient?: EmbeddingClient,
@@ -227,6 +277,7 @@ export async function planEntityGraphRepair(
       );
     const migrationSql = diffSql(migrationBefore, sqlInventory(db, ["_migrations"]));
     const inventory = sqlInventory(db);
+    const sessionPreflight = preflightSessionAudiences(db, input.merges);
     const entities = new EntityRepository({ db });
     for (const merge of input.merges)
       entities.merge(parseEntityId(merge.from), parseEntityId(merge.into), {
@@ -346,7 +397,7 @@ export async function planEntityGraphRepair(
         if (row === null || table === "stream_entry_index" || table === "_migrations") continue;
         if (table === "maintenance_audit" && String(row.action).startsWith("entity_graph_"))
           continue;
-        const next = remap(row, allIds) as Row;
+        const next = remap(row, allIds, table) as Row;
         if (["entities", "semantic_nodes", "semantic_edges"].includes(table)) next.id = row.id;
         if (table === "entities") next.merged_into = row.merged_into;
         if (table === "semantic_node_vector_sync_outbox") next.node_id = row.node_id;
@@ -357,6 +408,7 @@ export async function planEntityGraphRepair(
         if (table === "review_queue") {
           const refs = JSON.parse(String(next.refs)) as Row;
           if (
+            (row.kind === "duplicate" || row.kind === "contradiction") &&
             Array.isArray(refs.node_ids) &&
             refs.node_ids.length === 2 &&
             refs.node_ids[0] === refs.node_ids[1] &&
@@ -506,6 +558,7 @@ export async function planEntityGraphRepair(
             )
               fail(`Embedding shape changed for ${change.id}`);
             change.after.embedding = Array.from(next);
+            change.afterVectorHash = vectorHash(next);
           }
         } finally {
           table.close();
@@ -555,6 +608,7 @@ export async function planEntityGraphRepair(
         lance: lance.inventory,
       },
       reports: [
+        { category: "session_audience_preflight", rows: sessionPreflight },
         { category: "goal_history_not_reconstructable", rows: gaps.unresolved },
         {
           category: "scheduled_actions_need_outcome_evidence_archive_policy_exempts_scheduled",
@@ -658,8 +712,22 @@ export async function planEntityGraphRepair(
           run_id: plan.runId,
           process: "correction",
           action: "entity_graph_lance_rows",
-          targets: { table, rows: changes.map(({ id, after }) => ({ id, after })) },
-          reversal: { table, rows: changes.map(({ id, before }) => ({ id, before })) },
+          targets: {
+            table,
+            rows: changes.map(({ id, after, afterVectorHash }) => ({
+              id,
+              after,
+              vectorHash: afterVectorHash,
+            })),
+          },
+          reversal: {
+            table,
+            rows: changes.map(({ id, before, beforeVectorHash }) => ({
+              id,
+              before,
+              vectorHash: beforeVectorHash,
+            })),
+          },
         },
         plan.additionalSql,
       );

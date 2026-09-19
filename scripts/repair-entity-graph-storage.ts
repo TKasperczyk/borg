@@ -7,11 +7,8 @@ import { connect, type Connection } from "@lancedb/lancedb";
 import { LanceDbTable } from "../src/storage/lancedb/index.js";
 import { SqliteDatabase, SqliteRawDatabase } from "../src/storage/sqlite/index.js";
 import { StorageError } from "../src/util/errors.js";
-import {
-  episodeParticipantEntityId,
-  episodeParticipantEntityIdTerm,
-} from "../src/memory/episodic/participant-terms.js";
-import { parseEntityId } from "../src/util/ids.js";
+import { quoteSqlString } from "../src/storage/codecs.js";
+import { projectMachineReferences } from "../src/memory/common/reference-projection.js";
 
 export type Row = Record<string, unknown>;
 export type SqlChange = {
@@ -21,7 +18,66 @@ export type SqlChange = {
   after: Row | null;
   reason: string;
 };
-export type LanceChange = { table: string; id: string; before: Row; after: Row; reembed?: boolean };
+export type LanceChange = {
+  table: string;
+  id: string;
+  before: Row;
+  after: Row;
+  reembed?: boolean;
+  beforeVectorHash: string | null;
+  afterVectorHash: string | null;
+};
+
+export function vectorHash(vector: unknown): string | null {
+  return vector == null ? null : digest(JSON.stringify(Array.from(vector as Iterable<number>)));
+}
+
+export function lanceRowMatches(row: Row, change: LanceChange, side: "before" | "after"): boolean {
+  const snapshot = change[side];
+  const fields = Object.fromEntries(
+    Object.keys(snapshot).map((key) => [
+      key,
+      key === "embedding" ? Array.from(row[key] as Iterable<number>) : row[key],
+    ]),
+  );
+  return same(fields, snapshot) && vectorHash(row.embedding) === change[`${side}VectorHash`];
+}
+
+/** Every external row is checked before a journal or SQLite mutation, including vectors. */
+export async function preflightLance(
+  connection: Connection | null,
+  changes: LanceChange[],
+  allowAfter = false,
+): Promise<void> {
+  if (changes.length && connection === null) fail("Lance directory disappeared");
+  for (const name of new Set(changes.map((change) => change.table))) {
+    const table = new LanceDbTable(await connection!.openTable(name));
+    try {
+      const items = changes.filter((change) => change.table === name);
+      for (let offset = 0; offset < items.length; offset += 128) {
+        const batch = items.slice(offset, offset + 128);
+        const rows = new Map(
+          (
+            await table.list({
+              where: `id IN (${batch.map((change) => quoteSqlString(change.id)).join(",")})`,
+            })
+          ).map((row) => [String(row.id), row]),
+        );
+        for (const change of batch) {
+          const row = rows.get(change.id);
+          if (
+            !row ||
+            (!lanceRowMatches(row, change, "before") &&
+              !(allowAfter && lanceRowMatches(row, change, "after")))
+          )
+            fail(`Lance row changed since planning: ${name}/${change.id}`);
+        }
+      }
+    } finally {
+      table.close();
+    }
+  }
+}
 
 export function fail(message: string): never {
   throw new StorageError(message, { code: "ENTITY_GRAPH_REPAIR_INVALID" });
@@ -53,57 +109,8 @@ export function openRepairDatabase(dataDir: string, readOnly = true): SqliteData
 }
 
 /** Only exact machine handles / JSON structure. Never substitute inside prose. */
-export function remap(value: unknown, ids: ReadonlyMap<string, string>): unknown {
-  if (ArrayBuffer.isView(value)) return value;
-  if (typeof value === "string") {
-    const direct = ids.get(value);
-    if (direct !== undefined) return direct;
-    for (const prefix of ["semantic_node:", "semantic_edge:"]) {
-      if (value.startsWith(prefix) && ids.has(value.slice(prefix.length)))
-        return prefix + ids.get(value.slice(prefix.length));
-    }
-    const participant = episodeParticipantEntityId(value);
-    if (participant !== null && ids.has(participant)) {
-      return episodeParticipantEntityIdTerm(parseEntityId(ids.get(participant)!));
-    }
-    // Stored JSON is often nested inside SQL text or stream metadata.
-    if (
-      (value.startsWith("{") || value.startsWith("[")) &&
-      [...ids.keys()].some((id) => value.includes(id))
-    ) {
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(value);
-      } catch {
-        return value;
-      }
-      const next = remap(parsed, ids);
-      return same(parsed, next) ? value : JSON.stringify(next);
-    }
-    return value;
-  }
-  if (Array.isArray(value)) return value.map((item) => remap(item, ids));
-  if (value !== null && typeof value === "object") {
-    const result: Row = {};
-    for (const [key, item] of Object.entries(value)) {
-      const nextKey = String(remap(key, ids));
-      // Stream text remains source evidence even when an author pasted JSON.
-      const next = key === "content" && typeof item === "string" ? item : remap(item, ids);
-      if (Object.hasOwn(result, nextKey) && !same(result[nextKey], next)) {
-        // Recall suppression expiries retain the later turn, as in open-question reparenting.
-        if (key.startsWith("semantic_node:") || key.startsWith("semantic_edge:")) {
-          if (typeof next === "number" && typeof result[nextKey] === "number") {
-            result[nextKey] = Math.max(Number(result[nextKey]), next);
-            continue;
-          }
-        }
-        fail(`Conflicting JSON map keys after remapping ${key}`);
-      }
-      result[nextKey] = next;
-    }
-    return result;
-  }
-  return value;
+export function remap(value: unknown, ids: ReadonlyMap<string, string>, table?: string): unknown {
+  return projectMachineReferences(value, (id) => ids.get(id) ?? id, { table });
 }
 
 export function sqlInventory(
@@ -305,7 +312,7 @@ export async function planLance(
         columns: columns.filter((column) => column !== "embedding"),
       });
       for (const row of rows) {
-        const next = remap(row, ids) as Row;
+        const next = remap(row, ids, name) as Row;
         next.id = row.id;
         const reembed = name === "semantic_nodes" && touchedNodes.has(String(row.id));
         if (reembed) {
@@ -316,7 +323,33 @@ export async function planLance(
           }
         }
         if (!same(row, next) || reembed)
-          changes.push({ table: name, id: String(row.id), before: row, after: next, reembed });
+          changes.push({
+            table: name,
+            id: String(row.id),
+            before: row,
+            after: next,
+            reembed,
+            beforeVectorHash: null,
+            afterVectorHash: null,
+          });
+      }
+      if (columns.includes("embedding")) {
+        const touched = changes.filter((change) => change.table === name);
+        for (let offset = 0; offset < touched.length; offset += 128) {
+          const batch = touched.slice(offset, offset + 128);
+          const vectors = new Map(
+            (
+              await table.list({
+                where: `id IN (${batch.map((change) => quoteSqlString(change.id)).join(",")})`,
+                columns: ["id", "embedding"],
+              })
+            ).map((row) => [String(row.id), vectorHash(row.embedding)]),
+          );
+          for (const change of batch) {
+            change.beforeVectorHash = vectors.get(change.id) ?? fail(`Missing vector ${change.id}`);
+            change.afterVectorHash = change.beforeVectorHash;
+          }
+        }
       }
       if (name === "semantic_nodes") {
         for (const id of touchedNodes)

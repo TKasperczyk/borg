@@ -18,6 +18,7 @@ import {
   quoteIdentifier,
   openLance,
   digest,
+  preflightLance,
 } from "./repair-entity-graph-storage.js";
 import { validateSqlChanges, validateLanceChanges } from "./repair-entity-graph-validation.js";
 
@@ -87,16 +88,27 @@ export async function planEntityGraphReversal(
       }
       if (record.action === "entity_graph_lance_rows") {
         const table = String(record.targets.table);
-        const rows = record.targets.rows as Array<{ id: string; after: Row }>;
-        for (const saved of record.reversal.rows as Array<{ id: string; before: Row }>)
+        const rows = record.targets.rows as Array<{
+          id: string;
+          after: Row;
+          vectorHash: string | null;
+        }>;
+        for (const saved of record.reversal.rows as Array<{
+          id: string;
+          before: Row;
+          vectorHash: string | null;
+        }>)
           lance.push({
             table,
             id: saved.id,
             before: rows.find((row) => row.id === saved.id)!.after,
             after: saved.before,
+            beforeVectorHash: rows.find((row) => row.id === saved.id)!.vectorHash,
+            afterVectorHash: saved.vectorHash,
           });
       }
     }
+    await preflightLance(connection, lance);
     validateSqlChanges(sql);
     db.transaction(() => {
       db.pragma("defer_foreign_keys = ON");
@@ -154,8 +166,22 @@ export async function planEntityGraphReversal(
           run_id: runId,
           process: "correction",
           action: "entity_graph_lance_rows",
-          targets: { table, rows: changes.map(({ id, after }) => ({ id, after })) },
-          reversal: { table, rows: changes.map(({ id, before: old }) => ({ id, before: old })) },
+          targets: {
+            table,
+            rows: changes.map(({ id, after, afterVectorHash }) => ({
+              id,
+              after,
+              vectorHash: afterVectorHash,
+            })),
+          },
+          reversal: {
+            table,
+            rows: changes.map(({ id, before: old, beforeVectorHash }) => ({
+              id,
+              before: old,
+              vectorHash: beforeVectorHash,
+            })),
+          },
         },
         additionalSql,
       );

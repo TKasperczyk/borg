@@ -70,7 +70,7 @@ function parseStringArray<T>(value: string, schema: z.ZodType<T>, label: string)
   return result.data;
 }
 
-function mapPeriodRow(row: Record<string, unknown>): AutobiographicalPeriod {
+export function mapPeriodRow(row: Record<string, unknown>): AutobiographicalPeriod {
   const parsed = autobiographicalPeriodSchema.safeParse({
     id: row.id,
     record_version: Number(row.record_version ?? 1),

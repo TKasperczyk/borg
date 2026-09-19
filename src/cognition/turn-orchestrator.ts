@@ -530,6 +530,7 @@ export class TurnOrchestrator {
   }
 
   async run(input: TurnOrchestratorInput): Promise<TurnResult> {
+    input = this.options.entityRepository.resolveReferences(input);
     const sessionId = input.sessionId ?? DEFAULT_SESSION_ID;
     this.options.attachmentService.validateAttachments(input.attachments ?? []);
     const effectiveLockMode =

@@ -185,6 +185,7 @@ export async function buildBorgRepositories(
     entityRepository,
   });
   const episodicRepository = new EpisodicRepository({
+    entityRepository,
     table: options.episodesTable,
     db: sqlite,
     clock,
@@ -361,6 +362,7 @@ export async function buildBorgRepositories(
     clock,
   });
   const activityRepository = new ActivityRepository({
+    entityRepository,
     db: sqlite,
     clock,
   });
