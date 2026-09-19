@@ -346,10 +346,11 @@ export type AutonomySchedulerDescription = {
   /**
    * The interval the handle was armed with. Load-bearing to any consumer
    * comparing `scheduled_tick_at` across reads: that stamp is the last tick
-   * entry plus this, so while one handle stays armed consecutive values differ
-   * by a multiple of it (plus timer drift), and a delta that is not a multiple
-   * means the handle was re-armed. Without this term a series of stamps is
-   * just a series of stamps -- the phase is only readable against the period.
+   * entry plus this, so consecutive values differ by a multiple of it plus the
+   * lateness each entry kept -- an off-grid residue is that lateness and a
+   * re-arm alike, and only `interval_armed_at` separates them. Without this
+   * term a series of stamps is just a series of stamps -- the phase is only
+   * readable against the period.
    */
   interval_ms: number;
   /**
@@ -386,9 +387,10 @@ export type AutonomySchedulerDescription = {
    *
    * The scheduler has held this value since the first version of `start()` (it
    * is one of the two terms in the tick anchor); it simply never left the class.
-   * Re-arm was inferable only off `scheduled_tick_at` grid arithmetic, which
-   * needs two reads, an unbroken series, and a delta large enough for the
-   * off-grid residue to exceed timer drift.
+   * Before it, re-arm was approached off `scheduled_tick_at` grid arithmetic,
+   * which never separated it: the anchor is written on tick entry and keeps the
+   * lateness that entry arrived with, so an off-grid residue is retained
+   * lateness and a re-arm alike at any number of reads.
    */
   interval_armed_at: number | null;
   /**

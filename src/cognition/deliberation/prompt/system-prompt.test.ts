@@ -3187,15 +3187,15 @@ describe("buildBaseSystemPrompt", () => {
       expect(line).not.toContain(absent);
     }
     // The period travels with the stamps on every branch. Two scheduled stamps
-    // are only comparable against it: the anchor advances on tick entry, so the
-    // stamp moves in whole multiples while one handle stays armed, and the
-    // reader cannot tell a re-arm from a long tick without knowing the multiple.
+    // are only comparable against it: the anchor advances on tick entry and
+    // keeps the lateness that entry arrived with, so the delta is a multiple
+    // plus that residue and does not separate a re-arm from a late entry.
     expect(line).toContain(
-      "The scheduled stamp is the last tick entry plus the interval, which is 60000ms: while one handle stays armed it moves in whole multiples of that (plus timer drift), so a delta between two reads that is not a multiple means the handle was re-armed -- which needs the loop stopped and started again, since starting it while a handle exists does nothing.",
+      "The scheduled stamp is the last tick entry plus the interval, which is 60000ms: it moves in multiples of that plus the lateness each entry kept, so an off-grid delta between two reads is lateness or a re-arm alike -- which needs the loop stopped and started again, since starting it while a handle exists does nothing.",
     );
-    // The arming stamp is the direct form of the same question the grid clause
-    // above answers by arithmetic. The grid needs two reads, an unbroken series,
-    // and an off-grid residue larger than timer drift; the refusal count that
+    // The arming stamp is the direct form of the question the grid clause above
+    // raises and cannot close: an off-grid residue is a late tick entry and a
+    // re-arm alike at any number of reads. The refusal count that
     // precedes it cannot answer it at all, because a reset to zero and a counter
     // that did not move are the same reading. The stamp is the epoch itself.
     expect(line).toContain(

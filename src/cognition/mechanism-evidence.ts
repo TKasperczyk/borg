@@ -90,11 +90,11 @@ export type HydratedRecentRegeneration = {
 // block cannot offer at any number of reads.
 //
 // `intervalMs` and `droppedIntervalFires` are the fourth and fifth, and both were dropped at the
-// same call site as the three above. The interval length is what turns a series of
-// `scheduledTickAt` stamps into a grid: the stamp is the last tick entry plus the interval, so
-// consecutive reads differ by a multiple of it while one handle stays armed, and a delta that is
-// not a multiple means it was re-armed. Without the period a reader holding two stamps can see
-// that they differ and nothing more. The refused-fire counts answer the question `tickInFlight`
+// same call site as the three above. The interval length is what a series of `scheduledTickAt`
+// stamps is read against: the stamp is the last tick entry plus the interval, so consecutive reads
+// differ by a multiple of it plus whatever lateness each entry kept -- an off-grid residue is that
+// lateness and a re-arm alike, which is what `intervalArmedAt` is for. Without the period a reader
+// holding two stamps can see that they differ and nothing more. The refused-fire counts answer the question `tickInFlight`
 // raises and cannot close -- a tick holding the anchor is refusing an interval fire every period,
 // and the early return that refuses it is the only event in the scheduler that writes nothing
 // anywhere. A frozen hour and a quiet hour therefore leave the same trace in the budget and
