@@ -2139,7 +2139,7 @@ export function summarizeAutonomySchedulerState(
   const armedClause =
     armedAt === null
       ? ""
-      : ` The loop was last armed ${new Date(armedAt).toISOString()}: that stamp is the epoch this count resets against, so one repeating across two reads is a single armed handle and one that changes is a re-arm -- a comparison the count alone cannot support, since a reset is indistinguishable from not having moved.`;
+      : ` The loop was last armed ${new Date(armedAt).toISOString()}: that stamp is the epoch this count resets against, so a repeat across two reads is one armed handle and a change is one or more re-arms -- a comparison the count alone cannot support, since a reset is indistinguishable from not having moved.`;
   const droppedClause = ` Interval fires refused because a tick was already running: ${
     droppedFires.since_interval_armed
   } since the loop was last armed${

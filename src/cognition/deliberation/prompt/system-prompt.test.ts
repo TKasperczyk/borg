@@ -3199,7 +3199,7 @@ describe("buildBaseSystemPrompt", () => {
     // precedes it cannot answer it at all, because a reset to zero and a counter
     // that did not move are the same reading. The stamp is the epoch itself.
     expect(line).toContain(
-      "The loop was last armed 2023-11-14T21:13:20.000Z: that stamp is the epoch this count resets against, so one repeating across two reads is a single armed handle and one that changes is a re-arm -- a comparison the count alone cannot support, since a reset is indistinguishable from not having moved.",
+      "The loop was last armed 2023-11-14T21:13:20.000Z: that stamp is the epoch this count resets against, so a repeat across two reads is one armed handle and a change is one or more re-arms -- a comparison the count alone cannot support, since a reset is indistinguishable from not having moved.",
     );
   });
 
