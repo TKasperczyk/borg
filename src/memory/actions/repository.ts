@@ -367,13 +367,13 @@ export class ActionRepository {
       });
     }
     const row = rows[0]!;
-    if (row.actor === record.actor && row.updated_at === record.updated_at) return;
+    if (row.actor === record.actor) return;
     if (row.actor !== previousActor) {
       throw new StorageError(`Action mirror actor changed for ${id}`, {
         code: "ACTION_REPAIR_STALE",
       });
     }
-    await table.upsert([{ ...row, actor: record.actor, updated_at: record.updated_at }], {
+    await table.upsert([{ ...row, actor: record.actor }], {
       on: "id",
     });
   }

@@ -183,11 +183,18 @@ export function formatDataRepairPlan(plan: DataRepairPlan): string {
 }
 
 type Journal<P> = { version: 1; plan: P; sha256: string };
-export function loadRepairPlan<P extends DataRepairPlan>(dataDir: string, kind: RepairKind): P {
+export function loadRepairPlan<P extends DataRepairPlan>(
+  dataDir: string,
+  kind: RepairKind,
+  completedRunId?: MaintenanceRunId,
+): P {
   const bank = checkedPath(dataDir);
   assertNoPending(bank, kind);
-  let path = repairPendingPath(bank, kind);
-  if (!existsSync(path)) {
+  let path =
+    completedRunId === undefined
+      ? repairPendingPath(bank, kind)
+      : join(repairDirectory(bank, kind), `${completedRunId}.json`);
+  if (completedRunId === undefined && !existsSync(path)) {
     const dir = repairDirectory(bank, kind);
     const files = existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith(".json")) : [];
     const journals = files.map((f) => ({
@@ -203,6 +210,7 @@ export function loadRepairPlan<P extends DataRepairPlan>(dataDir: string, kind: 
     journal.plan.version !== 1 ||
     journal.plan.dataDir !== bank ||
     journal.plan.kind !== kind ||
+    (completedRunId !== undefined && journal.plan.runId !== completedRunId) ||
     fingerprint(journal.plan) !== journal.sha256
   )
     refuse("Invalid repair journal");

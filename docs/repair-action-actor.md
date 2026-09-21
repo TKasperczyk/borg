@@ -16,14 +16,21 @@ pending/unknown, or if another repair is pending. It also refuses the live demo 
 
 Apply flushes the plan, fsyncs a complete journal, and updates SQL through the actions
 repository in the same transaction as one `maintenance_audit` correction row per action.
-The audit contains the old actor and complete SQL/Lance before/after snapshots. Lifecycle
-state, timestamps, description, provenance and vectors retain their original values.
+The audit contains the old actor and complete SQL/Lance before/after snapshots. Each SQL
+row is re-read immediately before its write inside the transaction. ID and actor are the
+SQL preconditions; other metadata can advance without invalidating an actor-only repair.
+The fresh fields are carried into the repository patch so Zod defaults cannot clear omitted
+archive/session/reference metadata. The audit records these actual before/after values,
+and explicitly scopes reversal to `actor`. Lifecycle state, timestamps, description,
+provenance and vectors are preserved by the repair. Mirror timestamps are not resynchronized.
 Existing mirrors are then updated through the awaited actions repository repair method;
 failures propagate and leave the journal pending. No embeddings are requested, and absent
 mirrors are reported rather than created. A run-summary audit precedes journal archival.
 
-Resume rechecks entity preconditions, SQL records and every affected mirror/vector, accepts
-only the journal's before/after states, and avoids duplicate SQL writes/audits. Keep writers
+Resume rechecks entity preconditions, SQL IDs/actors and every affected mirror/vector. It
+accepts only the planned actor states and exact mirror states, and avoids duplicate SQL
+writes/audits. Metadata changes to sibling rows do not cause stale snapshot failures; a changed
+actor still refuses, including a change during the transaction. Keep writers
 stopped until it completes. A zero-change rerun adds nothing. Audit snapshots support an
 operator-reviewed reversal; no automatic undo command is added. Source streams, entity rows,
 review rows and action lifecycle decisions are untouched.

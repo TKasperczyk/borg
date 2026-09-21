@@ -103,9 +103,7 @@ export async function planActionActorRepair(
         const mirrorBefore = await mirrorRow(table, before.id);
         if (mirrorBefore && mirrorBefore.actor !== from)
           refuse(`Action mirror disagrees with SQL actor: ${before.id}`);
-        const mirrorAfter = mirrorBefore
-          ? { ...mirrorBefore, actor: to, updated_at: after.updated_at }
-          : null;
+        const mirrorAfter = mirrorBefore ? { ...mirrorBefore, actor: to } : null;
         plan.rows.push({
           before,
           after,
@@ -142,14 +140,27 @@ export async function planActionActorRepair(
   }
 }
 
+function assertActor(
+  current: ActionRecord | null,
+  id: ActionRecord["id"],
+  actor: EntityId,
+): ActionRecord {
+  assertSame(
+    current === null ? null : { id: current.id, actor: current.actor },
+    { id, actor },
+    `action identity/actor ${id}`,
+  );
+  return current!;
+}
+
 function sqlPreflight(db: SqliteDatabase, plan: ActorRepairPlan): void {
-  assertSame(entityPreflight(db, plan.from, plan.to), plan.to_entity, "destination entity");
+  entityPreflight(db, plan.from, plan.to);
   const repo = new ActionRepository({ db });
   for (const row of plan.rows)
-    assertSame(
+    assertActor(
       repo.get(row.before.id),
-      hasStep(db, plan, row.audit.action) ? row.after : row.before,
       row.before.id,
+      hasStep(db, plan, row.audit.action) ? plan.to : plan.from,
     );
 }
 async function preflight(db: SqliteDatabase, plan: ActorRepairPlan): Promise<void> {
@@ -179,14 +190,28 @@ export async function applyActionActorRepair(
           const repo = new ActionRepository({ db });
           for (const row of plan.rows) {
             if (hasStep(db, plan, row.audit.action)) continue;
-            repo.update(
-              row.before.id,
-              { actor: plan.to, updated_at: row.before.updated_at },
-              { skipSideEffects: true },
-            );
-            assertSame(repo.get(row.before.id), row.after, `updated ${row.before.id}`);
-            repairAudit(db, plan).record(row.audit);
+            // Earlier writes can update sibling metadata. Re-read immediately before
+            // each write and guard only the handle and actor this repair depends on.
+            const before = assertActor(repo.get(row.before.id), row.before.id, plan.from);
+            const { id, created_at: _createdAt, ...currentFields } = before;
+            // Zod defaults in the general patch schema fill omitted nullable fields.
+            // Carry the fresh fields so an actor correction cannot clear archive,
+            // session, or reference metadata. Never carry the stale plan snapshot.
+            repo.update(id, { ...currentFields, actor: plan.to }, { skipSideEffects: true });
+            const after = assertActor(repo.get(id), id, plan.to);
+            repairAudit(db, plan).record({
+              ...row.audit,
+              targets: { ...row.audit.targets, before, after, repair_fields: ["actor"] },
+              reversal: {
+                ...row.audit.reversal,
+                before,
+                expected_after: after,
+                repair_fields: ["actor"],
+              },
+            });
           }
+          // Detect an actor change to an already-written sibling before committing.
+          sqlPreflight(db, plan);
         }).immediate();
         await checkpoint?.("after_sqlite");
         await preflight(db, plan);
@@ -231,6 +256,12 @@ runRepairCli(import.meta.url, async () => {
   await printPlan(plan);
   if (args.apply) {
     await applyActionActorRepair(plan, { resume: args.resume });
-    console.log(JSON.stringify({ run_id: plan.runId, ...plan.summary }));
+    console.log(
+      JSON.stringify({
+        run_id: plan.runId,
+        ...plan.summary,
+        ...(plan.runId === null ? { status: "no changes; nothing pending" } : {}),
+      }),
+    );
   }
 });

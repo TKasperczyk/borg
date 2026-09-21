@@ -24,9 +24,10 @@ import { GrowthMarkersRepository } from "../src/memory/self/growth-markers.js";
 import { OpenQuestionsRepository } from "../src/memory/self/open-questions.js";
 import { TraitsRepository } from "../src/memory/self/traits-repository.js";
 import { ValuesRepository } from "../src/memory/self/values-repository.js";
-import type { MaintenanceAuditRecordInput } from "../src/offline/audit-log.js";
+import { AuditLog, type MaintenanceAuditRecordInput } from "../src/offline/audit-log.js";
 import type { SqliteDatabase } from "../src/storage/sqlite/index.js";
 import { FixedClock } from "../src/util/clock.js";
+import type { MaintenanceRunId } from "../src/util/ids.js";
 import { cloneDatabase, type Row } from "./repair-entity-graph-storage.js";
 import {
   applyDataRepair,
@@ -57,6 +58,7 @@ type RolloverRefs = PeriodRefs & { next_period_open_payload: AutobiographicalPer
 type ReviewChange = { before: ReviewQueueItem; after: ReviewQueueItem; resolution_text: string };
 type Dismissal = ReviewChange & { classification: "duplicate_closure" | "superseded_narrative" };
 export type PeriodRolloverPlan = DataRepairPlan & {
+  already_applied_run_id?: MaintenanceRunId;
   review_id: number;
   operator: string;
   backup_verified: string | null;
@@ -65,7 +67,7 @@ export type PeriodRolloverPlan = DataRepairPlan & {
   applied_refs: RolloverRefs;
   review: ReviewChange;
   predecessor: { before: AutobiographicalPeriod; after: AutobiographicalPeriod };
-  successor: { before: null; after: AutobiographicalPeriod };
+  successor: { before: AutobiographicalPeriod | null; after: AutobiographicalPeriod };
   periods_before: AutobiographicalPeriod[];
   dismissals: Dismissal[];
   identity_events: Row[];
@@ -253,8 +255,42 @@ export async function planPeriodRollover(
   const db = openDataRepairDatabase(dataDir);
   try {
     const queue = new ReviewQueueRepository({ db });
-    const item = queue.get(id) ?? refuse(`Missing review ${id}`),
-      refs = periodRefs(item);
+    const item = queue.get(id) ?? refuse(`Missing review ${id}`);
+    if (item.resolved_at !== null || item.resolution !== null) {
+      const completed = new AuditLog({ db })
+        .list({ process: "correction" })
+        .find((a) => a.action === `${KIND}:review:${id}` && a.reverted_at === null);
+      if (!completed)
+        refuse(
+          `Review ${id} must be an open identity_inconsistency row or a completed audited rollover`,
+        );
+      const saved = loadRepairPlan<PeriodRolloverPlan>(dataDir, KIND, completed.run_id);
+      assertSame(saved.review_id, id, "completed rollover review");
+      assertSame(
+        [...saved.dismissals.map((d) => d.before.id)].sort((a, b) => a - b),
+        [...dismissIds].sort((a, b) => a - b),
+        "completed rollover dismissals",
+      );
+      if (input.operator !== undefined)
+        assertSame(operator, saved.operator, "completed rollover operator");
+      if (backup !== null) assertSame(backup, saved.backup_verified, "completed rollover backup");
+      assertCompletedRollover(db, saved);
+      preflight(db, saved);
+      return {
+        ...saved,
+        runId: null,
+        already_applied_run_id: completed.run_id,
+        periods_before: periods(db),
+        predecessor: { before: saved.predecessor.after, after: saved.predecessor.after },
+        successor: { before: saved.successor.after, after: saved.successor.after },
+        review: { ...saved.review, before: saved.review.after },
+        dismissals: saved.dismissals.map((d) => ({ ...d, before: d.after })),
+        audits: [],
+        identity_events: [],
+        summary: { changed: 0, accepted_reviews: 0, dismissed_reviews: 0, identity_events: 0 },
+      };
+    }
+    const refs = periodRefs(item);
     const next = refs.next_period_open_payload;
     if (typeof refs.patch.end_ts !== "number" || next === undefined)
       refuse("Target review must propose a closure and next_period_open_payload");
@@ -406,7 +442,23 @@ export async function planPeriodRollover(
   }
 }
 
+function assertCompletedRollover(db: SqliteDatabase, plan: PeriodRolloverPlan): void {
+  const audits = repairAudit(db, plan).list({ run_id: plan.runId! });
+  if (!hasStep(db, plan, `${KIND}:complete`) || audits.some((a) => a.reverted_at !== null))
+    refuse("Rollover is not complete; use --apply --resume for a pending journal");
+}
+
 function preflight(db: SqliteDatabase, plan: PeriodRolloverPlan): void {
+  if (plan.already_applied_run_id !== undefined) {
+    const saved = loadRepairPlan<PeriodRolloverPlan>(
+      plan.dataDir,
+      KIND,
+      plan.already_applied_run_id,
+    );
+    assertCompletedRollover(db, saved);
+    preflight(db, saved);
+    return;
+  }
   const committed = hasStep(db, plan, `${KIND}:review:${plan.review_id}`);
   const expected = committed
     ? sorted([
@@ -494,6 +546,12 @@ runRepairCli(import.meta.url, async () => {
   await printPlan(plan);
   if (args.apply) {
     await applyPeriodRollover(plan, { backupVerified: backup, resume: args.resume });
-    console.log(JSON.stringify({ run_id: plan.runId, ...plan.summary }));
+    console.log(
+      JSON.stringify({
+        run_id: plan.runId,
+        ...plan.summary,
+        ...(plan.runId === null ? { status: "no changes; nothing pending" } : {}),
+      }),
+    );
   }
 });

@@ -194,6 +194,12 @@ runRepairCli(import.meta.url, async () => {
   await printPlan(plan);
   if (args.apply) {
     await applyCommitterBackfill(plan, { resume: args.resume });
-    console.log(JSON.stringify({ run_id: plan.runId, ...plan.summary }));
+    console.log(
+      JSON.stringify({
+        run_id: plan.runId,
+        ...plan.summary,
+        ...(plan.runId === null ? { status: "no changes; nothing pending" } : {}),
+      }),
+    );
   }
 });

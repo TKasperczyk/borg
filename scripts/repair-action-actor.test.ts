@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ActionRepository,
@@ -8,7 +9,14 @@ import {
 import { actionRecordSchema } from "../src/memory/actions/types.js";
 import { EntityRepository } from "../src/memory/commitments/repository.js";
 import { LanceDbStore } from "../src/storage/lancedb/index.js";
-import { createActionId, createEntityId, createStreamEntryId } from "../src/util/ids.js";
+import {
+  createActionId,
+  createEntityId,
+  createStreamEntryId,
+  createSessionId,
+  createSharedStateEntryId,
+} from "../src/util/ids.js";
+import { quoteSqlString } from "../src/storage/codecs.js";
 import { repairFixture } from "./audited-data-repair-test-support.js";
 import { loadRepairPlan, repairPendingPath } from "./audited-data-repair.js";
 import {
@@ -143,6 +151,132 @@ describe("orphan action actor repair", () => {
     expect(f.repo.list({ actor: f.from })).toEqual([]);
     expect(f.audit.list()).toHaveLength(6);
   });
+  it.each(["apply", "after_journal", "after_sqlite"])(
+    "preserves five rich rows with sibling metadata changes (%s), including CLI --resume",
+    async (mode) => {
+      const f = await fixture();
+      for (let i = 0; i < 5; i++) {
+        f.repo.add({
+          ...f.action,
+          id: i === 0 ? f.action.id : createActionId(),
+          state: i < 4 ? "archived" : "scheduled",
+          updated_at: 500 + i,
+          archived_at: i < 4 ? 400 + i : null,
+          expired_at: i < 4 ? 300 + i : null,
+          session_scope: "current_session",
+          session_anchor_id: createSessionId(),
+          last_referenced_at_ms: 500 + i,
+          last_referenced_turn_counter: 40 + i,
+          last_referenced_turn_global: 90 + i,
+          canonicalized_by_artifact_entry_id: createSharedStateEntryId(),
+        });
+      }
+      const records = f.repo.list({ actor: f.from });
+      await f.table!.upsert(
+        records.map((a) => ({
+          id: a.id,
+          description: a.description,
+          actor: a.actor,
+          state: a.state,
+          audience_entity_id: a.audience_entity_id,
+          updated_at: a.updated_at,
+          embedding: [0.125, -0.5, 0.75],
+        })),
+        { on: "id" },
+      );
+      const plan = await planActionActorRepair(f, 2000);
+      const first = plan.rows[0]!.before,
+        sibling = plan.rows[4]!.before;
+      // Fixture-only trigger models metadata changes to a later row from an earlier write.
+      // The real rehearsal failure was omitted-field defaults, not a production trigger.
+      f.db.exec(`CREATE TRIGGER fixture_touch_sibling AFTER UPDATE OF actor ON action_records
+      WHEN OLD.id = ${quoteSqlString(first.id)} AND NEW.actor != OLD.actor
+      BEGIN UPDATE action_records SET updated_at = updated_at + 10,
+        last_referenced_turn_global = last_referenced_turn_global + 1
+        WHERE id = ${quoteSqlString(sibling.id)}; END`);
+      if (mode === "apply") await applyActionActorRepair(plan);
+      else {
+        await expect(
+          applyActionActorRepair(plan, {
+            checkpoint: (point) => {
+              if (point === mode) throw new Error("interrupted");
+            },
+          }),
+        ).rejects.toThrow("interrupted");
+        const result = spawnSync(
+          process.execPath,
+          [
+            "--import",
+            "tsx",
+            "scripts/repair-action-actor.ts",
+            "--data-dir",
+            f.dataDir,
+            "--apply",
+            "--resume",
+          ],
+          { cwd: process.cwd(), encoding: "utf8", timeout: 20_000 },
+        );
+        expect(result.status, result.stderr).toBe(0);
+      }
+      for (const before of records) {
+        expect(f.repo.get(before.id)).toEqual({
+          ...before,
+          actor: f.to,
+          ...(before.id === sibling.id
+            ? {
+                updated_at: before.updated_at + 10,
+                last_referenced_turn_global: before.last_referenced_turn_global! + 1,
+              }
+            : {}),
+        });
+      }
+      const audit = f.audit.list().find((a) => a.action.endsWith(sibling.id))!;
+      expect(audit.targets.before).toMatchObject({
+        actor: f.from,
+        updated_at: sibling.updated_at + 10,
+        archived_at: sibling.archived_at,
+        last_referenced_turn_global: sibling.last_referenced_turn_global! + 1,
+      });
+      expect(audit.reversal.before).toEqual(audit.targets.before);
+      expect(f.audit.list()).toHaveLength(6);
+      await f.table!.checkoutLatest();
+      const mirrors = await f.table!.list();
+      for (const row of plan.rows) {
+        const mirror = mirrors.find((r) => r.id === row.before.id)!;
+        expect({ ...mirror, embedding: Array.from(mirror.embedding as Iterable<number>) }).toEqual(
+          row.mirror_after,
+        );
+      }
+      const repeated = await planActionActorRepair(f);
+      expect(repeated.summary.changed).toBe(0);
+      await applyActionActorRepair(repeated);
+      expect(f.audit.list()).toHaveLength(6);
+    },
+    30_000,
+  );
+  it.each(["before_apply", "inside_transaction"])(
+    "refuses a genuinely changed actor %s",
+    async (when) => {
+      const f = await fixture(false);
+      for (let i = 0; i < 4; i++) f.repo.add({ ...f.action, id: createActionId() });
+      const plan = await planActionActorRepair(f);
+      const first = plan.rows[0]!.before,
+        last = plan.rows[4]!.before;
+      const changedActor = f.entities.add({ canonicalName: "Different actor" }).id;
+      if (when === "before_apply") f.repo.add({ ...last, actor: changedActor });
+      else
+        f.db.exec(`CREATE TRIGGER fixture_change_actor AFTER UPDATE OF actor ON action_records
+      WHEN OLD.id = ${quoteSqlString(first.id)} AND NEW.actor != OLD.actor
+      BEGIN UPDATE action_records SET actor = ${quoteSqlString(changedActor)} WHERE id = ${quoteSqlString(last.id)}; END`);
+      await expect(applyActionActorRepair(plan)).rejects.toThrow("action identity/actor");
+      expect(f.audit.list()).toEqual([]);
+      for (const row of plan.rows)
+        expect(f.repo.get(row.before.id)).toEqual({
+          ...row.before,
+          ...(when === "before_apply" && row.before.id === last.id ? { actor: changedActor } : {}),
+        });
+    },
+  );
   it.each(["after_journal", "after_sqlite", "after_mirror", "after_completion", "after_archive"])(
     "resumes %s without duplicate audits or vector changes",
     async (point) => {

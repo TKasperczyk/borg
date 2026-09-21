@@ -170,7 +170,15 @@ describe("operator-applied period rollover", () => {
       successor_before: null,
       review_before: f.main,
     });
-    await expect(planPeriodRollover(f.input)).rejects.toThrow("open identity_inconsistency");
+    const beforeRerun = sqlInventory(f.db);
+    const repeated = await planPeriodRollover(f.input);
+    expect(repeated.summary.changed).toBe(0);
+    expect(repeated.runId).toBeNull();
+    expect(repeated.review.before).toEqual(repeated.review.after);
+    expect(repeated.successor.before).toEqual(repeated.successor.after);
+    expect(repeated.audits).toEqual([]);
+    await applyPeriodRollover(repeated, { backupVerified: f.backup });
+    expect(sqlInventory(f.db)).toEqual(beforeRerun);
   });
   it.each([50, 100])("refuses boundary %s at or before predecessor start", async (boundary) => {
     const f = fixture();
@@ -343,6 +351,20 @@ describe("operator-applied period rollover", () => {
     expect(f.queue.get(f.main.id)).toEqual(f.main);
     expect(existsSync(repairPendingPath(f.dataDir, plan.kind))).toBe(false);
   });
+  it("refuses to call a different or modified completed rollover a no-op", async () => {
+    const f = fixture();
+    const plan = await planPeriodRollover(f.input, 2000);
+    await applyPeriodRollover(plan, { backupVerified: f.backup });
+    await expect(planPeriodRollover({ ...f.input, dismiss: [] })).rejects.toThrow(
+      "completed rollover dismissals",
+    );
+    await expect(planPeriodRollover({ ...f.input, operator: "Another operator" })).rejects.toThrow(
+      "completed rollover operator",
+    );
+    f.repo.upsertPeriod({ ...plan.successor.after, narrative: "Changed after completion" });
+    await expect(planPeriodRollover(f.input)).rejects.toThrow("Changed since planning");
+    expect(f.audit.list()).toHaveLength(4);
+  });
   it("runs the actual CLI as dry run, requires backup, and supports apply/resume", () => {
     const f = fixture();
     const before = sqlInventory(f.db);
@@ -377,6 +399,11 @@ describe("operator-applied period rollover", () => {
     const applied = run([...args, "--backup-verified", f.backup, "--apply"]);
     expect(applied.status, applied.stderr).toBe(0);
     expect(f.repo.currentPeriod()?.id).toBe(f.next.id);
+    const beforeRerun = sqlInventory(f.db);
+    const repeated = run([...args, "--backup-verified", f.backup, "--apply"]);
+    expect(repeated.status, repeated.stderr).toBe(0);
+    expect(repeated.stdout).toContain("no changes; nothing pending");
+    expect(sqlInventory(f.db)).toEqual(beforeRerun);
     const resumed = run([
       "--data-dir",
       f.dataDir,

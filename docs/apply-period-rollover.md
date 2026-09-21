@@ -56,8 +56,11 @@ its audit are atomic. A run-summary audit precedes journal archival.
 
 After interruption keep writers stopped and resume with the recorded backup path. Resume
 checks the complete period timeline and affected reviews against journaled snapshots and
-audit markers; it never repeats a completed rollover or dismissal. A new invocation targeting
-an already-resolved review refuses. Full before/expected-after snapshots are in correction
+audit markers; it never repeats a completed rollover or dismissal. Repeating the same command
+for a completed audited rollover validates its archived journal, completion audit, current
+periods and review rows, and returns `no changes; nothing pending` without any writes. Other
+resolved reviews, changed dismissal/operator inputs, or changed completed state still refuse.
+Full before/expected-after snapshots are in correction
 audits for operator-reviewed reversal; no automatic undo command is added. Identity and
 maintenance audit history should remain append-only during any subsequent correction.
 
