@@ -6,7 +6,7 @@ import { episodeIdSchema } from "../src/memory/episodic/types.js";
 import { semanticNodeIdSchema } from "../src/memory/semantic/types.js";
 import type { SqliteDatabase } from "../src/storage/sqlite/index.js";
 import { utf16SafePrefixEnd } from "../src/util/utf16-boundary.js";
-import { fingerprint, refuse } from "./audited-data-repair.js";
+import { assertSame, fingerprint, refuse } from "./audited-data-repair.js";
 import type { Row } from "./repair-entity-graph-storage.js";
 
 export const DOSSIER_EPISODE_LIMIT = 6;
@@ -15,6 +15,19 @@ const hashSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const excerptSchema = z.object({ text: z.string(), truncated: z.boolean() }).strict();
 const selfNodeAnchorSchema = z.object({ id: semanticNodeIdSchema, label: z.string() }).strict();
 export type SelfNodeAnchor = z.infer<typeof selfNodeAnchorSchema>;
+const targetNodeSchema = selfNodeAnchorSchema.extend({
+  kind: z.enum(["self", "entity", "person"]),
+});
+export type TargetNode = z.infer<typeof targetNodeSchema>;
+export function recordedTarget(record: {
+  target_node?: TargetNode;
+  self_node?: SelfNodeAnchor;
+}): TargetNode | undefined {
+  const legacy = record.self_node ? { ...record.self_node, kind: "self" as const } : undefined;
+  if (legacy && record.target_node)
+    assertSame(record.target_node, legacy, "recorded target metadata");
+  return record.target_node ?? legacy;
+}
 export const verdictSchema = z
   .object({
     verdict: z.enum(["self", "other", "unsure"]),
@@ -108,7 +121,7 @@ export const failedVerdictSchema = z
 export type FailedVerdict = z.infer<typeof failedVerdictSchema>;
 export const verdictFileSchema = z
   .object({
-    version: z.union([z.literal(1), z.literal(2), z.literal(3)]),
+    version: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]),
     kind: z.literal("judge-self-label-nodes"),
     data_dir: z.string().min(1),
     started_at: z.number().finite(),
@@ -119,6 +132,7 @@ export const verdictFileSchema = z
     failures: z.array(failedVerdictSchema).default([]),
     candidate_node_ids: z.array(semanticNodeIdSchema).optional(),
     self_node: selfNodeAnchorSchema.optional(),
+    target_node: targetNodeSchema.optional(),
     matching_entities_report_only: z.array(z.record(z.string(), z.unknown())),
   })
   .strict()
@@ -134,6 +148,12 @@ export const verdictFileSchema = z
         code: "custom",
         path: ["self_node"],
         message: "Version 3 requires the selected self node",
+      });
+    if (file.version === 4 && file.target_node === undefined)
+      ctx.addIssue({
+        code: "custom",
+        path: ["target_node"],
+        message: "Version 4 requires the selected target node",
       });
   });
 export type VerdictFile = z.infer<typeof verdictFileSchema>;
@@ -154,35 +174,42 @@ function excerpt(value: string, limit: number) {
   };
 }
 
-export function selfLabelInventory(db: SqliteDatabase, selfNode?: string) {
+export function selfLabelInventory(db: SqliteDatabase, targetNode?: string) {
   const self = new EntityRepository({ db }).getSelf() ?? refuse("Missing self entity");
-  const anchors = db
+  const names = new Set([self.canonical_name, ...self.aliases].map(normalizedLabel));
+  const active = db
     .prepare(
-      `SELECT * FROM semantic_nodes WHERE kind = 'self'
+      `SELECT * FROM semantic_nodes WHERE kind IN ('self', 'entity', 'person')
     AND archived = 0 AND status = 'active' AND superseded_by IS NULL ORDER BY id`,
     )
     .all();
+  const eligible = active.filter((node) => names.has(normalizedLabel(String(node.label))));
   const edgeCount = db.prepare(
     "SELECT COUNT(*) AS count FROM semantic_edges WHERE from_node_id = ? OR to_node_id = ?",
   );
-  const summaries = anchors.map((node) => ({
+  const summarize = (node: Row) => ({
     id: String(node.id),
+    kind: String(node.kind),
     label: String(node.label),
     created_at: Number(node.created_at),
     edge_count: Number(edgeCount.get(node.id, node.id)!.count),
     source_count: strings(node, "source_episode_ids").length,
-  }));
-  if (selfNode === undefined && anchors.length !== 1)
+  });
+  const summaries = eligible.map(summarize);
+  if (targetNode === undefined && eligible.length !== 1)
     refuse(
-      `${anchors.length ? "Multiple active kind=self semantic nodes; --self-node is required" : "No active kind=self semantic nodes"}. Candidates: ${JSON.stringify(summaries)}`,
+      `${eligible.length ? "Multiple eligible comparison target nodes; --target-node is required" : "No eligible comparison target nodes"}. Candidates: ${JSON.stringify(summaries)}`,
     );
   const canonical =
-    (selfNode === undefined ? anchors[0] : anchors.find((node) => node.id === selfNode)) ??
+    (targetNode === undefined ? eligible[0] : eligible.find((node) => node.id === targetNode)) ??
     refuse(
-      `--self-node must name an active, unarchived, unsuperseded kind=self semantic node: ${selfNode}. Candidates: ${JSON.stringify(summaries)}`,
+      `--target-node must name an active, unarchived, unsuperseded self/entity/person node whose label matches the self entity's canonical name or aliases: ${targetNode}. Candidates: ${JSON.stringify(summaries)}`,
     );
-  const anchor = selfNodeAnchorSchema.parse({ id: canonical.id, label: canonical.label });
-  const names = new Set([self.canonical_name, ...self.aliases].map(normalizedLabel));
+  const target = targetNodeSchema.parse({
+    id: canonical.id,
+    kind: canonical.kind,
+    label: canonical.label,
+  });
   const candidates = db
     .prepare(
       `SELECT * FROM semantic_nodes
@@ -190,7 +217,7 @@ export function selfLabelInventory(db: SqliteDatabase, selfNode?: string) {
     AND status <> 'superseded' AND superseded_by IS NULL ORDER BY id`,
     )
     .all()
-    .filter((row) => names.has(normalizedLabel(String(row.label))));
+    .filter((row) => row.id !== target.id && names.has(normalizedLabel(String(row.label))));
   const matchingEntities = db
     .prepare("SELECT * FROM entities WHERE id <> ? ORDER BY id")
     .all(self.id)
@@ -200,10 +227,12 @@ export function selfLabelInventory(db: SqliteDatabase, selfNode?: string) {
   return {
     self,
     canonical,
-    anchor,
+    target,
     candidates,
     matchingEntities,
-    otherSelfNodes: summaries.filter((node) => node.id !== anchor.id),
+    otherSelfNodes: active
+      .filter((node) => node.kind === "self" && node.id !== target.id)
+      .map(summarize),
   };
 }
 
@@ -211,9 +240,9 @@ export async function buildSelfLabelDossier(
   db: SqliteDatabase,
   episodes: Pick<EpisodicRepository, "get" | "getStats"> | null,
   nodeId: string,
-  selfNode?: string,
+  targetNode?: string,
 ): Promise<SelfLabelDossier> {
-  const { self, canonical } = selfLabelInventory(db, selfNode);
+  const { self, canonical } = selfLabelInventory(db, targetNode);
   const node =
     db.prepare("SELECT * FROM semantic_nodes WHERE id = ?").get(nodeId) ??
     refuse(`Missing judged node ${nodeId}`);
@@ -292,17 +321,21 @@ export async function buildSelfLabelDossier(
 
 export function parseVerdictFile(value: unknown): VerdictFile {
   const file = verdictFileSchema.parse(value);
+  const target = recordedTarget(file);
   const ids = new Set<string>();
   const candidates =
     file.candidate_node_ids === undefined ? undefined : new Set(file.candidate_node_ids);
   if (candidates && candidates.size !== file.candidate_node_ids!.length)
     refuse("Duplicate candidate IDs");
+  if (target && candidates?.has(target.id))
+    refuse("The selected target must not be a judged candidate");
   for (const record of [...file.verdicts, ...file.failures]) {
     if (
       ids.has(record.node_id) ||
       (candidates !== undefined && !candidates.has(record.node_id)) ||
       record.node_id !== record.dossier.node.id ||
-      (file.self_node !== undefined && record.dossier.self.node_id !== file.self_node.id) ||
+      record.node_id === record.dossier.self.node_id ||
+      (target !== undefined && record.dossier.self.node_id !== target.id) ||
       record.model !== file.model ||
       fingerprint(record.dossier) !== record.dossier_hash
     )

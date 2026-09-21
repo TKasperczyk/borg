@@ -325,11 +325,13 @@ export async function planEntityGraphRepair(
       const [, target] = find("semantic_nodes", merge.into);
       if (
         nodeOnly
-          ? !["entity", "person"].includes(String(sourceNode.kind)) || target.kind !== "self"
+          ? !["entity", "person"].includes(String(sourceNode.kind)) ||
+            !["self", "entity", "person"].includes(String(target.kind))
           : sourceNode.kind !== "entity" || target.kind !== "entity"
       )
         fail("Explicit node merges require entity nodes");
-      if (target.status !== "active" || target.archived) fail("Node survivor must be active");
+      if (target.status !== "active" || target.archived || target.superseded_by !== null)
+        fail("Node survivor must be active and not superseded");
       if (
         sourceNode.archived &&
         sourceNode.superseded_by === target.id &&

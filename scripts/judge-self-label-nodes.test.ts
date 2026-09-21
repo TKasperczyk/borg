@@ -104,7 +104,7 @@ async function fixture(liveShape = false) {
       superseded_by: null,
       ...extra,
     });
-  const canonical = await addNode("self", "Anchor with a different label");
+  const canonical = await addNode("self", self.canonical_name);
   const same = await addNode("entity", " éCHO ", { aliases: ["先の名前"] });
   const other = await addNode("person", "別名", {
     description: "Une autre personne portant ce nom.",
@@ -192,14 +192,14 @@ async function judged(
   f: Fixture,
   allOther = false,
   liveStoreConfirmed?: string,
-  selfNode?: string,
+  targetNode: string | undefined = f.canonical.id,
 ) {
   return (
     await judgeSelfLabelNodes({
       dataDir: f.dataDir,
       llm: llm(f, allOther).client,
       liveStoreConfirmed,
-      selfNode,
+      targetNode,
     })
   ).file;
 }
@@ -208,15 +208,15 @@ async function planned(
   file?: VerdictFile,
   backupPath = backup(f),
   liveStoreConfirmed?: string,
-  selfNode?: string,
+  targetNode: string | undefined = f.canonical.id,
 ) {
   return planSelfLabelNodes({
     dataDir: f.dataDir,
-    verdicts: file ?? (await judged(f, false, liveStoreConfirmed, selfNode)),
+    verdicts: file ?? (await judged(f, false, liveStoreConfirmed, targetNode)),
     backupVerified: backupPath,
     embeddingClient: new FakeEmbeddingClient(4),
     liveStoreConfirmed,
-    selfNode,
+    targetNode,
   });
 }
 function rows(f: Fixture) {
@@ -232,24 +232,116 @@ describe("judged self-label repair", () => {
     await f.addNode("concept", "Écho");
     await f.addNode("entity", "Unrelated", { aliases: ["Écho"] });
     f.db.prepare("UPDATE semantic_nodes SET label = ? WHERE id = ?").run("Écho", f.canonical.id);
-    const inventory = selfLabelInventory(f.db);
+    const inventory = selfLabelInventory(f.db, f.canonical.id);
     expect(inventory.candidates.map((row) => row.id).sort()).toEqual(
       [f.same.id, f.other.id, f.unsure.id].sort(),
     );
     expect(inventory.canonical.id).toBe(f.canonical.id);
-    expect(selfLabelInventory(f.db, f.canonical.id).anchor).toEqual(inventory.anchor);
+    expect(selfLabelInventory(f.db, f.canonical.id).target).toEqual(inventory.target);
     expect(inventory.matchingEntities.map((row) => row.id)).toEqual([f.duplicateEntity.id]);
   });
 
-  it("refuses a missing structural self anchor, never inferring it from a label", async () => {
+  it("refuses when there are no eligible comparison targets", async () => {
     const f = await fixture();
-    f.db.prepare("UPDATE semantic_nodes SET kind = 'entity' WHERE id = ?").run(f.canonical.id);
+    f.db.prepare("UPDATE semantic_nodes SET archived = 1").run();
     expect(() => selfLabelInventory(f.db)).toThrow(
-      "No active kind=self semantic nodes. Candidates: []",
+      "No eligible comparison target nodes. Candidates: []",
     );
   });
 
-  it("requires --self-node for ambiguous anchors and lists IDs, labels, dates and both edge/source counts", async () => {
+  it.each(["self", "entity", "person"])(
+    "accepts a %s target, excludes it from judging and preserves report-only self nodes",
+    async (kind) => {
+      const f = await fixture();
+      const target = await f.addNode(kind, kind === "person" ? " 別名 " : " éCHO ", {
+        description: "Description du nœud choisi par l'opérateur.",
+      });
+      const observation = await f.addNode("self", "An observation with an unrelated label");
+      const reportIds = [f.canonical.id, observation.id].sort();
+      const before = f.db
+        .prepare("SELECT * FROM semantic_nodes WHERE id IN (?, ?) ORDER BY id")
+        .all(...reportIds);
+      const client = llm(f),
+        path = backup(f);
+      const inventory = selfLabelInventory(f.db, target.id);
+      expect(inventory.candidates.map((row) => row.id).sort()).toEqual(
+        [f.same.id, f.other.id, f.unsure.id].sort(),
+      );
+      expect(inventory.otherSelfNodes.map((row) => row.id).sort()).toEqual(reportIds);
+      const result = await judgeSelfLabelNodes({
+        dataDir: f.dataDir,
+        targetNode: target.id,
+        llm: client.client,
+      });
+      const recorded = { id: target.id, kind, label: target.label };
+      expect(result.file.target_node).toEqual(recorded);
+      expect(readVerdictFile(result.path).target_node).toEqual(recorded);
+      expect(result.file.candidate_node_ids).not.toContain(target.id);
+      expect(client.complete).toHaveBeenCalledTimes(3);
+      for (const [request] of client.complete.mock.calls) {
+        const dossier = JSON.parse(request.messages[0]!.content) as SelfLabelDossier;
+        expect(dossier.self).toMatchObject({
+          node_id: target.id,
+          canonical_name: f.self.canonical_name,
+          aliases: ["別名"],
+          description: { text: target.description },
+        });
+        expect(dossier.node.kind).not.toBe("self");
+        expect(dossier.node.id).not.toBe(target.id);
+      }
+      const plan = await planned(f, result.file, path, undefined, target.id);
+      expect(plan.selfLabelJudgments.target_node).toEqual(recorded);
+      expect(plan.input.nodeMerges).toEqual([{ from: f.same.id, into: target.id }]);
+      expect(
+        plan.reports
+          .find((row) => row.category === "other_self_nodes_report_only")!
+          .rows.map((row) => row.id)
+          .sort(),
+      ).toEqual(reportIds);
+      await applySelfLabelNodes(plan, { backupVerified: path, targetNode: target.id });
+      expect(
+        f.db
+          .prepare("SELECT archived, superseded_by FROM semantic_nodes WHERE id = ?")
+          .get(f.same.id),
+      ).toEqual({ archived: 1, superseded_by: target.id });
+      expect(
+        f.db.prepare("SELECT to_node_id FROM semantic_edges WHERE id = ?").get(f.incoming.id)!
+          .to_node_id,
+      ).toBe(target.id);
+      expect(
+        f.db
+          .prepare("SELECT * FROM semantic_nodes WHERE id IN (?, ?) ORDER BY id")
+          .all(...reportIds),
+      ).toEqual(before);
+      expect(
+        f.audit
+          .list()
+          .every((row) => fingerprint(row.targets.target_node) === fingerprint(recorded)),
+      ).toBe(true);
+      await applySelfLabelNodes(loadSelfLabelPlan(f.dataDir), {
+        backupVerified: path,
+        targetNode: target.id,
+        resume: true,
+      });
+    },
+  );
+
+  it.each(["self", "entity", "person"])(
+    "allows omitting the flag when the only eligible target has kind %s",
+    async (kind) => {
+      const f = await fixture(),
+        target = await f.addNode(kind, "別名");
+      f.db.prepare("UPDATE semantic_nodes SET archived = 1 WHERE id <> ?").run(target.id);
+      const client = llm(f);
+      expect(selfLabelInventory(f.db).target).toEqual({ id: target.id, kind, label: target.label });
+      const result = await judgeSelfLabelNodes({ dataDir: f.dataDir, llm: client.client });
+      expect(result.file.target_node).toEqual({ id: target.id, kind, label: target.label });
+      expect(result.file.verdicts).toEqual([]);
+      expect(client.complete).not.toHaveBeenCalled();
+    },
+  );
+
+  it("requires --target-node across eligible kinds and lists IDs, kinds, labels, dates and edge/source counts", async () => {
     const f = await fixture();
     f.entities.addAlias(f.self.id, "self");
     const observation = await f.addNode("self", "self", {
@@ -263,20 +355,52 @@ describe("judged self-label repair", () => {
     const candidates = [
       {
         id: f.canonical.id,
+        kind: "self",
         label: f.canonical.label,
         created_at: 1000,
         edge_count: 0,
         source_count: 1,
       },
-      { id: observation.id, label: "self", created_at: 900, edge_count: 3, source_count: 2 },
+      {
+        id: observation.id,
+        kind: "self",
+        label: "self",
+        created_at: 900,
+        edge_count: 3,
+        source_count: 2,
+      },
+      {
+        id: f.same.id,
+        kind: "entity",
+        label: f.same.label,
+        created_at: 1000,
+        edge_count: 3,
+        source_count: 1,
+      },
+      {
+        id: f.other.id,
+        kind: "person",
+        label: f.other.label,
+        created_at: 1000,
+        edge_count: 0,
+        source_count: 1,
+      },
+      {
+        id: f.unsure.id,
+        kind: "entity",
+        label: f.unsure.label,
+        created_at: 1000,
+        edge_count: 0,
+        source_count: 1,
+      },
     ].sort((a, b) => a.id.localeCompare(b.id));
-    const message = `Multiple active kind=self semantic nodes; --self-node is required. Candidates: ${JSON.stringify(candidates)}`;
+    const message = `Multiple eligible comparison target nodes; --target-node is required. Candidates: ${JSON.stringify(candidates)}`;
     const before = rows(f),
       client = llm(f),
       out = join(f.dataDir, "ambiguous.json");
     expect(() => selfLabelInventory(f.db)).toThrow(message);
     await expect(
-      judgeSelfLabelNodes({ dataDir: f.dataDir, out, llm: client.client }),
+      judgeSelfLabelNodes({ dataDir: f.dataDir, targetNode: undefined, out, llm: client.client }),
     ).rejects.toThrow(message);
     expect(client.complete).not.toHaveBeenCalled();
     expect(existsSync(out)).toBe(false);
@@ -284,17 +408,21 @@ describe("judged self-label repair", () => {
   });
 
   it.each([
-    "non-self",
+    "wrong-kind",
+    "unmatched-label",
+    "alias-only",
     "archived",
     "superseded-status",
     "superseded-pointer",
     "quarantined",
     "missing",
-  ])(
-    "rejects a --self-node selecting a %s node even when one valid anchor exists",
-    async (kind) => {
-      const f = await fixture();
-      const invalid = await f.addNode(kind === "non-self" ? "entity" : "self", "Écho", {
+  ])("rejects a --target-node selecting a %s node", async (kind) => {
+    const f = await fixture();
+    const invalid = await f.addNode(
+      kind === "wrong-kind" ? "concept" : "entity",
+      kind === "unmatched-label" || kind === "alias-only" ? "Unrelated" : "Écho",
+      {
+        aliases: kind === "alias-only" ? ["Écho"] : [],
         archived: kind === "archived" || kind === "missing",
         status:
           kind === "superseded-status"
@@ -303,21 +431,21 @@ describe("judged self-label repair", () => {
               ? "quarantined"
               : "active",
         superseded_by: kind === "superseded-pointer" ? f.canonical.id : null,
-      });
-      const selfNode = kind === "missing" ? createSemanticNodeId() : invalid.id;
-      const client = llm(f),
-        out = join(f.dataDir, "invalid-anchor.json"),
-        before = rows(f);
-      await expect(
-        judgeSelfLabelNodes({ dataDir: f.dataDir, selfNode, out, llm: client.client }),
-      ).rejects.toThrow(
-        "--self-node must name an active, unarchived, unsuperseded kind=self semantic node",
-      );
-      expect(client.complete).not.toHaveBeenCalled();
-      expect(existsSync(out)).toBe(false);
-      expect(rows(f)).toEqual(before);
-    },
-  );
+      },
+    );
+    const targetNode = kind === "missing" ? createSemanticNodeId() : invalid.id;
+    const client = llm(f),
+      out = join(f.dataDir, "invalid-anchor.json"),
+      before = rows(f);
+    await expect(
+      judgeSelfLabelNodes({ dataDir: f.dataDir, targetNode, out, llm: client.client }),
+    ).rejects.toThrow(
+      "--target-node must name an active, unarchived, unsuperseded self/entity/person node whose label matches",
+    );
+    expect(client.complete).not.toHaveBeenCalled();
+    expect(existsSync(out)).toBe(false);
+    expect(rows(f)).toEqual(before);
+  });
 
   it("uses the explicit anchor throughout judging, merge planning and recovery, keeping other self nodes report-only", async () => {
     const f = await fixture();
@@ -329,14 +457,14 @@ describe("judged self-label repair", () => {
       .get(observation.id);
     const client = llm(f),
       path = backup(f),
-      anchor = { id: f.canonical.id, label: f.canonical.label };
+      anchor = { id: f.canonical.id, kind: "self", label: f.canonical.label };
     const result = await judgeSelfLabelNodes({
       dataDir: f.dataDir,
-      selfNode: anchor.id,
+      targetNode: anchor.id,
       llm: client.client,
     });
-    expect(result.file.self_node).toEqual(anchor);
-    expect(readVerdictFile(result.path).self_node).toEqual(anchor);
+    expect(result.file.target_node).toEqual(anchor);
+    expect(readVerdictFile(result.path).target_node).toEqual(anchor);
     expect(client.complete).toHaveBeenCalledTimes(3);
     for (const [request] of client.complete.mock.calls) {
       const dossier = JSON.parse(request.messages[0]!.content) as SelfLabelDossier;
@@ -345,18 +473,21 @@ describe("judged self-label repair", () => {
     }
     // The report is refreshed when planning, independently of the judged candidates.
     f.addEdge(f.neighbor.id, observation.id);
-    await expect(planned(f, result.file, path)).rejects.toThrow("--self-node is required");
+    await expect(planSelfLabelNodes({ dataDir: f.dataDir, verdicts: result.file })).rejects.toThrow(
+      "--target-node is required",
+    );
     await expect(planned(f, result.file, path, undefined, observation.id)).rejects.toThrow(
-      "selected self node since judging",
+      "selected target node since judging",
     );
     const plan = await planned(f, result.file, path, undefined, anchor.id);
-    expect(plan.selfLabelJudgments.self_node).toEqual(anchor);
+    expect(plan.selfLabelJudgments.target_node).toEqual(anchor);
     expect(plan.input.nodeMerges).toEqual([{ from: f.same.id, into: anchor.id }]);
     expect(
       plan.reports.find((row) => row.category === "other_self_nodes_report_only")!.rows,
     ).toEqual([
       {
         id: observation.id,
+        kind: "self",
         label: observation.label,
         created_at: 900,
         edge_count: 2,
@@ -369,37 +500,41 @@ describe("judged self-label repair", () => {
     for (const row of [...plan.additionalSql, ...plan.completionSql].filter(
       (row) => row.table === "maintenance_audit",
     ))
-      expect(JSON.parse(String(row.after!.targets)).self_node).toEqual(anchor);
-    await expect(applySelfLabelNodes(plan, { backupVerified: path })).rejects.toThrow(
-      "--self-node is required",
-    );
+      expect(JSON.parse(String(row.after!.targets)).target_node).toEqual(anchor);
     await expect(
-      applySelfLabelNodes(plan, { backupVerified: path, selfNode: observation.id }),
-    ).rejects.toThrow("selected self node since judging");
+      applySelfLabelNodes(plan, { backupVerified: path, targetNode: undefined }),
+    ).rejects.toThrow("--target-node is required");
+    await expect(
+      applySelfLabelNodes(plan, { backupVerified: path, targetNode: observation.id }),
+    ).rejects.toThrow("selected target node since judging");
     expect(f.audit.list()).toHaveLength(0);
     expect(existsSync(graph.pendingPath(f.dataDir))).toBe(false);
     await expect(
       applySelfLabelNodes(plan, {
         backupVerified: path,
-        selfNode: anchor.id,
+        targetNode: anchor.id,
         checkpoint: (point) => {
           if (point === "after_sqlite") throw new Error("interrupted");
         },
       }),
     ).rejects.toThrow("interrupted");
     await expect(
-      applySelfLabelNodes(loadSelfLabelPlan(f.dataDir), { backupVerified: path, resume: true }),
-    ).rejects.toThrow("--self-node is required");
+      applySelfLabelNodes(loadSelfLabelPlan(f.dataDir), {
+        backupVerified: path,
+        targetNode: undefined,
+        resume: true,
+      }),
+    ).rejects.toThrow("--target-node is required");
     await applySelfLabelNodes(loadSelfLabelPlan(f.dataDir), {
       backupVerified: path,
-      selfNode: anchor.id,
+      targetNode: anchor.id,
       resume: true,
     });
     expect(f.db.prepare("SELECT * FROM semantic_nodes WHERE id = ?").get(observation.id)).toEqual(
       rawObservation,
     );
     expect(
-      f.audit.list().every((row) => fingerprint(row.targets.self_node) === fingerprint(anchor)),
+      f.audit.list().every((row) => fingerprint(row.targets.target_node) === fingerprint(anchor)),
     ).toBe(true);
     expect(f.audit.list().filter((row) => row.action.startsWith("judge-self-label:"))).toHaveLength(
       3,
@@ -412,24 +547,28 @@ describe("judged self-label repair", () => {
       client = llm(f);
     const first = await judgeSelfLabelNodes({
       dataDir: f.dataDir,
-      selfNode: otherAnchor.id,
+      targetNode: otherAnchor.id,
       llm: client.client,
     });
-    expect(first.file.self_node).toEqual({ id: otherAnchor.id, label: otherAnchor.label });
+    expect(first.file.target_node).toEqual({
+      id: otherAnchor.id,
+      kind: "self",
+      label: otherAnchor.label,
+    });
     const original = readFileSync(first.path, "utf8");
     client.complete.mockClear();
     await expect(
       judgeSelfLabelNodes({
         dataDir: f.dataDir,
-        selfNode: f.canonical.id,
+        targetNode: f.canonical.id,
         out: first.path,
         llm: client.client,
       }),
-    ).rejects.toThrow("Selected self node differs from the verdict file");
+    ).rejects.toThrow("Selected target node differs from the verdict file");
     expect(readFileSync(first.path, "utf8")).toBe(original);
     const resumed = await judgeSelfLabelNodes({
       dataDir: f.dataDir,
-      selfNode: otherAnchor.id,
+      targetNode: otherAnchor.id,
       out: first.path,
       llm: client.client,
     });
@@ -458,7 +597,7 @@ describe("judged self-label repair", () => {
       .prepare("UPDATE semantic_nodes SET source_episode_ids = ? WHERE id = ?")
       .run(JSON.stringify(sourceIds), f.same.id);
     const get = vi.spyOn(f.episodes, "get");
-    const dossier = await buildSelfLabelDossier(f.db, f.episodes, f.same.id);
+    const dossier = await buildSelfLabelDossier(f.db, f.episodes, f.same.id, f.canonical.id);
     expect(dossier.self).toMatchObject({
       entity_id: f.self.id,
       canonical_name: "Écho",
@@ -491,7 +630,7 @@ describe("judged self-label repair", () => {
     f.db
       .prepare("UPDATE episode_stats SET gist = ?, archived = 1 WHERE episode_id = ?")
       .run("短い要約", f.episode.id);
-    const withGist = await buildSelfLabelDossier(f.db, f.episodes, f.same.id);
+    const withGist = await buildSelfLabelDossier(f.db, f.episodes, f.same.id, f.canonical.id);
     expect(withGist.episodes[0]).toMatchObject({
       excerpt: { text: "短い要約" },
       excerpt_source: "gist",
@@ -513,7 +652,11 @@ describe("judged self-label repair", () => {
       }),
     );
     const model = llm(f);
-    const result = await judgeSelfLabelNodes({ dataDir: f.dataDir, llm: model.client });
+    const result = await judgeSelfLabelNodes({
+      targetNode: f.canonical.id,
+      dataDir: f.dataDir,
+      llm: model.client,
+    });
     expect(model.complete).toHaveBeenCalledTimes(3);
     expect(model.maxActive()).toBe(2);
     expect(result.file.model_role).toBe("extraction");
@@ -541,7 +684,11 @@ describe("judged self-label repair", () => {
       stop_reason: "end_turn",
       tool_calls: [],
     });
-    const result = await judgeSelfLabelNodes({ dataDir: f.dataDir, llm: client.client });
+    const result = await judgeSelfLabelNodes({
+      targetNode: f.canonical.id,
+      dataDir: f.dataDir,
+      llm: client.client,
+    });
     expect(result.file.verdicts).toEqual([]);
     expect(result.file.failures).toHaveLength(3);
     expect(result.file.failures.every((row) => row.error_class === "StructuredToolCallError")).toBe(
@@ -567,7 +714,11 @@ describe("judged self-label repair", () => {
         input: { verdict, reason: "Conflicting fixture judgments", confidence: 0.75 },
       })),
     });
-    const result = await judgeSelfLabelNodes({ dataDir: f.dataDir, llm: client.client });
+    const result = await judgeSelfLabelNodes({
+      targetNode: f.canonical.id,
+      dataDir: f.dataDir,
+      llm: client.client,
+    });
     expect(result.file.verdicts).toEqual([]);
     expect(result.file.failures).toHaveLength(3);
     expect(
@@ -592,7 +743,12 @@ describe("judged self-label repair", () => {
       return await complete(request);
     });
     const out = join(f.dataDir, "partial.json");
-    const partial = await judgeSelfLabelNodes({ dataDir: f.dataDir, out, llm: client.client });
+    const partial = await judgeSelfLabelNodes({
+      targetNode: f.canonical.id,
+      dataDir: f.dataDir,
+      out,
+      llm: client.client,
+    });
     expect(client.complete).toHaveBeenCalledTimes(3);
     expect(partial.file.verdicts).toHaveLength(2);
     expect(partial.file.failures).toMatchObject([
@@ -606,7 +762,12 @@ describe("judged self-label repair", () => {
     expect(readVerdictFile(out)).toEqual(partial.file);
     await expect(planned(f, partial.file)).rejects.toThrow(`${f.other.id} (failed)`);
     const retry = llm(f);
-    const resumed = await judgeSelfLabelNodes({ dataDir: f.dataDir, out, llm: retry.client });
+    const resumed = await judgeSelfLabelNodes({
+      targetNode: f.canonical.id,
+      dataDir: f.dataDir,
+      out,
+      llm: retry.client,
+    });
     expect(retry.complete).toHaveBeenCalledTimes(1);
     expect(JSON.parse(retry.complete.mock.calls[0]![0].messages[0]!.content).node.id).toBe(
       f.other.id,
@@ -616,7 +777,12 @@ describe("judged self-label repair", () => {
     for (const record of partial.file.verdicts)
       expect(resumed.file.verdicts.find((row) => row.node_id === record.node_id)).toEqual(record);
     const again = llm(f);
-    await judgeSelfLabelNodes({ dataDir: f.dataDir, out, llm: again.client });
+    await judgeSelfLabelNodes({
+      targetNode: f.canonical.id,
+      dataDir: f.dataDir,
+      out,
+      llm: again.client,
+    });
     expect(again.complete).not.toHaveBeenCalled();
     expect(rows(f)).toEqual(before);
   });
@@ -625,7 +791,7 @@ describe("judged self-label repair", () => {
     const f = await fixture(),
       client = llm(f),
       out = join(f.dataDir, "in-flight.json");
-    const ids = selfLabelInventory(f.db).candidates.map((row) => String(row.id));
+    const ids = selfLabelInventory(f.db, f.canonical.id).candidates.map((row) => String(row.id));
     let release!: () => void;
     const gate = new Promise<void>((done) => {
       release = done;
@@ -635,7 +801,12 @@ describe("judged self-label repair", () => {
       if (JSON.parse(request.messages[0]!.content).node.id === ids[1]) await gate;
       return await complete(request);
     });
-    const running = judgeSelfLabelNodes({ dataDir: f.dataDir, out, llm: client.client });
+    const running = judgeSelfLabelNodes({
+      targetNode: f.canonical.id,
+      dataDir: f.dataDir,
+      out,
+      llm: client.client,
+    });
     try {
       await vi.waitFor(() =>
         expect(readVerdictFile(out).verdicts.map((row) => row.node_id)).toContain(ids[0]),
@@ -656,10 +827,20 @@ describe("judged self-label repair", () => {
   it("resume-judging rejudges only changed dossiers and preserves unchanged verdicts", async () => {
     const f = await fixture(),
       out = join(f.dataDir, "changed.json");
-    const original = await judgeSelfLabelNodes({ dataDir: f.dataDir, out, llm: llm(f).client });
+    const original = await judgeSelfLabelNodes({
+      targetNode: f.canonical.id,
+      dataDir: f.dataDir,
+      out,
+      llm: llm(f).client,
+    });
     f.db.prepare("UPDATE semantic_nodes SET confidence = 0.5 WHERE id = ?").run(f.unsure.id);
     const retry = llm(f);
-    const next = await judgeSelfLabelNodes({ dataDir: f.dataDir, out, llm: retry.client });
+    const next = await judgeSelfLabelNodes({
+      targetNode: f.canonical.id,
+      dataDir: f.dataDir,
+      out,
+      llm: retry.client,
+    });
     expect(retry.complete).toHaveBeenCalledTimes(1);
     expect(next.file.verdicts.find((row) => row.node_id === f.unsure.id)!.dossier_hash).not.toBe(
       original.file.verdicts.find((row) => row.node_id === f.unsure.id)!.dossier_hash,
@@ -668,14 +849,14 @@ describe("judged self-label repair", () => {
       expect(next.file.verdicts.find((row) => row.node_id === record.node_id)).toEqual(record);
   });
 
-  it.each([1, 2] as const)(
+  it.each([1, 2, 3] as const)(
     "resumes complete version-%s files without repeating judgments",
     async (version) => {
       const f = await fixture(),
         original = await judged(f),
         out = join(f.dataDir, "legacy-verdicts.json");
       const {
-        self_node: _anchor,
+        target_node: _anchor,
         failures: _failures,
         candidate_node_ids: _candidates,
         ...old
@@ -688,15 +869,23 @@ describe("judged self-label repair", () => {
               version,
               failures: original.failures,
               candidate_node_ids: original.candidate_node_ids,
+              ...(version === 3
+                ? { self_node: { id: f.canonical.id, label: f.canonical.label } }
+                : {}),
             };
       writeFileSync(out, JSON.stringify(legacy));
       const plan = await planned(f, readVerdictFile(out));
-      expect(plan.selfLabelJudgments.self_node).toEqual(original.self_node);
+      expect(plan.selfLabelJudgments.target_node).toEqual(original.target_node);
       const client = llm(f);
-      const next = await judgeSelfLabelNodes({ dataDir: f.dataDir, out, llm: client.client });
+      const next = await judgeSelfLabelNodes({
+        targetNode: f.canonical.id,
+        dataDir: f.dataDir,
+        out,
+        llm: client.client,
+      });
       expect(client.complete).not.toHaveBeenCalled();
-      expect(next.file.version).toBe(3);
-      expect(next.file.self_node).toEqual(original.self_node);
+      expect(next.file.version).toBe(4);
+      expect(next.file.target_node).toEqual(original.target_node);
       expect(next.file.verdicts).toEqual(original.verdicts);
       expect(readVerdictFile(out)).toEqual(next.file);
     },
@@ -718,7 +907,12 @@ describe("judged self-label repair", () => {
       return await complete(request);
     });
     await expect(
-      judgeSelfLabelNodes({ dataDir: f.dataDir, out, llm: client.client }),
+      judgeSelfLabelNodes({
+        targetNode: f.canonical.id,
+        dataDir: f.dataDir,
+        out,
+        llm: client.client,
+      }),
     ).rejects.toThrow("verdict file changed while judging");
     expect(readFileSync(out, "utf8")).toBe(external);
     expect(f.audit.list()).toHaveLength(0);
@@ -736,12 +930,15 @@ describe("judged self-label repair", () => {
     expect(() =>
       parseVerdictFile({ ...file, verdicts: [{ ...file.verdicts[0], confidence: 2 }] }),
     ).toThrow();
-    expect(() => parseVerdictFile({ ...file, self_node: undefined })).toThrow(
-      "requires the selected self node",
+    expect(() => parseVerdictFile({ ...file, target_node: undefined })).toThrow(
+      "requires the selected target node",
     );
     expect(() =>
-      parseVerdictFile({ ...file, self_node: { id: f.other.id, label: f.other.label } }),
-    ).toThrow("Invalid or duplicate");
+      parseVerdictFile({
+        ...file,
+        target_node: { id: f.other.id, kind: "person", label: f.other.label },
+      }),
+    ).toThrow("selected target must not be a judged candidate");
   });
 
   it.each(["node", "edge", "target", "episode"])(
@@ -817,7 +1014,7 @@ describe("judged self-label repair", () => {
         path = backup(f),
         plan = await planned(f, file, path);
       const apply = vi.spyOn(graph, "applyEntityGraphRepair");
-      await applySelfLabelNodes(plan, { backupVerified: path });
+      await applySelfLabelNodes(plan, { targetNode: f.canonical.id, backupVerified: path });
       expect(apply).toHaveBeenCalledOnce();
       expect(
         f.db
@@ -900,7 +1097,7 @@ describe("judged self-label repair", () => {
     const plan = await planned(f, file, path);
     expect(plan.sql).toEqual([]);
     expect(plan.lance).toEqual([]);
-    await applySelfLabelNodes(plan, { backupVerified: path });
+    await applySelfLabelNodes(plan, { targetNode: f.canonical.id, backupVerified: path });
     const after = rows(f);
     delete before.maintenance_audit;
     delete after.maintenance_audit;
@@ -908,7 +1105,11 @@ describe("judged self-label repair", () => {
     expect(await f.table.list()).toEqual(vectors);
     const audits = f.audit.list();
     expect(audits.filter((row) => row.action === "judge-self-label:other")).toHaveLength(3);
-    await applySelfLabelNodes(loadSelfLabelPlan(f.dataDir), { backupVerified: path, resume: true });
+    await applySelfLabelNodes(loadSelfLabelPlan(f.dataDir), {
+      targetNode: f.canonical.id,
+      backupVerified: path,
+      resume: true,
+    });
     expect(f.audit.list()).toEqual(audits);
   });
 
@@ -931,7 +1132,7 @@ describe("judged self-label repair", () => {
     file.verdicts.find((row) => row.node_id === f.unsure.id)!.verdict = "unsure";
     const first = await planned(f, file, path),
       preparedBeforeApply = await planned(f, file, path);
-    await applySelfLabelNodes(first, { backupVerified: path });
+    await applySelfLabelNodes(first, { targetNode: f.canonical.id, backupVerified: path });
     const before = rows(f),
       audits = f.audit.list();
     for (const record of file.verdicts) {
@@ -945,11 +1146,18 @@ describe("judged self-label repair", () => {
         }),
       );
     }
-    expect(await applySelfLabelNodes(first, { backupVerified: path })).toEqual({
+    expect(
+      await applySelfLabelNodes(first, { targetNode: f.canonical.id, backupVerified: path }),
+    ).toEqual({
       changed: false,
       run_id: null,
     });
-    expect(await applySelfLabelNodes(preparedBeforeApply, { backupVerified: path })).toEqual({
+    expect(
+      await applySelfLabelNodes(preparedBeforeApply, {
+        targetNode: f.canonical.id,
+        backupVerified: path,
+      }),
+    ).toEqual({
       changed: false,
       run_id: null,
     });
@@ -964,7 +1172,9 @@ describe("judged self-label repair", () => {
         .find((report) => report.category === "judgment_audits")!
         .rows.every((row) => row.status === "already_recorded"),
     ).toBe(true);
-    expect(await applySelfLabelNodes(again, { backupVerified: path })).toEqual({
+    expect(
+      await applySelfLabelNodes(again, { targetNode: f.canonical.id, backupVerified: path }),
+    ).toEqual({
       changed: false,
       run_id: null,
     });
@@ -976,7 +1186,10 @@ describe("judged self-label repair", () => {
     const f = await fixture(),
       file = await judged(f, true),
       path = backup(f);
-    await applySelfLabelNodes(await planned(f, file, path), { backupVerified: path });
+    await applySelfLabelNodes(await planned(f, file, path), {
+      targetNode: f.canonical.id,
+      backupVerified: path,
+    });
     f.db
       .prepare(
         "UPDATE maintenance_audit SET targets = json_remove(targets, '$.judgment_id') WHERE action LIKE 'judge-self-label:%'",
@@ -985,18 +1198,26 @@ describe("judged self-label repair", () => {
     const before = rows(f);
     const again = await planned(f, file, path);
     expect(again.runId).toBeNull();
-    await applySelfLabelNodes(again, { backupVerified: path });
+    await applySelfLabelNodes(again, { targetNode: f.canonical.id, backupVerified: path });
     expect(rows(f)).toEqual(before);
   });
 
   it("records a new audit when the dossier or verdict changes and still refuses stale evidence", async () => {
     const f = await fixture(),
       path = backup(f);
-    const original = await judgeSelfLabelNodes({ dataDir: f.dataDir, llm: llm(f, true).client });
-    await applySelfLabelNodes(await planned(f, original.file, path), { backupVerified: path });
+    const original = await judgeSelfLabelNodes({
+      targetNode: f.canonical.id,
+      dataDir: f.dataDir,
+      llm: llm(f, true).client,
+    });
+    await applySelfLabelNodes(await planned(f, original.file, path), {
+      targetNode: f.canonical.id,
+      backupVerified: path,
+    });
     f.db.prepare("UPDATE semantic_nodes SET confidence = 0.6 WHERE id = ?").run(f.unsure.id);
     await expect(planned(f, original.file, path)).rejects.toThrow("Dossier hash mismatch");
     const updated = await judgeSelfLabelNodes({
+      targetNode: f.canonical.id,
       dataDir: f.dataDir,
       out: original.path,
       llm: llm(f, true).client,
@@ -1005,7 +1226,7 @@ describe("judged self-label repair", () => {
     expect(
       plan.additionalSql.filter((row) => String(row.after?.action).startsWith("judge-self-label:")),
     ).toHaveLength(1);
-    await applySelfLabelNodes(plan, { backupVerified: path });
+    await applySelfLabelNodes(plan, { targetNode: f.canonical.id, backupVerified: path });
     updated.file.verdicts.find((row) => row.node_id === f.other.id)!.verdict = "unsure";
     const differentVerdict = await planned(f, updated.file, path);
     expect(
@@ -1013,7 +1234,10 @@ describe("judged self-label repair", () => {
         String(row.after?.action).startsWith("judge-self-label:"),
       ),
     ).toHaveLength(1);
-    await applySelfLabelNodes(differentVerdict, { backupVerified: path });
+    await applySelfLabelNodes(differentVerdict, {
+      targetNode: f.canonical.id,
+      backupVerified: path,
+    });
     const judgments = f.audit.list().filter((row) => row.action.startsWith("judge-self-label:"));
     expect(judgments).toHaveLength(5);
     expect(new Set(judgments.map((row) => row.targets.judgment_id)).size).toBe(5);
@@ -1035,9 +1259,9 @@ describe("judged self-label repair", () => {
       reversal: JSON.parse(String(change.reversal)),
     });
     const before = rows(f);
-    await expect(applySelfLabelNodes(plan, { backupVerified: path })).rejects.toThrow(
-      "judgment audits changed since planning; re-plan",
-    );
+    await expect(
+      applySelfLabelNodes(plan, { targetNode: f.canonical.id, backupVerified: path }),
+    ).rejects.toThrow("judgment audits changed since planning; re-plan");
     expect(rows(f)).toEqual(before);
     expect(existsSync(graph.pendingPath(f.dataDir))).toBe(false);
   });
@@ -1054,13 +1278,18 @@ describe("judged self-label repair", () => {
       plan = await planned(f, undefined, path);
     await expect(
       applySelfLabelNodes(plan, {
+        targetNode: f.canonical.id,
         backupVerified: path,
         checkpoint: (at) => {
           if (at === point) throw new Error("interrupted");
         },
       }),
     ).rejects.toThrow("interrupted");
-    await applySelfLabelNodes(loadSelfLabelPlan(f.dataDir), { backupVerified: path, resume: true });
+    await applySelfLabelNodes(loadSelfLabelPlan(f.dataDir), {
+      targetNode: f.canonical.id,
+      backupVerified: path,
+      resume: true,
+    });
     expect(f.audit.list().filter((row) => row.action.startsWith("judge-self-label:"))).toHaveLength(
       3,
     );
@@ -1078,6 +1307,7 @@ describe("judged self-label repair", () => {
         plan = await planned(f, undefined, path);
       await expect(
         applySelfLabelNodes(plan, {
+          targetNode: f.canonical.id,
           backupVerified: path,
           checkpoint: (at) => {
             if (at === point) throw new Error("interrupted");
@@ -1097,6 +1327,7 @@ describe("judged self-label repair", () => {
       expect(rows(f)).toEqual(before);
       expect(readFileSync(journalPath, "utf8")).toBe(journal);
       await applySelfLabelNodes(loadSelfLabelPlan(f.dataDir), {
+        targetNode: f.canonical.id,
         backupVerified: path,
         resume: true,
       });
@@ -1112,6 +1343,7 @@ describe("judged self-label repair", () => {
       plan = await planned(f, undefined, path);
     await expect(
       applySelfLabelNodes(plan, {
+        targetNode: f.canonical.id,
         backupVerified: path,
         checkpoint: () => {
           throw new Error("interrupted");
@@ -1135,6 +1367,7 @@ describe("judged self-label repair", () => {
       plan = await planned(f, undefined, path);
     await expect(
       applySelfLabelNodes(plan, {
+        targetNode: f.canonical.id,
         backupVerified: path,
         checkpoint: () => {
           throw new Error("interrupted");
@@ -1144,7 +1377,11 @@ describe("judged self-label repair", () => {
     const journal = readFileSync(graph.pendingPath(f.dataDir), "utf8");
     f.db.prepare("UPDATE semantic_nodes SET description = 'changed' WHERE id = ?").run(f.unsure.id);
     await expect(
-      applySelfLabelNodes(loadSelfLabelPlan(f.dataDir), { backupVerified: path, resume: true }),
+      applySelfLabelNodes(loadSelfLabelPlan(f.dataDir), {
+        targetNode: f.canonical.id,
+        backupVerified: path,
+        resume: true,
+      }),
     ).rejects.toThrow("Dossier hash mismatch");
     expect(readFileSync(graph.pendingPath(f.dataDir), "utf8")).toBe(journal);
     expect(f.audit.list()).toHaveLength(0);
@@ -1156,9 +1393,9 @@ describe("judged self-label repair", () => {
       plan = await planned(f, undefined, path);
     f.db.prepare("UPDATE semantic_nodes SET description = 'modified' WHERE id = ?").run(f.same.id);
     const before = rows(f);
-    await expect(applySelfLabelNodes(plan, { backupVerified: path })).rejects.toThrow(
-      "Dossier hash mismatch",
-    );
+    await expect(
+      applySelfLabelNodes(plan, { targetNode: f.canonical.id, backupVerified: path }),
+    ).rejects.toThrow("Dossier hash mismatch");
     expect(rows(f)).toEqual(before);
     expect(existsSync(graph.pendingPath(f.dataDir))).toBe(false);
   });
@@ -1169,6 +1406,7 @@ describe("judged self-label repair", () => {
       plan = await planned(f, undefined, path);
     await expect(
       applySelfLabelNodes(plan, {
+        targetNode: f.canonical.id,
         backupVerified: path,
         checkpoint: (point) => {
           if (point === "after_sqlite") throw new Error("interrupted");
@@ -1182,7 +1420,11 @@ describe("judged self-label repair", () => {
       .run(f.unsure.id);
     const before = rows(f);
     await expect(
-      applySelfLabelNodes(loadSelfLabelPlan(f.dataDir), { backupVerified: path, resume: true }),
+      applySelfLabelNodes(loadSelfLabelPlan(f.dataDir), {
+        targetNode: f.canonical.id,
+        backupVerified: path,
+        resume: true,
+      }),
     ).rejects.toThrow("Dossier hash mismatch");
     expect(rows(f)).toEqual(before);
     expect(readFileSync(pending, "utf8")).toBe(journal);
@@ -1198,12 +1440,12 @@ describe("judged self-label repair", () => {
       path = backup(f),
       plan = await planned(f, undefined, path);
     await expect(applySelfLabelNodes(plan)).rejects.toThrow("--backup-verified");
-    await expect(applySelfLabelNodes(plan, { backupVerified: f.dataDir })).rejects.toThrow(
-      "independent",
-    );
-    await expect(applySelfLabelNodes(plan, { backupVerified: backup(f) })).rejects.toThrow(
-      "verified backup",
-    );
+    await expect(
+      applySelfLabelNodes(plan, { targetNode: f.canonical.id, backupVerified: f.dataDir }),
+    ).rejects.toThrow("independent");
+    await expect(
+      applySelfLabelNodes(plan, { targetNode: f.canonical.id, backupVerified: backup(f) }),
+    ).rejects.toThrow("verified backup");
     expect(existsSync(graph.pendingPath(f.dataDir))).toBe(false);
     expect(f.audit.list()).toHaveLength(0);
   });
@@ -1221,13 +1463,13 @@ describe("judged self-label repair", () => {
         )
         .run();
     const client = llm(f);
-    await expect(judgeSelfLabelNodes({ dataDir: f.dataDir, llm: client.client })).rejects.toThrow(
-      "Pending or unknown migrations",
-    );
+    await expect(
+      judgeSelfLabelNodes({ targetNode: f.canonical.id, dataDir: f.dataDir, llm: client.client }),
+    ).rejects.toThrow("Pending or unknown migrations");
     expect(client.complete).not.toHaveBeenCalled();
-    await expect(applySelfLabelNodes(plan, { backupVerified: path })).rejects.toThrow(
-      "Pending or unknown migrations",
-    );
+    await expect(
+      applySelfLabelNodes(plan, { targetNode: f.canonical.id, backupVerified: path }),
+    ).rejects.toThrow("Pending or unknown migrations");
     expect(existsSync(graph.pendingPath(f.dataDir))).toBe(false);
     expect(f.audit.list()).toHaveLength(0);
   });
@@ -1252,13 +1494,21 @@ describe("judged self-label repair", () => {
     f.db.prepare("UPDATE semantic_nodes SET archived = 1 WHERE kind IN ('entity', 'person')").run();
     const client = llm(f),
       path = backup(f);
-    const { file } = await judgeSelfLabelNodes({ dataDir: f.dataDir, llm: client.client });
+    const { file } = await judgeSelfLabelNodes({
+      targetNode: f.canonical.id,
+      dataDir: f.dataDir,
+      llm: client.client,
+    });
     const before = rows(f);
     expect(client.complete).not.toHaveBeenCalled();
-    expect(file.self_node).toEqual({ id: f.canonical.id, label: f.canonical.label });
+    expect(file.target_node).toEqual({
+      id: f.canonical.id,
+      kind: "self",
+      label: f.canonical.label,
+    });
     const plan = await planned(f, file, path);
     expect(plan.runId).toBeNull();
-    await applySelfLabelNodes(plan, { backupVerified: path });
+    await applySelfLabelNodes(plan, { targetNode: f.canonical.id, backupVerified: path });
     expect(rows(f)).toEqual(before);
     expect(existsSync(graph.pendingPath(f.dataDir))).toBe(false);
   });
@@ -1277,6 +1527,7 @@ describe("judged self-label repair", () => {
       plan = await planned(f, undefined, path);
     await expect(
       applySelfLabelNodes(plan, {
+        targetNode: f.canonical.id,
         backupVerified: path,
         checkpoint: () => {
           throw new Error("interrupted");
@@ -1302,6 +1553,7 @@ describe("judged self-label repair", () => {
       plan = await planned(f, file, path, path);
     await expect(
       applySelfLabelNodes(plan, {
+        targetNode: f.canonical.id,
         backupVerified: path,
         liveStoreConfirmed: path,
         checkpoint: (point) => {
@@ -1309,10 +1561,11 @@ describe("judged self-label repair", () => {
         },
       }),
     ).rejects.toThrow("interrupted");
-    await expect(applySelfLabelNodes(plan, { backupVerified: path, resume: true })).rejects.toThrow(
-      "live demo store is forbidden",
-    );
+    await expect(
+      applySelfLabelNodes(plan, { targetNode: f.canonical.id, backupVerified: path, resume: true }),
+    ).rejects.toThrow("live demo store is forbidden");
     await applySelfLabelNodes(loadSelfLabelPlan(f.dataDir, { liveStoreConfirmed: path }), {
+      targetNode: f.canonical.id,
       backupVerified: path,
       liveStoreConfirmed: path,
       resume: true,
@@ -1327,12 +1580,11 @@ describe("judged self-label repair", () => {
     ).toBe(true);
   });
 
-  it.each([false, true])(
-    "CLI judge/plan/apply/resume with multiple self nodes = %s",
-    async (multiple) => {
+  it.each(["--target-node", "--self-node"])(
+    "CLI judge/plan/apply/resume using %s",
+    async (flag) => {
       const f = await fixture();
-      if (multiple) await f.addNode("self", "別名");
-      const selection = multiple ? ["--self-node", f.canonical.id] : [];
+      const selection = [flag, f.canonical.id];
       vi.spyOn(clients, "createLlmFactory").mockReturnValue(() => llm(f, true).client);
       const stdout = vi.spyOn(process.stdout, "write").mockImplementation(((
         text: string,
@@ -1342,20 +1594,31 @@ describe("judged self-label repair", () => {
         return true;
       }) as typeof process.stdout.write);
       const out = join(f.dataDir, "verdicts.json");
-      if (multiple)
-        await expect(main(["--data-dir", f.dataDir, "--out", out])).rejects.toThrow(
-          "--self-node is required",
-        );
+      await expect(main(["--data-dir", f.dataDir, "--out", out])).rejects.toThrow(
+        "--target-node is required",
+      );
+      await expect(
+        main([
+          "--data-dir",
+          f.dataDir,
+          "--out",
+          out,
+          "--target-node",
+          f.canonical.id,
+          "--self-node",
+          f.same.id,
+        ]),
+      ).rejects.toThrow("conflicting IDs");
       await main(["--data-dir", f.dataDir, "--out", out, ...selection]);
       expect(readVerdictFile(out).verdicts).toHaveLength(3);
-      expect(readVerdictFile(out).self_node).toEqual({
+      expect(readVerdictFile(out).target_node).toEqual({
         id: f.canonical.id,
+        kind: "self",
         label: f.canonical.label,
       });
-      if (multiple)
-        await expect(main(["plan", "--data-dir", f.dataDir, "--verdicts", out])).rejects.toThrow(
-          "--self-node is required",
-        );
+      await expect(main(["plan", "--data-dir", f.dataDir, "--verdicts", out])).rejects.toThrow(
+        "--target-node is required",
+      );
       await main(["plan", "--data-dir", f.dataDir, "--verdicts", out, ...selection]);
       const dry = JSON.parse(String(stdout.mock.calls.at(-1)![0]));
       expect(dry.mode).toBe("dry-run");
