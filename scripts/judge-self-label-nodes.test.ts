@@ -188,12 +188,18 @@ function llm(f: Fixture, allOther = false) {
   const client: LLMClient = { complete, converse: vi.fn() };
   return { client, complete, maxActive: () => maxActive };
 }
-async function judged(f: Fixture, allOther = false, liveStoreConfirmed?: string) {
+async function judged(
+  f: Fixture,
+  allOther = false,
+  liveStoreConfirmed?: string,
+  selfNode?: string,
+) {
   return (
     await judgeSelfLabelNodes({
       dataDir: f.dataDir,
       llm: llm(f, allOther).client,
       liveStoreConfirmed,
+      selfNode,
     })
   ).file;
 }
@@ -202,13 +208,15 @@ async function planned(
   file?: VerdictFile,
   backupPath = backup(f),
   liveStoreConfirmed?: string,
+  selfNode?: string,
 ) {
   return planSelfLabelNodes({
     dataDir: f.dataDir,
-    verdicts: file ?? (await judged(f, false, liveStoreConfirmed)),
+    verdicts: file ?? (await judged(f, false, liveStoreConfirmed, selfNode)),
     backupVerified: backupPath,
     embeddingClient: new FakeEmbeddingClient(4),
     liveStoreConfirmed,
+    selfNode,
   });
 }
 function rows(f: Fixture) {
@@ -229,17 +237,218 @@ describe("judged self-label repair", () => {
       [f.same.id, f.other.id, f.unsure.id].sort(),
     );
     expect(inventory.canonical.id).toBe(f.canonical.id);
+    expect(selfLabelInventory(f.db, f.canonical.id).anchor).toEqual(inventory.anchor);
     expect(inventory.matchingEntities.map((row) => row.id)).toEqual([f.duplicateEntity.id]);
   });
 
-  it("requires a unique structural self anchor, never inferring it from a label", async () => {
+  it("refuses a missing structural self anchor, never inferring it from a label", async () => {
     const f = await fixture();
     f.db.prepare("UPDATE semantic_nodes SET kind = 'entity' WHERE id = ?").run(f.canonical.id);
-    expect(() => selfLabelInventory(f.db)).toThrow("exactly one active canonical");
+    expect(() => selfLabelInventory(f.db)).toThrow(
+      "No active kind=self semantic nodes. Candidates: []",
+    );
+  });
+
+  it("requires --self-node for ambiguous anchors and lists IDs, labels, dates and both edge/source counts", async () => {
+    const f = await fixture();
+    f.entities.addAlias(f.self.id, "self");
+    const observation = await f.addNode("self", "self", {
+      created_at: 900,
+      source_episode_ids: [f.episode.id, createEpisodeId()],
+    });
+    await f.addNode("self", "Inactive anchor", { archived: true });
+    f.addEdge(observation.id, f.neighbor.id);
+    f.addEdge(f.neighbor.id, observation.id);
+    f.addEdge(observation.id, f.same.id);
+    const candidates = [
+      {
+        id: f.canonical.id,
+        label: f.canonical.label,
+        created_at: 1000,
+        edge_count: 0,
+        source_count: 1,
+      },
+      { id: observation.id, label: "self", created_at: 900, edge_count: 3, source_count: 2 },
+    ].sort((a, b) => a.id.localeCompare(b.id));
+    const message = `Multiple active kind=self semantic nodes; --self-node is required. Candidates: ${JSON.stringify(candidates)}`;
+    const before = rows(f),
+      client = llm(f),
+      out = join(f.dataDir, "ambiguous.json");
+    expect(() => selfLabelInventory(f.db)).toThrow(message);
+    await expect(
+      judgeSelfLabelNodes({ dataDir: f.dataDir, out, llm: client.client }),
+    ).rejects.toThrow(message);
+    expect(client.complete).not.toHaveBeenCalled();
+    expect(existsSync(out)).toBe(false);
+    expect(rows(f)).toEqual(before);
+  });
+
+  it.each([
+    "non-self",
+    "archived",
+    "superseded-status",
+    "superseded-pointer",
+    "quarantined",
+    "missing",
+  ])(
+    "rejects a --self-node selecting a %s node even when one valid anchor exists",
+    async (kind) => {
+      const f = await fixture();
+      const invalid = await f.addNode(kind === "non-self" ? "entity" : "self", "Écho", {
+        archived: kind === "archived" || kind === "missing",
+        status:
+          kind === "superseded-status"
+            ? "superseded"
+            : kind === "quarantined"
+              ? "quarantined"
+              : "active",
+        superseded_by: kind === "superseded-pointer" ? f.canonical.id : null,
+      });
+      const selfNode = kind === "missing" ? createSemanticNodeId() : invalid.id;
+      const client = llm(f),
+        out = join(f.dataDir, "invalid-anchor.json"),
+        before = rows(f);
+      await expect(
+        judgeSelfLabelNodes({ dataDir: f.dataDir, selfNode, out, llm: client.client }),
+      ).rejects.toThrow(
+        "--self-node must name an active, unarchived, unsuperseded kind=self semantic node",
+      );
+      expect(client.complete).not.toHaveBeenCalled();
+      expect(existsSync(out)).toBe(false);
+      expect(rows(f)).toEqual(before);
+    },
+  );
+
+  it("uses the explicit anchor throughout judging, merge planning and recovery, keeping other self nodes report-only", async () => {
+    const f = await fixture();
+    f.entities.addAlias(f.self.id, "self");
+    const observation = await f.addNode("self", "self", { created_at: 900 });
+    f.addEdge(observation.id, f.same.id);
+    const rawObservation = f.db
+      .prepare("SELECT * FROM semantic_nodes WHERE id = ?")
+      .get(observation.id);
+    const client = llm(f),
+      path = backup(f),
+      anchor = { id: f.canonical.id, label: f.canonical.label };
+    const result = await judgeSelfLabelNodes({
+      dataDir: f.dataDir,
+      selfNode: anchor.id,
+      llm: client.client,
+    });
+    expect(result.file.self_node).toEqual(anchor);
+    expect(readVerdictFile(result.path).self_node).toEqual(anchor);
+    expect(client.complete).toHaveBeenCalledTimes(3);
+    for (const [request] of client.complete.mock.calls) {
+      const dossier = JSON.parse(request.messages[0]!.content) as SelfLabelDossier;
+      expect(dossier.self.node_id).toBe(anchor.id);
+      expect([f.same.id, f.other.id, f.unsure.id]).toContain(dossier.node.id);
+    }
+    // The report is refreshed when planning, independently of the judged candidates.
+    f.addEdge(f.neighbor.id, observation.id);
+    await expect(planned(f, result.file, path)).rejects.toThrow("--self-node is required");
+    await expect(planned(f, result.file, path, undefined, observation.id)).rejects.toThrow(
+      "selected self node since judging",
+    );
+    const plan = await planned(f, result.file, path, undefined, anchor.id);
+    expect(plan.selfLabelJudgments.self_node).toEqual(anchor);
+    expect(plan.input.nodeMerges).toEqual([{ from: f.same.id, into: anchor.id }]);
+    expect(
+      plan.reports.find((row) => row.category === "other_self_nodes_report_only")!.rows,
+    ).toEqual([
+      {
+        id: observation.id,
+        label: observation.label,
+        created_at: 900,
+        edge_count: 2,
+        source_count: 1,
+      },
+    ]);
+    expect(
+      plan.sql.some((row) => row.table === "semantic_nodes" && row.after?.id === observation.id),
+    ).toBe(false);
+    for (const row of [...plan.additionalSql, ...plan.completionSql].filter(
+      (row) => row.table === "maintenance_audit",
+    ))
+      expect(JSON.parse(String(row.after!.targets)).self_node).toEqual(anchor);
+    await expect(applySelfLabelNodes(plan, { backupVerified: path })).rejects.toThrow(
+      "--self-node is required",
+    );
+    await expect(
+      applySelfLabelNodes(plan, { backupVerified: path, selfNode: observation.id }),
+    ).rejects.toThrow("selected self node since judging");
+    expect(f.audit.list()).toHaveLength(0);
+    expect(existsSync(graph.pendingPath(f.dataDir))).toBe(false);
+    await expect(
+      applySelfLabelNodes(plan, {
+        backupVerified: path,
+        selfNode: anchor.id,
+        checkpoint: (point) => {
+          if (point === "after_sqlite") throw new Error("interrupted");
+        },
+      }),
+    ).rejects.toThrow("interrupted");
+    await expect(
+      applySelfLabelNodes(loadSelfLabelPlan(f.dataDir), { backupVerified: path, resume: true }),
+    ).rejects.toThrow("--self-node is required");
+    await applySelfLabelNodes(loadSelfLabelPlan(f.dataDir), {
+      backupVerified: path,
+      selfNode: anchor.id,
+      resume: true,
+    });
+    expect(f.db.prepare("SELECT * FROM semantic_nodes WHERE id = ?").get(observation.id)).toEqual(
+      rawObservation,
+    );
+    expect(
+      f.audit.list().every((row) => fingerprint(row.targets.self_node) === fingerprint(anchor)),
+    ).toBe(true);
+    expect(f.audit.list().filter((row) => row.action.startsWith("judge-self-label:"))).toHaveLength(
+      3,
+    );
+  });
+
+  it("resumes judging with the same selected anchor and refuses a different anchor without overwriting the file", async () => {
+    const f = await fixture(),
+      otherAnchor = await f.addNode("self", "別名"),
+      client = llm(f);
+    const first = await judgeSelfLabelNodes({
+      dataDir: f.dataDir,
+      selfNode: otherAnchor.id,
+      llm: client.client,
+    });
+    expect(first.file.self_node).toEqual({ id: otherAnchor.id, label: otherAnchor.label });
+    const original = readFileSync(first.path, "utf8");
+    client.complete.mockClear();
+    await expect(
+      judgeSelfLabelNodes({
+        dataDir: f.dataDir,
+        selfNode: f.canonical.id,
+        out: first.path,
+        llm: client.client,
+      }),
+    ).rejects.toThrow("Selected self node differs from the verdict file");
+    expect(readFileSync(first.path, "utf8")).toBe(original);
+    const resumed = await judgeSelfLabelNodes({
+      dataDir: f.dataDir,
+      selfNode: otherAnchor.id,
+      out: first.path,
+      llm: client.client,
+    });
+    expect(resumed.file.verdicts).toEqual(first.file.verdicts);
+    expect(client.complete).not.toHaveBeenCalled();
+  });
+
+  it("refuses incidental structural changes to a report-only self node", async () => {
+    const f = await fixture(),
+      observation = await f.addNode("self", "別名");
     f.db
-      .prepare("UPDATE semantic_nodes SET kind = 'self' WHERE id IN (?, ?)")
-      .run(f.canonical.id, f.same.id);
-    expect(() => selfLabelInventory(f.db)).toThrow("exactly one active canonical");
+      .prepare("UPDATE semantic_nodes SET corrected_by = ? WHERE id = ?")
+      .run(f.same.id, observation.id);
+    const file = await judged(f, false, undefined, f.canonical.id),
+      before = rows(f);
+    await expect(planned(f, file, backup(f), undefined, f.canonical.id)).rejects.toThrow(
+      "Merge would modify non-merge node",
+    );
+    expect(rows(f)).toEqual(before);
   });
 
   it("builds dossiers with both edge directions, capped repository excerpts and explicit missing sources", async () => {
@@ -459,19 +668,39 @@ describe("judged self-label repair", () => {
       expect(next.file.verdicts.find((row) => row.node_id === record.node_id)).toEqual(record);
   });
 
-  it("resumes complete version-1 files without repeating judgments", async () => {
-    const f = await fixture(),
-      original = await judged(f),
-      out = join(f.dataDir, "legacy-verdicts.json");
-    const { failures: _failures, candidate_node_ids: _manifest, ...old } = original;
-    writeFileSync(out, JSON.stringify({ ...old, version: 1 }));
-    const client = llm(f);
-    const next = await judgeSelfLabelNodes({ dataDir: f.dataDir, out, llm: client.client });
-    expect(client.complete).not.toHaveBeenCalled();
-    expect(next.file.version).toBe(2);
-    expect(next.file.verdicts).toEqual(original.verdicts);
-    expect(readVerdictFile(out)).toEqual(next.file);
-  });
+  it.each([1, 2] as const)(
+    "resumes complete version-%s files without repeating judgments",
+    async (version) => {
+      const f = await fixture(),
+        original = await judged(f),
+        out = join(f.dataDir, "legacy-verdicts.json");
+      const {
+        self_node: _anchor,
+        failures: _failures,
+        candidate_node_ids: _candidates,
+        ...old
+      } = original;
+      const legacy =
+        version === 1
+          ? { ...old, version }
+          : {
+              ...old,
+              version,
+              failures: original.failures,
+              candidate_node_ids: original.candidate_node_ids,
+            };
+      writeFileSync(out, JSON.stringify(legacy));
+      const plan = await planned(f, readVerdictFile(out));
+      expect(plan.selfLabelJudgments.self_node).toEqual(original.self_node);
+      const client = llm(f);
+      const next = await judgeSelfLabelNodes({ dataDir: f.dataDir, out, llm: client.client });
+      expect(client.complete).not.toHaveBeenCalled();
+      expect(next.file.version).toBe(3);
+      expect(next.file.self_node).toEqual(original.self_node);
+      expect(next.file.verdicts).toEqual(original.verdicts);
+      expect(readVerdictFile(out)).toEqual(next.file);
+    },
+  );
 
   it("does not overwrite an external verdict-file edit while a judgment is running", async () => {
     const f = await fixture(),
@@ -507,6 +736,12 @@ describe("judged self-label repair", () => {
     expect(() =>
       parseVerdictFile({ ...file, verdicts: [{ ...file.verdicts[0], confidence: 2 }] }),
     ).toThrow();
+    expect(() => parseVerdictFile({ ...file, self_node: undefined })).toThrow(
+      "requires the selected self node",
+    );
+    expect(() =>
+      parseVerdictFile({ ...file, self_node: { id: f.other.id, label: f.other.label } }),
+    ).toThrow("Invalid or duplicate");
   });
 
   it.each(["node", "edge", "target", "episode"])(
@@ -1020,6 +1255,7 @@ describe("judged self-label repair", () => {
     const { file } = await judgeSelfLabelNodes({ dataDir: f.dataDir, llm: client.client });
     const before = rows(f);
     expect(client.complete).not.toHaveBeenCalled();
+    expect(file.self_node).toEqual({ id: f.canonical.id, label: f.canonical.label });
     const plan = await planned(f, file, path);
     expect(plan.runId).toBeNull();
     await applySelfLabelNodes(plan, { backupVerified: path });
@@ -1091,37 +1327,82 @@ describe("judged self-label repair", () => {
     ).toBe(true);
   });
 
-  it("CLI defaults to judge, then emits a complete dry plan and requires a backup for apply", async () => {
-    const f = await fixture();
-    vi.spyOn(clients, "createLlmFactory").mockReturnValue(() => llm(f, true).client);
-    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(((
-      text: string,
-      callback?: (error?: Error | null) => void,
-    ) => {
-      callback?.();
-      return true;
-    }) as typeof process.stdout.write);
-    const out = join(f.dataDir, "verdicts.json");
-    await main(["--data-dir", f.dataDir, "--out", out]);
-    expect(readVerdictFile(out).verdicts).toHaveLength(3);
-    await main(["plan", "--data-dir", f.dataDir, "--verdicts", out]);
-    const dry = JSON.parse(String(stdout.mock.calls.at(-1)![0]));
-    expect(dry.mode).toBe("dry-run");
-    expect(dry.plan.additionalSql).toHaveLength(4);
-    expect(f.audit.list()).toHaveLength(0);
-    await expect(main(["--data-dir", f.dataDir, "--verdicts", out, "--apply"])).rejects.toThrow(
-      "--backup-verified",
-    );
-    const path = backup(f);
-    await main(["apply", "--data-dir", f.dataDir, "--verdicts", out, "--backup-verified", path]);
-    await main(["apply", "--data-dir", f.dataDir, "--verdicts", out, "--backup-verified", path]);
-    expect(JSON.parse(String(stdout.mock.calls.at(-1)![0]))).toMatchObject({
-      complete: true,
-      status: "no changes",
-      changed: false,
-      run_id: null,
-    });
-    await main(["apply", "--data-dir", f.dataDir, "--resume", "--backup-verified", path]);
-    expect(f.audit.list().filter((row) => row.action === "judge-self-label:other")).toHaveLength(3);
-  });
+  it.each([false, true])(
+    "CLI judge/plan/apply/resume with multiple self nodes = %s",
+    async (multiple) => {
+      const f = await fixture();
+      if (multiple) await f.addNode("self", "別名");
+      const selection = multiple ? ["--self-node", f.canonical.id] : [];
+      vi.spyOn(clients, "createLlmFactory").mockReturnValue(() => llm(f, true).client);
+      const stdout = vi.spyOn(process.stdout, "write").mockImplementation(((
+        text: string,
+        callback?: (error?: Error | null) => void,
+      ) => {
+        callback?.();
+        return true;
+      }) as typeof process.stdout.write);
+      const out = join(f.dataDir, "verdicts.json");
+      if (multiple)
+        await expect(main(["--data-dir", f.dataDir, "--out", out])).rejects.toThrow(
+          "--self-node is required",
+        );
+      await main(["--data-dir", f.dataDir, "--out", out, ...selection]);
+      expect(readVerdictFile(out).verdicts).toHaveLength(3);
+      expect(readVerdictFile(out).self_node).toEqual({
+        id: f.canonical.id,
+        label: f.canonical.label,
+      });
+      if (multiple)
+        await expect(main(["plan", "--data-dir", f.dataDir, "--verdicts", out])).rejects.toThrow(
+          "--self-node is required",
+        );
+      await main(["plan", "--data-dir", f.dataDir, "--verdicts", out, ...selection]);
+      const dry = JSON.parse(String(stdout.mock.calls.at(-1)![0]));
+      expect(dry.mode).toBe("dry-run");
+      expect(dry.plan.additionalSql).toHaveLength(4);
+      expect(f.audit.list()).toHaveLength(0);
+      await expect(
+        main(["--data-dir", f.dataDir, "--verdicts", out, "--apply", ...selection]),
+      ).rejects.toThrow("--backup-verified");
+      const path = backup(f);
+      await main([
+        "apply",
+        "--data-dir",
+        f.dataDir,
+        "--verdicts",
+        out,
+        "--backup-verified",
+        path,
+        ...selection,
+      ]);
+      await main([
+        "apply",
+        "--data-dir",
+        f.dataDir,
+        "--verdicts",
+        out,
+        "--backup-verified",
+        path,
+        ...selection,
+      ]);
+      expect(JSON.parse(String(stdout.mock.calls.at(-1)![0]))).toMatchObject({
+        complete: true,
+        status: "no changes",
+        changed: false,
+        run_id: null,
+      });
+      await main([
+        "apply",
+        "--data-dir",
+        f.dataDir,
+        "--resume",
+        "--backup-verified",
+        path,
+        ...selection,
+      ]);
+      expect(f.audit.list().filter((row) => row.action === "judge-self-label:other")).toHaveLength(
+        3,
+      );
+    },
+  );
 });

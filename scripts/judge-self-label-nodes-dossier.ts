@@ -13,6 +13,8 @@ export const DOSSIER_EPISODE_LIMIT = 6;
 export const DOSSIER_EXCERPT_CHARS = 800;
 const hashSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const excerptSchema = z.object({ text: z.string(), truncated: z.boolean() }).strict();
+const selfNodeAnchorSchema = z.object({ id: semanticNodeIdSchema, label: z.string() }).strict();
+export type SelfNodeAnchor = z.infer<typeof selfNodeAnchorSchema>;
 export const verdictSchema = z
   .object({
     verdict: z.enum(["self", "other", "unsure"]),
@@ -106,7 +108,7 @@ export const failedVerdictSchema = z
 export type FailedVerdict = z.infer<typeof failedVerdictSchema>;
 export const verdictFileSchema = z
   .object({
-    version: z.union([z.literal(1), z.literal(2)]),
+    version: z.union([z.literal(1), z.literal(2), z.literal(3)]),
     kind: z.literal("judge-self-label-nodes"),
     data_dir: z.string().min(1),
     started_at: z.number().finite(),
@@ -116,15 +118,22 @@ export const verdictFileSchema = z
     verdicts: z.array(verdictRecordSchema),
     failures: z.array(failedVerdictSchema).default([]),
     candidate_node_ids: z.array(semanticNodeIdSchema).optional(),
+    self_node: selfNodeAnchorSchema.optional(),
     matching_entities_report_only: z.array(z.record(z.string(), z.unknown())),
   })
   .strict()
   .superRefine((file, ctx) => {
-    if (file.version === 2 && file.candidate_node_ids === undefined)
+    if (file.version >= 2 && file.candidate_node_ids === undefined)
       ctx.addIssue({
         code: "custom",
         path: ["candidate_node_ids"],
-        message: "Version 2 requires the candidate manifest",
+        message: "Version 2 and later require the candidate manifest",
+      });
+    if (file.version === 3 && file.self_node === undefined)
+      ctx.addIssue({
+        code: "custom",
+        path: ["self_node"],
+        message: "Version 3 requires the selected self node",
       });
   });
 export type VerdictFile = z.infer<typeof verdictFileSchema>;
@@ -145,7 +154,7 @@ function excerpt(value: string, limit: number) {
   };
 }
 
-export function selfLabelInventory(db: SqliteDatabase) {
+export function selfLabelInventory(db: SqliteDatabase, selfNode?: string) {
   const self = new EntityRepository({ db }).getSelf() ?? refuse("Missing self entity");
   const anchors = db
     .prepare(
@@ -153,8 +162,26 @@ export function selfLabelInventory(db: SqliteDatabase) {
     AND archived = 0 AND status = 'active' AND superseded_by IS NULL ORDER BY id`,
     )
     .all();
-  if (anchors.length !== 1) refuse("Expected exactly one active canonical kind=self semantic node");
-  const canonical = anchors[0]!;
+  const edgeCount = db.prepare(
+    "SELECT COUNT(*) AS count FROM semantic_edges WHERE from_node_id = ? OR to_node_id = ?",
+  );
+  const summaries = anchors.map((node) => ({
+    id: String(node.id),
+    label: String(node.label),
+    created_at: Number(node.created_at),
+    edge_count: Number(edgeCount.get(node.id, node.id)!.count),
+    source_count: strings(node, "source_episode_ids").length,
+  }));
+  if (selfNode === undefined && anchors.length !== 1)
+    refuse(
+      `${anchors.length ? "Multiple active kind=self semantic nodes; --self-node is required" : "No active kind=self semantic nodes"}. Candidates: ${JSON.stringify(summaries)}`,
+    );
+  const canonical =
+    (selfNode === undefined ? anchors[0] : anchors.find((node) => node.id === selfNode)) ??
+    refuse(
+      `--self-node must name an active, unarchived, unsuperseded kind=self semantic node: ${selfNode}. Candidates: ${JSON.stringify(summaries)}`,
+    );
+  const anchor = selfNodeAnchorSchema.parse({ id: canonical.id, label: canonical.label });
   const names = new Set([self.canonical_name, ...self.aliases].map(normalizedLabel));
   const candidates = db
     .prepare(
@@ -170,15 +197,23 @@ export function selfLabelInventory(db: SqliteDatabase) {
     .filter(
       (row) => normalizedLabel(String(row.canonical_name)) === normalizedLabel(self.canonical_name),
     );
-  return { self, canonical, candidates, matchingEntities };
+  return {
+    self,
+    canonical,
+    anchor,
+    candidates,
+    matchingEntities,
+    otherSelfNodes: summaries.filter((node) => node.id !== anchor.id),
+  };
 }
 
 export async function buildSelfLabelDossier(
   db: SqliteDatabase,
   episodes: Pick<EpisodicRepository, "get" | "getStats"> | null,
   nodeId: string,
+  selfNode?: string,
 ): Promise<SelfLabelDossier> {
-  const { self, canonical } = selfLabelInventory(db);
+  const { self, canonical } = selfLabelInventory(db, selfNode);
   const node =
     db.prepare("SELECT * FROM semantic_nodes WHERE id = ?").get(nodeId) ??
     refuse(`Missing judged node ${nodeId}`);
@@ -267,6 +302,7 @@ export function parseVerdictFile(value: unknown): VerdictFile {
       ids.has(record.node_id) ||
       (candidates !== undefined && !candidates.has(record.node_id)) ||
       record.node_id !== record.dossier.node.id ||
+      (file.self_node !== undefined && record.dossier.self.node_id !== file.self_node.id) ||
       record.model !== file.model ||
       fingerprint(record.dossier) !== record.dossier_hash
     )
