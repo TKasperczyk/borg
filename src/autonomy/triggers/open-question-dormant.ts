@@ -17,20 +17,19 @@ type EpisodicSearchHit = {
   score: number;
 };
 
-type OpenQuestionDormantPayload = {
+type DormantQuestion = {
   open_question_id: OpenQuestion["id"];
   question: string;
   urgency: number;
   last_touched: number;
-  // The offline rumination loop selects questions on its own criteria, and this
-  // trigger neither feeds it nor reads its result. Carrying its bookkeeping here
-  // is the only way the wake says whether the question it is handing over has
-  // ever been worked offline -- otherwise a question no offline pass has reached
-  // arrives looking exactly like one that has been ruminated a dozen times.
   unresolved_rumination_ticks: number;
   last_ruminated_at: number | null;
   related_episodes?: EpisodicSearchHit[];
 } & ReturnType<typeof memoryDisclosurePayloadFields>;
+
+export type OpenQuestionDormantPayload = DormantQuestion & {
+  additional_questions?: DormantQuestion[];
+};
 
 export type OpenQuestionDormantTriggerOptions = {
   openQuestionsRepository: OpenQuestionsRepository;
@@ -60,7 +59,7 @@ export function createOpenQuestionDormantTrigger(
         .filter((question) => question.last_touched + options.dormantMs < nowMs)
         .sort((left, right) => left.last_touched - right.last_touched);
 
-      return openQuestions
+      const candidates = openQuestions
         .map<DueEvent<OpenQuestionDormantPayload> | null>((question) => {
           const watermarkProcessName = `${WATERMARK_PREFIX}:${question.id}:${question.last_touched}`;
 
@@ -87,6 +86,23 @@ export function createOpenQuestionDormantTrigger(
           };
         })
         .filter((event): event is DueEvent<OpenQuestionDormantPayload> => event !== null);
+      const selected = candidates.slice(0, 3);
+      const first = selected[0];
+      return first === undefined
+        ? []
+        : [
+            {
+              ...first,
+              payload: {
+                ...first.payload,
+                ...(selected.length === 1
+                  ? {}
+                  : {
+                      additional_questions: selected.slice(1).map((event) => event.payload),
+                    }),
+              },
+            },
+          ];
     },
     async nextDueAt() {
       const nowMs = clock.now();
@@ -106,6 +122,22 @@ export function createOpenQuestionDormantTrigger(
         });
 
       return candidates.length === 0 ? null : Math.min(...candidates);
+    },
+    commitFired(event) {
+      for (const question of [event.payload, ...(event.payload.additional_questions ?? [])]) {
+        const current = options.openQuestionsRepository.get(question.open_question_id);
+        if (current?.status === "open") {
+          options.openQuestionsRepository.markRuminated(
+            current.id,
+            current.unresolved_rumination_ticks + 1,
+          );
+        }
+        options.watermarkRepository.set(
+          `${WATERMARK_PREFIX}:${question.open_question_id}:${question.last_touched}`,
+          sessionId,
+          { lastTs: question.last_touched, lastEntryId: event.id },
+        );
+      }
     },
     buildTurn(event) {
       return {

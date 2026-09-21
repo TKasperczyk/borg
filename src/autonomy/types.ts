@@ -147,6 +147,8 @@ export type AutonomyWakeSource<Payload extends Record<string, unknown> = Record<
     // scan to reconcile. Best-effort: the watermark remains the idempotency
     // source of truth, so a throwing onFired never causes a re-fire.
     onFired?(event: DueEvent<Payload>): void | Promise<void>;
+    /** Synchronous SQLite bookkeeping, committed atomically with source watermarks. */
+    commitFired?(event: DueEvent<Payload>): void;
   };
 
 export type AutonomyTrigger<Payload extends Record<string, unknown> = Record<string, unknown>> =

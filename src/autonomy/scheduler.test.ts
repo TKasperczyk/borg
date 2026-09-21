@@ -21,6 +21,7 @@ import { associateTurnExecutionMetricsWithError } from "../cognition/turn-execut
 
 import {
   createCommitmentExpiringTrigger,
+  createOpenQuestionDormantTrigger,
   createGoalFollowupDueTrigger,
   createScheduledReflectionTrigger,
   createScheduledWakeTrigger,
@@ -1828,6 +1829,75 @@ describe("AutonomyScheduler", () => {
       ).toBe(batched.backoff!.updatedAt + 14 * 86_400_000);
     } finally {
       await Promise.all(harnesses.map((harness) => harness.cleanup()));
+    }
+  });
+
+  it("runs one prepared turn for three dormant questions and stamps all three", async () => {
+    const clock = new ManualClock(1_000_000);
+    const harness = await createOfflineTestHarness({ clock });
+    const watermarkRepository = new StreamWatermarkRepository({ db: harness.db, clock });
+    const questions = Array.from({ length: 3 }, (_, index) =>
+      harness.openQuestionsRepository.add({
+        question: `Question ${index}`,
+        urgency: 0.5,
+        source: "user",
+        provenance: { kind: "system" },
+        last_touched: clock.now() - 100_000 + index,
+      }),
+    );
+    const source = createOpenQuestionDormantTrigger({
+      openQuestionsRepository: harness.openQuestionsRepository,
+      watermarkRepository,
+      dormantMs: 50_000,
+      clock,
+    });
+    const createStreamWriter = (sessionId: typeof DEFAULT_SESSION_ID) =>
+      new StreamWriter({ dataDir: harness.tempDir, sessionId, clock });
+    const dispatcher = new ToolDispatcher({ createStreamWriter, clock });
+    const dispatch = vi.spyOn(dispatcher, "dispatch").mockResolvedValue({
+      callId: "prep",
+      toolName: "tool.episodic.search",
+      ok: true,
+      output: { episodes: [] },
+      durationMs: 1,
+    });
+    const turnRunner = {
+      run: vi.fn().mockResolvedValue(createStructuralTurnResult({ emissionKind: "suppressed" })),
+    };
+    const scheduler = createScheduler({
+      db: harness.db,
+      enabled: true,
+      intervalMs: 1_000,
+      maxWakesPerWindow: 1,
+      clock,
+      createStreamWriter,
+      watermarkRepository,
+      turnOrchestrator: turnRunner,
+      toolDispatcher: dispatcher,
+      sources: [source],
+    });
+    try {
+      expect(await scheduler.tick()).toMatchObject({ firedEvents: 1 });
+      expect(turnRunner.run).toHaveBeenCalledTimes(1);
+      expect(dispatch.mock.calls.map(([input]) => input.input)).toEqual(
+        questions.map((question) => ({ query: question.question, limit: 5 })),
+      );
+      const payload = turnRunner.run.mock.calls[0]![0].autonomyTrigger.payload;
+      expect(payload.additional_questions).toHaveLength(2);
+      expect(
+        payload.additional_questions.every((question: Record<string, unknown>) =>
+          Array.isArray(question.related_episodes),
+        ),
+      ).toBe(true);
+      for (const question of questions) {
+        expect(harness.openQuestionsRepository.get(question.id)?.last_ruminated_at).toBe(
+          clock.now(),
+        );
+      }
+      expect((await scheduler.describe()).budget.used_in_current_window).toBe(1);
+      expect((await scheduler.tick()).firedEvents).toBe(0);
+    } finally {
+      await harness.cleanup();
     }
   });
 

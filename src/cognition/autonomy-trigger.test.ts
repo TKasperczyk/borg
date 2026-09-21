@@ -168,7 +168,7 @@ describe("formatAutonomyTriggerContext epoch annotation", () => {
     expect(rendered).toContain("cannot wake me a second time");
     expect(rendered).toContain("never a count of how often it has already woken me");
     expect(rendered).toContain("leaves the pair unlatched and can return");
-    expect(rendered).toContain("which this wake neither feeds nor writes");
+    expect(rendered).toContain("updates its rumination count and time");
     expect(rendered.indexOf("note on this dormant-question wake")).toBeGreaterThan(
       rendered.indexOf('"last_ruminated_at": null'),
     );

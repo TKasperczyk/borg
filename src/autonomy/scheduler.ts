@@ -37,6 +37,7 @@ import {
   AUTONOMY_WAKE_SOURCE_NAMES,
   HEADWAY_EMISSION_KINDS,
 } from "./types.js";
+import type { OpenQuestionDormantPayload } from "./triggers/open-question-dormant.js";
 import type { AutonomyWakeExecutionCounts, AutonomyWakesRepository } from "./wakes-repository.js";
 import {
   getExecutiveFocusGoalStaleBackoffProcessName,
@@ -1377,7 +1378,8 @@ export class AutonomyScheduler {
               this.scheduleBatchTriggerErrorBackoff(wakeBatch);
             }
             const executionCounts =
-              turnExecutionMetricsFromError(error) ?? (busy ? ZERO_TURN_EXECUTION_COUNTS : undefined);
+              turnExecutionMetricsFromError(error) ??
+              (busy ? ZERO_TURN_EXECUTION_COUNTS : undefined);
             const outcomeSummary = busy
               ? "Skipped autonomous turn because the session was busy."
               : `Autonomous turn failed: ${formatError(error)}`;
@@ -1551,7 +1553,8 @@ export class AutonomyScheduler {
                 this.applyPerGoalEmptyWakeBackoff(event, outcome);
               }
 
-              for (const { event } of wakeBatch.events) {
+              for (const { source, event } of wakeBatch.events) {
+                source.commitFired?.(event);
                 this.options.watermarkRepository.set(event.watermarkProcessName, this.sessionId, {
                   lastTs: event.sortTs,
                   lastEntryId: event.id,
@@ -2202,38 +2205,32 @@ export class AutonomyScheduler {
       }
 
       case "open_question_dormant": {
-        const payload = dueEvent.payload as {
-          question: string;
-        };
-        const result = await this.options.toolDispatcher.dispatch({
-          toolName: "tool.episodic.search",
-          input: {
-            query: payload.question,
-            limit: 5,
-          },
-          origin: "autonomous",
-          sessionId: this.sessionId,
-          provenance,
-          timeoutMs: this.prepToolTimeoutMs,
-        });
-
-        if (!result.ok) {
-          return {
-            toolError: result.error,
-          };
+        const payload = dueEvent.payload as OpenQuestionDormantPayload;
+        const preparedQuestions = [];
+        for (const question of [payload, ...(payload.additional_questions ?? [])]) {
+          const result = await this.options.toolDispatcher.dispatch({
+            toolName: "tool.episodic.search",
+            input: { query: question.question, limit: 5 },
+            origin: "autonomous",
+            sessionId: this.sessionId,
+            provenance,
+            timeoutMs: this.prepToolTimeoutMs,
+          });
+          if (!result.ok) return { toolError: result.error };
+          const output = result.output as { episodes: unknown[] };
+          preparedQuestions.push({ ...question, related_episodes: output.episodes });
         }
-
-        const output = result.output as {
-          episodes: unknown[];
-        };
-
         return {
           source,
           event: {
             ...dueEvent,
             payload: {
-              ...dueEvent.payload,
-              related_episodes: output.episodes,
+              ...preparedQuestions[0],
+              ...(payload.additional_questions === undefined
+                ? {}
+                : {
+                    additional_questions: preparedQuestions.slice(1),
+                  }),
             },
           },
         };

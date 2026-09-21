@@ -250,16 +250,9 @@ function boundAutonomyTriggerContext(context: AutonomyTriggerContext): string {
   return bounded;
 }
 
-// A dormant-question wake's event id is the question paired with the same stamp
-// its sort_ts reports, and that pair is what the scheduler latches -- so the
-// event is one-shot per dormancy, and an old sort_ts means the question has
-// stood unwritten that long rather than that it has been waking me all along.
-// Nothing in the rendered block says so: the block shows a date eight days back
-// on a wake that fired today and looks like recurrence. The offline rumination
-// loop's bookkeeping rides in the payload for the same reason -- the wake is not
-// that loop's selector and cannot report its own passes as offline work.
+// Each presented question keeps its own dormancy latch and disclosure label.
 const OPEN_QUESTION_DORMANCY_DOMAIN_NOTE =
-  "note on this dormant-question wake: last_touched is the dormancy anchor this trigger measures against, and my event_id pairs the question with that same stamp, which is what gets latched once the wake completes. So this event cannot wake me a second time -- only a later write that moves last_touched mints a new stamp and a new event -- and an old sort_ts is how long the question has stood at that stamp, never a count of how often it has already woken me. Not every write moves it: the offline loop's rumination bookkeeping does not, and a question rendered into a context section is not written at all. A wake that fails before it completes leaves the pair unlatched and can return. unresolved_rumination_ticks and last_ruminated_at are that offline loop's own record under its own selection, which this wake neither feeds nor writes: on a question that is still open, a null last_ruminated_at means no offline pass has been written against it since it was opened.";
+  "note on this dormant-question wake: up to three questions share this wake. Each last_touched is that question's dormancy anchor, never a count of how often it has already woken me. Completion latches every presented question at that stamp and updates its rumination count and time; a failure leaves the pair unlatched and can return. A latched question cannot wake me a second time until a later write moves last_touched. Rumination stamps include offline passes and completed dormant-question wakes; null means neither has been recorded.";
 
 function carriesOpenQuestionDormancy(payload: Record<string, unknown>): boolean {
   return typeof payload.open_question_id === "string" && typeof payload.last_touched === "number";
