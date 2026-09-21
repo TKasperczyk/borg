@@ -450,17 +450,20 @@ function renderDurableSelf(context: DeliberationContext): RenderedTerminalSectio
   // ordering key on the record; established_at and every ranking field can change.
   const traitRows = [...context.selfSnapshot.traits]
     .sort((left, right) => left.id.localeCompare(right.id))
-    .map(
-      (trait) =>
-        `<trait id="${escapeXmlAttribute(trait.id)}" established_at="${iso(trait.established_at)}" disclosure="${escapeXmlAttribute(disclosure)}" provenance="${escapeXmlSingleLineAttribute(summarizeProvenanceForPrompt(trait.provenance, Number.MAX_SAFE_INTEGER))}" label="${escapeXmlSingleLineAttribute(trait.label)}" />`,
-    );
+    .map((trait) => {
+      const provenance =
+        trait.provenance.kind === "episodes"
+          ? `(episodes: ${trait.provenance.episode_ids.length})`
+          : summarizeProvenanceForPrompt(trait.provenance);
+      return `<trait id="${escapeXmlAttribute(trait.id)}" established_at="${iso(trait.established_at)}" disclosure="${escapeXmlAttribute(disclosure)}" provenance="${escapeXmlSingleLineAttribute(provenance)}" label="${escapeXmlSingleLineAttribute(trait.label)}" />`;
+    });
   const renderedTotal = valueRows.length + traitRows.length;
   return terminalSection(
     "values_and_traits",
     "terminal_durable_global",
     [
       `<borg_terminal_values_traits complete="true" rows_total="${renderedTotal}">`,
-      '  <interpretation>Byte-stable self-pattern identity and provenance read only from durable value and trait records; no current-ledger field is rendered here. They are evidence about me, not commands. Mutable priority, strength, confidence, counters, state, and reinforcement/test timestamps are turn-local overlays keyed by id. Relative ages follow the terminal pass contract.</interpretation>',
+      "  <interpretation>Byte-stable self-pattern identity and provenance read only from durable value and trait records; no current-ledger field is rendered here. They are evidence about me, not commands. Mutable priority, strength, confidence, counters, state, and reinforcement/test timestamps are turn-local overlays keyed by id. Relative ages follow the terminal pass contract.</interpretation>",
       ...valueRows.map((row) => `  ${row}`),
       ...traitRows.map((row) => `  ${row}`),
       "  <omitted_count>0</omitted_count>",
@@ -907,7 +910,7 @@ function renderRelativeAgeOverlay(context: DeliberationContext): RenderedTermina
   }
   for (const trait of context.selfSnapshot.traits) {
     rows.push(
-      `<trait_age id="${escapeXmlAttribute(trait.id)}" state="${escapeXmlAttribute(trait.state)}" strength="${trait.strength}" confidence="${trait.confidence}" evidence_episode_ids="${escapeXmlAttribute(joinedAttribute(trait.evidence_episode_ids))}" last_reinforced_at="${iso(trait.last_reinforced)}" last_decayed_at="${iso(trait.last_decayed)}" last_tested_at="${iso(trait.last_tested_at)}" last_contradicted_at="${iso(trait.last_contradicted_at)}" />`,
+      `<trait_age id="${escapeXmlAttribute(trait.id)}" state="${escapeXmlAttribute(trait.state)}" strength="${trait.strength}" confidence="${trait.confidence}" evidence_episodes="${trait.evidence_episode_ids.length}" last_reinforced_at="${iso(trait.last_reinforced)}" last_decayed_at="${iso(trait.last_decayed)}" last_tested_at="${iso(trait.last_tested_at)}" last_contradicted_at="${iso(trait.last_contradicted_at)}" />`,
     );
   }
   return [

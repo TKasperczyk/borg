@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { FakeEmbeddingClient } from "../../../embeddings/index.js";
 import type { CommitmentRecord } from "../../../memory/commitments/index.js";
+import { summarizeProvenanceForPrompt, type Provenance } from "../../../memory/common/index.js";
 import {
   selfMigrations,
   TraitsRepository,
@@ -982,6 +983,76 @@ describe("compact terminal finalizer context", () => {
     );
     expect(aliceSurface.system[0]?.text).toBe(bobSurface.system[0]?.text);
   });
+
+  it.each([
+    ["episodes", 1],
+    ["episodes", 32],
+    ["offline", 0],
+    ["offline", 1],
+    ["online", 1],
+    ["online_reflector", 1],
+    ["manual", 0],
+    ["system", 0],
+  ] as const)(
+    "keeps legible %s trait provenance and %i evidence episodes without ids or row growth",
+    (kind, episodeCount) => {
+      const episodeIds = Array.from({ length: episodeCount }, () => createEpisodeId());
+      const streamId = createStreamEntryId();
+      const provenance: Provenance =
+        kind === "episodes"
+          ? { kind, episode_ids: episodeIds }
+          : kind === "online_reflector"
+            ? { kind, evidence_episode_ids: episodeIds, evidence_stream_entry_ids: [streamId] }
+            : kind === "online" || kind === "offline"
+              ? { kind, process: "reflector" }
+              : { kind };
+      const trait = {
+        id: createTraitId(),
+        label: "好奇心",
+        strength: 0.8,
+        last_reinforced: NOW_MS - 2 * 60_000,
+        last_decayed: null,
+        state: "established" as const,
+        established_at: NOW_MS - 4 * 60 * 60_000,
+        confidence: 0.9,
+        last_tested_at: null,
+        last_contradicted_at: null,
+        support_count: episodeCount,
+        contradiction_count: 0,
+        evidence_episode_ids: episodeIds,
+        provenance,
+      };
+      const result = build(context({ selfSnapshot: { goals: [], values: [], traits: [trait] } }));
+      const durableRow = result.system[0]!.text.match(/<trait [^>]*\/>/)![0];
+      const overlayRow = result.system[2]!.text.match(/<trait_age [^>]*\/>/)![0];
+      const expectedProvenance =
+        kind === "episodes"
+          ? `(episodes: ${episodeCount})`
+          : summarizeProvenanceForPrompt(provenance);
+      expect(durableRow).toContain(`provenance="${expectedProvenance}"`);
+      expect(durableRow).toContain("disclosure_class=self_private");
+      expect(durableRow).toContain(trait.label);
+      expect(overlayRow).toContain(`evidence_episodes="${episodeCount}"`);
+      expect(overlayRow).toContain(
+        `last_reinforced_at="${new Date(trait.last_reinforced).toISOString()}"`,
+      );
+      expect(overlayRow).not.toContain("evidence_episode_ids=");
+      for (const id of [...episodeIds, streamId]) {
+        expect(durableRow).not.toContain(id);
+        expect(overlayRow).not.toContain(id);
+      }
+      const oldDurableRow = durableRow.replace(
+        `provenance="${expectedProvenance}"`,
+        `provenance="${summarizeProvenanceForPrompt(provenance, Number.MAX_SAFE_INTEGER)}"`,
+      );
+      const oldOverlayRow = overlayRow.replace(
+        `evidence_episodes="${episodeCount}"`,
+        `evidence_episode_ids="${episodeIds.join(",") || "none"}"`,
+      );
+      expect(Buffer.byteLength(durableRow)).toBeLessThanOrEqual(Buffer.byteLength(oldDurableRow));
+      expect(Buffer.byteLength(overlayRow)).toBeLessThan(Buffer.byteLength(oldOverlayRow));
+    },
+  );
 
   it("keeps mutable exact stamps in overlays and derives rather than printing relative ages", () => {
     const scheduledExpiry = NOW_MS + 6 * 60 * 60_000;
