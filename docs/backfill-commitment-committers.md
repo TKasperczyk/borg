@@ -12,8 +12,12 @@ pnpm tsx scripts/backfill-commitment-committers.ts --data-dir /home/luth/tmp/ban
 The default read-only plan lists **every NULL row**, all source entry IDs, indexed/missing
 joins, distinct non-NULL senders, raw stored before/after rows, identity events and audit inputs.
 Snapshots retain legacy NULLs and the exact stored JSON strings instead of decoded defaults.
-Exactly one distinct sender is sufficient even if some other source IDs are missing or
-have NULL senders. Zero or multiple senders leave the row NULL. No entity redirect,
+Every source entry must be indexed with a non-NULL sender, and all must resolve to the
+same sender. A missing entry or NULL sender leaves the commitment NULL with status
+`unresolved_source_entry` and reason `unresolved source entry`, even when other entries
+have one or more known senders. The summary's `unresolved_source_rows` counts these
+commitments separately; `zero_senders` counts rows without source entries, and
+`multiple_senders` counts fully resolved rows with conflicting senders. No entity redirect,
 speaker role, audience, directive text or authorship inference is used. The field means
 the sender of the entry from which the directive was extracted.
 
@@ -27,7 +31,8 @@ Updates and one `maintenance_audit` row per change commit in one SQLite transact
 Each audit has process `correction`, the prior NULL, the full prior record and expected
 after record for guarded reversal. A separate run-summary audit precedes journal archival.
 Resume uses the journal and durable audit markers, rechecking source joins and affected
-records; it does not duplicate updates or audits. An empty rerun creates no journal or audit.
+records and the complete-source attribution rule; it does not duplicate updates or audits.
+Older plans that accepted partial joins refuse. An empty rerun creates no journal or audit.
 
 No automatic reversal command is provided. The audit snapshots support an operator-reviewed
 repository-based reversal; restoring a verified backup is the alternative. No expiry sweep,

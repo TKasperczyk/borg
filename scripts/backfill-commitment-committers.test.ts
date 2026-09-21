@@ -49,26 +49,37 @@ function fixture() {
       provenance: { kind: "manual" },
       sourceStreamEntryIds: ids,
     });
-  const single = add([first, second, missing]);
+  const single = add([first, second]);
   const multiple = add([first, third]);
   const zero = add([missing]);
   const empty = add();
-  return { ...f, repo, index, a, b, first, single, multiple, zero, empty };
+  const partial = add([first, missing]);
+  return { ...f, repo, index, a, b, first, third, missing, single, multiple, zero, empty, partial };
 }
 describe("commitment committer backfill", () => {
-  it("plans each NULL row by distinct indexed sender, including missing joins", () => {
+  it("requires complete same-sender joins and lists unresolved sources separately", () => {
     const f = fixture();
     const bytes = readFileSync(join(f.dataDir, "borg.db"));
     const plan = planCommitterBackfill(f.dataDir, 2000);
     expect(plan.summary).toEqual({
-      scanned_null: 4,
+      scanned_null: 5,
       changed: 1,
-      zero_senders: 2,
+      zero_senders: 1,
       multiple_senders: 1,
+      unresolved_source_rows: 2,
     });
     expect(plan.rows.find((r) => r.commitment_id === f.single.id)).toMatchObject({
       resolved_sender: f.a,
-      joined_entries: [{ sender_entity_id: f.a }, { sender_entity_id: f.a }, { indexed: false }],
+      joined_entries: [{ sender_entity_id: f.a }, { sender_entity_id: f.a }],
+    });
+    expect(plan.rows.find((r) => r.commitment_id === f.partial.id)).toMatchObject({
+      status: "unresolved_source_entry",
+      reason: "unresolved source entry",
+      resolved_sender: null,
+      distinct_senders: [f.a],
+      joined_entries: [{ sender_entity_id: f.a }, { entry_id: f.missing, indexed: false }],
+      after: null,
+      audit: null,
     });
     expect(readFileSync(join(f.dataDir, "borg.db"))).toEqual(bytes);
     expect(f.audit.list()).toEqual([]);
@@ -85,7 +96,8 @@ describe("commitment committer backfill", () => {
       provenance: f.single.provenance,
       record_version: f.single.record_version,
     });
-    for (const row of [f.multiple, f.zero, f.empty]) expect(f.repo.get(row.id)).toEqual(row);
+    for (const row of [f.multiple, f.zero, f.empty, f.partial])
+      expect(f.repo.get(row.id)).toEqual(row);
     expect(f.audit.list({ process: "correction" })).toHaveLength(2);
     expect(
       f.audit.list().find((a) => a.action.endsWith(f.single.id))?.reversal.committed_by_entity_id,
@@ -194,12 +206,68 @@ describe("commitment committer backfill", () => {
     const before = f.repo.get(f.single.id);
     const plan = planCommitterBackfill(f.dataDir, 2000);
     expect(plan.rows.some((r) => r.commitment_id === f.single.id)).toBe(false);
-    expect(plan.rows.find((r) => r.commitment_id === f.multiple.id)?.distinct_senders).toEqual([
-      f.b,
-    ]);
+    expect(plan.rows.find((r) => r.commitment_id === f.multiple.id)).toMatchObject({
+      distinct_senders: [f.b],
+      status: "unresolved_source_entry",
+      reason: "unresolved source entry",
+      resolved_sender: null,
+    });
     await applyCommitterBackfill(plan);
     expect(f.repo.get(f.single.id)).toEqual(before);
+    expect(f.repo.get(f.multiple.id)).toEqual(f.multiple);
     expect(f.repo.get(f.zero.id)?.expired_at).toBeNull();
+  });
+  it.each(["missing_entry", "null_sender"])(
+    "leaves [sender A, unresolved source] NULL without a per-row audit (%s)",
+    async (kind) => {
+      const f = fixture();
+      if (kind === "null_sender")
+        f.index.record(f.missing, DEFAULT_SESSION_ID, 3, 3, 4, "user_msg", null);
+      const plan = planCommitterBackfill(f.dataDir, 2000);
+      const partial = plan.rows.find((r) => r.commitment_id === f.partial.id)!;
+      expect(partial.joined_entries[1]).toEqual({
+        entry_id: f.missing,
+        indexed: kind === "null_sender",
+        sender_entity_id: null,
+      });
+      expect(partial.reason).toBe("unresolved source entry");
+      expect(partial.resolved_sender).toBeNull();
+      expect(partial.after).toBeNull();
+      expect(partial.audit).toBeNull();
+      expect(plan.summary.unresolved_source_rows).toBe(2);
+      await applyCommitterBackfill(plan);
+      expect(f.repo.get(f.partial.id)).toEqual(f.partial);
+      expect(f.audit.list().some((a) => a.action.endsWith(f.partial.id))).toBe(false);
+      expect(f.repo.get(f.single.id)?.committed_by_entity_id).toBe(f.a);
+    },
+  );
+  it("classifies a missing source distinctly even with multiple known senders", () => {
+    const f = fixture();
+    f.repo.update(
+      f.partial.id,
+      { source_stream_entry_ids: [f.first, f.third, f.missing] },
+      { kind: "manual" },
+    );
+    const plan = planCommitterBackfill(f.dataDir, 2000);
+    expect(plan.rows.find((r) => r.commitment_id === f.partial.id)).toMatchObject({
+      status: "unresolved_source_entry",
+      reason: "unresolved source entry",
+      distinct_senders: [f.a, f.b].sort(),
+      resolved_sender: null,
+      audit: null,
+    });
+  });
+  it("refuses the older partial-join classification before journaling", async () => {
+    const f = fixture();
+    const plan = planCommitterBackfill(f.dataDir, 2000);
+    const partial = plan.rows.find((r) => r.commitment_id === f.partial.id)!;
+    partial.status = "single_sender";
+    partial.reason = null;
+    partial.resolved_sender = f.a;
+    await expect(applyCommitterBackfill(plan)).rejects.toThrow("source attribution");
+    expect(f.repo.get(f.partial.id)).toEqual(f.partial);
+    expect(f.audit.list()).toEqual([]);
+    expect(existsSync(repairPendingPath(f.dataDir, plan.kind))).toBe(false);
   });
   it("rolls back repository and identity writes when audit persistence fails", async () => {
     const f = fixture();

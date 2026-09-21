@@ -26,11 +26,14 @@ import {
 } from "./audited-data-repair.js";
 
 type JoinedEntry = { entry_id: string; indexed: boolean; sender_entity_id: EntityId | null };
-type CommitmentPlanRow = {
-  commitment_id: CommitmentRecord["id"];
-  status: "single_sender" | "zero_senders" | "multiple_senders";
+type SourceAttribution = {
+  status: "single_sender" | "zero_senders" | "multiple_senders" | "unresolved_source_entry";
+  reason: "unresolved source entry" | null;
   resolved_sender: EntityId | null;
   distinct_senders: EntityId[];
+};
+type CommitmentPlanRow = SourceAttribution & {
+  commitment_id: CommitmentRecord["id"];
   joined_entries: JoinedEntry[];
   before: Row;
   after: Row | null;
@@ -42,6 +45,26 @@ export type CommitterPlan = DataRepairPlan & {
 };
 const KIND = "backfill-commitment-committers";
 const reason = "Backfill directive source-entry sender from stream_entry_index";
+
+function sourceAttribution(joined: JoinedEntry[]): SourceAttribution {
+  const senders = [
+    ...new Set(joined.flatMap((e) => (e.sender_entity_id === null ? [] : [e.sender_entity_id]))),
+  ].sort();
+  const unresolved = joined.some((e) => !e.indexed || e.sender_entity_id === null);
+  const status = unresolved
+    ? "unresolved_source_entry"
+    : senders.length === 1
+      ? "single_sender"
+      : senders.length === 0
+        ? "zero_senders"
+        : "multiple_senders";
+  return {
+    status,
+    reason: unresolved ? "unresolved source entry" : null,
+    resolved_sender: status === "single_sender" ? senders[0]! : null,
+    distinct_senders: senders,
+  };
+}
 
 function joinedEntries(db: SqliteDatabase, dataDir: string, row: Row): JoinedEntry[] {
   const index = new StreamEntryIndexRepository({ db, dataDir });
@@ -77,21 +100,9 @@ export function planCommitterBackfill(dataDir: string, now = Date.now()): Commit
       .all()
       .map((before): CommitmentPlanRow => {
         const joined = joinedEntries(db, dataDir, before);
-        const senders = [
-          ...new Set(
-            joined.flatMap((e) => (e.sender_entity_id === null ? [] : [e.sender_entity_id])),
-          ),
-        ].sort();
         return {
           commitment_id: parseCommitmentId(String(before.id)),
-          status:
-            senders.length === 1
-              ? "single_sender"
-              : senders.length === 0
-                ? "zero_senders"
-                : "multiple_senders",
-          resolved_sender: senders.length === 1 ? senders[0]! : null,
-          distinct_senders: senders,
+          ...sourceAttribution(joined),
           joined_entries: joined,
           before,
           after: null,
@@ -109,6 +120,7 @@ export function planCommitterBackfill(dataDir: string, now = Date.now()): Commit
       changed: changed.length,
       zero_senders: rows.filter((r) => r.status === "zero_senders").length,
       multiple_senders: rows.filter((r) => r.status === "multiple_senders").length,
+      unresolved_source_rows: rows.filter((r) => r.status === "unresolved_source_entry").length,
     };
     if (changed.length) {
       const projection = cloneDatabase(db);
@@ -155,10 +167,18 @@ function preflight(db: SqliteDatabase, plan: CommitterPlan): void {
       done ? row.after : row.before,
       row.commitment_id,
     );
+    const joined = joinedEntries(db, plan.dataDir, row.before);
+    assertSame(joined, row.joined_entries, `index joins for ${row.commitment_id}`);
+    // A journal from the older partial-join rule must not bypass full resolution on resume.
     assertSame(
-      joinedEntries(db, plan.dataDir, row.before),
-      row.joined_entries,
-      `index joins for ${row.commitment_id}`,
+      sourceAttribution(joined),
+      {
+        status: row.status,
+        reason: row.reason ?? null,
+        resolved_sender: row.resolved_sender,
+        distinct_senders: row.distinct_senders,
+      },
+      `source attribution for ${row.commitment_id}`,
     );
   }
 }
