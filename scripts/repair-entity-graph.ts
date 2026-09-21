@@ -46,8 +46,29 @@ export type RepairCheckpoint =
   | "after_completion"
   | "before_archive"
   | "after_archive";
-export type RepairOptions = { checkpoint?: (point: RepairCheckpoint) => void | Promise<void> };
-type Journal = { version: 2; plan: RepairPlan };
+type RepairJournalKind = "entity-graph-repair" | "judge-self-label-nodes";
+export type RepairOptions = {
+  checkpoint?: (point: RepairCheckpoint) => void | Promise<void>;
+  /** Internal delegation after the owning script's preflight; never a legacy CLI flag. */
+  journalKind?: RepairJournalKind;
+};
+type Journal = { version: 2; kind?: RepairJournalKind; plan: RepairPlan };
+
+function journalKind(journal: Journal): RepairJournalKind {
+  // Pre-kind judged journals must not become an unguarded legacy recovery path.
+  const origin =
+    "selfLabelJudgments" in journal.plan ? "judge-self-label-nodes" : "entity-graph-repair";
+  if (journal.kind !== undefined && journal.kind !== origin)
+    fail("Journal kind/origin mismatch; judged journals require scripts/judge-self-label-nodes.ts");
+  return journal.kind ?? origin;
+}
+
+function assertJournalOwner(journal: Journal, options: RepairOptions): void {
+  if (journalKind(journal) !== (options.journalKind ?? "entity-graph-repair"))
+    fail(
+      "Judged repair journals must resume through scripts/judge-self-label-nodes.ts --apply --resume with its backup and live-store confirmations",
+    );
+}
 const JOURNAL_DIRECTORY = "entity-graph-repair";
 export function pendingPath(dataDir: string): string {
   return join(dataDir, JOURNAL_DIRECTORY, "pending.json");
@@ -90,6 +111,7 @@ function assertProtected(plan: RepairPlan): void {
 }
 
 async function finishJournal(journal: Journal, options: RepairOptions = {}): Promise<void> {
+  assertJournalOwner(journal, options);
   const { plan } = journal;
   const runId = plan.runId ?? fail("Empty repair cannot have a journal");
   assertProtected(plan);
@@ -198,6 +220,8 @@ export async function applyEntityGraphRepair(
   plan: RepairPlan,
   options: RepairOptions = {},
 ): Promise<void> {
+  const journal: Journal = { version: 2, kind: journalKind({ version: 2, plan }), plan };
+  assertJournalOwner(journal, options);
   // In particular: don't mkdir, create a journal, open a writable DB, or insert audit markers.
   if (plan.runId === null) return;
   if (existsSync(pendingPath(plan.input.dataDir)))
@@ -212,7 +236,6 @@ export async function applyEntityGraphRepair(
   // The journal's directory entry must be durable before committing SQLite.
   mkdirSync(join(plan.input.dataDir, JOURNAL_DIRECTORY), { recursive: true });
   syncDirectory(plan.input.dataDir);
-  const journal: Journal = { version: 2, plan };
   writeJsonFileAtomic(pendingPath(plan.input.dataDir), journal, { space: 0, mode: 0o600 });
   await options.checkpoint?.("after_journal");
   await finishJournal(journal, options);
@@ -230,11 +253,19 @@ export async function resumeEntityGraphRepair(
     const archived = existsSync(directory)
       ? readdirSync(directory).filter((file) => file.endsWith(".json"))
       : [];
+    const journals = archived
+      .map((file) => JSON.parse(readFileSync(join(directory, file), "utf8")) as Journal)
+      .sort((a, b) => b.plan.plannedAt - a.plan.plannedAt);
+    // Do not report successful legacy recovery of the latest judged run, either.
+    if (journals[0] && options.journalKind === undefined) assertJournalOwner(journals[0], options);
+    const owned = journals.filter(
+      (journal) => journalKind(journal) === (options.journalKind ?? "entity-graph-repair"),
+    );
     const db = openRepairDatabase(dataDir);
     try {
       if (
-        archived.some((file) => {
-          const journal = JSON.parse(readFileSync(join(directory, file), "utf8")) as Journal;
+        owned.some((journal) => {
+          assertJournalOwner(journal, options);
           return (
             journal.version === 2 &&
             journal.plan.runId !== null &&

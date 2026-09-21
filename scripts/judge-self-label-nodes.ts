@@ -347,10 +347,16 @@ export function loadSelfLabelPlan(dataDir: string, access: Access = {}): SelfLab
       (path) =>
         JSON.parse(readFileSync(checkedPath(path, access.liveStoreConfirmed), "utf8")) as {
           version: number;
+          kind?: string;
           plan: SelfLabelPlan;
         },
     )
-    .filter((journal) => journal.version === 2 && journal.plan.selfLabelJudgments?.kind === KIND)
+    .filter(
+      (journal) =>
+        journal.version === 2 &&
+        (journal.kind === undefined || journal.kind === KIND) &&
+        journal.plan.selfLabelJudgments?.kind === KIND,
+    )
     .map((journal) => journal.plan)
     .sort((a, b) => b.plannedAt - a.plannedAt);
   const plan =
@@ -402,8 +408,9 @@ export async function applySelfLabelNodes(
     )
       refuse("Archived judged repair lacks its completion marker");
   });
-  if (options.resume) await resumeEntityGraphRepair(bank, options);
-  else await applyEntityGraphRepair(plan, options);
+  const delegated: RepairOptions = { ...options, journalKind: KIND };
+  if (options.resume) await resumeEntityGraphRepair(bank, delegated);
+  else await applyEntityGraphRepair(plan, delegated);
 }
 
 export async function main(argv = process.argv.slice(2)): Promise<void> {

@@ -52,6 +52,8 @@ The verdict file is bound to its canonical bank path. Duplicate IDs, malformed s
 
 ## Recovery and live-path guard
 
+The journal envelope records `kind: "judge-self-label-nodes"`. The shared recovery engine rejects this kind through the legacy CLI and accepts it only through the owning script's delegated path after its preflight. Kind/origin mismatches refuse; pre-kind judged journals are recognized from their plan metadata and have the same restriction.
+
 The script uses the **same** version-2 `entity-graph-repair/pending.json` journal and `<run-id>.json` archives as the first repair, with an additional versioned, checksummed judged-plan payload. Judgments and graph SQL changes commit together; Lance commits, outbox drains and completion/archive follow the existing machinery. Resume through this script so backup, confirmation, checksum, migrations and dossier guards are repeated:
 
 ```sh

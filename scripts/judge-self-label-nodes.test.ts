@@ -562,6 +562,65 @@ describe("judged self-label repair", () => {
     expect(existsSync(graph.pendingPath(f.dataDir))).toBe(false);
   });
 
+  it.each(["after_journal", "after_sqlite", "after_archive"] as const)(
+    "legacy CLI refuses judged recovery at %s without changing the store or journal",
+    async (point) => {
+      const f = await fixture(),
+        path = backup(f),
+        plan = await planned(f, undefined, path);
+      await expect(
+        applySelfLabelNodes(plan, {
+          backupVerified: path,
+          checkpoint: (at) => {
+            if (at === point) throw new Error("interrupted");
+          },
+        }),
+      ).rejects.toThrow("interrupted");
+      const journalPath =
+        point === "after_archive"
+          ? join(f.dataDir, "entity-graph-repair", `${plan.runId}.json`)
+          : graph.pendingPath(f.dataDir);
+      const journal = readFileSync(journalPath, "utf8"),
+        before = rows(f);
+      expect(JSON.parse(journal).kind).toBe("judge-self-label-nodes");
+      await expect(graph.main(["--data-dir", f.dataDir, "--apply", "--resume"])).rejects.toThrow(
+        "must resume through scripts/judge-self-label-nodes.ts",
+      );
+      expect(rows(f)).toEqual(before);
+      expect(readFileSync(journalPath, "utf8")).toBe(journal);
+      await applySelfLabelNodes(loadSelfLabelPlan(f.dataDir), {
+        backupVerified: path,
+        resume: true,
+      });
+      expect(
+        f.audit.list().filter((row) => row.action.startsWith("judge-self-label:")),
+      ).toHaveLength(3);
+    },
+  );
+
+  it("legacy recovery also refuses pre-kind judged journals and mismatched kind/origin", async () => {
+    const f = await fixture(),
+      path = backup(f),
+      plan = await planned(f, undefined, path);
+    await expect(
+      applySelfLabelNodes(plan, {
+        backupVerified: path,
+        checkpoint: () => {
+          throw new Error("interrupted");
+        },
+      }),
+    ).rejects.toThrow("interrupted");
+    const pending = graph.pendingPath(f.dataDir),
+      journal = JSON.parse(readFileSync(pending, "utf8"));
+    delete journal.kind;
+    writeFileSync(pending, JSON.stringify(journal));
+    await expect(graph.resumeEntityGraphRepair(f.dataDir)).rejects.toThrow("must resume through");
+    journal.kind = "entity-graph-repair";
+    writeFileSync(pending, JSON.stringify(journal));
+    await expect(graph.resumeEntityGraphRepair(f.dataDir)).rejects.toThrow("kind/origin mismatch");
+    expect(f.audit.list()).toHaveLength(0);
+  });
+
   it("rechecks hashes after planning and before apply, including pending precommit resume", async () => {
     const f = await fixture(),
       path = backup(f),
