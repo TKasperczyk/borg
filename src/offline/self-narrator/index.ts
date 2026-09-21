@@ -231,7 +231,13 @@ function buildObservationPrompt(
     "Existing growth markers for the current period (prior context, not additional citable episodes):",
     ...priorGrowthMarkers.map((marker) =>
       JSON.stringify({
-        ...marker,
+        ts: new Date(marker.ts).toISOString(),
+        category: marker.category,
+        what_changed: marker.what_changed,
+        before_description: marker.before_description,
+        after_description: marker.after_description,
+        confidence: marker.confidence,
+        source_process: marker.source_process,
         ...memoryDisclosurePayloadFields(marker.disclosure_label ?? unknownMemoryDisclosureLabel()),
       }),
     ),

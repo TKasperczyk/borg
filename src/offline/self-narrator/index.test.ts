@@ -5,7 +5,8 @@ import {
   publicMemoryDisclosureLabel,
   selfPrivateMemoryDisclosureLabel,
 } from "../../memory/common/disclosure-label.js";
-import { createMaintenanceRunId } from "../../util/ids.js";
+import { memoryDisclosurePayloadFields } from "../../memory/common/disclosure-serializers.js";
+import { createEpisodeId, createMaintenanceRunId, createStreamEntryId } from "../../util/ids.js";
 import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
 import { estimatePromptTokens } from "../../util/token-estimate.js";
 
@@ -256,6 +257,82 @@ describe("SelfNarratorProcess", () => {
       await harness.cleanup();
     }
   });
+
+  it.each(["episodes", "online_reflector"] as const)(
+    "keeps prior growth context without uncitable ids in %s provenance",
+    async (kind) => {
+      const episodes = [createEpisodeFixture(), createEpisodeFixture()];
+      const priorEpisodeId = createEpisodeId();
+      const priorStreamId = createStreamEntryId();
+      const llm = new FakeLLMClient({
+        responses: [
+          createSelfNarratorResponse({ observation: null, period_decision: "continue_current" }),
+        ],
+      });
+      const harness = await createOfflineTestHarness({ llmClient: llm });
+      const process = new SelfNarratorProcess({
+        autobiographicalRepository: harness.autobiographicalRepository,
+        growthMarkersRepository: harness.growthMarkersRepository,
+        registry: harness.registry,
+      });
+      try {
+        vi.spyOn(harness.episodicRepository, "listEffectivelyVisible").mockResolvedValue(episodes);
+        harness.autobiographicalRepository.upsertPeriod({
+          label: "Current period",
+          start_ts: 1_000,
+          narrative: "My earlier story.",
+          provenance: { kind: "offline", process: "self-narrator" },
+        });
+        const disclosure = selfPrivateMemoryDisclosureLabel();
+        const marker = harness.growthMarkersRepository.add({
+          ts: 2_000,
+          category: "understanding",
+          what_changed: "以前の経験から学んだこと。",
+          before_description: "I had not noticed the pattern.",
+          after_description: "I learned to ask earlier.",
+          evidence_episode_ids: [priorEpisodeId],
+          confidence: 0.5,
+          source_process: "reflector",
+          disclosure_label: disclosure,
+          provenance:
+            kind === "episodes"
+              ? { kind, episode_ids: [priorEpisodeId] }
+              : {
+                  kind,
+                  evidence_episode_ids: [priorEpisodeId],
+                  evidence_stream_entry_ids: [priorStreamId],
+                },
+        });
+        await process.plan(harness.createContext());
+        const prompt = String(llm.requests[0]!.messages[0]!.content);
+        const row = prompt.split("\n").find((line) => line.includes(marker.what_changed))!;
+        expect(JSON.parse(row)).toMatchObject({
+          ts: new Date(marker.ts).toISOString(),
+          category: marker.category,
+          what_changed: marker.what_changed,
+          before_description: marker.before_description,
+          after_description: marker.after_description,
+          confidence: marker.confidence,
+          source_process: marker.source_process,
+          disclosure_label: { disclosure_class: "self_private" },
+        });
+        for (const id of [priorEpisodeId, priorStreamId, marker.id])
+          expect(prompt).not.toContain(id);
+        for (const episode of episodes) expect(prompt).toContain(episode.id);
+        expect(prompt).toContain("I only cite evidence_episode_ids from the provided episodes.");
+        expect(Buffer.byteLength(row)).toBeLessThan(
+          Buffer.byteLength(
+            JSON.stringify({
+              ...marker,
+              ...memoryDisclosurePayloadFields(disclosure),
+            }),
+          ),
+        );
+      } finally {
+        await harness.cleanup();
+      }
+    },
+  );
 
   it("carries prior growth-marker disclosure into a revised narrative", async () => {
     const llm = new FakeLLMClient({
