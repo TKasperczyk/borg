@@ -103,6 +103,7 @@ export async function planActionActorRepair(
         const mirrorBefore = await mirrorRow(table, before.id);
         if (mirrorBefore && mirrorBefore.actor !== from)
           refuse(`Action mirror disagrees with SQL actor: ${before.id}`);
+        // The mirror may lag SQL (including updated_at); this repair changes only actor.
         const mirrorAfter = mirrorBefore ? { ...mirrorBefore, actor: to } : null;
         plan.rows.push({
           before,

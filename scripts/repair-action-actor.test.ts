@@ -77,7 +77,7 @@ async function fixture(withVectors = true) {
         actor: a.actor,
         state: a.state,
         audience_entity_id: null,
-        updated_at: a.updated_at,
+        updated_at: a.updated_at - 50,
         embedding: [0.125, -0.5, 0.75],
       })),
       { on: "id" },
@@ -120,6 +120,53 @@ describe("orphan action actor repair", () => {
     await applyActionActorRepair(rerun);
     expect(f.audit.list()).toHaveLength(2);
   });
+  it.each(["apply", "after_sqlite"])(
+    "preserves mirror timestamp 150 and metadata when SQL timestamp is 200 (%s)",
+    async (mode) => {
+      const f = await fixture();
+      const original = (await f.table!.list()).find((r) => r.id === f.action.id)!;
+      const mirrorBefore = {
+        ...original,
+        description: "Mirror description from an earlier refresh",
+        state: "archived",
+        audience_entity_id: createEntityId(),
+        embedding: Array.from(original.embedding as Iterable<number>),
+      };
+      await f.table!.upsert([mirrorBefore], { on: "id" });
+      const plan = await planActionActorRepair(f, 2000);
+      const row = plan.rows[0]!;
+      expect(row.before.updated_at).toBe(200);
+      expect(row.after).toEqual({ ...row.before, actor: f.to });
+      expect(row.mirror_before).toEqual(mirrorBefore);
+      expect(row.mirror_before?.updated_at).toBe(150);
+      expect(row.mirror_after).toEqual({ ...mirrorBefore, actor: f.to });
+      if (mode === "apply") await applyActionActorRepair(plan);
+      else {
+        await expect(
+          applyActionActorRepair(plan, {
+            checkpoint: (point) => {
+              if (point === mode) throw new Error("interrupted");
+            },
+          }),
+        ).rejects.toThrow("interrupted");
+        await applyActionActorRepair(loadRepairPlan<ActorRepairPlan>(f.dataDir, plan.kind), {
+          resume: true,
+        });
+      }
+      expect(f.repo.get(f.action.id)).toEqual({ ...f.action, actor: f.to });
+      await f.table!.checkoutLatest();
+      const mirrorAfter = (await f.table!.list()).find((r) => r.id === f.action.id)!;
+      expect({
+        ...mirrorAfter,
+        embedding: Array.from(mirrorAfter.embedding as Iterable<number>),
+      }).toEqual({ ...mirrorBefore, actor: f.to });
+      const audit = f.audit.list().find((a) => a.action.endsWith(f.action.id))!;
+      expect(audit.targets.mirror_before).toEqual(mirrorBefore);
+      expect(audit.targets.mirror_after).toEqual({ ...mirrorBefore, actor: f.to });
+      expect(audit.reversal.mirror_before).toEqual(mirrorBefore);
+      expect(audit.reversal.mirror_expected_after).toEqual({ ...mirrorBefore, actor: f.to });
+    },
+  );
   it("refuses a source entity row, including a redirect", async () => {
     const f = await fixture(false);
     f.entities.add({ id: f.from, canonicalName: "Existing" });

@@ -373,6 +373,7 @@ export class ActionRepository {
         code: "ACTION_REPAIR_STALE",
       });
     }
+    // Retain the mirror's own updated_at and metadata even when SQL has newer values.
     await table.upsert([{ ...row, actor: record.actor }], {
       on: "id",
     });
