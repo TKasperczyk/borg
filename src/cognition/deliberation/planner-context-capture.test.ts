@@ -202,6 +202,7 @@ describe("planner context capture", () => {
           autonomySchedulerState: {
             operatorAttentionIndex: {
               total: 125,
+              subjectless: 4,
               records: attentionRows,
             },
             observedAt: NOW_MS,
@@ -293,7 +294,12 @@ describe("planner context capture", () => {
     );
     expect(plannerSurfaceText(replayPair.compact.rendered.system)).toContain("in_flight=1");
     expect(replayPair.legacy.rendered.system).toContain("Harness scheduler state");
-    expect(replayPair.legacy.rendered.system).toContain("Operator attention records: total=125");
+    expect(replayPair.legacy.rendered.system).toContain(
+      "Operator attention records: total=125, 4 without a subject",
+    );
+    expect(plannerSurfaceText(replayPair.compact.rendered.system)).toContain(
+      "Operator attention records: total=125, 4 without a subject",
+    );
     expect(plannerSurfaceText(replayPair.compact.rendered.system)).toContain("Capture subject");
     const capturedRows =
       parsed.render_input.compactContext.turnMechanismEvidence?.autonomySchedulerState

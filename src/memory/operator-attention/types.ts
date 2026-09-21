@@ -33,6 +33,7 @@ export type OperatorAttentionIndexRow = OperatorAttentionRecord & {
 
 export type OperatorAttentionIndex = {
   total: number;
+  subjectless: number;
   records: OperatorAttentionIndexRow[];
 };
 

@@ -2951,12 +2951,16 @@ describe("buildBaseSystemPrompt", () => {
     },
   );
 
-  it("renders the attention total, dates, filers and subjects beside wake rows on autonomous turns", () => {
+  it.each([
+    [125, 4, -40],
+    [163, 126, -38],
+  ])("renders attention totals %i/%i with a %i byte change", (total, subjectless, byteDelta) => {
     const schedulerState = makeSchedulerStateWithSources();
     const filer = createEntityId();
     schedulerState.windowWakes = [];
     schedulerState.operatorAttentionIndex = {
-      total: 125,
+      total,
+      subjectless,
       records: [
         operatorAttentionPromptRow({
           record_key: "new",
@@ -2989,7 +2993,16 @@ describe("buildBaseSystemPrompt", () => {
         "borg_mechanism_evidence",
       );
     const block = render();
-    expect(block).toContain("Operator attention records: total=125; latest 2 shown, newest first.");
+    expect(block).toContain(
+      `Operator attention records: total=${total}, ${subjectless} without a subject; latest 2 shown, newest first.`,
+    );
+    const before = block
+      .replace(`, ${subjectless} without a subject;`, ";")
+      .replace(
+        "Bodies never reach this store at all; ",
+        "Bodies never reach this store at all, so nothing sits behind that field to retrieve at any budget; ",
+      );
+    expect(Buffer.byteLength(block) - Buffer.byteLength(before)).toBe(byteDelta);
     expect(block).toContain(
       `2023-11-14T22:13:20.000Z | filer=${filer} | subject="件名 &lt;handoff&gt;"`,
     );
@@ -3014,8 +3027,10 @@ describe("buildBaseSystemPrompt", () => {
       expect(row).toContain(`origin_audience=${filer} private-to=unknown`);
       expect(row).toContain("I can use this internally");
     }
-    schedulerState.operatorAttentionIndex = { total: 0, records: [] };
-    expect(render()).toContain("Operator attention records: total=0; latest 0 shown");
+    schedulerState.operatorAttentionIndex = { total: 0, subjectless: 0, records: [] };
+    expect(render()).toContain(
+      "Operator attention records: total=0, 0 without a subject; latest 0 shown",
+    );
   });
 
   it("renders per-wake finalizer and stall counts, their legend, and null-safe totals", () => {
