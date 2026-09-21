@@ -4,7 +4,8 @@
   "include": [
     "scripts/audited-data-repair*.ts",
     "scripts/backfill-commitment-committers*.ts",
-    "scripts/repair-action-actor*.ts"
+    "scripts/repair-action-actor*.ts",
+    "scripts/apply-period-rollover*.ts"
   ],
   "exclude": ["node_modules", "dist"]
 }
