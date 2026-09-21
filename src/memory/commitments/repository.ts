@@ -1526,6 +1526,53 @@ export class CommitmentRepository {
     return row === undefined ? null : mapCommitmentRow(row);
   }
 
+  /** Offline audited backfill: change only the NULL source-sender column.
+   * The caller journals and preflights raw rows with writers stopped. Do not use
+   * the normal decoder/update path: it normalizes legacy NULLs and JSON text.
+   * Timestamps and record_version are deliberately preserved by this repair.
+   */
+  backfillCommitter(
+    id: CommitmentId,
+    sender: EntityId,
+    reason: string,
+  ): Record<string, string | number | null> {
+    const parsedId = parseCommitmentId(id);
+    const parsedSender = parseEntityId(sender);
+    return runIdentityWrite(this.identityEventRepository, () => {
+      const read = () =>
+        this.db.prepare("SELECT * FROM commitments WHERE id = ?").get(parsedId) as
+          | Record<string, string | number | null>
+          | undefined;
+      const before = read();
+      if (before === undefined || before.committed_by_entity_id !== null) {
+        throw new CommitmentError(`Expected a NULL committer for ${parsedId}`, {
+          code: "COMMITMENT_BACKFILL_STALE",
+        });
+      }
+      const result = this.db
+        .prepare(
+          "UPDATE commitments SET committed_by_entity_id = ? WHERE id = ? AND committed_by_entity_id IS NULL",
+        )
+        .run(parsedSender, parsedId);
+      if (result.changes !== 1) {
+        throw new CommitmentError(`Committer changed during backfill for ${parsedId}`, {
+          code: "COMMITMENT_BACKFILL_STALE",
+        });
+      }
+      const after = read()!;
+      this.identityEventRepository?.record({
+        record_type: "commitment",
+        record_id: parsedId,
+        action: "update",
+        old_value: before,
+        new_value: after,
+        reason,
+        provenance: { kind: "manual" },
+      });
+      return after;
+    });
+  }
+
   list(options: CommitmentListOptions = {}): CommitmentRecord[] {
     const nowMs = options.nowMs ?? this.clock.now();
     this.materializeExpiredCommitments(nowMs);

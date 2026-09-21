@@ -5,8 +5,8 @@ import { StreamEntryIndexRepository } from "../src/stream/entry-index.js";
 import type { SqliteDatabase } from "../src/storage/sqlite/index.js";
 import type { MaintenanceAuditRecordInput } from "../src/offline/audit-log.js";
 import { FixedClock } from "../src/util/clock.js";
-import type { EntityId } from "../src/util/ids.js";
-import { cloneDatabase } from "./repair-entity-graph-storage.js";
+import { parseCommitmentId, type EntityId } from "../src/util/ids.js";
+import { cloneDatabase, type Row } from "./repair-entity-graph-storage.js";
 import {
   applyDataRepair,
   assertNoPending,
@@ -32,8 +32,8 @@ type CommitmentPlanRow = {
   resolved_sender: EntityId | null;
   distinct_senders: EntityId[];
   joined_entries: JoinedEntry[];
-  before: CommitmentRecord;
-  after: CommitmentRecord | null;
+  before: Row;
+  after: Row | null;
   audit: MaintenanceAuditRecordInput | null;
 };
 export type CommitterPlan = DataRepairPlan & {
@@ -43,9 +43,10 @@ export type CommitterPlan = DataRepairPlan & {
 const KIND = "backfill-commitment-committers";
 const reason = "Backfill directive source-entry sender from stream_entry_index";
 
-function joinedEntries(db: SqliteDatabase, dataDir: string, row: CommitmentRecord): JoinedEntry[] {
+function joinedEntries(db: SqliteDatabase, dataDir: string, row: Row): JoinedEntry[] {
   const index = new StreamEntryIndexRepository({ db, dataDir });
-  const ids = row.source_stream_entry_ids ?? [];
+  // Decode source handles only; retain raw column values in every snapshot.
+  const ids = mapCommitmentRow(row).source_stream_entry_ids ?? [];
   const found = index.lookupMany(ids);
   return ids.map((id) => ({
     entry_id: id,
@@ -62,23 +63,18 @@ function repository(db: SqliteDatabase, plannedAt: number): CommitmentRepository
   });
 }
 function update(db: SqliteDatabase, row: CommitmentPlanRow, now: number) {
-  return repository(db, now).update(
-    row.commitment_id,
-    { committed_by_entity_id: row.resolved_sender },
-    { kind: "manual" },
-    { reason, expectedVersion: row.before.record_version },
-  );
+  return repository(db, now).backfillCommitter(row.commitment_id, row.resolved_sender!, reason);
 }
 export function planCommitterBackfill(dataDir: string, now = Date.now()): CommitterPlan {
   dataDir = checkedPath(dataDir);
   assertNoPending(dataDir);
   const db = openDataRepairDatabase(dataDir);
   try {
-    // list() materializes expiry: deliberately use the read-only query + repository decoder.
+    // list() materializes expiry and the decoder normalizes legacy columns.
+    // Snapshot raw storage so those values remain visible in plans and audits.
     const rows = db
       .prepare("SELECT * FROM commitments WHERE committed_by_entity_id IS NULL ORDER BY id")
       .all()
-      .map(mapCommitmentRow)
       .map((before): CommitmentPlanRow => {
         const joined = joinedEntries(db, dataDir, before);
         const senders = [
@@ -87,7 +83,7 @@ export function planCommitterBackfill(dataDir: string, now = Date.now()): Commit
           ),
         ].sort();
         return {
-          commitment_id: before.id,
+          commitment_id: parseCommitmentId(String(before.id)),
           status:
             senders.length === 1
               ? "single_sender"
@@ -124,7 +120,7 @@ export function planCommitterBackfill(dataDir: string, now = Date.now()): Commit
             .map((r) => r.id),
         );
         for (const row of changed) {
-          row.after = update(projection, row, now)!;
+          row.after = update(projection, row, now);
           row.audit = auditInput(
             plan,
             `${KIND}:${row.commitment_id}`,
@@ -152,10 +148,13 @@ export function planCommitterBackfill(dataDir: string, now = Date.now()): Commit
 }
 
 function preflight(db: SqliteDatabase, plan: CommitterPlan): void {
-  const repo = repository(db, plan.plannedAt);
   for (const row of plan.rows) {
     const done = row.audit !== null && hasStep(db, plan, row.audit.action);
-    assertSame(repo.get(row.commitment_id), done ? row.after : row.before, row.commitment_id);
+    assertSame(
+      db.prepare("SELECT * FROM commitments WHERE id = ?").get(row.commitment_id),
+      done ? row.after : row.before,
+      row.commitment_id,
+    );
     assertSame(
       joinedEntries(db, plan.dataDir, row.before),
       row.joined_entries,

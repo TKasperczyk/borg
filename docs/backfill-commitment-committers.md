@@ -10,7 +10,8 @@ pnpm tsx scripts/backfill-commitment-committers.ts --data-dir /home/luth/tmp/ban
 ```
 
 The default read-only plan lists **every NULL row**, all source entry IDs, indexed/missing
-joins, distinct non-NULL senders, full before/after records, identity events and audit inputs.
+joins, distinct non-NULL senders, raw stored before/after rows, identity events and audit inputs.
+Snapshots retain legacy NULLs and the exact stored JSON strings instead of decoded defaults.
 Exactly one distinct sender is sufficient even if some other source IDs are missing or
 have NULL senders. Zero or multiple senders leave the row NULL. No entity redirect,
 speaker role, audience, directive text or authorship inference is used. The field means
@@ -18,8 +19,10 @@ the sender of the entry from which the directive was extracted.
 
 Apply emits the complete plan before creating an fsync'd journal in
 `audited-data-repairs/backfill-commitment-committers/`. The commitments repository updates
-only the requested field plus its normal timestamp/version metadata; the identity repository
-records the manual maintenance event. Original commitment provenance is retained.
+only `committed_by_entity_id` through a dedicated backfill method; every other column,
+including timestamps, record version, legacy NULLs and JSON text, is preserved. The identity
+repository records the manual maintenance event with raw before/after rows. Original
+commitment provenance is retained.
 Updates and one `maintenance_audit` row per change commit in one SQLite transaction.
 Each audit has process `correction`, the prior NULL, the full prior record and expected
 after record for guarded reversal. A separate run-summary audit precedes journal archival.

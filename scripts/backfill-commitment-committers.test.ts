@@ -83,7 +83,7 @@ describe("commitment committer backfill", () => {
     expect(f.repo.get(f.single.id)).toMatchObject({
       committed_by_entity_id: f.a,
       provenance: f.single.provenance,
-      record_version: 2,
+      record_version: f.single.record_version,
     });
     for (const row of [f.multiple, f.zero, f.empty]) expect(f.repo.get(row.id)).toEqual(row);
     expect(f.audit.list({ process: "correction" })).toHaveLength(2);
@@ -96,6 +96,68 @@ describe("commitment committer backfill", () => {
     expect(rerun.runId).toBeNull();
     await applyCommitterBackfill(rerun);
     expect(f.audit.list()).toHaveLength(2);
+  });
+  it.each(["apply", "after_sqlite"])(
+    "preserves every raw legacy column and audits NULL enforcement (%s)",
+    async (mode) => {
+      const f = fixture();
+      const sourceText = ` [\n${f.single.source_stream_entry_ids!.map((id) => JSON.stringify(id)).join(", ")}\n] `;
+      f.db
+        .prepare(
+          `UPDATE commitments SET enforcement_class = NULL, updated_at = NULL,
+        last_reinforced_at = NULL, source_stream_entry_ids = ?, source_episode_ids = '[ ]',
+        provenance_episode_ids = '[ ]' WHERE id = ?`,
+        )
+        .run(sourceText, f.single.id);
+      const read = () => f.db.prepare("SELECT * FROM commitments WHERE id = ?").get(f.single.id)!;
+      const before = read();
+      expect(f.repo.get(f.single.id)?.enforcement_class).toBe("advisory");
+      const plan = planCommitterBackfill(f.dataDir, 2000);
+      const planned = plan.rows.find((r) => r.commitment_id === f.single.id)!;
+      expect(planned.before).toEqual(before);
+      expect(planned.before.enforcement_class).toBeNull();
+      expect(planned.after).toEqual({ ...before, committed_by_entity_id: f.a });
+      expect(read()).toEqual(before);
+      if (mode === "apply") await applyCommitterBackfill(plan);
+      else {
+        await expect(
+          applyCommitterBackfill(plan, {
+            checkpoint: (point) => {
+              if (point === mode) throw new Error("interrupted");
+            },
+          }),
+        ).rejects.toThrow("interrupted");
+        await applyCommitterBackfill(loadRepairPlan<CommitterPlan>(f.dataDir, plan.kind), {
+          resume: true,
+        });
+      }
+      // Raw strings (including JSON whitespace), NULLs and every other column survive.
+      expect(read()).toEqual({ ...before, committed_by_entity_id: f.a });
+      const audit = f.audit.list().find((a) => a.action.endsWith(f.single.id))!;
+      expect(audit.targets.before).toEqual(before);
+      expect(audit.targets.after).toEqual(read());
+      expect(audit.reversal.before).toEqual(before);
+      expect(audit.reversal.expected_after).toEqual(read());
+      const event = f.db
+        .prepare("SELECT old_value_json, new_value_json FROM identity_events")
+        .get()!;
+      expect(JSON.parse(String(event.old_value_json))).toEqual(before);
+      expect(JSON.parse(String(event.new_value_json))).toEqual(read());
+      expect(f.audit.list()).toHaveLength(2);
+    },
+  );
+  it("rejects changed raw columns even when the decoded value would match", async () => {
+    const f = fixture();
+    f.db.prepare("UPDATE commitments SET enforcement_class = NULL WHERE id = ?").run(f.single.id);
+    const decoded = f.repo.get(f.single.id);
+    const plan = planCommitterBackfill(f.dataDir, 2000);
+    f.db
+      .prepare("UPDATE commitments SET enforcement_class = 'advisory' WHERE id = ?")
+      .run(f.single.id);
+    expect(f.repo.get(f.single.id)).toEqual(decoded);
+    await expect(applyCommitterBackfill(plan)).rejects.toThrow("Changed since planning");
+    expect(f.audit.list()).toEqual([]);
+    expect(existsSync(repairPendingPath(f.dataDir, plan.kind))).toBe(false);
   });
   it.each(["after_journal", "after_sqlite", "after_completion", "after_archive"])(
     "resumes interruption at %s exactly once",
