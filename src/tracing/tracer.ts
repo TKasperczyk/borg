@@ -299,6 +299,7 @@ const PAYLOAD_GATED_TRACE_KEYS = new Set([
   "skipped_promotions",
   "full_text",
   "typed_queries",
+  "violations",
   "query",
 ]);
 

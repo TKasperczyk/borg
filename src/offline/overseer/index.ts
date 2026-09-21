@@ -462,27 +462,35 @@ function buildTemporalDriftRepairRefs(
   item: OverseerPlanItem,
   proposedProvenance: OverseerProposedProvenance,
 ): Record<string, unknown> {
-  return {
+  const common = {
     target_type: item.target_type,
     target_id: item.target_id,
-    ...(item.corrected_start_time === undefined
-      ? {}
-      : { corrected_start_time: item.corrected_start_time }),
-    ...(item.corrected_end_time === undefined
-      ? {}
-      : { corrected_end_time: item.corrected_end_time }),
+    proposed_provenance: proposedProvenance,
+  };
+  if (item.target_type === "semantic_edge") {
+    return {
+      ...common,
+      target_kind: "semantic_edge",
+      reason: item.reason,
+      ...(item.suggested_valid_to === undefined
+        ? {}
+        : { suggested_valid_to: item.suggested_valid_to }),
+      ...(item.by_edge_id === undefined ? {} : { by_edge_id: item.by_edge_id }),
+    };
+  }
+  return {
+    ...common,
     ...(item.patch_description === undefined ? {} : { patch_description: item.patch_description }),
-    ...(item.target_type === "semantic_edge"
+    ...(item.target_type === "episode"
       ? {
-          target_kind: "semantic_edge",
-          reason: item.reason,
+          ...(item.corrected_start_time === undefined
+            ? {}
+            : { corrected_start_time: item.corrected_start_time }),
+          ...(item.corrected_end_time === undefined
+            ? {}
+            : { corrected_end_time: item.corrected_end_time }),
         }
       : {}),
-    ...(item.suggested_valid_to === undefined
-      ? {}
-      : { suggested_valid_to: item.suggested_valid_to }),
-    ...(item.by_edge_id === undefined ? {} : { by_edge_id: item.by_edge_id }),
-    proposed_provenance: proposedProvenance,
   };
 }
 

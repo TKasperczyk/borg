@@ -862,6 +862,53 @@ describe("MaintenanceScheduler", () => {
     expect(timeouts.activeTimers().map((timer) => timer.delayMs)).toEqual([0, 10_000]);
   });
 
+  it.each(["heavy", "light"] as const)(
+    "anchors %s cadence without changing boot catch-up grace",
+    async (cadence) => {
+      const clock = new ManualClock(1_000);
+      const watermarks = createFakeCadenceWatermarks(clock);
+      const timeouts = createManualTimeouts();
+      const spy = createFakeOrchestrator();
+      const run = vi.spyOn(spy.orchestrator, "run");
+      run.mockImplementationOnce(async () => {
+        clock.advance(30_000);
+        return {
+          run_id: "mrun_fake",
+          dryRun: false,
+          results: [],
+          changes: [],
+          tokens_used: 0,
+          errors: [],
+        } as unknown as OrchestratorResult;
+      });
+      watermarks.set(cadence === "heavy" ? "light" : "heavy", clock.now());
+      const scheduler = new MaintenanceScheduler(
+        withSchedulerDefaults({
+          enabled: true,
+          lightIntervalMs: 60_000,
+          heavyIntervalMs: 60_000,
+          lightProcesses: ["consolidator"],
+          heavyProcesses: ["reflector"],
+          orchestrator: spy.orchestrator,
+          processRegistry: createFakeProcessRegistry(),
+          cadenceWatermarkRepository: watermarks.repo,
+          startupGraceMs: 500,
+          clock,
+          setTimeoutFn: timeouts.setTimeoutFn,
+          clearTimeoutFn: timeouts.clearTimeoutFn,
+        }),
+      );
+      scheduler.start();
+      const bootTimer = timeouts.activeTimers().find((timer) => timer.delayMs === 500);
+      expect(bootTimer).toBeDefined();
+      clock.advance(500);
+      await timeouts.fire(bootTimer);
+      expect(watermarks.get(cadence)?.lastTs).toBe(cadence === "heavy" ? 1_500 : 31_500);
+      expect(timeouts.activeTimers().at(-1)?.delayMs).toBe(cadence === "heavy" ? 30_000 : 60_000);
+      await scheduler.stop();
+    },
+  );
+
   it("advances the heavy marker after a successful storage-only heavy tick", async () => {
     const clock = new ManualClock(1_000);
     const spy = createFakeOrchestrator();

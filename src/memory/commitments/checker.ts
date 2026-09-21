@@ -8,7 +8,13 @@ import {
   type LLMToolDefinition,
 } from "../../llm/index.js";
 import { summarizeProvenanceForPrompt } from "../common/provenance.js";
-import { parseCommitmentId, type CommitmentId, type EntityId } from "../../util/ids.js";
+import type { TurnTracer } from "../../tracing/tracer.js";
+import {
+  parseCommitmentId,
+  type CommitmentId,
+  type EntityId,
+  type SessionId,
+} from "../../util/ids.js";
 import { escapeReservedBorgTags } from "../../util/prompt-tags.js";
 import { EntityRepository } from "./repository.js";
 import {
@@ -44,6 +50,9 @@ export type CommitmentCheckerOptions = {
   detectionModel: string;
   rewriteModel: string;
   entityRepository: EntityRepository;
+  tracer?: TurnTracer;
+  turnId?: string;
+  sessionId?: SessionId;
 };
 
 // Schema for the violation-detection tool. The judge returns a list of
@@ -217,6 +226,12 @@ export class CommitmentChecker {
             tool_choice: { type: "tool", name: VIOLATION_JUDGE_TOOL_NAME },
             max_tokens: 1_000,
             budget: "commitment-judge",
+          },
+          trace: {
+            tracer: this.options.tracer,
+            turnId: this.options.turnId,
+            sessionId: this.options.sessionId,
+            label: "commitment_judge",
           },
           toolName: VIOLATION_JUDGE_TOOL_NAME,
           parse: (input) => {

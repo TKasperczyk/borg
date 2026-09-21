@@ -1,5 +1,6 @@
 import { join } from "node:path";
 
+import Anthropic from "@anthropic-ai/sdk";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { StreamReader, StreamWatermarkRepository, StreamWriter } from "../stream/index.js";
@@ -21,6 +22,7 @@ import { associateTurnExecutionMetricsWithError } from "../cognition/turn-execut
 
 import {
   createCommitmentExpiringTrigger,
+  createOpenQuestionDormantTrigger,
   createGoalFollowupDueTrigger,
   createScheduledReflectionTrigger,
   createScheduledWakeTrigger,
@@ -1051,7 +1053,7 @@ describe("AutonomyScheduler", () => {
           dormancyCount: 3,
           actionAvailabilityKey,
         }).endMs,
-      ).toBe(Number.POSITIVE_INFINITY);
+      ).toBe(backoff!.updatedAt + 14 * 86_400_000);
     }
   });
 
@@ -1746,6 +1748,8 @@ describe("AutonomyScheduler", () => {
           },
         ],
       });
+      followupSource.dormantGoalIds = () => [goal.id];
+      executiveSource.dormantGoalIds = () => [goal.id];
       const turnRunner = {
         run: vi.fn().mockResolvedValue(createStructuralTurnResult({ emissionKind: "suppressed" })),
       };
@@ -1771,6 +1775,7 @@ describe("AutonomyScheduler", () => {
 
       const result = await scheduler.tick();
 
+      expect((await scheduler.describe()).dormant_goals).toBe(1);
       return {
         backoff: watermarkRepository.get(backoffProcessName, DEFAULT_SESSION_ID),
         followupLatch: watermarkRepository.get(
@@ -1822,11 +1827,176 @@ describe("AutonomyScheduler", () => {
           dormancyCount: 3,
           actionAvailabilityKey,
         }).endMs,
-      ).toBe(Number.POSITIVE_INFINITY);
+      ).toBe(batched.backoff!.updatedAt + 14 * 86_400_000);
     } finally {
       await Promise.all(harnesses.map((harness) => harness.cleanup()));
     }
   });
+
+  it.each([
+    { provider: true, category: "operational" as const },
+    { provider: false, category: "operational" as const },
+    { provider: true, category: "contemplative" as const },
+    { provider: false, category: "contemplative" as const },
+  ])(
+    "accounts for $category turn failures (provider=$provider)",
+    async ({ provider, category }) => {
+      const clock = new ManualClock(1_000_000);
+      const harness = await createOfflineTestHarness({ clock });
+      const createStreamWriter = (sessionId: typeof DEFAULT_SESSION_ID) =>
+        new StreamWriter({ dataDir: harness.tempDir, sessionId, clock });
+      const failure = new Error("turn failed", {
+        cause: new LLMError("arbitrary wording", {
+          code: provider ? "LLM_CALL_TIMED_OUT" : "LLM_STRUCTURED_OUTPUT_PARSE_FAILED",
+        }),
+      });
+      const turnRunner = {
+        run: vi
+          .fn()
+          .mockRejectedValueOnce(failure)
+          .mockResolvedValue(createStructuralTurnResult({ emissionKind: "suppressed" })),
+      };
+      const source = createTestDueSource(
+        "typed-failure",
+        category === "contemplative" ? "scheduled_wake" : "goal_followup_due",
+        category,
+      );
+      const scheduler = createScheduler({
+        db: harness.db,
+        enabled: true,
+        intervalMs: 1_000,
+        maxWakesPerWindow: category === "contemplative" ? 1 : 2,
+        reservedContemplativeWakesPerWindow: 1,
+        clock,
+        createStreamWriter,
+        watermarkRepository: new StreamWatermarkRepository({ db: harness.db, clock }),
+        turnOrchestrator: turnRunner,
+        toolDispatcher: new ToolDispatcher({ createStreamWriter, clock }),
+        sources: [source],
+      });
+      try {
+        expect(await scheduler.tick()).toMatchObject({ errorCount: 1 });
+        expect(await scheduler.describe()).toMatchObject({
+          budget: {
+            used_in_current_window: provider ? 0 : 1,
+            contemplative_used_in_current_window: !provider && category === "contemplative" ? 1 : 0,
+            next_budget_slot_frees_at: provider ? null : clock.now() + 3_600_001,
+            wakes_in_current_window_by_trigger: [{ wake_count: 1, outcome_counts: { error: 1 } }],
+          },
+          window_wakes: [
+            { outcome: "error", preparation_failed: false, turn_provider_failed: provider },
+          ],
+        });
+        clock.advance(30_000);
+        expect(await scheduler.tick()).toMatchObject(
+          provider ? { firedEvents: 1, budgetSkipped: 0 } : { firedEvents: 0, budgetSkipped: 1 },
+        );
+        expect(turnRunner.run).toHaveBeenCalledTimes(provider ? 2 : 1);
+        expect((await scheduler.describe()).budget.next_budget_slot_frees_at).toBe(
+          (provider ? clock.now() : clock.now() - 30_000) + 3_600_001,
+        );
+      } finally {
+        await harness.cleanup();
+      }
+    },
+  );
+
+  it.each([false, true])(
+    "runs one prepared turn for three dormant questions (fleet governor enabled=%s)",
+    async (fleetEnabled) => {
+      const clock = new ManualClock(1_000_000);
+      const harness = await createOfflineTestHarness({ clock });
+      const watermarkRepository = new StreamWatermarkRepository({ db: harness.db, clock });
+      const questions = Array.from({ length: 3 }, (_, index) =>
+        harness.openQuestionsRepository.add({
+          question: `Question ${index}`,
+          urgency: 0.5,
+          source: "user",
+          provenance: { kind: "system" },
+          last_touched: clock.now() - 100_000 + index,
+        }),
+      );
+      // The oldest question predates the fleet anchor; only the third is fresh.
+      setFleetBrakeState(watermarkRepository, clock, {
+        empty_streak: 5,
+        streak_anchor_ts: questions[1]!.last_touched,
+        last_wake_ts: clock.now(),
+        bypass_count: 2,
+      });
+      const source = createOpenQuestionDormantTrigger({
+        openQuestionsRepository: harness.openQuestionsRepository,
+        watermarkRepository,
+        dormantMs: 50_000,
+        clock,
+      });
+      const createStreamWriter = (sessionId: typeof DEFAULT_SESSION_ID) =>
+        new StreamWriter({ dataDir: harness.tempDir, sessionId, clock });
+      const dispatcher = new ToolDispatcher({ createStreamWriter, clock });
+      const dispatch = vi.spyOn(dispatcher, "dispatch").mockResolvedValue({
+        callId: "prep",
+        toolName: "tool.episodic.search",
+        ok: true,
+        output: { episodes: [] },
+        durationMs: 1,
+      });
+      const turnRunner = {
+        run: vi.fn().mockResolvedValue(createStructuralTurnResult({ emissionKind: "suppressed" })),
+      };
+      const scheduler = createScheduler({
+        db: harness.db,
+        enabled: true,
+        intervalMs: 1_000,
+        maxWakesPerWindow: 1,
+        fleetBrake: { ...DEFAULT_FLEET_BRAKE_OPTIONS, enabled: fleetEnabled },
+        clock,
+        createStreamWriter,
+        watermarkRepository,
+        turnOrchestrator: turnRunner,
+        toolDispatcher: dispatcher,
+        sources: [source],
+      });
+      try {
+        expect(await scheduler.tick()).toMatchObject({ firedEvents: 1, fleetCooldownSkipped: 0 });
+        expect(turnRunner.run).toHaveBeenCalledTimes(1);
+        expect(dispatch.mock.calls.map(([input]) => input.input)).toEqual(
+          questions.map((question) => ({ query: question.question, limit: 5 })),
+        );
+        const payload = turnRunner.run.mock.calls[0]![0].autonomyTrigger.payload;
+        expect(payload.additional_questions).toHaveLength(2);
+        expect(
+          payload.additional_questions.every((question: Record<string, unknown>) =>
+            Array.isArray(question.related_episodes),
+          ),
+        ).toBe(true);
+        expect(
+          [payload, ...payload.additional_questions].map((question) => question.last_touched),
+        ).toEqual(questions.map((question) => question.last_touched));
+        for (const question of questions) {
+          expect(harness.openQuestionsRepository.get(question.id)).toMatchObject({
+            last_touched: question.last_touched,
+            last_ruminated_at: clock.now(),
+            unresolved_rumination_ticks: 1,
+          });
+          expect(
+            watermarkRepository.get(
+              `autonomy:open-question-dormant:${question.id}:${question.last_touched}`,
+              DEFAULT_SESSION_ID,
+            ),
+          ).toMatchObject({ lastTs: question.last_touched });
+        }
+        expect(await scheduler.describe()).toMatchObject({
+          budget: { used_in_current_window: 1 },
+          fleet_brake: {
+            enabled: fleetEnabled,
+            ...(fleetEnabled ? { empty_streak: 6, bypass_count: 3 } : {}),
+          },
+        });
+        expect((await scheduler.tick()).firedEvents).toBe(0);
+      } finally {
+        await harness.cleanup();
+      }
+    },
+  );
 
   it("fires due events once and respects trigger watermarks", async () => {
     const clock = new ManualClock(1_000_000);
@@ -3395,6 +3565,117 @@ describe("AutonomyScheduler", () => {
       fleet_brake: { empty_streak: 6, bypass_count: 3 },
     });
   });
+
+  it.each([
+    {
+      kind: "wrapped transport",
+      failure: new LLMError("任意の文言", { code: "LLM_CALL_TIMED_OUT" }),
+      globalCircuit: true,
+    },
+    {
+      kind: "unwrapped streamed provider",
+      failure: new Anthropic.APIError(undefined, {}, "任意の文言", undefined, "overloaded_error"),
+      globalCircuit: false,
+    },
+  ])(
+    "preserves the last freshness bypass after a $kind failure while retaining error brakes",
+    async ({ failure, globalCircuit }) => {
+      const clock = new ManualClock(2_400_000);
+      const harness = await createOfflineTestHarness({ clock });
+      cleanup = harness.cleanup;
+      const watermarkRepository = new StreamWatermarkRepository({ db: harness.db, clock });
+      const wakeRepository = new AutonomyWakesRepository({ db: harness.db, clock });
+      const failedAt = clock.now();
+      setFleetBrakeState(watermarkRepository, clock, {
+        empty_streak: 5,
+        streak_anchor_ts: failedAt - 1_000,
+        last_wake_ts: failedAt,
+        error_streak: 2,
+        last_error_ts: failedAt - 1_000,
+        bypass_count: 2,
+      });
+      const source = createPersistentDueSource({
+        watermarkRepository,
+        eventIds: ["provider-recovery"],
+        sourceName: "open_question_dormant",
+        stateTs: () => failedAt,
+        payload: () => ({ question: "What remains open?" }),
+      });
+      const createStreamWriter = (sessionId: typeof DEFAULT_SESSION_ID) =>
+        new StreamWriter({ dataDir: harness.tempDir, sessionId, clock });
+      const dispatcher = new ToolDispatcher({ createStreamWriter, clock });
+      vi.spyOn(dispatcher, "dispatch").mockResolvedValue({
+        callId: "prep",
+        toolName: "tool.episodic.search",
+        ok: true,
+        output: { episodes: [] },
+        durationMs: 1,
+      });
+      const turnRunner = {
+        run: vi
+          .fn()
+          .mockRejectedValueOnce(failure)
+          .mockResolvedValue(createStructuralTurnResult({ emissionKind: "suppressed" })),
+      };
+      // Keep the production fleet governor enabled, with only one bypass left.
+      const scheduler = new AutonomyScheduler({
+        enabled: true,
+        intervalMs: 60_000,
+        maxWakesPerWindow: 1,
+        budgetWindowMs: 86_400_000,
+        clock,
+        wakeRepository,
+        watermarkRepository,
+        createStreamWriter,
+        turnOrchestrator: turnRunner,
+        toolDispatcher: dispatcher,
+        sources: [source],
+      });
+      expect(await scheduler.tick()).toMatchObject({
+        errorCount: 1,
+        fleetCooldownSkipped: 0,
+        budgetSkipped: 0,
+      });
+      expect(wakeRepository.listSince(0, 1)[0]).toMatchObject({
+        outcome: "error",
+        preparation_failed: false,
+        turn_provider_failed: true,
+      });
+      expect(await scheduler.describe()).toMatchObject({
+        budget: { used_in_current_window: 0, next_budget_slot_frees_at: null },
+        fleet_brake: {
+          enabled: true,
+          bypass_count: 2,
+          error_streak: globalCircuit ? 3 : 2,
+          error_paused_until: globalCircuit ? failedAt + 300_000 : null,
+        },
+      });
+
+      clock.advance(29_999);
+      expect((await scheduler.tick()).events).toEqual([]);
+      expect(turnRunner.run).toHaveBeenCalledTimes(1);
+      clock.advance(1);
+      if (globalCircuit) {
+        expect(await scheduler.tick()).toMatchObject({ errorCircuitSkipped: 1, firedEvents: 0 });
+        expect(turnRunner.run).toHaveBeenCalledTimes(1);
+        clock.advance(270_000);
+      }
+      expect((await scheduler.describe()).fleet_brake.cooldown_until).toBeGreaterThan(clock.now());
+      expect(await scheduler.tick()).toMatchObject({
+        firedEvents: 1,
+        budgetSkipped: 0,
+        fleetCooldownSkipped: 0,
+        errorCircuitSkipped: 0,
+      });
+      expect(turnRunner.run).toHaveBeenCalledTimes(2);
+      expect(wakeRepository.countSince(0)).toBe(2);
+      expect(wakeRepository.countSince(0, { excludeTurnProviderFailures: true })).toBe(1);
+      expect(await scheduler.describe()).toMatchObject({
+        budget: { used_in_current_window: 1 },
+        fleet_brake: { empty_streak: 6, error_streak: 0, bypass_count: 3 },
+      });
+    },
+  );
 
   it("keeps a long retrieval preparation single-flight and counts every refused interval fire", async () => {
     const clock = new ManualClock(1_000_000);

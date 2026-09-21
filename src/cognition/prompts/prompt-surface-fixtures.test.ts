@@ -116,6 +116,7 @@ const FIXTURE_SELF_PRIVATE_DISCLOSURE = {
 const FIXTURE_AUTONOMY_SCHEDULER_STATE: NonNullable<
   NonNullable<DeliberationContext["turnMechanismEvidence"]>["autonomySchedulerState"]
 > = {
+  dormantGoals: 2,
   observedAt: NOW_MS,
   enabled: true,
   tickInFlight: false,
@@ -194,6 +195,7 @@ const FIXTURE_AUTONOMY_SCHEDULER_STATE: NonNullable<
       trigger_name: "goal_followup_due",
       outcome: "error",
       preparation_failed: false,
+      turn_provider_failed: true,
       headway_bases: null,
       finalizer_rounds: 0,
       stall_retries: 1,
@@ -220,7 +222,7 @@ const FIXTURE_AUTONOMY_SCHEDULER_STATE: NonNullable<
     max_wakes_per_window: 6,
     window_ms: 24 * 60 * 60_000,
     window_started_at: NOW_MS - 24 * 60 * 60_000,
-    used_in_current_window: 4,
+    used_in_current_window: 3,
     reserved_contemplative_wakes_per_window: 2,
     contemplative_used_in_current_window: 3,
     wakes_in_current_window_by_trigger: [
@@ -251,7 +253,7 @@ const FIXTURE_AUTONOMY_SCHEDULER_STATE: NonNullable<
         },
       },
     ],
-    next_budget_slot_frees_at: NOW_MS + 6 * 60 * 60_000,
+    next_budget_slot_frees_at: NOW_MS + 23.5 * 60 * 60_000 + 1,
   },
 };
 const COMPACT_PLANNER_FIXTURE_NAME = "s2-planner-system-prompt-compact.txt";

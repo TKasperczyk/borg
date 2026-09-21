@@ -641,7 +641,7 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
           items.push({
             action: "close_period",
             previous: currentPeriod,
-            end_ts: nowMs,
+            end_ts: nextPeriodStartTs,
           });
         }
 

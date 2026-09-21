@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { APIConnectionError as OpenAIConnectionError, APIError as OpenAIAPIError } from "openai";
 import type {
   JSONOutputFormat,
   Message,
@@ -1005,6 +1006,38 @@ function errorConstructorName(error: unknown): string | undefined {
 
 export function isRetryableLlmTransportError(error: unknown): error is LLMError {
   return error instanceof LLMError && RETRYABLE_LLM_TRANSPORT_ERROR_CODES.has(error.code);
+}
+
+/** Provider/transport failures only; malformed model output and request defects stay distinct. */
+export function isLlmProviderTransportError(error: unknown): boolean {
+  return (
+    findInErrorCauseChain(error, (candidate): candidate is Error => {
+      if (isRetryableLlmTransportError(candidate)) return true;
+      if (
+        candidate instanceof Anthropic.APIConnectionError ||
+        candidate instanceof OpenAIConnectionError
+      )
+        return true;
+      if (candidate instanceof Anthropic.APIError && candidate.status === undefined) {
+        // SDK errors from SSE frames carry a provider type without an HTTP status.
+        return (
+          candidate.type === "overloaded_error" ||
+          candidate.type === "api_error" ||
+          candidate.type === "rate_limit_error" ||
+          candidate.type === "timeout_error"
+        );
+      }
+      if (candidate instanceof Anthropic.APIError || candidate instanceof OpenAIAPIError) {
+        const status = candidate.status;
+        return (
+          status === 408 ||
+          status === 429 ||
+          (status !== undefined && status >= 500 && status < 600)
+        );
+      }
+      return false;
+    }) !== undefined
+  );
 }
 
 function findRetryableLlmTransportError(error: unknown): LLMError | undefined {

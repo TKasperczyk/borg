@@ -139,12 +139,16 @@ export type AutonomyWakeSource<Payload extends Record<string, unknown> = Record<
     scan(): Promise<DueEvent<Payload>[]>;
     buildTurn(event: DueEvent<Payload>): TurnInput;
     nextDueAt?(): Promise<number | null>;
+    /** Internal handles for counting shared per-goal dormancy across sources. */
+    dormantGoalIds?(): readonly string[];
     // Optional lifecycle hook invoked by the scheduler immediately after a wake
     // fires successfully (watermark committed). Lets a source make its own
     // persisted state authoritative at fire-time instead of waiting for the next
     // scan to reconcile. Best-effort: the watermark remains the idempotency
     // source of truth, so a throwing onFired never causes a re-fire.
     onFired?(event: DueEvent<Payload>): void | Promise<void>;
+    /** Synchronous SQLite bookkeeping, committed atomically with source watermarks. */
+    commitFired?(event: DueEvent<Payload>): void;
   };
 
 export type AutonomyTrigger<Payload extends Record<string, unknown> = Record<string, unknown>> =
@@ -182,6 +186,8 @@ export type AutonomySchedulerWakeDescription = {
   trigger_name: AutonomyWakeSourceName;
   outcome: AutonomyWakeOutcome | null;
   preparation_failed: boolean;
+  /** Absent only in historical captures. */
+  turn_provider_failed?: boolean;
   headway_bases: string[] | null;
   finalizer_rounds: number | null;
   stall_retries: number | null;
@@ -197,7 +203,7 @@ export type AutonomySchedulerBudgetDescription = {
    * comparable across reads.
    */
   window_started_at: number;
-  /** Excludes structurally recorded preparation failures; outcome tallies retain them. */
+  /** Excludes structurally recorded preparation and turn provider failures; outcome tallies retain them. */
   used_in_current_window: number;
   reserved_contemplative_wakes_per_window: number;
   contemplative_used_in_current_window: number;
@@ -312,6 +318,7 @@ export type AutonomySchedulerFleetBrakeDescription = {
 };
 
 export type AutonomySchedulerDescription = {
+  dormant_goals: number;
   /**
    * The clock read every other field here is as of. `describe()` takes it once
    * and derives the budget cutoff, the window counts and `next_tick_at` from

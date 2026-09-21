@@ -101,6 +101,8 @@ export type HydratedRecentRegeneration = {
 // outcome counts, which is none; these are that difference, and unlike `tickInFlight` the
 // per-tick count still carries information on an autonomous turn.
 export type AutonomySchedulerMechanismEvidence = {
+  /** Absent in historical captures. */
+  dormantGoals?: number;
   observedAt: number;
   enabled: boolean;
   tickInFlight: boolean;
@@ -148,6 +150,7 @@ export const AUTONOMY_SCHEDULER_DESCRIPTION_FIELD_DISPOSITION: Record<
   keyof AutonomySchedulerDescription,
   AutonomySchedulerFieldDisposition
 > = {
+  dormant_goals: "carried",
   observed_at: "carried",
   enabled: "carried",
   tick_in_flight: "carried",

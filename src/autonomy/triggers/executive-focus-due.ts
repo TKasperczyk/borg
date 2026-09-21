@@ -30,7 +30,8 @@ import { DEFAULT_SESSION_ID, type EpisodeId, type SessionId } from "../../util/i
 import type { AutonomyTrigger, DueEvent } from "../types.js";
 import {
   getExecutiveFocusGoalStaleBackoffProcessName,
-  goalStaleBackoffEndMs,
+  goalStaleBackoffState,
+  type GoalStaleBackoffState,
 } from "../executive-focus-stale-backoff.js";
 
 const TRIGGER_NAME = "executive_focus_due" as const;
@@ -340,14 +341,14 @@ export function createExecutiveFocusDueTrigger(
     return cooldownEnd !== null && cooldownEnd > nowMs;
   }
 
-  function getGoalStaleBackoffEnd(
+  function getGoalStaleBackoff(
     input: {
       goal_id: GoalRecord["id"];
       last_progress_ts: number | null;
     },
     actionAvailabilityKey: string | null,
-  ): number | null {
-    return goalStaleBackoffEndMs({
+  ): GoalStaleBackoffState {
+    return goalStaleBackoffState({
       watermark: options.watermarkRepository.get(
         getExecutiveFocusGoalStaleBackoffProcessName(input.goal_id),
         sessionId,
@@ -366,7 +367,7 @@ export function createExecutiveFocusDueTrigger(
     nowMs: number,
     actionAvailabilityKey: string | null,
   ): boolean {
-    const backoffEnd = getGoalStaleBackoffEnd(
+    const { endMs: backoffEnd } = getGoalStaleBackoff(
       {
         goal_id: goal.id,
         last_progress_ts: goal.last_progress_ts,
@@ -432,6 +433,20 @@ export function createExecutiveFocusDueTrigger(
     name: TRIGGER_NAME,
     type: "trigger",
     sourceCategory: "operational",
+    dormantGoalIds() {
+      if (!options.enabled) return [];
+      const nowMs = clock.now();
+      const actionKey = options.goalStaleBackoffActionAvailabilityKey?.() ?? null;
+      return listActiveGoalsForCognition(options.goalsRepository)
+        .filter((goal) => {
+          const state = getGoalStaleBackoff(
+            { goal_id: goal.id, last_progress_ts: goal.last_progress_ts },
+            actionKey,
+          );
+          return state.dormant && state.endMs !== null && state.endMs > nowMs;
+        })
+        .map((goal) => goal.id);
+    },
     async scan() {
       if (!options.enabled) {
         return [];

@@ -590,6 +590,64 @@ describe("RuminatorProcess", () => {
     }
   });
 
+  it("accepts omitted tensions and connected questions as empty lists", async () => {
+    const questionText = "What still explains the rollout tension?";
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      embeddingClient: new TestEmbeddingClient(new Map([[questionText, [1, 0, 0, 0]]])),
+    });
+    const process = new RuminatorProcess({
+      openQuestionsRepository: harness.openQuestionsRepository,
+      growthMarkersRepository: harness.growthMarkersRepository,
+      registry: harness.registry,
+    });
+
+    try {
+      await harness.episodicRepository.createEpisode(
+        createEpisodeFixture({ created_at: 2_000_000, significance: 0.95 }, [1, 0, 0, 0]),
+      );
+      const question = harness.openQuestionsRepository.add({
+        question: questionText,
+        urgency: 0.5,
+        source: "reflection",
+        created_at: 1_000_000,
+        last_touched: 1_000_000,
+        provenance: { kind: "manual" },
+      });
+      llm.pushResponse({
+        text: "",
+        input_tokens: 50,
+        output_tokens: 40,
+        stop_reason: "tool_use",
+        tool_calls: [
+          {
+            id: "toolu_1",
+            name: RUMINATOR_TOOL_NAME,
+            input: { outcome: "still_open", reasoning: "I need more evidence to settle this." },
+          },
+        ],
+      });
+
+      const plan = await process.plan(harness.createContext(), {});
+      expect(plan.items).toContainEqual(
+        expect.objectContaining({
+          action: "mark_unresolved",
+          question_id: question.id,
+          tensions: [],
+          connected_open_question_ids: [],
+        }),
+      );
+      await process.apply(harness.createContext(), plan);
+      expect(harness.openQuestionsRepository.listRecentRuminations(question.id)[0]).toMatchObject({
+        tensions: [],
+        connected_open_question_ids: [],
+      });
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
   it("unwraps parameter scaffolding from a string tensions value", async () => {
     const clock = new FixedClock(3_000_000);
     const questionText = "What still explains the Atlas rollout tension?";

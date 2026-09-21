@@ -962,6 +962,7 @@ describe("SelfNarratorProcess", () => {
       ],
     });
     const rolloverTs = Date.UTC(2026, 6, 15);
+    const successorStartTs = Date.UTC(2026, 6, 11);
     const harness = await createOfflineTestHarness({
       llmClient: llm,
       clock: {
@@ -1000,6 +1001,8 @@ describe("SelfNarratorProcess", () => {
         createEpisodeFixture({
           id: "ep_bbbbbbbbbbbbbbbb" as never,
           title: "Atlas follow-up",
+          start_time: successorStartTs,
+          end_time: successorStartTs + 1_000,
           narrative: "Atlas debugging continued.",
           tags: ["atlas"],
           created_at: Date.UTC(2026, 6, 11),
@@ -1010,7 +1013,10 @@ describe("SelfNarratorProcess", () => {
       const plan = await process.plan(harness.createContext(), {});
       const nextPeriod = plan.items.find((item) => item.action === "open_period")?.period;
 
-      expect(nextPeriod).toBeDefined();
+      expect(nextPeriod?.start_ts).toBe(successorStartTs);
+      expect(plan.items.find((item) => item.action === "close_period")?.end_ts).toBe(
+        successorStartTs,
+      );
 
       await process.apply(harness.createContext(), plan);
 
@@ -1034,8 +1040,9 @@ describe("SelfNarratorProcess", () => {
 
       expect(harness.autobiographicalRepository.currentPeriod()?.id).toBe(nextPeriod?.id);
       expect(harness.autobiographicalRepository.getPeriod(currentPeriod.id)?.end_ts).toBe(
-        rolloverTs,
+        successorStartTs,
       );
+      expect(harness.autobiographicalRepository.currentPeriod()?.start_ts).toBe(successorStartTs);
     } finally {
       await harness.cleanup();
     }

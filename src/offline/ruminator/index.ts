@@ -369,8 +369,8 @@ const resolvedRuminationResponseSchema = z.object({
 const stillOpenRuminationResponseSchema = z.object({
   outcome: z.literal("still_open"),
   reasoning: wireSafeRuminationTextSchema,
-  tensions: tolerantTensionsSchema,
-  connected_open_question_ids: z.array(openQuestionIdSchema),
+  tensions: tolerantTensionsSchema.default([]),
+  connected_open_question_ids: z.array(openQuestionIdSchema).default([]),
 });
 type RuminationResponse =
   | z.infer<typeof resolvedRuminationResponseSchema>

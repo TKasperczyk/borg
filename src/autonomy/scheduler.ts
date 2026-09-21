@@ -11,6 +11,7 @@ import {
 import { DEFAULT_SESSION_ID, goalIdHelpers, type GoalId, type SessionId } from "../util/ids.js";
 import type { ToolDispatcher } from "../tools/dispatcher.js";
 import { classifySuppressionReason } from "../cognition/generation/suppression-outcome.js";
+import { isLlmProviderTransportError } from "../llm/index.js";
 import type { TurnOrchestrator, TurnResult } from "../cognition/index.js";
 import { turnExecutionMetricsFromError } from "../cognition/turn-execution-metrics.js";
 import { memoryDisclosurePayloadFields } from "../memory/common/disclosure-serializers.js";
@@ -37,6 +38,7 @@ import {
   AUTONOMY_WAKE_SOURCE_NAMES,
   HEADWAY_EMISSION_KINDS,
 } from "./types.js";
+import type { OpenQuestionDormantPayload } from "./triggers/open-question-dormant.js";
 import type { AutonomyWakeExecutionCounts, AutonomyWakesRepository } from "./wakes-repository.js";
 import {
   getExecutiveFocusGoalStaleBackoffProcessName,
@@ -940,6 +942,7 @@ export class AutonomyScheduler {
     const fleetBrakeMetadata = this.readFleetBrakeState();
     const usedInCurrentWindow = this.options.wakeRepository.countSince(budgetCutoff, {
       excludePreparationFailures: true,
+      excludeTurnProviderFailures: true,
     });
     const currentWindowWakes = this.options.wakeRepository.listSince(
       budgetCutoff,
@@ -977,7 +980,7 @@ export class AutonomyScheduler {
       } else {
         group.outcome_counts[wake.outcome] += 1;
       }
-      if (!wake.preparation_failed) {
+      if (!wake.preparation_failed && !wake.turn_provider_failed) {
         oldestWakeAt = oldestWakeAt === null ? wake.ts : Math.min(oldestWakeAt, wake.ts);
       }
     }
@@ -990,6 +993,9 @@ export class AutonomyScheduler {
     const scheduledTickAt = this.describeScheduledTickAt(nowMs);
 
     return {
+      dormant_goals: new Set(
+        this.options.sources.flatMap((source) => source.dormantGoalIds?.() ?? []),
+      ).size,
       observed_at: nowMs,
       enabled: this.options.enabled,
       tick_in_flight: this.activeTick !== null,
@@ -1018,6 +1024,7 @@ export class AutonomyScheduler {
         trigger_name: wake.trigger_name,
         outcome: wake.outcome,
         preparation_failed: wake.preparation_failed,
+        turn_provider_failed: wake.turn_provider_failed,
         headway_bases: wake.headway_bases,
         finalizer_rounds: wake.finalizer_rounds,
         stall_retries: wake.stall_retries,
@@ -1034,6 +1041,7 @@ export class AutonomyScheduler {
         contemplative_used_in_current_window: this.options.wakeRepository.countSince(budgetCutoff, {
           sourceCategory: "contemplative",
           excludePreparationFailures: true,
+          excludeTurnProviderFailures: true,
         }),
         wakes_in_current_window_by_trigger: wakesInCurrentWindowByTrigger,
         // countSince/listSince admit ts === cutoff, so the oldest wake remains
@@ -1236,6 +1244,7 @@ export class AutonomyScheduler {
           const budgetCutoff = this.clock.now() - this.options.budgetWindowMs;
           const totalWakesInWindow = this.options.wakeRepository.countSince(budgetCutoff, {
             excludePreparationFailures: true,
+            excludeTurnProviderFailures: true,
           });
           const reservedContemplativeWakes = Math.min(
             this.options.maxWakesPerWindow,
@@ -1244,6 +1253,7 @@ export class AutonomyScheduler {
           const contemplativeWakesInWindow = this.options.wakeRepository.countSince(budgetCutoff, {
             sourceCategory: "contemplative",
             excludePreparationFailures: true,
+            excludeTurnProviderFailures: true,
           });
           const reservedContemplativeSlotsRemaining = Math.max(
             0,
@@ -1374,7 +1384,8 @@ export class AutonomyScheduler {
               this.scheduleBatchTriggerErrorBackoff(wakeBatch);
             }
             const executionCounts =
-              turnExecutionMetricsFromError(error) ?? (busy ? ZERO_TURN_EXECUTION_COUNTS : undefined);
+              turnExecutionMetricsFromError(error) ??
+              (busy ? ZERO_TURN_EXECUTION_COUNTS : undefined);
             const outcomeSummary = busy
               ? "Skipped autonomous turn because the session was busy."
               : `Autonomous turn failed: ${formatError(error)}`;
@@ -1401,25 +1412,26 @@ export class AutonomyScheduler {
               );
             } else {
               errorCount += 1;
+              const turnProviderFailed = isLlmProviderTransportError(error);
               this.options.wakeRepository.recordOutcome(
                 wakeRecord.id,
                 "error",
                 outcomeSummary,
                 null,
                 executionCounts,
+                { turnProviderFailed },
               );
+              // Provider failures preserve the admitted freshness allowance;
+              // source retry backoff and the global error circuit still apply.
+              const bypassKind = turnProviderFailed ? null : fleetAdmission.bypassKind;
               if (isGlobalCircuitFailure(error)) {
                 this.updateFleetBrakeAfterGlobalError(
                   dueEvent,
-                  fleetAdmission.bypassKind,
+                  bypassKind,
                   fleetAdmission.metadata,
                 );
               } else {
-                this.consumeFleetFreshnessBypass(
-                  dueEvent,
-                  fleetAdmission.bypassKind,
-                  fleetAdmission.metadata,
-                );
+                this.consumeFleetFreshnessBypass(dueEvent, bypassKind, fleetAdmission.metadata);
               }
             }
             eventResults.push(
@@ -1548,7 +1560,8 @@ export class AutonomyScheduler {
                 this.applyPerGoalEmptyWakeBackoff(event, outcome);
               }
 
-              for (const { event } of wakeBatch.events) {
+              for (const { source, event } of wakeBatch.events) {
+                source.commitFired?.(event);
                 this.options.watermarkRepository.set(event.watermarkProcessName, this.sessionId, {
                   lastTs: event.sortTs,
                   lastEntryId: event.id,
@@ -2199,38 +2212,32 @@ export class AutonomyScheduler {
       }
 
       case "open_question_dormant": {
-        const payload = dueEvent.payload as {
-          question: string;
-        };
-        const result = await this.options.toolDispatcher.dispatch({
-          toolName: "tool.episodic.search",
-          input: {
-            query: payload.question,
-            limit: 5,
-          },
-          origin: "autonomous",
-          sessionId: this.sessionId,
-          provenance,
-          timeoutMs: this.prepToolTimeoutMs,
-        });
-
-        if (!result.ok) {
-          return {
-            toolError: result.error,
-          };
+        const payload = dueEvent.payload as OpenQuestionDormantPayload;
+        const preparedQuestions = [];
+        for (const question of [payload, ...(payload.additional_questions ?? [])]) {
+          const result = await this.options.toolDispatcher.dispatch({
+            toolName: "tool.episodic.search",
+            input: { query: question.question, limit: 5 },
+            origin: "autonomous",
+            sessionId: this.sessionId,
+            provenance,
+            timeoutMs: this.prepToolTimeoutMs,
+          });
+          if (!result.ok) return { toolError: result.error };
+          const output = result.output as { episodes: unknown[] };
+          preparedQuestions.push({ ...question, related_episodes: output.episodes });
         }
-
-        const output = result.output as {
-          episodes: unknown[];
-        };
-
         return {
           source,
           event: {
             ...dueEvent,
             payload: {
-              ...dueEvent.payload,
-              related_episodes: output.episodes,
+              ...preparedQuestions[0],
+              ...(payload.additional_questions === undefined
+                ? {}
+                : {
+                    additional_questions: preparedQuestions.slice(1),
+                  }),
             },
           },
         };

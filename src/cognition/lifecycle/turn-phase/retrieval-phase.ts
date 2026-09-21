@@ -826,6 +826,7 @@ export async function runRetrievalPhase(input: {
           // after that, so using it dated every count in the block by the
           // whole retrieval span rather than by the ledger/compile gap the
           // surface says it is naming.
+          dormantGoals: description.dormant_goals,
           observedAt: description.observed_at,
           enabled: description.enabled,
           tickInFlight: description.tick_in_flight,
