@@ -35,6 +35,31 @@ export const verdictSchema = z
     confidence: z.number().min(0).max(1),
   })
   .strict();
+const operatorVerdictSchema = verdictSchema.extend({
+  confidence: verdictSchema.shape.confidence.nullable(),
+});
+const entityReferenceSchema = z.object({ entity_id: z.string().min(1) }).strict();
+const judgedBySchema = entityReferenceSchema.extend({
+  evidence: z
+    .object({
+      stream_entry_id: z.string().min(1),
+      session_id: z.string().min(1).optional(),
+      timestamp: z.number().int().nonnegative().optional(),
+    })
+    .strict(),
+});
+const operatorJudgeSchema = z
+  .object({
+    kind: z.literal("operator"),
+    judged_by: judgedBySchema,
+    recorded_by: entityReferenceSchema.optional(),
+  })
+  .strict();
+export const operatorVerdictsSchema = operatorJudgeSchema.omit({ kind: true }).extend({
+  target_node_id: semanticNodeIdSchema,
+  verdicts: z.array(operatorVerdictSchema.extend({ node_id: semanticNodeIdSchema })),
+});
+export type OperatorVerdicts = z.infer<typeof operatorVerdictsSchema>;
 const legacyDossierSchema = z
   .object({
     version: z.literal(1),
@@ -130,7 +155,7 @@ export const failedVerdictSchema = z
   })
   .strict();
 export type FailedVerdict = z.infer<typeof failedVerdictSchema>;
-export const verdictFileSchema = z
+const modelVerdictFileSchema = z
   .object({
     version: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]),
     kind: z.literal("judge-self-label-nodes"),
@@ -167,8 +192,38 @@ export const verdictFileSchema = z
         message: "Version 4 requires the selected target node",
       });
   });
+// Keep the legacy model envelopes intact: reading must not rewrite their hashes or journals.
+const operatorVerdictRecordSchema = verdictRecordSchema.omit({ model: true }).extend({
+  confidence: operatorVerdictSchema.shape.confidence,
+  // The evidence timestamp is optional; recording time is not judgment time.
+  judged_at: z.number().int().nonnegative().nullable(),
+});
+const operatorVerdictFileSchema = z
+  .object({
+    version: z.literal(5),
+    kind: z.literal("judge-self-label-nodes"),
+    data_dir: z.string().min(1),
+    started_at: z.number().finite(),
+    completed_at: z.number().finite(),
+    judge: operatorJudgeSchema,
+    verdicts: z.array(operatorVerdictRecordSchema),
+    failures: z.array(z.never()).length(0),
+    candidate_node_ids: z.array(semanticNodeIdSchema),
+    target_node: targetNodeSchema,
+    matching_entities_report_only: z.array(z.record(z.string(), z.unknown())),
+  })
+  .strict();
+export const verdictFileSchema = z.union([modelVerdictFileSchema, operatorVerdictFileSchema]);
+export type ModelVerdictFile = z.infer<typeof modelVerdictFileSchema>;
+export type OperatorVerdictFile = z.infer<typeof operatorVerdictFileSchema>;
 export type VerdictFile = z.infer<typeof verdictFileSchema>;
-export type VerdictRecord = z.infer<typeof verdictRecordSchema>;
+export type VerdictRecord =
+  | z.infer<typeof verdictRecordSchema>
+  | z.infer<typeof operatorVerdictRecordSchema>;
+// Legacy files have an implicit model judge; only new operator files serialize attribution.
+export type VerdictJudge =
+  | ({ kind: "model" } & Pick<ModelVerdictFile, "model" | "model_role">)
+  | z.infer<typeof operatorJudgeSchema>;
 
 // Operator-specified inventory criterion, NOT an identity decision.
 // Duplicates private normalizeName in memory/commitments/repository.ts to avoid widening its exports.
@@ -351,7 +406,7 @@ export function parseVerdictFile(value: unknown): VerdictFile {
       record.node_id !== record.dossier.node.id ||
       record.node_id === record.dossier.self.node_id ||
       (target !== undefined && record.dossier.self.node_id !== target.id) ||
-      record.model !== file.model ||
+      (file.version !== 5 && "model" in record && record.model !== file.model) ||
       fingerprint(record.dossier) !== record.dossier_hash
     )
       refuse(`Invalid or duplicate judgment/dossier: ${record.node_id}`);
@@ -368,11 +423,16 @@ export function assertCompleteVerdicts(file: VerdictFile, currentCandidateIds: s
       (id) => !successful.has(id),
     ),
   );
-  if (incomplete.size)
+  if (incomplete.size) {
+    const advice =
+      file.version === 5
+        ? "complete the operator input and run record with a new --out path"
+        : "rerun judge on the existing --out file";
     refuse(
       `Failed or missing judgments: ${[...incomplete]
         .sort()
         .map((id) => `${id} (${failed.has(id) ? "failed" : "missing"})`)
-        .join(", ")}; rerun judge on the existing --out file`,
+        .join(", ")}; ${advice}`,
     );
+  }
 }
