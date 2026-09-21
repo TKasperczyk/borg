@@ -1,0 +1,178 @@
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { AuditLog } from "../src/offline/audit-log.js";
+import { CommitmentRepository, EntityRepository } from "../src/memory/commitments/repository.js";
+import { StreamEntryIndexRepository } from "../src/stream/entry-index.js";
+import { createStreamEntryId, DEFAULT_SESSION_ID, type StreamEntryId } from "../src/util/ids.js";
+import {
+  applyCommitterBackfill,
+  planCommitterBackfill,
+  type CommitterPlan,
+} from "./backfill-commitment-committers.js";
+import {
+  checkedPath,
+  formatDataRepairPlan,
+  loadRepairPlan,
+  repairArgs,
+  repairPendingPath,
+} from "./audited-data-repair.js";
+import { repairFixture } from "./audited-data-repair-test-support.js";
+
+const cleanups: Array<() => void> = [];
+afterEach(() => {
+  vi.restoreAllMocks();
+  while (cleanups.length) cleanups.pop()!();
+});
+function fixture() {
+  const f = repairFixture();
+  cleanups.push(f.cleanup);
+  const repo = new CommitmentRepository(f);
+  const entities = new EntityRepository(f);
+  const a = entities.add({ canonicalName: "A" }).id,
+    b = entities.add({ canonicalName: "B" }).id;
+  const index = new StreamEntryIndexRepository(f);
+  const first = createStreamEntryId(),
+    second = createStreamEntryId(),
+    third = createStreamEntryId(),
+    missing = createStreamEntryId();
+  index.record(first, DEFAULT_SESSION_ID, 0, 0, 1, "user_msg", a);
+  index.record(second, DEFAULT_SESSION_ID, 1, 1, 2, "user_msg", a);
+  index.record(third, DEFAULT_SESSION_ID, 2, 2, 3, "user_msg", b);
+  let count = 0;
+  const add = (ids?: StreamEntryId[]) =>
+    repo.add({
+      type: "promise",
+      directiveFamily: `fixture_${count++}`,
+      directive: "Opaque directive",
+      priority: 1,
+      provenance: { kind: "manual" },
+      sourceStreamEntryIds: ids,
+    });
+  const single = add([first, second, missing]);
+  const multiple = add([first, third]);
+  const zero = add([missing]);
+  const empty = add();
+  return { ...f, repo, index, a, b, first, single, multiple, zero, empty };
+}
+describe("commitment committer backfill", () => {
+  it("plans each NULL row by distinct indexed sender, including missing joins", () => {
+    const f = fixture();
+    const bytes = readFileSync(join(f.dataDir, "borg.db"));
+    const plan = planCommitterBackfill(f.dataDir, 2000);
+    expect(plan.summary).toEqual({
+      scanned_null: 4,
+      changed: 1,
+      zero_senders: 2,
+      multiple_senders: 1,
+    });
+    expect(plan.rows.find((r) => r.commitment_id === f.single.id)).toMatchObject({
+      resolved_sender: f.a,
+      joined_entries: [{ sender_entity_id: f.a }, { sender_entity_id: f.a }, { indexed: false }],
+    });
+    expect(readFileSync(join(f.dataDir, "borg.db"))).toEqual(bytes);
+    expect(f.audit.list()).toEqual([]);
+    expect(formatDataRepairPlan(plan)).toContain(f.multiple.id);
+    expect(existsSync(repairPendingPath(f.dataDir, plan.kind))).toBe(false);
+  });
+  it("applies via repository, audits prior NULL, preserves provenance and skips ambiguity", async () => {
+    const f = fixture();
+    const indexBefore = f.db.prepare("SELECT * FROM stream_entry_index").all();
+    const plan = planCommitterBackfill(f.dataDir, 2000);
+    await applyCommitterBackfill(plan);
+    expect(f.repo.get(f.single.id)).toMatchObject({
+      committed_by_entity_id: f.a,
+      provenance: f.single.provenance,
+      record_version: 2,
+    });
+    for (const row of [f.multiple, f.zero, f.empty]) expect(f.repo.get(row.id)).toEqual(row);
+    expect(f.audit.list({ process: "correction" })).toHaveLength(2);
+    expect(
+      f.audit.list().find((a) => a.action.endsWith(f.single.id))?.reversal.committed_by_entity_id,
+    ).toBeNull();
+    expect(f.db.prepare("SELECT * FROM stream_entry_index").all()).toEqual(indexBefore);
+    expect(f.db.prepare("SELECT * FROM identity_events").all()).toEqual(plan.identity_events);
+    const rerun = planCommitterBackfill(f.dataDir, 3000);
+    expect(rerun.runId).toBeNull();
+    await applyCommitterBackfill(rerun);
+    expect(f.audit.list()).toHaveLength(2);
+  });
+  it.each(["after_journal", "after_sqlite", "after_completion", "after_archive"])(
+    "resumes interruption at %s exactly once",
+    async (point) => {
+      const f = fixture();
+      const plan = planCommitterBackfill(f.dataDir, 2000);
+      await expect(
+        applyCommitterBackfill(plan, {
+          checkpoint: (at) => {
+            if (at === point) throw new Error("interrupted");
+          },
+        }),
+      ).rejects.toThrow("interrupted");
+      const loaded = loadRepairPlan<CommitterPlan>(f.dataDir, plan.kind);
+      await applyCommitterBackfill(loaded, { resume: true });
+      expect(f.repo.get(f.single.id)?.committed_by_entity_id).toBe(f.a);
+      expect(f.audit.list()).toHaveLength(2);
+      expect(f.db.prepare("SELECT * FROM identity_events").all()).toHaveLength(1);
+    },
+  );
+  it("rejects stale source joins before journaling", async () => {
+    const f = fixture();
+    const plan = planCommitterBackfill(f.dataDir);
+    f.index.record(f.first, DEFAULT_SESSION_ID, 0, 0, 1, "user_msg", f.b);
+    await expect(applyCommitterBackfill(plan)).rejects.toThrow("Changed since planning");
+    expect(f.audit.list()).toHaveLength(0);
+    expect(existsSync(repairPendingPath(f.dataDir, plan.kind))).toBe(false);
+  });
+  it("counts NULL index senders as unresolved and never sweeps expired or already-attributed rows", async () => {
+    const f = fixture();
+    f.index.record(f.first, DEFAULT_SESSION_ID, 0, 0, 1, "user_msg", null);
+    f.repo.update(f.single.id, { committed_by_entity_id: f.a }, { kind: "manual" });
+    f.repo.update(f.zero.id, { expires_at: 1500, expired_at: null }, { kind: "manual" });
+    const before = f.repo.get(f.single.id);
+    const plan = planCommitterBackfill(f.dataDir, 2000);
+    expect(plan.rows.some((r) => r.commitment_id === f.single.id)).toBe(false);
+    expect(plan.rows.find((r) => r.commitment_id === f.multiple.id)?.distinct_senders).toEqual([
+      f.b,
+    ]);
+    await applyCommitterBackfill(plan);
+    expect(f.repo.get(f.single.id)).toEqual(before);
+    expect(f.repo.get(f.zero.id)?.expired_at).toBeNull();
+  });
+  it("rolls back repository and identity writes when audit persistence fails", async () => {
+    const f = fixture();
+    const plan = planCommitterBackfill(f.dataDir, 2000);
+    vi.spyOn(AuditLog.prototype, "record").mockImplementation(() => {
+      throw new Error("audit failed");
+    });
+    await expect(applyCommitterBackfill(plan)).rejects.toThrow("audit failed");
+    expect(f.repo.get(f.single.id)).toEqual(f.single);
+    expect(f.db.prepare("SELECT * FROM identity_events").all()).toEqual([]);
+    expect(f.audit.list()).toEqual([]);
+    vi.restoreAllMocks();
+    await applyCommitterBackfill(loadRepairPlan<CommitterPlan>(f.dataDir, plan.kind), {
+      resume: true,
+    });
+    expect(f.repo.get(f.single.id)?.committed_by_entity_id).toBe(f.a);
+  });
+  it("rejects stale rows before journaling", async () => {
+    const f = fixture();
+    const plan = planCommitterBackfill(f.dataDir);
+    f.repo.update(f.single.id, { directive: "Intervening change" }, { kind: "manual" });
+    await expect(applyCommitterBackfill(plan)).rejects.toThrow("Changed since planning");
+    expect(f.audit.list()).toHaveLength(0);
+  });
+  it("refuses pending migrations without applying them", () => {
+    const f = fixture();
+    f.db.prepare("DELETE FROM _migrations WHERE id = (SELECT MAX(id) FROM _migrations)").run();
+    expect(() => planCommitterBackfill(f.dataDir)).toThrow("migrations");
+    expect(f.audit.list()).toHaveLength(0);
+  });
+  it("requires an explicit bank and refuses the live path before opening it", () => {
+    expect(() => repairArgs([])).toThrow("--data-dir");
+    expect(() => checkedPath("demo/server/.borg-data/demo")).toThrow("forbidden");
+    expect(() => repairArgs(["--data-dir", process.cwd(), "--resume"])).toThrow(
+      "--resume requires --apply",
+    );
+  });
+});
