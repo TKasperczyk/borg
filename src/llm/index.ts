@@ -1018,6 +1018,15 @@ export function isLlmProviderTransportError(error: unknown): boolean {
         candidate instanceof OpenAIConnectionError
       )
         return true;
+      if (candidate instanceof Anthropic.APIError && candidate.status === undefined) {
+        // SDK errors from SSE frames carry a provider type without an HTTP status.
+        return (
+          candidate.type === "overloaded_error" ||
+          candidate.type === "api_error" ||
+          candidate.type === "rate_limit_error" ||
+          candidate.type === "timeout_error"
+        );
+      }
       if (candidate instanceof Anthropic.APIError || candidate instanceof OpenAIAPIError) {
         const status = candidate.status;
         return (
