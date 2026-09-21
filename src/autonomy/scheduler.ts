@@ -990,6 +990,9 @@ export class AutonomyScheduler {
     const scheduledTickAt = this.describeScheduledTickAt(nowMs);
 
     return {
+      dormant_goals: new Set(
+        this.options.sources.flatMap((source) => source.dormantGoalIds?.() ?? []),
+      ).size,
       observed_at: nowMs,
       enabled: this.options.enabled,
       tick_in_flight: this.activeTick !== null,

@@ -90,7 +90,7 @@ export function createGoalFollowupDueTrigger(
     actionAvailabilityKey: string | null,
   ): GoalStaleBackoffState {
     if (!options.respectStaleBackoff) {
-      return { endMs: null, actionAvailabilityChanged: false };
+      return { endMs: null, actionAvailabilityChanged: false, dormant: false };
     }
 
     return goalStaleBackoffState({
@@ -192,6 +192,16 @@ export function createGoalFollowupDueTrigger(
     name: TRIGGER_NAME,
     type: "trigger",
     sourceCategory: "operational",
+    dormantGoalIds() {
+      const nowMs = clock.now();
+      const actionKey = options.goalStaleBackoffActionAvailabilityKey?.() ?? null;
+      return flattenGoalTree(options.goalsRepository.list({ status: "active" }))
+        .filter((goal) => {
+          const state = staleBackoff(goal, actionKey);
+          return state.dormant && state.endMs !== null && state.endMs > nowMs;
+        })
+        .map((goal) => goal.id);
+    },
     async scan() {
       const nowMs = clock.now();
       const actionAvailabilityKey = options.goalStaleBackoffActionAvailabilityKey?.() ?? null;

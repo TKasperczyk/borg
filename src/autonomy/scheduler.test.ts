@@ -1051,7 +1051,7 @@ describe("AutonomyScheduler", () => {
           dormancyCount: 3,
           actionAvailabilityKey,
         }).endMs,
-      ).toBe(Number.POSITIVE_INFINITY);
+      ).toBe(backoff!.updatedAt + 14 * 86_400_000);
     }
   });
 
@@ -1746,6 +1746,8 @@ describe("AutonomyScheduler", () => {
           },
         ],
       });
+      followupSource.dormantGoalIds = () => [goal.id];
+      executiveSource.dormantGoalIds = () => [goal.id];
       const turnRunner = {
         run: vi.fn().mockResolvedValue(createStructuralTurnResult({ emissionKind: "suppressed" })),
       };
@@ -1771,6 +1773,7 @@ describe("AutonomyScheduler", () => {
 
       const result = await scheduler.tick();
 
+      expect((await scheduler.describe()).dormant_goals).toBe(1);
       return {
         backoff: watermarkRepository.get(backoffProcessName, DEFAULT_SESSION_ID),
         followupLatch: watermarkRepository.get(
@@ -1822,7 +1825,7 @@ describe("AutonomyScheduler", () => {
           dormancyCount: 3,
           actionAvailabilityKey,
         }).endMs,
-      ).toBe(Number.POSITIVE_INFINITY);
+      ).toBe(batched.backoff!.updatedAt + 14 * 86_400_000);
     } finally {
       await Promise.all(harnesses.map((harness) => harness.cleanup()));
     }

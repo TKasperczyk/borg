@@ -116,6 +116,7 @@ const FIXTURE_SELF_PRIVATE_DISCLOSURE = {
 const FIXTURE_AUTONOMY_SCHEDULER_STATE: NonNullable<
   NonNullable<DeliberationContext["turnMechanismEvidence"]>["autonomySchedulerState"]
 > = {
+  dormantGoals: 2,
   observedAt: NOW_MS,
   enabled: true,
   tickInFlight: false,

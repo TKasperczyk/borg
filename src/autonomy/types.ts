@@ -139,6 +139,8 @@ export type AutonomyWakeSource<Payload extends Record<string, unknown> = Record<
     scan(): Promise<DueEvent<Payload>[]>;
     buildTurn(event: DueEvent<Payload>): TurnInput;
     nextDueAt?(): Promise<number | null>;
+    /** Internal handles for counting shared per-goal dormancy across sources. */
+    dormantGoalIds?(): readonly string[];
     // Optional lifecycle hook invoked by the scheduler immediately after a wake
     // fires successfully (watermark committed). Lets a source make its own
     // persisted state authoritative at fire-time instead of waiting for the next
@@ -312,6 +314,7 @@ export type AutonomySchedulerFleetBrakeDescription = {
 };
 
 export type AutonomySchedulerDescription = {
+  dormant_goals: number;
   /**
    * The clock read every other field here is as of. `describe()` takes it once
    * and derives the budget cutoff, the window counts and `next_tick_at` from

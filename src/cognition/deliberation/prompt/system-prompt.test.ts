@@ -268,6 +268,7 @@ function makeSchedulerStateWithSources(): NonNullable<
   NonNullable<DeliberationContext["turnMechanismEvidence"]>["autonomySchedulerState"]
 > {
   return {
+    dormantGoals: 2,
     observedAt: NOW_MS,
     enabled: true,
     tickInFlight: false,
@@ -3391,10 +3392,11 @@ describe("buildBaseSystemPrompt", () => {
     expect(block).toContain(
       "A none is therefore consistent with that source firing on the very next tick.",
     );
+    expect(block).toContain("Dormant goals: 2.");
     // Carrying the field empties the dropped list, so the block's own statement
     // of its gap flips to the no-gap branch rather than falling silent.
     expect(block).toContain(
-      "Every field the scheduler's read produces is rendered somewhere below, so this block and that read differ by nothing.",
+      "Every field the scheduler's read produces is rendered somewhere below.",
     );
     // Retracted wording, pinned so it cannot return under a rewrite: the block
     // said this list was the one thing it did not carry.
