@@ -1114,7 +1114,6 @@ function selectOpenReviewItems(
       })
       .filter(eligible)
       .filter((item) => isSupportedReviewResolverCandidate(item))
-      .sort((left, right) => left.created_at - right.created_at || left.id - right.id)
       .map((item) => ({
         review_id: item.id,
         kind,
@@ -1123,7 +1122,12 @@ function selectOpenReviewItems(
   );
 
   return {
-    selected: candidates.slice(0, maxItems),
+    selected: candidates
+      .sort(
+        (left, right) =>
+          left.previous.created_at - right.previous.created_at || left.review_id - right.review_id,
+      )
+      .slice(0, maxItems),
     skippedOverCap: Math.max(0, candidates.length - maxItems),
   };
 }
