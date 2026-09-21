@@ -1047,6 +1047,13 @@ describe("runPostGenerationPhase", () => {
       last_referenced_turn_counter: 49,
       last_referenced_turn_global: 4_775,
     });
+    const scheduledParticipantAction = makeAction({
+      actor: participantId,
+      state: "scheduled",
+      scheduled_at: 1_000,
+      last_referenced_turn_counter: 49,
+      last_referenced_turn_global: 4_775,
+    });
     const borgAction = makeAction({
       actor: "borg",
       last_referenced_turn_counter: 5,
@@ -1081,6 +1088,7 @@ describe("runPostGenerationPhase", () => {
     });
     const actionRepository = makeActionRepository([
       staleParticipantAction,
+      scheduledParticipantAction,
       borgAction,
       groupAction,
       freshParticipantAction,
@@ -1209,6 +1217,13 @@ describe("runPostGenerationPhase", () => {
 
     expect(actionRepository.records).toContainEqual(
       expect.objectContaining({
+        id: scheduledParticipantAction.id,
+        state: "archived",
+        archived_at: 10_000,
+      }),
+    );
+    expect(actionRepository.records).toContainEqual(
+      expect.objectContaining({
         id: staleParticipantAction.id,
         state: "archived",
         archived_at: 10_000,
@@ -1240,9 +1255,9 @@ describe("runPostGenerationPhase", () => {
     expect(events).toContainEqual({
       event: "action_archive_scan.completed",
       data: expect.objectContaining({
-        scanned_count: 4,
-        eligible_count: 1,
-        archived_count: 1,
+        scanned_count: 5,
+        eligible_count: 2,
+        archived_count: 2,
         archive_after_turns: 20,
         skipped_by_reason: {
           below_inactive_threshold: 1,
