@@ -348,6 +348,36 @@ export class ActionRepository {
     await Promise.allSettled([...this.pendingEmbeddingTasks]);
   }
 
+  /** Offline audited actor repair: preserve the existing vector and all other metadata.
+   * The caller journals and preflights both stores, then commits the SQL repair first.
+   * Unlike the ordinary background refresh this awaited write propagates failures.
+   */
+  async syncRepairedActorMirror(id: ActionId, previousActor: ActionActor): Promise<void> {
+    const record = this.get(id);
+    const table = this.table;
+    if (record === null || table === undefined) {
+      throw new StorageError(`Missing action or mirror for ${id}`, {
+        code: "ACTION_REPAIR_MISSING",
+      });
+    }
+    const rows = await table.list({ where: `id = ${quoteSqlString(id)}` });
+    if (rows.length !== 1) {
+      throw new StorageError(`Expected one action mirror for ${id}`, {
+        code: "ACTION_REPAIR_MISSING",
+      });
+    }
+    const row = rows[0]!;
+    if (row.actor === record.actor && row.updated_at === record.updated_at) return;
+    if (row.actor !== previousActor) {
+      throw new StorageError(`Action mirror actor changed for ${id}`, {
+        code: "ACTION_REPAIR_STALE",
+      });
+    }
+    await table.upsert([{ ...row, actor: record.actor, updated_at: record.updated_at }], {
+      on: "id",
+    });
+  }
+
   private upsertSqlRow(record: ActionRecord): void {
     this.db
       .prepare(

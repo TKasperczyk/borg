@@ -1,6 +1,10 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": { "rootDir": "." },
-  "include": ["scripts/audited-data-repair*.ts", "scripts/backfill-commitment-committers*.ts"],
+  "include": [
+    "scripts/audited-data-repair*.ts",
+    "scripts/backfill-commitment-committers*.ts",
+    "scripts/repair-action-actor*.ts"
+  ],
   "exclude": ["node_modules", "dist"]
 }

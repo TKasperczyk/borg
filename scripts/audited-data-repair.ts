@@ -120,7 +120,10 @@ export function newPlan(
 
 export function assertSame(actual: unknown, expected: unknown, label: string): void {
   // Object key order is immaterial; array order and every stored value are material.
-  if (fingerprint(actual) !== fingerprint(expected)) refuse(`Changed since planning: ${label}`);
+  if (!sameSnapshot(actual, expected)) refuse(`Changed since planning: ${label}`);
+}
+export function sameSnapshot(actual: unknown, expected: unknown): boolean {
+  return fingerprint(actual) === fingerprint(expected);
 }
 function stable(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(stable);
@@ -250,7 +253,7 @@ export async function applyDataRepair<P extends DataRepairPlan>(
 }
 
 export function repairArgs(args: string[], extra: NonNullable<ParseArgsConfig["options"]> = {}) {
-  const parsed = parseArgs({
+  const parsed: Record<string, string | string[] | boolean | undefined> = parseArgs({
     args,
     strict: true,
     allowPositionals: false,

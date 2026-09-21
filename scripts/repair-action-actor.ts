@@ -1,0 +1,236 @@
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { ActionRepository } from "../src/memory/actions/repository.js";
+import type { ActionRecord } from "../src/memory/actions/types.js";
+import type { MaintenanceAuditRecordInput } from "../src/offline/audit-log.js";
+import { quoteSqlString } from "../src/storage/codecs.js";
+import { LanceDbTable } from "../src/storage/lancedb/index.js";
+import type { SqliteDatabase } from "../src/storage/sqlite/index.js";
+import { parseEntityId, type EntityId } from "../src/util/ids.js";
+import { openLance, type Row } from "./repair-entity-graph-storage.js";
+import {
+  applyDataRepair,
+  assertNoPending,
+  assertSame,
+  auditInput,
+  checkedPath,
+  hasStep,
+  loadRepairPlan,
+  newPlan,
+  openDataRepairDatabase,
+  printPlan,
+  refuse,
+  repairArgs,
+  repairAudit,
+  runRepairCli,
+  sameSnapshot,
+  type DataRepairPlan,
+  type RepairCheckpoint,
+} from "./audited-data-repair.js";
+
+const KIND = "repair-action-actor";
+type ActorPlanRow = {
+  before: ActionRecord;
+  after: ActionRecord;
+  mirror_before: Row | null;
+  mirror_after: Row | null;
+  audit: MaintenanceAuditRecordInput;
+};
+export type ActorRepairPlan = DataRepairPlan & {
+  from: EntityId;
+  to: EntityId;
+  to_entity: Row;
+  rows: ActorPlanRow[];
+  mirror_table_present: boolean;
+};
+
+function entityPreflight(db: SqliteDatabase, from: EntityId, to: EntityId): Row {
+  if (db.prepare("SELECT id FROM entities WHERE id = ?").get(from))
+    refuse("--from has an entities row; use the entity-graph redirect repair");
+  return (
+    db.prepare("SELECT * FROM entities WHERE id = ?").get(to) ?? refuse("--to has no entities row")
+  );
+}
+async function withMirror<T>(
+  dataDir: string,
+  callback: (table: LanceDbTable | null) => Promise<T>,
+): Promise<T> {
+  if (existsSync(join(dataDir, "lancedb"))) checkedPath(join(dataDir, "lancedb"));
+  const connection = await openLance(dataDir);
+  let table: LanceDbTable | null = null;
+  try {
+    if (connection && (await connection.tableNames()).includes("action_records"))
+      table = new LanceDbTable(await connection.openTable("action_records"));
+    return await callback(table);
+  } finally {
+    table?.close();
+    connection?.close();
+  }
+}
+async function mirrorRow(table: LanceDbTable | null, id: string): Promise<Row | null> {
+  if (!table) return null;
+  const rows = await table.list({ where: `id = ${quoteSqlString(id)}` });
+  if (rows.length > 1) refuse(`Duplicate action mirror ${id}`);
+  const row = rows[0];
+  return row ? { ...row, embedding: Array.from(row.embedding as Iterable<number>) } : null;
+}
+
+export async function planActionActorRepair(
+  input: { dataDir: string; from: string; to: string },
+  now = Date.now(),
+): Promise<ActorRepairPlan> {
+  const dataDir = checkedPath(input.dataDir),
+    from = parseEntityId(input.from),
+    to = parseEntityId(input.to);
+  assertNoPending(dataDir);
+  const db = openDataRepairDatabase(dataDir);
+  try {
+    const toEntity = entityPreflight(db, from, to);
+    // Omit the limit so historical/terminal actions are all included.
+    const records = new ActionRepository({ db }).list({ actor: from });
+    const plan: ActorRepairPlan = {
+      ...newPlan(KIND, dataDir, records.length, now),
+      from,
+      to,
+      to_entity: toEntity,
+      rows: [],
+      mirror_table_present: false,
+    };
+    await withMirror(dataDir, async (table) => {
+      plan.mirror_table_present = table !== null;
+      for (const before of records) {
+        const after = { ...before, actor: to };
+        const mirrorBefore = await mirrorRow(table, before.id);
+        if (mirrorBefore && mirrorBefore.actor !== from)
+          refuse(`Action mirror disagrees with SQL actor: ${before.id}`);
+        const mirrorAfter = mirrorBefore
+          ? { ...mirrorBefore, actor: to, updated_at: after.updated_at }
+          : null;
+        plan.rows.push({
+          before,
+          after,
+          mirror_before: mirrorBefore,
+          mirror_after: mirrorAfter,
+          audit: auditInput(
+            plan,
+            `${KIND}:${before.id}`,
+            {
+              action_id: before.id,
+              before,
+              after,
+              mirror_before: mirrorBefore,
+              mirror_after: mirrorAfter,
+            },
+            {
+              actor: from,
+              before,
+              expected_after: after,
+              mirror_before: mirrorBefore,
+              mirror_expected_after: mirrorAfter,
+            },
+          ),
+        });
+      }
+    });
+    plan.summary = {
+      changed: plan.rows.length,
+      mirror_updates: plan.rows.filter((r) => r.mirror_before !== null).length,
+    };
+    return plan;
+  } finally {
+    db.close();
+  }
+}
+
+function sqlPreflight(db: SqliteDatabase, plan: ActorRepairPlan): void {
+  assertSame(entityPreflight(db, plan.from, plan.to), plan.to_entity, "destination entity");
+  const repo = new ActionRepository({ db });
+  for (const row of plan.rows)
+    assertSame(
+      repo.get(row.before.id),
+      hasStep(db, plan, row.audit.action) ? row.after : row.before,
+      row.before.id,
+    );
+}
+async function preflight(db: SqliteDatabase, plan: ActorRepairPlan): Promise<void> {
+  sqlPreflight(db, plan);
+  await withMirror(plan.dataDir, async (table) => {
+    assertSame(table !== null, plan.mirror_table_present, "action mirror table");
+    for (const row of plan.rows) {
+      const current = await mirrorRow(table, row.before.id);
+      const done = hasStep(db, plan, row.audit.action);
+      // A journaled SQL commit may have either mirror state, never another vector/metadata value.
+      if (done && sameSnapshot(current, row.mirror_after)) continue;
+      assertSame(current, row.mirror_before, `action mirror ${row.before.id}`);
+    }
+  });
+}
+export async function applyActionActorRepair(
+  plan: ActorRepairPlan,
+  options: { resume?: boolean; checkpoint?: RepairCheckpoint } = {},
+): Promise<void> {
+  await applyDataRepair(
+    plan,
+    {
+      preflight,
+      async finish(db, plan, checkpoint) {
+        db.transaction(() => {
+          sqlPreflight(db, plan);
+          const repo = new ActionRepository({ db });
+          for (const row of plan.rows) {
+            if (hasStep(db, plan, row.audit.action)) continue;
+            repo.update(
+              row.before.id,
+              { actor: plan.to, updated_at: row.before.updated_at },
+              { skipSideEffects: true },
+            );
+            assertSame(repo.get(row.before.id), row.after, `updated ${row.before.id}`);
+            repairAudit(db, plan).record(row.audit);
+          }
+        }).immediate();
+        await checkpoint?.("after_sqlite");
+        await preflight(db, plan);
+        await withMirror(plan.dataDir, async (table) => {
+          if (!table) return;
+          const repo = new ActionRepository({ db, table });
+          for (const row of plan.rows) {
+            if (row.mirror_before === null) continue;
+            await repo.syncRepairedActorMirror(row.before.id, plan.from);
+            assertSame(
+              await mirrorRow(table, row.before.id),
+              row.mirror_after,
+              `updated mirror ${row.before.id}`,
+            );
+            await checkpoint?.(`after_mirror:${row.before.id}`);
+          }
+        });
+      },
+    },
+    options,
+  );
+}
+runRepairCli(import.meta.url, async () => {
+  const args = repairArgs(process.argv.slice(2), {
+    from: { type: "string" },
+    to: { type: "string" },
+  });
+  let plan: ActorRepairPlan;
+  if (args.resume) {
+    plan = loadRepairPlan<ActorRepairPlan>(args.dataDir, KIND);
+    if (args.values.from !== undefined) assertSame(args.values.from, plan.from, "--from");
+    if (args.values.to !== undefined) assertSame(args.values.to, plan.to, "--to");
+  } else {
+    if (typeof args.values.from !== "string" || typeof args.values.to !== "string")
+      refuse("--from and --to are required");
+    plan = await planActionActorRepair({
+      dataDir: args.dataDir,
+      from: args.values.from,
+      to: args.values.to,
+    });
+  }
+  await printPlan(plan);
+  if (args.apply) {
+    await applyActionActorRepair(plan, { resume: args.resume });
+    console.log(JSON.stringify({ run_id: plan.runId, ...plan.summary }));
+  }
+});
