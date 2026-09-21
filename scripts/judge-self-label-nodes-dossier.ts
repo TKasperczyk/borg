@@ -89,23 +89,49 @@ export const verdictRecordSchema = verdictSchema
     judged_at: z.number().finite(),
   })
   .strict();
+export const failedVerdictSchema = z
+  .object({
+    status: z.literal("failed"),
+    node_id: semanticNodeIdSchema,
+    dossier: dossierSchema,
+    dossier_hash: hashSchema,
+    model: z.string().min(1),
+    failed_at: z.number().finite(),
+    error_class: z.string().min(1),
+    message: z.string(),
+    cause_class: z.string().nullable(),
+    cause_message: z.string().nullable(),
+  })
+  .strict();
+export type FailedVerdict = z.infer<typeof failedVerdictSchema>;
 export const verdictFileSchema = z
   .object({
-    version: z.literal(1),
+    version: z.union([z.literal(1), z.literal(2)]),
     kind: z.literal("judge-self-label-nodes"),
     data_dir: z.string().min(1),
     started_at: z.number().finite(),
-    completed_at: z.number().finite(),
+    completed_at: z.number().finite().nullable(),
     model: z.string().min(1),
     model_role: z.literal("extraction"),
     verdicts: z.array(verdictRecordSchema),
+    failures: z.array(failedVerdictSchema).default([]),
+    candidate_node_ids: z.array(semanticNodeIdSchema).optional(),
     matching_entities_report_only: z.array(z.record(z.string(), z.unknown())),
   })
-  .strict();
+  .strict()
+  .superRefine((file, ctx) => {
+    if (file.version === 2 && file.candidate_node_ids === undefined)
+      ctx.addIssue({
+        code: "custom",
+        path: ["candidate_node_ids"],
+        message: "Version 2 requires the candidate manifest",
+      });
+  });
 export type VerdictFile = z.infer<typeof verdictFileSchema>;
 export type VerdictRecord = z.infer<typeof verdictRecordSchema>;
 
 // Operator-specified inventory criterion, NOT an identity decision.
+// Duplicates private normalizeName in memory/commitments/repository.ts to avoid widening its exports.
 function normalizedLabel(value: string): string {
   return value.trim().toLowerCase();
 }
@@ -232,9 +258,14 @@ export async function buildSelfLabelDossier(
 export function parseVerdictFile(value: unknown): VerdictFile {
   const file = verdictFileSchema.parse(value);
   const ids = new Set<string>();
-  for (const record of file.verdicts) {
+  const candidates =
+    file.candidate_node_ids === undefined ? undefined : new Set(file.candidate_node_ids);
+  if (candidates && candidates.size !== file.candidate_node_ids!.length)
+    refuse("Duplicate candidate IDs");
+  for (const record of [...file.verdicts, ...file.failures]) {
     if (
       ids.has(record.node_id) ||
+      (candidates !== undefined && !candidates.has(record.node_id)) ||
       record.node_id !== record.dossier.node.id ||
       record.model !== file.model ||
       fingerprint(record.dossier) !== record.dossier_hash
@@ -243,4 +274,21 @@ export function parseVerdictFile(value: unknown): VerdictFile {
     ids.add(record.node_id);
   }
   return file;
+}
+
+export function assertCompleteVerdicts(file: VerdictFile, currentCandidateIds: string[]): void {
+  const successful = new Set(file.verdicts.map((row) => String(row.node_id)));
+  const failed = new Set(file.failures.map((row) => String(row.node_id)));
+  const incomplete = new Set(
+    [...currentCandidateIds, ...(file.candidate_node_ids ?? []), ...failed].filter(
+      (id) => !successful.has(id),
+    ),
+  );
+  if (incomplete.size)
+    refuse(
+      `Failed or missing judgments: ${[...incomplete]
+        .sort()
+        .map((id) => `${id} (${failed.has(id) ? "failed" : "missing"})`)
+        .join(", ")}; rerun judge on the existing --out file`,
+    );
 }

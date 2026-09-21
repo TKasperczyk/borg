@@ -36,11 +36,14 @@ import {
 import { applySqlChanges, cloneDatabase, openLance } from "./repair-entity-graph-storage.js";
 import {
   buildSelfLabelDossier,
+  assertCompleteVerdicts,
   parseVerdictFile,
   selfLabelInventory,
   verdictSchema,
   type VerdictFile,
   type VerdictRecord,
+  type FailedVerdict,
+  type SelfLabelDossier,
 } from "./judge-self-label-nodes-dossier.js";
 
 const KIND = "judge-self-label-nodes";
@@ -83,14 +86,22 @@ export function readVerdictFile(path: string, access: Access = {}): VerdictFile 
   );
 }
 
-export function writeVerdictFile(path: string, file: VerdictFile, access: Access = {}): void {
+export function writeVerdictFile(
+  path: string,
+  file: VerdictFile,
+  access: Access = {},
+  previous?: VerdictFile,
+): void {
   const output = resolve(path);
   if (verifyLiveStoreOverride(access.liveStoreConfirmed) === null) rejectLivePath(output);
   // Check the existing ancestor before creating directories (including symlink/live guards).
   let ancestor = dirname(output);
   while (!existsSync(ancestor)) ancestor = dirname(ancestor);
   checkedPath(ancestor, access.liveStoreConfirmed);
-  if (existsSync(output)) refuse("Verdict output already exists; choose a new --out path");
+  if (existsSync(output)) {
+    if (previous === undefined) refuse("Verdict output already exists; choose a new --out path");
+    assertSame(readVerdictFile(output, access), previous, "verdict file changed while judging");
+  } else if (previous !== undefined) refuse("Verdict file disappeared while judging");
   const checked = parseVerdictFile(file);
   mkdirSync(dirname(output), { recursive: true, mode: 0o700 });
   writeJsonFileAtomic(output, checked, { mode: 0o600 });
@@ -106,6 +117,10 @@ async function assertDossiers(
   file: VerdictFile,
   hashes?: Record<string, string>,
 ): Promise<void> {
+  assertCompleteVerdicts(
+    file,
+    hashes === undefined ? selfLabelInventory(db).candidates.map((row) => String(row.id)) : [],
+  );
   if (hashes === undefined) {
     assertSame(
       selfLabelInventory(db)
@@ -122,6 +137,22 @@ async function assertDossiers(
   }
 }
 
+function failedVerdict(dossier: SelfLabelDossier, model: string, error: unknown): FailedVerdict {
+  const cause = error instanceof Error && error.cause instanceof Error ? error.cause : null;
+  return {
+    status: "failed",
+    node_id: dossier.node.id,
+    dossier,
+    dossier_hash: fingerprint(dossier),
+    model,
+    failed_at: Date.now(),
+    error_class: error instanceof Error ? error.constructor.name : typeof error,
+    message: error instanceof Error ? error.message : String(error),
+    cause_class: cause?.constructor.name ?? null,
+    cause_message: cause?.message ?? null,
+  };
+}
+
 export async function judgeSelfLabelNodes(
   input: { dataDir: string; out?: string; llm?: LLMClient } & Access,
 ): Promise<{ path: string; file: VerdictFile }> {
@@ -131,76 +162,130 @@ export async function judgeSelfLabelNodes(
   const config = loadConfig({ dataDir });
   const model = config.anthropic.models.extraction;
   const llm = input.llm ?? createLlmFactory(config, undefined, undefined, new SystemClock())();
-  const file: VerdictFile = {
-    version: 1,
-    kind: KIND,
-    data_dir: dataDir,
-    started_at: started,
-    completed_at: started,
-    model,
-    model_role: "extraction",
-    verdicts: [],
-    matching_entities_report_only: [],
+  const output = resolve(
+    input.out ?? join(dataDir, "audited-data-repairs", `${KIND}-${createMaintenanceRunId()}.json`),
+  );
+  const path = existsSync(output) ? checkedPath(output, input.liveStoreConfirmed) : output;
+  let saved = existsSync(path) ? readVerdictFile(path, input) : undefined;
+  if (saved) {
+    assertSame(saved.data_dir, dataDir, "verdict store");
+    assertSame(saved.model, model, "judging model; use a new --out file to change model");
+  }
+  const file: VerdictFile = saved
+    ? structuredClone(saved)
+    : {
+        version: 2,
+        kind: KIND,
+        data_dir: dataDir,
+        started_at: started,
+        completed_at: null,
+        model,
+        model_role: "extraction",
+        verdicts: [],
+        failures: [],
+        candidate_node_ids: [],
+        matching_entities_report_only: [],
+      };
+  const persist = () => {
+    writeVerdictFile(path, file, input, saved);
+    saved = structuredClone(file);
   };
   await readEvidence(dataDir, input, async (db, episodes) => {
     const inventory = selfLabelInventory(db);
+    const candidateIds = inventory.candidates.map((row) => String(row.id));
+    const removed = [...file.verdicts, ...file.failures].filter(
+      (row) => !candidateIds.includes(row.node_id),
+    );
+    if (removed.length)
+      refuse(
+        `Recorded nodes are no longer candidates: ${removed.map((row) => row.node_id).join(", ")}; preserve this file and choose a new --out`,
+      );
     file.matching_entities_report_only = inventory.matchingEntities;
-    const dossiers = [];
+    const dossiers: SelfLabelDossier[] = [];
     for (const node of inventory.candidates)
       dossiers.push(await buildSelfLabelDossier(db, episodes, String(node.id)));
-    // Two calls at a time. Drain both before closing repositories on a failure.
-    for (let offset = 0; offset < dossiers.length; offset += 2) {
+    const hashes = new Map(dossiers.map((dossier) => [dossier.node.id, fingerprint(dossier)]));
+    file.version = 2;
+    file.completed_at = null;
+    file.candidate_node_ids = dossiers.map((dossier) => dossier.node.id);
+    file.verdicts = file.verdicts.filter(
+      (record) => hashes.get(record.node_id) === record.dossier_hash,
+    );
+    const retained = new Set(file.verdicts.map((row) => row.node_id));
+    const pending = dossiers.filter((dossier) => !retained.has(dossier.node.id));
+    // The complete candidate manifest makes an interrupted/missing node explicit.
+    persist();
+    const recordFailure = (dossier: SelfLabelDossier, error: unknown) => {
+      file.verdicts = file.verdicts.filter((row) => row.node_id !== dossier.node.id);
+      file.failures = file.failures.filter((row) => row.node_id !== dossier.node.id);
+      file.failures.push(failedVerdict(dossier, model, error));
+    };
+    // Two requests at a time; persist each completion, without waiting for its peer.
+    for (let offset = 0; offset < pending.length; offset += 2) {
       const results = await Promise.allSettled(
-        dossiers.slice(offset, offset + 2).map(async (dossier) => {
-          const result = await callStructuredTool({
-            llmClient: llm,
-            toolName: TOOL,
-            // One logical judgment; transport retries belong to the existing client policy.
-            maxAttempts: 1,
-            request: {
+        pending.slice(offset, offset + 2).map(async (dossier) => {
+          try {
+            const result = await callStructuredTool({
+              llmClient: llm,
+              toolName: TOOL,
+              // One logical judgment; transport retries belong to the existing client policy.
+              maxAttempts: 1,
+              request: {
+                model,
+                system: SYSTEM,
+                messages: [{ role: "user", content: JSON.stringify(dossier) }],
+                tools: [
+                  {
+                    name: TOOL,
+                    description: "Record an identity judgment for this node.",
+                    inputSchema: toToolInputSchema(verdictSchema),
+                  },
+                ],
+                tool_choice: { type: "tool", name: TOOL },
+                max_tokens: 1200,
+                temperature: 0,
+                budget: KIND,
+              },
+              parse: (value, { response }) => {
+                const count = response.tool_calls.filter((call) => call.name === TOOL).length;
+                if (count !== 1) refuse(`Expected exactly one ${TOOL} call; received ${count}`);
+                return verdictSchema.parse(value);
+              },
+            });
+            file.failures = file.failures.filter((row) => row.node_id !== dossier.node.id);
+            file.verdicts.push({
+              ...result.parsed,
+              node_id: dossier.node.id,
+              dossier,
+              dossier_hash: fingerprint(dossier),
               model,
-              system: SYSTEM,
-              messages: [{ role: "user", content: JSON.stringify(dossier) }],
-              tools: [
-                {
-                  name: TOOL,
-                  description: "Record an identity judgment for this node.",
-                  inputSchema: toToolInputSchema(verdictSchema),
-                },
-              ],
-              tool_choice: { type: "tool", name: TOOL },
-              max_tokens: 1200,
-              temperature: 0,
-              budget: KIND,
-            },
-            parse: (value, { response }) => {
-              const count = response.tool_calls.filter((call) => call.name === TOOL).length;
-              if (count !== 1) refuse(`Expected exactly one ${TOOL} call; received ${count}`);
-              return verdictSchema.parse(value);
-            },
-          });
-          return {
-            ...result.parsed,
-            node_id: dossier.node.id,
-            dossier,
-            dossier_hash: fingerprint(dossier),
-            model,
-            judged_at: Date.now(),
-          };
+              judged_at: Date.now(),
+            });
+          } catch (error) {
+            recordFailure(dossier, error);
+          }
+          // Persistence errors are fatal, not misclassified as a model failure.
+          persist();
         }),
       );
       for (const result of results) {
         if (result.status === "rejected") throw result.reason;
-        file.verdicts.push(result.value);
       }
     }
-    await assertDossiers(db, episodes, file);
+    // Recheck completed evidence without discarding other nodes' durable results.
+    for (const record of [...file.verdicts]) {
+      try {
+        const current = await buildSelfLabelDossier(db, episodes, record.node_id);
+        if (fingerprint(current) !== record.dossier_hash)
+          refuse(`Dossier hash mismatch: ${record.node_id}; evidence changed while judging`);
+      } catch (error) {
+        recordFailure(record.dossier, error);
+        persist();
+      }
+    }
+    file.completed_at = Date.now();
+    persist();
   });
-  file.completed_at = Date.now();
-  const path = resolve(
-    input.out ?? join(dataDir, "audited-data-repairs", `${KIND}-${createMaintenanceRunId()}.json`),
-  );
-  writeVerdictFile(path, file, input);
   return { path, file };
 }
 
@@ -442,10 +527,20 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       JSON.stringify({
         mode: "judge",
         verdict_file: result.path,
-        candidates: result.file.verdicts.map((row) => row.dossier.node),
+        candidates: [...result.file.verdicts, ...result.file.failures].map(
+          (row) => row.dossier.node,
+        ),
+        failed_nodes: result.file.failures.map((row) => ({
+          node_id: row.node_id,
+          error_class: row.error_class,
+        })),
         matching_entities_report_only: result.file.matching_entities_report_only,
       }) + "\n",
     );
+    if (result.file.failures.length)
+      refuse(
+        `Judging incomplete; results saved to ${result.path}. Failed nodes: ${result.file.failures.map((row) => row.node_id).join(", ")}; rerun judge with the same --out path`,
+      );
     return;
   }
   if (args.values.out) refuse("--out is only for judge");

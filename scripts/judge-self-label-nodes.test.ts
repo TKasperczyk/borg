@@ -332,11 +332,14 @@ describe("judged self-label repair", () => {
       stop_reason: "end_turn",
       tool_calls: [],
     });
-    await expect(judgeSelfLabelNodes({ dataDir: f.dataDir, llm: client.client })).rejects.toThrow(
-      "missing",
+    const result = await judgeSelfLabelNodes({ dataDir: f.dataDir, llm: client.client });
+    expect(result.file.verdicts).toEqual([]);
+    expect(result.file.failures).toHaveLength(3);
+    expect(result.file.failures.every((row) => row.error_class === "StructuredToolCallError")).toBe(
+      true,
     );
-    expect(client.complete).toHaveBeenCalledTimes(2);
-    expect(existsSync(join(f.dataDir, "audited-data-repairs"))).toBe(false);
+    expect(readVerdictFile(result.path)).toEqual(result.file);
+    expect(client.complete).toHaveBeenCalledTimes(3);
     expect(f.audit.list()).toHaveLength(0);
   });
 
@@ -355,16 +358,141 @@ describe("judged self-label repair", () => {
         input: { verdict, reason: "Conflicting fixture judgments", confidence: 0.75 },
       })),
     });
-    await expect(
-      judgeSelfLabelNodes({ dataDir: f.dataDir, llm: client.client }),
-    ).rejects.toMatchObject({
-      kind: "invalid_payload",
-      cause: {
-        message: "Expected exactly one JudgeSelfLabelNode call; received 2",
-      },
-    });
+    const result = await judgeSelfLabelNodes({ dataDir: f.dataDir, llm: client.client });
+    expect(result.file.verdicts).toEqual([]);
+    expect(result.file.failures).toHaveLength(3);
+    expect(
+      result.file.failures.every(
+        (row) =>
+          row.error_class === "StructuredToolCallError" &&
+          row.cause_message === "Expected exactly one JudgeSelfLabelNode call; received 2",
+      ),
+    ).toBe(true);
     expect(rows(f)).toEqual(before);
-    expect(existsSync(join(f.dataDir, "audited-data-repairs"))).toBe(false);
+    expect(readVerdictFile(result.path)).toEqual(result.file);
+  });
+
+  it("keeps successful results through a partial failure and retries only the failed node", async () => {
+    const f = await fixture(),
+      client = llm(f),
+      before = rows(f);
+    const complete = client.complete.getMockImplementation()!;
+    client.complete.mockImplementation(async (request) => {
+      const dossier = JSON.parse(request.messages[0]!.content) as SelfLabelDossier;
+      if (dossier.node.id === f.other.id) throw new TypeError("fixture transport failure");
+      return await complete(request);
+    });
+    const out = join(f.dataDir, "partial.json");
+    const partial = await judgeSelfLabelNodes({ dataDir: f.dataDir, out, llm: client.client });
+    expect(client.complete).toHaveBeenCalledTimes(3);
+    expect(partial.file.verdicts).toHaveLength(2);
+    expect(partial.file.failures).toMatchObject([
+      {
+        status: "failed",
+        node_id: f.other.id,
+        error_class: "StructuredToolCallError",
+        cause_class: "TypeError",
+      },
+    ]);
+    expect(readVerdictFile(out)).toEqual(partial.file);
+    await expect(planned(f, partial.file)).rejects.toThrow(`${f.other.id} (failed)`);
+    const retry = llm(f);
+    const resumed = await judgeSelfLabelNodes({ dataDir: f.dataDir, out, llm: retry.client });
+    expect(retry.complete).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(retry.complete.mock.calls[0]![0].messages[0]!.content).node.id).toBe(
+      f.other.id,
+    );
+    expect(resumed.file.failures).toEqual([]);
+    expect(resumed.file.verdicts).toHaveLength(3);
+    for (const record of partial.file.verdicts)
+      expect(resumed.file.verdicts.find((row) => row.node_id === record.node_id)).toEqual(record);
+    const again = llm(f);
+    await judgeSelfLabelNodes({ dataDir: f.dataDir, out, llm: again.client });
+    expect(again.complete).not.toHaveBeenCalled();
+    expect(rows(f)).toEqual(before);
+  });
+
+  it("persists a completed node while its peer is pending and lists every missing node on plan", async () => {
+    const f = await fixture(),
+      client = llm(f),
+      out = join(f.dataDir, "in-flight.json");
+    const ids = selfLabelInventory(f.db).candidates.map((row) => String(row.id));
+    let release!: () => void;
+    const gate = new Promise<void>((done) => {
+      release = done;
+    });
+    const complete = client.complete.getMockImplementation()!;
+    client.complete.mockImplementation(async (request) => {
+      if (JSON.parse(request.messages[0]!.content).node.id === ids[1]) await gate;
+      return await complete(request);
+    });
+    const running = judgeSelfLabelNodes({ dataDir: f.dataDir, out, llm: client.client });
+    try {
+      await vi.waitFor(() =>
+        expect(readVerdictFile(out).verdicts.map((row) => row.node_id)).toContain(ids[0]),
+      );
+      const saved = readVerdictFile(out);
+      expect(saved.completed_at).toBeNull();
+      expect(saved.candidate_node_ids).toEqual(ids);
+      expect(saved.verdicts).toHaveLength(1);
+      await expect(planned(f, saved)).rejects.toThrow(`${ids[1]} (missing), ${ids[2]} (missing)`);
+      expect(client.complete).toHaveBeenCalledTimes(2);
+    } finally {
+      release();
+      await running;
+    }
+    expect(readVerdictFile(out).verdicts).toHaveLength(3);
+  });
+
+  it("resume-judging rejudges only changed dossiers and preserves unchanged verdicts", async () => {
+    const f = await fixture(),
+      out = join(f.dataDir, "changed.json");
+    const original = await judgeSelfLabelNodes({ dataDir: f.dataDir, out, llm: llm(f).client });
+    f.db.prepare("UPDATE semantic_nodes SET confidence = 0.5 WHERE id = ?").run(f.unsure.id);
+    const retry = llm(f);
+    const next = await judgeSelfLabelNodes({ dataDir: f.dataDir, out, llm: retry.client });
+    expect(retry.complete).toHaveBeenCalledTimes(1);
+    expect(next.file.verdicts.find((row) => row.node_id === f.unsure.id)!.dossier_hash).not.toBe(
+      original.file.verdicts.find((row) => row.node_id === f.unsure.id)!.dossier_hash,
+    );
+    for (const record of original.file.verdicts.filter((row) => row.node_id !== f.unsure.id))
+      expect(next.file.verdicts.find((row) => row.node_id === record.node_id)).toEqual(record);
+  });
+
+  it("resumes complete version-1 files without repeating judgments", async () => {
+    const f = await fixture(),
+      original = await judged(f),
+      out = join(f.dataDir, "legacy-verdicts.json");
+    const { failures: _failures, candidate_node_ids: _manifest, ...old } = original;
+    writeFileSync(out, JSON.stringify({ ...old, version: 1 }));
+    const client = llm(f);
+    const next = await judgeSelfLabelNodes({ dataDir: f.dataDir, out, llm: client.client });
+    expect(client.complete).not.toHaveBeenCalled();
+    expect(next.file.version).toBe(2);
+    expect(next.file.verdicts).toEqual(original.verdicts);
+    expect(readVerdictFile(out)).toEqual(next.file);
+  });
+
+  it("does not overwrite an external verdict-file edit while a judgment is running", async () => {
+    const f = await fixture(),
+      client = llm(f),
+      out = join(f.dataDir, "edited.json");
+    const complete = client.complete.getMockImplementation()!;
+    let external: string | undefined;
+    client.complete.mockImplementation(async (request) => {
+      if (!external) {
+        const edited = readVerdictFile(out);
+        edited.completed_at = 123;
+        external = JSON.stringify(edited);
+        writeFileSync(out, external);
+      }
+      return await complete(request);
+    });
+    await expect(
+      judgeSelfLabelNodes({ dataDir: f.dataDir, out, llm: client.client }),
+    ).rejects.toThrow("verdict file changed while judging");
+    expect(readFileSync(out, "utf8")).toBe(external);
+    expect(f.audit.list()).toHaveLength(0);
   });
 
   it("rejects malformed, duplicated or tampered verdict files", async () => {
@@ -756,13 +884,13 @@ describe("judged self-label repair", () => {
       file = await judged(f),
       spy = vi.spyOn(graph, "planEntityGraphRepair");
     await expect(planned(f, { ...file, verdicts: file.verdicts.slice(1) })).rejects.toThrow(
-      "candidate set",
+      "Failed or missing judgments",
     );
     await expect(planned(f, { ...file, data_dir: "/unrelated-bank" })).rejects.toThrow(
       "verdict store",
     );
     await f.addNode("person", "別名");
-    await expect(planned(f, file)).rejects.toThrow("candidate set");
+    await expect(planned(f, file)).rejects.toThrow("Failed or missing judgments");
     expect(spy).not.toHaveBeenCalled();
   });
 
