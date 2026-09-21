@@ -35,7 +35,7 @@ export const verdictSchema = z
     confidence: z.number().min(0).max(1),
   })
   .strict();
-export const dossierSchema = z
+const legacyDossierSchema = z
   .object({
     version: z.literal(1),
     node: z
@@ -94,11 +94,22 @@ export const dossierSchema = z
     episodes_omitted: z.number().int().nonnegative(),
   })
   .strict();
+export const dossierSchema = legacyDossierSchema.extend({
+  version: z.literal(2),
+  narrative_voice: z
+    .object({
+      every_source_episode_is_self_first_person: z.literal(true),
+      narrator: z.literal("self entity"),
+    })
+    .strict(),
+});
+// Preserve old evidence exactly so resume-judging can compare, then replace its hash.
+const storedDossierSchema = z.discriminatedUnion("version", [legacyDossierSchema, dossierSchema]);
 export type SelfLabelDossier = z.infer<typeof dossierSchema>;
 export const verdictRecordSchema = verdictSchema
   .extend({
     node_id: semanticNodeIdSchema,
-    dossier: dossierSchema,
+    dossier: storedDossierSchema,
     dossier_hash: hashSchema,
     model: z.string().min(1),
     judged_at: z.number().finite(),
@@ -108,7 +119,7 @@ export const failedVerdictSchema = z
   .object({
     status: z.literal("failed"),
     node_id: semanticNodeIdSchema,
-    dossier: dossierSchema,
+    dossier: storedDossierSchema,
     dossier_hash: hashSchema,
     model: z.string().min(1),
     failed_at: z.number().finite(),
@@ -292,7 +303,11 @@ export async function buildSelfLabelDossier(
     });
   }
   return dossierSchema.parse({
-    version: 1,
+    version: 2,
+    narrative_voice: {
+      every_source_episode_is_self_first_person: true,
+      narrator: "self entity",
+    },
     node: {
       id: node.id,
       kind: node.kind,

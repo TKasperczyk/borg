@@ -22,6 +22,7 @@ import * as graph from "./repair-entity-graph.js";
 import { lanceRowMatches, openLance, sqlInventory } from "./repair-entity-graph-storage.js";
 import {
   buildSelfLabelDossier,
+  dossierSchema,
   DOSSIER_EPISODE_LIMIT,
   DOSSIER_EXCERPT_CHARS,
   parseVerdictFile,
@@ -598,6 +599,11 @@ describe("judged self-label repair", () => {
       .run(JSON.stringify(sourceIds), f.same.id);
     const get = vi.spyOn(f.episodes, "get");
     const dossier = await buildSelfLabelDossier(f.db, f.episodes, f.same.id, f.canonical.id);
+    expect(dossier.version).toBe(2);
+    expect(dossier.narrative_voice).toEqual({
+      every_source_episode_is_self_first_person: true,
+      narrator: "self entity",
+    });
     expect(dossier.self).toMatchObject({
       entity_id: f.self.id,
       canonical_name: "Écho",
@@ -665,7 +671,15 @@ describe("judged self-label repair", () => {
       expect(request.model).toBe(result.file.model);
       expect(request.tool_choice).toEqual({ type: "tool", name: "JudgeSelfLabelNode" });
       expect(request.system).toContain("label match is not evidence");
+      expect(request.system).toContain("The narrator of every source episode is the self entity.");
+      expect(request.system).toContain("third-person mention of the self entity's canonical name");
+      expect(request.system).toContain("name must be established by the record itself");
+      expect(request.system).toContain("not merely by the name appearing in the third person");
       expect(request.system).toContain("Unsure is a valid");
+      expect(JSON.parse(request.messages[0]!.content).narrative_voice).toEqual({
+        every_source_episode_is_self_first_person: true,
+        narrator: "self entity",
+      });
     }
     expect(readVerdictFile(result.path)).toEqual(result.file);
     expect(rows(f)).toEqual(before);
@@ -850,7 +864,7 @@ describe("judged self-label repair", () => {
   });
 
   it.each([1, 2, 3] as const)(
-    "resumes complete version-%s files without repeating judgments",
+    "resumes verdict-file version-%s with current dossiers without repeating judgments",
     async (version) => {
       const f = await fixture(),
         original = await judged(f),
@@ -890,6 +904,54 @@ describe("judged self-label repair", () => {
       expect(readVerdictFile(out)).toEqual(next.file);
     },
   );
+
+  it("rejudges every version-1 dossier with narrator context, including prior other and unsure verdicts", async () => {
+    const f = await fixture(),
+      original = await judged(f),
+      out = join(f.dataDir, "prior-dossiers.json");
+    const legacy: VerdictFile = {
+      ...original,
+      verdicts: original.verdicts.map((record) => {
+        const { narrative_voice: _voice, ...old } = dossierSchema.parse(record.dossier);
+        const dossier = { ...old, version: 1 as const };
+        return { ...record, dossier, dossier_hash: fingerprint(dossier) };
+      }),
+    };
+    expect(legacy.verdicts.map((row) => row.verdict).sort()).toEqual(["other", "self", "unsure"]);
+    writeVerdictFile(out, legacy);
+    expect(readVerdictFile(out)).toEqual(legacy);
+    const before = rows(f),
+      client = llm(f);
+    await expect(planned(f, readVerdictFile(out))).rejects.toThrow("Dossier hash mismatch");
+    const resumed = await judgeSelfLabelNodes({
+      dataDir: f.dataDir,
+      targetNode: f.canonical.id,
+      out,
+      llm: client.client,
+    });
+    expect(client.complete).toHaveBeenCalledTimes(3);
+    expect(resumed.file.failures).toEqual([]);
+    expect(resumed.file.verdicts).toHaveLength(3);
+    for (const record of resumed.file.verdicts) {
+      const prior = legacy.verdicts.find((row) => row.node_id === record.node_id)!;
+      expect(record.dossier.version).toBe(2);
+      expect(record.dossier_hash).not.toBe(prior.dossier_hash);
+      expect(record.dossier_hash).toBe(fingerprint(record.dossier));
+      // Narrator context informs the model; it never overrides its verdict.
+      expect(record.verdict).toBe(prior.verdict);
+    }
+    expect(readVerdictFile(out)).toEqual(resumed.file);
+    client.complete.mockClear();
+    await judgeSelfLabelNodes({
+      dataDir: f.dataDir,
+      targetNode: f.canonical.id,
+      out,
+      llm: client.client,
+    });
+    expect(client.complete).not.toHaveBeenCalled();
+    expect(rows(f)).toEqual(before);
+    expect(existsSync(graph.pendingPath(f.dataDir))).toBe(false);
+  });
 
   it("does not overwrite an external verdict-file edit while a judgment is running", async () => {
     const f = await fixture(),

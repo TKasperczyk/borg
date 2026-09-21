@@ -57,6 +57,12 @@ of the same name, even when the name is also a self alias. Compare the descripti
 relationships and source episodes with the supplied comparison target, in any language.
 The comparison description comes from the operator-selected target node, paired with the
 self entity's canonical name and aliases. That target may have kind self, entity or person.
+The narrator of every source episode is the self entity. These are its own first-person
+memory records. A third-person mention of the self entity's canonical name or an alias
+normally refers to the narrator as addressed or quoted by others: a summarizer may use
+first-person narration while preserving the name used by others. A distinct bearer of the
+name must be established by the record itself through a different role, different attributes,
+or an explicit contrast, not merely by the name appearing in the third person.
 Return self only when the evidence supports the same identity, other when it supports a
 different referent, and unsure when evidence is insufficient or ambiguous. Unsure is a valid
 answer. Explain your judgment and confidence. Missing sources and truncated excerpts are
@@ -147,7 +153,11 @@ async function assertDossiers(
   return inventory;
 }
 
-function failedVerdict(dossier: SelfLabelDossier, model: string, error: unknown): FailedVerdict {
+function failedVerdict(
+  dossier: VerdictRecord["dossier"],
+  model: string,
+  error: unknown,
+): FailedVerdict {
   const cause = error instanceof Error && error.cause instanceof Error ? error.cause : null;
   return {
     status: "failed",
@@ -238,7 +248,7 @@ export async function judgeSelfLabelNodes(
     const pending = dossiers.filter((dossier) => !retained.has(dossier.node.id));
     // The complete candidate manifest makes an interrupted/missing node explicit.
     persist();
-    const recordFailure = (dossier: SelfLabelDossier, error: unknown) => {
+    const recordFailure = (dossier: VerdictRecord["dossier"], error: unknown) => {
       file.verdicts = file.verdicts.filter((row) => row.node_id !== dossier.node.id);
       file.failures = file.failures.filter((row) => row.node_id !== dossier.node.id);
       file.failures.push(failedVerdict(dossier, model, error));
