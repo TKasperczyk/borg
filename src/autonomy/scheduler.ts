@@ -1412,26 +1412,26 @@ export class AutonomyScheduler {
               );
             } else {
               errorCount += 1;
+              const turnProviderFailed = isLlmProviderTransportError(error);
               this.options.wakeRepository.recordOutcome(
                 wakeRecord.id,
                 "error",
                 outcomeSummary,
                 null,
                 executionCounts,
-                { turnProviderFailed: isLlmProviderTransportError(error) },
+                { turnProviderFailed },
               );
+              // Provider failures preserve the admitted freshness allowance;
+              // source retry backoff and the global error circuit still apply.
+              const bypassKind = turnProviderFailed ? null : fleetAdmission.bypassKind;
               if (isGlobalCircuitFailure(error)) {
                 this.updateFleetBrakeAfterGlobalError(
                   dueEvent,
-                  fleetAdmission.bypassKind,
+                  bypassKind,
                   fleetAdmission.metadata,
                 );
               } else {
-                this.consumeFleetFreshnessBypass(
-                  dueEvent,
-                  fleetAdmission.bypassKind,
-                  fleetAdmission.metadata,
-                );
+                this.consumeFleetFreshnessBypass(dueEvent, bypassKind, fleetAdmission.metadata);
               }
             }
             eventResults.push(

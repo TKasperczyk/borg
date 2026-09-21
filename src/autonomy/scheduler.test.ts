@@ -1,5 +1,6 @@
 import { join } from "node:path";
 
+import Anthropic from "@anthropic-ai/sdk";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { StreamReader, StreamWatermarkRepository, StreamWriter } from "../stream/index.js";
@@ -3536,6 +3537,117 @@ describe("AutonomyScheduler", () => {
       fleet_brake: { empty_streak: 6, bypass_count: 3 },
     });
   });
+
+  it.each([
+    {
+      kind: "wrapped transport",
+      failure: new LLMError("任意の文言", { code: "LLM_CALL_TIMED_OUT" }),
+      globalCircuit: true,
+    },
+    {
+      kind: "unwrapped streamed provider",
+      failure: new Anthropic.APIError(undefined, {}, "任意の文言", undefined, "overloaded_error"),
+      globalCircuit: false,
+    },
+  ])(
+    "preserves the last freshness bypass after a $kind failure while retaining error brakes",
+    async ({ failure, globalCircuit }) => {
+      const clock = new ManualClock(2_400_000);
+      const harness = await createOfflineTestHarness({ clock });
+      cleanup = harness.cleanup;
+      const watermarkRepository = new StreamWatermarkRepository({ db: harness.db, clock });
+      const wakeRepository = new AutonomyWakesRepository({ db: harness.db, clock });
+      const failedAt = clock.now();
+      setFleetBrakeState(watermarkRepository, clock, {
+        empty_streak: 5,
+        streak_anchor_ts: failedAt - 1_000,
+        last_wake_ts: failedAt,
+        error_streak: 2,
+        last_error_ts: failedAt - 1_000,
+        bypass_count: 2,
+      });
+      const source = createPersistentDueSource({
+        watermarkRepository,
+        eventIds: ["provider-recovery"],
+        sourceName: "open_question_dormant",
+        stateTs: () => failedAt,
+        payload: () => ({ question: "What remains open?" }),
+      });
+      const createStreamWriter = (sessionId: typeof DEFAULT_SESSION_ID) =>
+        new StreamWriter({ dataDir: harness.tempDir, sessionId, clock });
+      const dispatcher = new ToolDispatcher({ createStreamWriter, clock });
+      vi.spyOn(dispatcher, "dispatch").mockResolvedValue({
+        callId: "prep",
+        toolName: "tool.episodic.search",
+        ok: true,
+        output: { episodes: [] },
+        durationMs: 1,
+      });
+      const turnRunner = {
+        run: vi
+          .fn()
+          .mockRejectedValueOnce(failure)
+          .mockResolvedValue(createStructuralTurnResult({ emissionKind: "suppressed" })),
+      };
+      // Keep the production fleet governor enabled, with only one bypass left.
+      const scheduler = new AutonomyScheduler({
+        enabled: true,
+        intervalMs: 60_000,
+        maxWakesPerWindow: 1,
+        budgetWindowMs: 86_400_000,
+        clock,
+        wakeRepository,
+        watermarkRepository,
+        createStreamWriter,
+        turnOrchestrator: turnRunner,
+        toolDispatcher: dispatcher,
+        sources: [source],
+      });
+      expect(await scheduler.tick()).toMatchObject({
+        errorCount: 1,
+        fleetCooldownSkipped: 0,
+        budgetSkipped: 0,
+      });
+      expect(wakeRepository.listSince(0, 1)[0]).toMatchObject({
+        outcome: "error",
+        preparation_failed: false,
+        turn_provider_failed: true,
+      });
+      expect(await scheduler.describe()).toMatchObject({
+        budget: { used_in_current_window: 0, next_budget_slot_frees_at: null },
+        fleet_brake: {
+          enabled: true,
+          bypass_count: 2,
+          error_streak: globalCircuit ? 3 : 2,
+          error_paused_until: globalCircuit ? failedAt + 300_000 : null,
+        },
+      });
+
+      clock.advance(29_999);
+      expect((await scheduler.tick()).events).toEqual([]);
+      expect(turnRunner.run).toHaveBeenCalledTimes(1);
+      clock.advance(1);
+      if (globalCircuit) {
+        expect(await scheduler.tick()).toMatchObject({ errorCircuitSkipped: 1, firedEvents: 0 });
+        expect(turnRunner.run).toHaveBeenCalledTimes(1);
+        clock.advance(270_000);
+      }
+      expect((await scheduler.describe()).fleet_brake.cooldown_until).toBeGreaterThan(clock.now());
+      expect(await scheduler.tick()).toMatchObject({
+        firedEvents: 1,
+        budgetSkipped: 0,
+        fleetCooldownSkipped: 0,
+        errorCircuitSkipped: 0,
+      });
+      expect(turnRunner.run).toHaveBeenCalledTimes(2);
+      expect(wakeRepository.countSince(0)).toBe(2);
+      expect(wakeRepository.countSince(0, { excludeTurnProviderFailures: true })).toBe(1);
+      expect(await scheduler.describe()).toMatchObject({
+        budget: { used_in_current_window: 1 },
+        fleet_brake: { empty_streak: 6, error_streak: 0, bypass_count: 3 },
+      });
+    },
+  );
 
   it("keeps a long retrieval preparation single-flight and counts every refused interval fire", async () => {
     const clock = new ManualClock(1_000_000);
