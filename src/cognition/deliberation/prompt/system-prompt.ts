@@ -2019,8 +2019,11 @@ export function summarizeAutonomySchedulerState(
 
   if (schedulerState.operatorAttentionIndex !== undefined) {
     const attention = schedulerState.operatorAttentionIndex;
+    // Older planner captures have no measurement of the whole population's null subjects.
+    const subjectlessClause =
+      attention.subjectless === undefined ? "" : `, ${attention.subjectless} without a subject`;
     lines.push(
-      `Operator attention records: total=${attention.total}, ${attention.subjectless} without a subject; latest ${attention.records.length} shown, newest first.`,
+      `Operator attention records: total=${attention.total}${subjectlessClause}; latest ${attention.records.length} shown, newest first.`,
       "Filing metadata only: existence, date, filer, subject. Bodies remain with the operator; a filing is not a decision or an instruction. These records do not gate action. Treat this index as private to you and the operator; disclose contextually.",
       // Both clauses answer over-reads of an absence, which is the failure this
       // index invites: it shows a bounded slice of a growing table, and the two
