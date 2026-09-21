@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { type LLMCompleteResult } from "../../llm/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import type { CommitmentRecord, EntityRepository } from "../../memory/commitments/index.js";
+import { DEFAULT_SESSION_ID } from "../../util/ids.js";
 import type { CommitmentId } from "../../util/ids.js";
 import type { TurnTracer } from "../../tracing/tracer.js";
 import { CommitmentGuardRunner } from "./guard-runner.js";
@@ -84,6 +85,85 @@ function makeRunner(
 }
 
 describe("CommitmentGuardRunner", () => {
+  it.each([false, true])(
+    "traces the judge and gates violation text (payloads=%s)",
+    async (includePayloads) => {
+      const violation = {
+        commitment_id: commitmentId,
+        reason: "Discloses the private launch date.",
+        violating_span_or_topic: "Launch is tomorrow.",
+        confidence: 0.9,
+      };
+      const llm = new FakeLLMClient({ responses: [verdictResponse([violation])] });
+      const emit = vi.fn();
+      const tracer: TurnTracer = { enabled: true, includePayloads, emit };
+      await makeRunner(tracer).run({
+        turnId: "turn-traced-judge",
+        sessionId: DEFAULT_SESSION_ID,
+        llmClient: llm,
+        response: violation.violating_span_or_topic,
+        userMessage: "When is launch?",
+        cognitionInput: "When is launch?",
+        origin: "user",
+        autonomyTrigger: null,
+        commitments: [makeCommitment()],
+        relevantEntities: [],
+      });
+      for (const event of ["llm_call.started", "llm_call.completed"]) {
+        expect(emit).toHaveBeenCalledWith(
+          event,
+          expect.objectContaining({
+            turnId: "turn-traced-judge",
+            session_id: DEFAULT_SESSION_ID,
+            label: "commitment_judge",
+          }),
+        );
+      }
+      for (const event of [
+        "commitment_guard.regeneration_requested",
+        "commitment_check.completed",
+      ]) {
+        const payload = emit.mock.calls.find(([name]) => name === event)![1];
+        if (includePayloads) expect(payload.violations).toEqual([violation]);
+        else expect(payload).not.toHaveProperty("violations");
+      }
+      if (!includePayloads) {
+        expect(JSON.stringify(emit.mock.calls)).not.toContain(violation.reason);
+        expect(JSON.stringify(emit.mock.calls)).not.toContain(violation.violating_span_or_topic);
+      }
+    },
+  );
+
+  it("traces a judge transport failure with the turn correlation", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        () => {
+          throw new Error("judge unavailable");
+        },
+      ],
+    });
+    const emit = vi.fn();
+    await makeRunner({ enabled: true, includePayloads: false, emit }).run({
+      turnId: "turn-judge-error",
+      llmClient: llm,
+      response: "Launch is tomorrow.",
+      userMessage: "When is launch?",
+      cognitionInput: "When is launch?",
+      origin: "user",
+      autonomyTrigger: null,
+      commitments: [makeCommitment()],
+      relevantEntities: [],
+    });
+    expect(emit).toHaveBeenCalledWith(
+      "llm_call.completed",
+      expect.objectContaining({
+        turnId: "turn-judge-error",
+        label: "commitment_judge",
+        responseShape: { error: "judge unavailable" },
+      }),
+    );
+  });
+
   it("defaults an omitted mode to enforce in trace output", async () => {
     const llm = new FakeLLMClient();
     const tracer: TurnTracer = {
