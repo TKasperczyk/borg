@@ -23,6 +23,8 @@ The file stores each complete presented dossier, its SHA-256, model ID, judgment
 
 ## Plan, then apply with a verified backup
 
+A response must contain exactly one `JudgeSelfLabelNode` tool call. Multiple calls, including conflicting `self` and `unsure` calls, fail the node instead of selecting the first. This checks protocol cardinality only; it does not reinterpret the judgment text.
+
 ```sh
 pnpm tsx scripts/judge-self-label-nodes.ts plan \
   --data-dir /path/to/stopped-bank --verdicts /path/to/new-verdicts.json

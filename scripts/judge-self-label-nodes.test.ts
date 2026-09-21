@@ -340,6 +340,33 @@ describe("judged self-label repair", () => {
     expect(f.audit.list()).toHaveLength(0);
   });
 
+  it("rejects conflicting judgment calls instead of accepting the first verdict", async () => {
+    const f = await fixture(),
+      client = llm(f),
+      before = rows(f);
+    client.complete.mockResolvedValue({
+      text: "",
+      input_tokens: 1,
+      output_tokens: 1,
+      stop_reason: "tool_use",
+      tool_calls: ["self", "unsure"].map((verdict, index) => ({
+        id: `judgment_${index}`,
+        name: "JudgeSelfLabelNode",
+        input: { verdict, reason: "Conflicting fixture judgments", confidence: 0.75 },
+      })),
+    });
+    await expect(
+      judgeSelfLabelNodes({ dataDir: f.dataDir, llm: client.client }),
+    ).rejects.toMatchObject({
+      kind: "invalid_payload",
+      cause: {
+        message: "Expected exactly one JudgeSelfLabelNode call; received 2",
+      },
+    });
+    expect(rows(f)).toEqual(before);
+    expect(existsSync(join(f.dataDir, "audited-data-repairs"))).toBe(false);
+  });
+
   it("rejects malformed, duplicated or tampered verdict files", async () => {
     const f = await fixture(),
       file = await judged(f);

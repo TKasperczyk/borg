@@ -173,7 +173,11 @@ export async function judgeSelfLabelNodes(
               temperature: 0,
               budget: KIND,
             },
-            parse: (value) => verdictSchema.parse(value),
+            parse: (value, { response }) => {
+              const count = response.tool_calls.filter((call) => call.name === TOOL).length;
+              if (count !== 1) refuse(`Expected exactly one ${TOOL} call; received ${count}`);
+              return verdictSchema.parse(value);
+            },
           });
           return {
             ...result.parsed,
