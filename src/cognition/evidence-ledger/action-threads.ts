@@ -384,6 +384,7 @@ export function renderActionThreadText(
 ): string {
   const currentAt = new Date(actionTimestampForState(thread.current)).toISOString();
   const actor = actionActorDisplay(thread.current.actor, entityRepository);
+  const singleRecord = thread.records.length === 1;
   const originIsCurrent = thread.current.id === thread.origin.id;
   // One extraction pass writes every record it mints under a single stamp, so a thread assembled
   // out of one pass has no earliest member: `selectThreadOrigin` falls through the `created_at`
@@ -408,23 +409,27 @@ export function renderActionThreadText(
   // printing a repeated value there would only widen a line this section truncates from the tail.
   const originStateAt = new Date(actionTimestampForState(thread.origin)).toISOString();
   const createdAtDiffers = thread.origin.created_at !== thread.current.created_at;
-  const originAt = originIsCurrent
+  const originCreation = originIsCurrent
     ? ""
-    : `; originating_intent is a separate record created ${new Date(
+    : `originating_intent is a separate record created ${new Date(
         thread.origin.created_at,
       ).toISOString()}${
         createdAtDiffers
           ? `, this record created ${new Date(thread.current.created_at).toISOString()}`
           : ""
-      }, grouped with this one by description similarity rather than by any recorded link${
-        createdAtDiffers
-          ? ""
-          : ", and carrying the same created_at as it, so which of the two is named originating follows record-id order and not precedence"
+      }, `;
+  // Earliest creation and latest update can select the same member of a multi-record thread.
+  const originAt = singleRecord
+    ? ""
+    : `; ${originCreation}grouped with this one by description similarity rather than by any recorded link${
+        !originIsCurrent && !createdAtDiffers
+          ? ", and carrying the same created_at as it, so which of the two is named originating follows record-id order and not precedence"
+          : ""
       }`;
   const lines = [
     `actor: ${actor}`,
     `${
-      originIsCurrent
+      singleRecord
         ? "action"
         : `originating_intent (${thread.origin.state} since ${originStateAt}, ${renderActionStateDisposition(
             thread.origin.state,
@@ -445,7 +450,7 @@ export function renderActionThreadText(
     )}) since ${currentAt}${originAt}`,
   ];
 
-  if (!originIsCurrent) {
+  if (!singleRecord) {
     lines.push(`current_intent: ${thread.current.description}`);
   }
 
