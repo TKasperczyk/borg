@@ -5,7 +5,7 @@ import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import type { CommitmentRecord, EntityRepository } from "../../memory/commitments/index.js";
 import { DEFAULT_SESSION_ID } from "../../util/ids.js";
 import type { CommitmentId } from "../../util/ids.js";
-import type { TurnTracer } from "../../tracing/tracer.js";
+import { compositeTracer, type TurnTracer } from "../../tracing/tracer.js";
 import { CommitmentGuardRunner } from "./guard-runner.js";
 
 const commitmentId = "cmt_abcdefghijklmnop" as CommitmentId;
@@ -85,9 +85,13 @@ function makeRunner(
 }
 
 describe("CommitmentGuardRunner", () => {
-  it.each([false, true])(
-    "traces the judge and gates violation text (payloads=%s)",
-    async (includePayloads) => {
+  it.each([
+    { includePayloads: false, mixedSinks: false },
+    { includePayloads: true, mixedSinks: false },
+    { includePayloads: true, mixedSinks: true },
+  ])(
+    "traces the judge and gates violation text (payloads=$includePayloads, mixed sinks=$mixedSinks)",
+    async ({ includePayloads, mixedSinks }) => {
       const violation = {
         commitment_id: commitmentId,
         reason: "Discloses the private launch date.",
@@ -96,7 +100,11 @@ describe("CommitmentGuardRunner", () => {
       };
       const llm = new FakeLLMClient({ responses: [verdictResponse([violation])] });
       const emit = vi.fn();
-      const tracer: TurnTracer = { enabled: true, includePayloads, emit };
+      const redactedEmit = vi.fn();
+      const tracer = compositeTracer([
+        { enabled: true, includePayloads, emit },
+        ...(mixedSinks ? [{ enabled: true, includePayloads: false, emit: redactedEmit }] : []),
+      ]);
       await makeRunner(tracer).run({
         turnId: "turn-traced-judge",
         sessionId: DEFAULT_SESSION_ID,
@@ -126,6 +134,17 @@ describe("CommitmentGuardRunner", () => {
         const payload = emit.mock.calls.find(([name]) => name === event)![1];
         if (includePayloads) expect(payload.violations).toEqual([violation]);
         else expect(payload).not.toHaveProperty("violations");
+      }
+      if (mixedSinks) {
+        expect(tracer.includePayloads).toBe(true);
+        expect(redactedEmit).toHaveBeenCalledTimes(emit.mock.calls.length);
+        for (const [, data] of redactedEmit.mock.calls) {
+          expect(data).not.toHaveProperty("violations");
+        }
+        expect(JSON.stringify(redactedEmit.mock.calls)).not.toContain(violation.reason);
+        expect(JSON.stringify(redactedEmit.mock.calls)).not.toContain(
+          violation.violating_span_or_topic,
+        );
       }
       if (!includePayloads) {
         expect(JSON.stringify(emit.mock.calls)).not.toContain(violation.reason);
