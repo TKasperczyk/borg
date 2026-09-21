@@ -55,7 +55,7 @@ export function refuse(message: string): never {
 }
 
 // Check the lexical path BEFORE any filesystem lookup, then check symlink resolution.
-function rejectLivePath(path: string): void {
+export function rejectLivePath(path: string): void {
   const parts = resolve(path).split(sep);
   for (let i = 0; i < parts.length - 2; i++) {
     if (parts[i] === "demo" && parts[i + 1] === "server" && parts[i + 2] === ".borg-data") {
@@ -124,8 +124,14 @@ export function repairDirectory(dataDir: string, kind: RepairKind): string {
 export function repairPendingPath(dataDir: string, kind: RepairKind): string {
   return join(repairDirectory(dataDir, kind), "pending.json");
 }
-export function assertNoPending(dataDir: string, ownKind?: RepairKind): void {
-  if (existsSync(join(dataDir, "entity-graph-repair", "pending.json")))
+export function assertNoPending(
+  dataDir: string,
+  ownKind?: RepairKind | "entity-graph-repair",
+): void {
+  if (
+    ownKind !== "entity-graph-repair" &&
+    existsSync(join(dataDir, "entity-graph-repair", "pending.json"))
+  )
     refuse("Entity graph repair is pending");
   for (const kind of KINDS) {
     if (kind !== ownKind && existsSync(repairPendingPath(dataDir, kind)))
@@ -169,7 +175,7 @@ function stable(value: unknown): unknown {
   }
   return value;
 }
-function fingerprint(value: unknown): string {
+export function fingerprint(value: unknown): string {
   return digest(JSON.stringify(stable(value)));
 }
 

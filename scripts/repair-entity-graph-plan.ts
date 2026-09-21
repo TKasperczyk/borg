@@ -17,10 +17,11 @@ import {
   SemanticNodeRepository,
   SemanticEdgeRepository,
   edgeFromRow,
+  nodeFromRow,
 } from "../src/memory/semantic/repository.js";
 import { buildNodeEmbeddingText } from "../src/memory/semantic/extractor.js";
 import { semanticObservationMetadataSchema } from "../src/memory/semantic/types.js";
-import { AuditLog } from "../src/offline/audit-log.js";
+import { AuditLog, type MaintenanceAuditRecordInput } from "../src/offline/audit-log.js";
 import { LanceDbTable } from "../src/storage/lancedb/index.js";
 import { runMigrations, type SqliteDatabase } from "../src/storage/sqlite/index.js";
 import { ManualClock } from "../src/util/clock.js";
@@ -58,7 +59,17 @@ import {
 import { validateSqlChanges, validateLanceChanges } from "./repair-entity-graph-validation.js";
 
 export type Merge = { from: string; into: string; renameInto?: string };
-export type RepairInput = { dataDir: string; merges: Merge[]; nodeMerges: Merge[] };
+export type RepairInput = {
+  dataDir: string;
+  merges: Merge[];
+  nodeMerges: Merge[];
+  /** Only explicitly selected node merges; no general alias hygiene or goal backfills. */
+  scope?: "explicit-node-merges";
+};
+export type RepairPlanningOptions = {
+  auditRecords?: Array<Pick<MaintenanceAuditRecordInput, "action" | "targets" | "reversal">>;
+  auditContext?: Record<string, unknown>;
+};
 export type GoalGap = {
   id: string;
   version: number;
@@ -238,7 +249,10 @@ export function preflightSessionAudiences(db: SqliteDatabase, merges: Merge[]): 
 export async function planEntityGraphRepair(
   input: RepairInput,
   embeddingClient?: EmbeddingClient,
+  options: RepairPlanningOptions = {},
 ): Promise<RepairPlan> {
+  const nodeOnly = input.scope === "explicit-node-merges";
+  if (nodeOnly && input.merges.length) fail("Node-only repair cannot merge entities");
   const ids = mergeMap(input.merges, entityIdHelpers.is);
   const nodeIds = mergeMap(input.nodeMerges, semanticNodeIdHelpers.is);
   const source = openRepairDatabase(input.dataDir);
@@ -294,7 +308,7 @@ export async function planEntityGraphRepair(
       return fail(`Missing ${table} row ${id}`);
     };
     const rawId = /\bent_[a-z0-9]{16}\b/g;
-    for (const row of tableRows("semantic_nodes").values()) {
+    for (const row of nodeOnly ? [] : tableRows("semantic_nodes").values()) {
       if (row === null) continue;
       row.aliases = JSON.stringify(
         array(row, "aliases").filter((alias) => String(alias).match(rawId) === null),
@@ -309,7 +323,11 @@ export async function planEntityGraphRepair(
     for (const merge of input.nodeMerges) {
       const [, sourceNode] = find("semantic_nodes", merge.from);
       const [, target] = find("semantic_nodes", merge.into);
-      if (sourceNode.kind !== "entity" || target.kind !== "entity")
+      if (
+        nodeOnly
+          ? !["entity", "person"].includes(String(sourceNode.kind)) || target.kind !== "self"
+          : sourceNode.kind !== "entity" || target.kind !== "entity"
+      )
         fail("Explicit node merges require entity nodes");
       if (target.status !== "active" || target.archived) fail("Node survivor must be active");
       if (
@@ -395,7 +413,11 @@ export async function planEntityGraphRepair(
     for (const [table, rows] of projected) {
       for (const [rowid, row] of rows) {
         if (row === null || table === "stream_entry_index" || table === "_migrations") continue;
-        if (table === "maintenance_audit" && String(row.action).startsWith("entity_graph_"))
+        if (
+          table === "maintenance_audit" &&
+          (String(row.action).startsWith("entity_graph_") ||
+            String(row.action).startsWith("judge-self-label:"))
+        )
           continue;
         const next = remap(row, allIds, table) as Row;
         if (["entities", "semantic_nodes", "semantic_edges"].includes(table)) next.id = row.id;
@@ -494,6 +516,12 @@ export async function planEntityGraphRepair(
     );
     for (const change of diffSql(inventory, projectedInventory)) {
       if (change.table === "semantic_nodes" && change.after !== null) {
+        // Match the repository codec used by the outbox drain. Otherwise an
+        // alias copied from a padded label changes again after the Lance commit,
+        // making the reviewed after-snapshot impossible to resume or reverse.
+        change.after.aliases = JSON.stringify(
+          nodeFromRow({ ...change.after, embedding: new Float32Array([0]) }).aliases,
+        );
         change.after.updated_at = now;
         touchedNodes.add(String(change.after.id));
       }
@@ -571,7 +599,7 @@ export async function planEntityGraphRepair(
       ),
     );
     validateLanceChanges(lance.changes, rowsById);
-    const gaps = goalGaps(db, allIds, now);
+    const gaps = nodeOnly ? { gaps: [], unresolved: [] } : goalGaps(db, allIds, now);
     const plan: RepairPlan = {
       input,
       plannedAt: now,
@@ -618,7 +646,13 @@ export async function planEntityGraphRepair(
         },
       ],
     };
-    if (!sql.length && !lance.changes.length && !gaps.gaps.length && !migrations.length)
+    if (
+      !sql.length &&
+      !lance.changes.length &&
+      !gaps.gaps.length &&
+      !migrations.length &&
+      !options.auditRecords?.length
+    )
       return plan;
     plan.runId = createMaintenanceRunId();
     const audit = new AuditLog({ db, clock: new ManualClock(now) });
@@ -682,7 +716,10 @@ export async function planEntityGraphRepair(
         reason: "repository generation-guarded outbox drain after Lance commit",
       }));
     const recordAudit = (input: Parameters<AuditLog["record"]>[0], destination: SqlChange[]) => {
-      const record = audit.record(input);
+      const record = audit.record({
+        ...input,
+        targets: { ...input.targets, ...options.auditContext },
+      });
       destination.push({
         table: "maintenance_audit",
         rowid: record.id,
@@ -691,6 +728,9 @@ export async function planEntityGraphRepair(
         reason: "maintenance audit with reversal payload",
       });
     };
+    for (const record of options.auditRecords ?? []) {
+      recordAudit({ ...record, run_id: plan.runId, process: "correction" }, plan.additionalSql);
+    }
     const allSql = [...sql, ...extraMutations];
     for (const table of new Set(allSql.map((change) => change.table))) {
       const changes = allSql.filter((change) => change.table === table);
