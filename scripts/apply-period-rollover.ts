@@ -45,7 +45,7 @@ import {
   repairAudit,
   runRepairCli,
   type DataRepairPlan,
-  type RepairCheckpoint,
+  type RepairApplyOptions,
 } from "./audited-data-repair.js";
 
 const KIND = "apply-period-rollover";
@@ -79,6 +79,7 @@ export type RolloverInput = {
   dismiss?: number[];
   operator?: string;
   backupVerified?: string;
+  liveStoreConfirmed?: string;
 };
 
 function reviewId(value: unknown): number {
@@ -122,11 +123,15 @@ function validateTimeline(rows: AutobiographicalPeriod[]): void {
   }
 }
 
-export function verifyRolloverBackup(dataDir: string, path: string | undefined): string {
+export function verifyRolloverBackup(
+  dataDir: string,
+  path: string | undefined,
+  liveStoreConfirmed?: string,
+): string {
   if (!path)
     refuse("--apply requires --backup-verified <path> for an operator-verified fresh backup");
-  const backup = checkedPath(path),
-    bank = checkedPath(dataDir);
+  const backup = checkedPath(path, liveStoreConfirmed),
+    bank = checkedPath(dataDir, liveStoreConfirmed);
   const inside = (parent: string, child: string) => {
     const rel = relative(parent, child);
     return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !rel.startsWith(sep));
@@ -242,17 +247,19 @@ export async function planPeriodRollover(
   input: RolloverInput,
   now = Date.now(),
 ): Promise<PeriodRolloverPlan> {
-  const dataDir = checkedPath(input.dataDir),
+  const dataDir = checkedPath(input.dataDir, input.liveStoreConfirmed),
     id = reviewId(input.reviewId);
   const operator = (input.operator ?? userInfo().username).trim();
   if (!operator) refuse("Operator name must be nonempty");
   assertNoPending(dataDir);
   const backup =
-    input.backupVerified === undefined ? null : verifyRolloverBackup(dataDir, input.backupVerified);
+    input.backupVerified === undefined
+      ? null
+      : verifyRolloverBackup(dataDir, input.backupVerified, input.liveStoreConfirmed);
   const dismissIds = (input.dismiss ?? []).map(reviewId);
   if (new Set([id, ...dismissIds]).size !== dismissIds.length + 1)
     refuse("Review IDs must be distinct; the applied row cannot be dismissed");
-  const db = openDataRepairDatabase(dataDir);
+  const db = openDataRepairDatabase(dataDir, true, input.liveStoreConfirmed);
   try {
     const queue = new ReviewQueueRepository({ db });
     const item = queue.get(id) ?? refuse(`Missing review ${id}`);
@@ -264,7 +271,12 @@ export async function planPeriodRollover(
         refuse(
           `Review ${id} must be an open identity_inconsistency row or a completed audited rollover`,
         );
-      const saved = loadRepairPlan<PeriodRolloverPlan>(dataDir, KIND, completed.run_id);
+      const saved = loadRepairPlan<PeriodRolloverPlan>(
+        dataDir,
+        KIND,
+        completed.run_id,
+        input.liveStoreConfirmed,
+      );
       assertSame(saved.review_id, id, "completed rollover review");
       assertSame(
         [...saved.dismissals.map((d) => d.before.id)].sort((a, b) => a - b),
@@ -318,7 +330,7 @@ export async function planPeriodRollover(
     const boundaryIso = new Date(boundary).toISOString();
     const resolution = `operator ${operator} applied rollover ${id} at boundary ${boundary} (${boundaryIso})`;
     const plan: PeriodRolloverPlan = {
-      ...newPlan(KIND, dataDir, 2, now),
+      ...newPlan(KIND, dataDir, 2, now, input.liveStoreConfirmed),
       review_id: id,
       operator,
       backup_verified: backup,
@@ -454,6 +466,7 @@ function preflight(db: SqliteDatabase, plan: PeriodRolloverPlan): void {
       plan.dataDir,
       KIND,
       plan.already_applied_run_id,
+      plan.live_store_override?.backup_path,
     );
     assertCompletedRollover(db, saved);
     preflight(db, saved);
@@ -482,9 +495,13 @@ function preflight(db: SqliteDatabase, plan: PeriodRolloverPlan): void {
 }
 export async function applyPeriodRollover(
   plan: PeriodRolloverPlan,
-  options: { backupVerified?: string; resume?: boolean; checkpoint?: RepairCheckpoint } = {},
+  options: RepairApplyOptions & { backupVerified?: string } = {},
 ): Promise<void> {
-  const backup = verifyRolloverBackup(plan.dataDir, options.backupVerified);
+  const backup = verifyRolloverBackup(
+    plan.dataDir,
+    options.backupVerified,
+    options.liveStoreConfirmed,
+  );
   assertSame(
     backup,
     plan.backup_verified,
@@ -523,7 +540,12 @@ runRepairCli(import.meta.url, async () => {
     typeof args.values["backup-verified"] === "string" ? args.values["backup-verified"] : undefined;
   let plan: PeriodRolloverPlan;
   if (args.resume) {
-    plan = loadRepairPlan<PeriodRolloverPlan>(args.dataDir, KIND);
+    plan = loadRepairPlan<PeriodRolloverPlan>(
+      args.dataDir,
+      KIND,
+      undefined,
+      args.liveStoreConfirmed,
+    );
     if (args.values["review-id"] !== undefined)
       assertSame(reviewId(args.values["review-id"]), plan.review_id, "--review-id");
     if (args.values.operator !== undefined)
@@ -541,14 +563,20 @@ runRepairCli(import.meta.url, async () => {
       dismiss: Array.isArray(args.values.dismiss) ? args.values.dismiss.map(reviewId) : [],
       operator: typeof args.values.operator === "string" ? args.values.operator : undefined,
       backupVerified: backup,
+      liveStoreConfirmed: args.liveStoreConfirmed,
     });
   }
   await printPlan(plan);
   if (args.apply) {
-    await applyPeriodRollover(plan, { backupVerified: backup, resume: args.resume });
+    await applyPeriodRollover(plan, {
+      backupVerified: backup,
+      resume: args.resume,
+      liveStoreConfirmed: args.liveStoreConfirmed,
+    });
     console.log(
       JSON.stringify({
         run_id: plan.runId,
+        live_store_override: plan.live_store_override ?? null,
         ...plan.summary,
         ...(plan.runId === null ? { status: "no changes; nothing pending" } : {}),
       }),

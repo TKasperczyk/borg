@@ -27,7 +27,7 @@ import {
   runRepairCli,
   sameSnapshot,
   type DataRepairPlan,
-  type RepairCheckpoint,
+  type RepairApplyOptions,
 } from "./audited-data-repair.js";
 
 const KIND = "repair-action-actor";
@@ -48,9 +48,9 @@ export type ActorRepairPlan = DataRepairPlan & {
   mirror_table_present: boolean;
 };
 
-function assertJournalVersion(plan: ActorRepairPlan): void {
+function assertJournalVersion(plan: ActorRepairPlan, liveStoreConfirmed?: string): void {
   if (plan.journal_version === JOURNAL_VERSION) return;
-  const dataDir = checkedPath(plan.dataDir);
+  const dataDir = checkedPath(plan.dataDir, liveStoreConfirmed);
   const pending = repairPendingPath(dataDir, KIND);
   const path = existsSync(pending)
     ? pending
@@ -70,8 +70,10 @@ function entityPreflight(db: SqliteDatabase, from: EntityId, to: EntityId): Row 
 async function withMirror<T>(
   dataDir: string,
   callback: (table: LanceDbTable | null) => Promise<T>,
+  liveStoreConfirmed?: string,
 ): Promise<T> {
-  if (existsSync(join(dataDir, "lancedb"))) checkedPath(join(dataDir, "lancedb"));
+  if (existsSync(join(dataDir, "lancedb")))
+    checkedPath(join(dataDir, "lancedb"), liveStoreConfirmed);
   const connection = await openLance(dataDir);
   let table: LanceDbTable | null = null;
   try {
@@ -103,20 +105,20 @@ function sameMirrorSnapshot(current: Row | null, expected: Row | null): boolean 
 }
 
 export async function planActionActorRepair(
-  input: { dataDir: string; from: string; to: string },
+  input: { dataDir: string; from: string; to: string; liveStoreConfirmed?: string },
   now = Date.now(),
 ): Promise<ActorRepairPlan> {
-  const dataDir = checkedPath(input.dataDir),
+  const dataDir = checkedPath(input.dataDir, input.liveStoreConfirmed),
     from = parseEntityId(input.from),
     to = parseEntityId(input.to);
   assertNoPending(dataDir);
-  const db = openDataRepairDatabase(dataDir);
+  const db = openDataRepairDatabase(dataDir, true, input.liveStoreConfirmed);
   try {
     const toEntity = entityPreflight(db, from, to);
     // Omit the limit so historical/terminal actions are all included.
     const records = new ActionRepository({ db }).list({ actor: from });
     const plan: ActorRepairPlan = {
-      ...newPlan(KIND, dataDir, records.length, now),
+      ...newPlan(KIND, dataDir, records.length, now, input.liveStoreConfirmed),
       journal_version: JOURNAL_VERSION,
       from,
       to,
@@ -124,41 +126,45 @@ export async function planActionActorRepair(
       rows: [],
       mirror_table_present: false,
     };
-    await withMirror(dataDir, async (table) => {
-      plan.mirror_table_present = table !== null;
-      for (const before of records) {
-        const after = { ...before, actor: to };
-        const mirrorBefore = await mirrorRow(table, before.id);
-        if (mirrorBefore && mirrorBefore.actor !== from)
-          refuse(`Action mirror disagrees with SQL actor: ${before.id}`);
-        // The mirror may lag SQL (including updated_at); this repair changes only actor.
-        const mirrorAfter = mirrorBefore ? { ...mirrorBefore, actor: to } : null;
-        plan.rows.push({
-          before,
-          after,
-          mirror_before: mirrorBefore,
-          mirror_after: mirrorAfter,
-          audit: auditInput(
-            plan,
-            `${KIND}:${before.id}`,
-            {
-              action_id: before.id,
-              before,
-              after,
-              mirror_before: mirrorBefore,
-              mirror_after: mirrorAfter,
-            },
-            {
-              actor: from,
-              before,
-              expected_after: after,
-              mirror_before: mirrorBefore,
-              mirror_expected_after: mirrorAfter,
-            },
-          ),
-        });
-      }
-    });
+    await withMirror(
+      dataDir,
+      async (table) => {
+        plan.mirror_table_present = table !== null;
+        for (const before of records) {
+          const after = { ...before, actor: to };
+          const mirrorBefore = await mirrorRow(table, before.id);
+          if (mirrorBefore && mirrorBefore.actor !== from)
+            refuse(`Action mirror disagrees with SQL actor: ${before.id}`);
+          // The mirror may lag SQL (including updated_at); this repair changes only actor.
+          const mirrorAfter = mirrorBefore ? { ...mirrorBefore, actor: to } : null;
+          plan.rows.push({
+            before,
+            after,
+            mirror_before: mirrorBefore,
+            mirror_after: mirrorAfter,
+            audit: auditInput(
+              plan,
+              `${KIND}:${before.id}`,
+              {
+                action_id: before.id,
+                before,
+                after,
+                mirror_before: mirrorBefore,
+                mirror_after: mirrorAfter,
+              },
+              {
+                actor: from,
+                before,
+                expected_after: after,
+                mirror_before: mirrorBefore,
+                mirror_expected_after: mirrorAfter,
+              },
+            ),
+          });
+        }
+      },
+      input.liveStoreConfirmed,
+    );
     plan.summary = {
       changed: plan.rows.length,
       mirror_updates: plan.rows.filter((r) => r.mirror_before !== null).length,
@@ -194,24 +200,28 @@ function sqlPreflight(db: SqliteDatabase, plan: ActorRepairPlan): void {
 }
 async function preflight(db: SqliteDatabase, plan: ActorRepairPlan): Promise<void> {
   sqlPreflight(db, plan);
-  await withMirror(plan.dataDir, async (table) => {
-    assertSame(table !== null, plan.mirror_table_present, "action mirror table");
-    for (const row of plan.rows) {
-      const current = await mirrorRow(table, row.before.id);
-      const done = hasStep(db, plan, row.audit.action);
-      // A journaled SQL commit may have either asserted mirror state.
-      if (done && sameMirrorSnapshot(current, row.mirror_after)) continue;
-      if (!sameMirrorSnapshot(current, row.mirror_before))
-        refuse(`Changed since planning: action mirror ${row.before.id}`);
-    }
-  });
+  await withMirror(
+    plan.dataDir,
+    async (table) => {
+      assertSame(table !== null, plan.mirror_table_present, "action mirror table");
+      for (const row of plan.rows) {
+        const current = await mirrorRow(table, row.before.id);
+        const done = hasStep(db, plan, row.audit.action);
+        // A journaled SQL commit may have either asserted mirror state.
+        if (done && sameMirrorSnapshot(current, row.mirror_after)) continue;
+        if (!sameMirrorSnapshot(current, row.mirror_before))
+          refuse(`Changed since planning: action mirror ${row.before.id}`);
+      }
+    },
+    plan.live_store_override?.backup_path,
+  );
 }
 export async function applyActionActorRepair(
   plan: ActorRepairPlan,
-  options: { resume?: boolean; checkpoint?: RepairCheckpoint } = {},
+  options: RepairApplyOptions = {},
 ): Promise<void> {
   // Reject incompatible plans before opening a writable store or touching the journal.
-  assertJournalVersion(plan);
+  assertJournalVersion(plan, options.liveStoreConfirmed);
   await applyDataRepair(
     plan,
     {
@@ -247,17 +257,21 @@ export async function applyActionActorRepair(
         }).immediate();
         await checkpoint?.("after_sqlite");
         await preflight(db, plan);
-        await withMirror(plan.dataDir, async (table) => {
-          if (!table) return;
-          const repo = new ActionRepository({ db, table });
-          for (const row of plan.rows) {
-            if (row.mirror_before === null) continue;
-            await repo.syncRepairedActorMirror(row.before.id, plan.from);
-            if (!sameMirrorSnapshot(await mirrorRow(table, row.before.id), row.mirror_after))
-              refuse(`Changed since planning: updated mirror ${row.before.id}`);
-            await checkpoint?.(`after_mirror:${row.before.id}`);
-          }
-        });
+        await withMirror(
+          plan.dataDir,
+          async (table) => {
+            if (!table) return;
+            const repo = new ActionRepository({ db, table });
+            for (const row of plan.rows) {
+              if (row.mirror_before === null) continue;
+              await repo.syncRepairedActorMirror(row.before.id, plan.from);
+              if (!sameMirrorSnapshot(await mirrorRow(table, row.before.id), row.mirror_after))
+                refuse(`Changed since planning: updated mirror ${row.before.id}`);
+              await checkpoint?.(`after_mirror:${row.before.id}`);
+            }
+          },
+          options.liveStoreConfirmed,
+        );
       },
     },
     options,
@@ -270,8 +284,8 @@ runRepairCli(import.meta.url, async () => {
   });
   let plan: ActorRepairPlan;
   if (args.resume) {
-    plan = loadRepairPlan<ActorRepairPlan>(args.dataDir, KIND);
-    assertJournalVersion(plan);
+    plan = loadRepairPlan<ActorRepairPlan>(args.dataDir, KIND, undefined, args.liveStoreConfirmed);
+    assertJournalVersion(plan, args.liveStoreConfirmed);
     if (args.values.from !== undefined) assertSame(args.values.from, plan.from, "--from");
     if (args.values.to !== undefined) assertSame(args.values.to, plan.to, "--to");
   } else {
@@ -281,14 +295,19 @@ runRepairCli(import.meta.url, async () => {
       dataDir: args.dataDir,
       from: args.values.from,
       to: args.values.to,
+      liveStoreConfirmed: args.liveStoreConfirmed,
     });
   }
   await printPlan(plan);
   if (args.apply) {
-    await applyActionActorRepair(plan, { resume: args.resume });
+    await applyActionActorRepair(plan, {
+      resume: args.resume,
+      liveStoreConfirmed: args.liveStoreConfirmed,
+    });
     console.log(
       JSON.stringify({
         run_id: plan.runId,
+        live_store_override: plan.live_store_override ?? null,
         ...plan.summary,
         ...(plan.runId === null ? { status: "no changes; nothing pending" } : {}),
       }),

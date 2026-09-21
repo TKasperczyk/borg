@@ -1,7 +1,7 @@
 # Operator-applied autobiographical rollover
 
 Stop every writer, take and verify a fresh independent backup, then rehearse on a copy.
-The script opens only an explicit bank, refuses the live demo path, pending/unknown migrations,
+The script opens only an explicit bank, refuses the live demo path by default, pending/unknown migrations,
 and other pending repair journals. It makes no LLM calls and does not select a review for you.
 
 ```sh
@@ -15,6 +15,18 @@ that differs. `--backup-verified` is the operator's attestation that the supplie
 fresh and consistent. The path must exist, be independent of the bank, and be supplied again
 on resume; the tool does not create a backup or infer its freshness from filesystem timestamps.
 The applied plan and audit record its canonical path. A directory or snapshot archive is accepted.
+
+For a stopped-service live apply, also pass `--live-store-confirmed <verified-backup-directory>`
+with the live `--data-dir`. This directory must exist and contain a `borg.db` or `borg.db-clean`
+file. Both lexical and resolved live-path refusals are skipped only for that invocation.
+`--backup-verified` is still required for apply/resume; both flags may name the same verified
+directory. The operator remains responsible for stopped writers and a fresh, consistent backup.
+
+The plan, apply summary and journal record `live_store_override: { "backup_path": "<canonical directory>" }`.
+Every rollover, dismissal and run-summary correction audit records it in `targets.live_store_override`.
+Without the flag the field is `null`. Resume requires the same `--live-store-confirmed` backup
+directory again; omission, a different directory, or adding confirmation to an unconfirmed
+journal refuses. A journal's recorded override does not authorize a later invocation.
 
 Only an **open identity_inconsistency review** whose validated refs target the sole open
 autobiographical period, include a numeric `patch.end_ts`, and include an open

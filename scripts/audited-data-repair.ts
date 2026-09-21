@@ -6,6 +6,7 @@ import {
   realpathSync,
   renameSync,
   readdirSync,
+  statSync,
 } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -28,6 +29,7 @@ const KINDS: RepairKind[] = [
   "repair-action-actor",
   "apply-period-rollover",
 ];
+export type LiveStoreOverride = { backup_path: string };
 export type DataRepairPlan = {
   version: 1;
   kind: RepairKind;
@@ -35,8 +37,14 @@ export type DataRepairPlan = {
   plannedAt: number;
   runId: MaintenanceRunId | null;
   summary: Record<string, number>;
+  live_store_override?: LiveStoreOverride | null;
 };
 export type RepairCheckpoint = (point: string) => void | Promise<void>;
+export type RepairApplyOptions = {
+  resume?: boolean;
+  checkpoint?: RepairCheckpoint;
+  liveStoreConfirmed?: string;
+};
 export type RepairDriver<P extends DataRepairPlan> = {
   preflight: (db: SqliteDatabase, plan: P) => void | Promise<void>;
   finish: (db: SqliteDatabase, plan: P, checkpoint?: RepairCheckpoint) => Promise<void>;
@@ -56,10 +64,29 @@ function rejectLivePath(path: string): void {
   }
 }
 
-export function checkedPath(path: string): string {
-  rejectLivePath(path);
+export function verifyLiveStoreOverride(backupPath: string | undefined): LiveStoreOverride | null {
+  if (backupPath === undefined) return null;
+  const path = resolve(backupPath);
+  if (!existsSync(path) || !statSync(path).isDirectory())
+    refuse(
+      "--live-store-confirmed requires an existing backup directory containing borg.db or borg.db-clean",
+    );
+  const backup = realpathSync(path);
+  if (
+    !["borg.db", "borg.db-clean"].some((name) => {
+      const file = join(backup, name);
+      return existsSync(file) && statSync(file).isFile();
+    })
+  )
+    refuse("--live-store-confirmed backup directory must contain a borg.db or borg.db-clean file");
+  return { backup_path: backup };
+}
+
+export function checkedPath(path: string, liveStoreConfirmed?: string): string {
+  const override = verifyLiveStoreOverride(liveStoreConfirmed);
+  if (override === null) rejectLivePath(path);
   const result = realpathSync(resolve(path));
-  rejectLivePath(result);
+  if (override === null) rejectLivePath(result);
   return result;
 }
 
@@ -74,9 +101,13 @@ export function assertMigrations(db: SqliteDatabase): void {
   }
 }
 
-export function openDataRepairDatabase(dataDir: string, readOnly = true): SqliteDatabase {
-  const bank = checkedPath(dataDir);
-  checkedPath(join(bank, "borg.db"));
+export function openDataRepairDatabase(
+  dataDir: string,
+  readOnly = true,
+  liveStoreConfirmed?: string,
+): SqliteDatabase {
+  const bank = checkedPath(dataDir, liveStoreConfirmed);
+  checkedPath(join(bank, "borg.db"), liveStoreConfirmed);
   const db = openRepairDatabase(bank, readOnly);
   try {
     assertMigrations(db);
@@ -107,14 +138,16 @@ export function newPlan(
   dataDir: string,
   changed: number,
   plannedAt = Date.now(),
+  liveStoreConfirmed?: string,
 ): DataRepairPlan {
   return {
     version: 1,
     kind,
-    dataDir: checkedPath(dataDir),
+    dataDir: checkedPath(dataDir, liveStoreConfirmed),
     plannedAt,
     runId: changed === 0 ? null : createMaintenanceRunId(),
     summary: { changed },
+    live_store_override: verifyLiveStoreOverride(liveStoreConfirmed),
   };
 }
 
@@ -154,7 +187,13 @@ export function auditInput(
   targets: Record<string, unknown>,
   reversal: Record<string, unknown>,
 ): MaintenanceAuditRecordInput {
-  return { run_id: plan.runId!, process: "correction", action, targets, reversal };
+  return {
+    run_id: plan.runId!,
+    process: "correction",
+    action,
+    targets: { ...targets, live_store_override: plan.live_store_override ?? null },
+    reversal,
+  };
 }
 export function completionAudit(plan: DataRepairPlan): MaintenanceAuditRecordInput {
   return auditInput(
@@ -169,6 +208,7 @@ export function formatDataRepairPlan(plan: DataRepairPlan): string {
   return JSON.stringify(
     {
       ...plan,
+      live_store_override: plan.live_store_override ?? null,
       completion_audit: plan.runId ? completionAudit(plan) : null,
       journal: plan.runId
         ? {
@@ -187,8 +227,9 @@ export function loadRepairPlan<P extends DataRepairPlan>(
   dataDir: string,
   kind: RepairKind,
   completedRunId?: MaintenanceRunId,
+  liveStoreConfirmed?: string,
 ): P {
-  const bank = checkedPath(dataDir);
+  const bank = checkedPath(dataDir, liveStoreConfirmed);
   assertNoPending(bank, kind);
   let path =
     completedRunId === undefined
@@ -214,17 +255,27 @@ export function loadRepairPlan<P extends DataRepairPlan>(
     fingerprint(journal.plan) !== journal.sha256
   )
     refuse("Invalid repair journal");
+  assertLiveStoreOverride(journal.plan, liveStoreConfirmed);
   return journal.plan;
+}
+
+function assertLiveStoreOverride(plan: DataRepairPlan, liveStoreConfirmed?: string): void {
+  assertSame(
+    verifyLiveStoreOverride(liveStoreConfirmed),
+    plan.live_store_override ?? null,
+    "--live-store-confirmed must match the plan/journal; repeat the same backup path on --resume",
+  );
 }
 
 export async function applyDataRepair<P extends DataRepairPlan>(
   plan: P,
   driver: RepairDriver<P>,
-  options: { resume?: boolean; checkpoint?: RepairCheckpoint } = {},
+  options: RepairApplyOptions = {},
 ): Promise<void> {
-  assertSame(checkedPath(plan.dataDir), plan.dataDir, "bank path");
+  assertSame(checkedPath(plan.dataDir, options.liveStoreConfirmed), plan.dataDir, "bank path");
+  assertLiveStoreOverride(plan, options.liveStoreConfirmed);
   assertNoPending(plan.dataDir, options.resume ? plan.kind : undefined);
-  const preflight = openDataRepairDatabase(plan.dataDir);
+  const preflight = openDataRepairDatabase(plan.dataDir, true, options.liveStoreConfirmed);
   try {
     await driver.preflight(preflight, plan);
   } finally {
@@ -232,7 +283,12 @@ export async function applyDataRepair<P extends DataRepairPlan>(
   }
   if (plan.runId === null) return;
   const pending = repairPendingPath(plan.dataDir, plan.kind);
-  if (options.resume) assertSame(loadRepairPlan(plan.dataDir, plan.kind), plan, "journal plan");
+  if (options.resume)
+    assertSame(
+      loadRepairPlan(plan.dataDir, plan.kind, undefined, options.liveStoreConfirmed),
+      plan,
+      "journal plan",
+    );
   else {
     const root = join(plan.dataDir, "audited-data-repairs");
     mkdirSync(root, { recursive: true, mode: 0o700 });
@@ -242,7 +298,7 @@ export async function applyDataRepair<P extends DataRepairPlan>(
     writeJsonFileAtomic(pending, { version: 1, plan, sha256: fingerprint(plan) }, { mode: 0o600 });
     await options.checkpoint?.("after_journal");
   }
-  const db = openDataRepairDatabase(plan.dataDir, false);
+  const db = openDataRepairDatabase(plan.dataDir, false, options.liveStoreConfirmed);
   try {
     await driver.preflight(db, plan);
     await driver.finish(db, plan, options.checkpoint);
@@ -267,6 +323,7 @@ export function repairArgs(args: string[], extra: NonNullable<ParseArgsConfig["o
     allowPositionals: false,
     options: {
       "data-dir": { type: "string" },
+      "live-store-confirmed": { type: "string" },
       apply: { type: "boolean", default: false },
       resume: { type: "boolean", default: false },
       ...extra,
@@ -275,9 +332,13 @@ export function repairArgs(args: string[], extra: NonNullable<ParseArgsConfig["o
   if (typeof parsed["data-dir"] !== "string")
     refuse("--data-dir is required; no default store is opened");
   if (parsed.resume && !parsed.apply) refuse("--resume requires --apply");
+  const liveStoreConfirmed = verifyLiveStoreOverride(
+    typeof parsed["live-store-confirmed"] === "string" ? parsed["live-store-confirmed"] : undefined,
+  )?.backup_path;
   return {
     values: parsed,
-    dataDir: checkedPath(parsed["data-dir"]),
+    dataDir: checkedPath(parsed["data-dir"], liveStoreConfirmed),
+    liveStoreConfirmed,
     apply: parsed.apply === true,
     resume: parsed.resume === true,
   };

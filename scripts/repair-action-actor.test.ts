@@ -17,7 +17,7 @@ import {
   createSharedStateEntryId,
 } from "../src/util/ids.js";
 import { quoteSqlString } from "../src/storage/codecs.js";
-import { repairFixture } from "./audited-data-repair-test-support.js";
+import { repairBackupFixture, repairFixture } from "./audited-data-repair-test-support.js";
 import { applyDataRepair, loadRepairPlan, repairPendingPath } from "./audited-data-repair.js";
 import { sqlInventory } from "./repair-entity-graph-storage.js";
 import {
@@ -31,8 +31,8 @@ afterEach(async () => {
   vi.restoreAllMocks();
   while (cleanups.length) await cleanups.pop()!();
 });
-async function fixture(withVectors = true) {
-  const f = repairFixture();
+async function fixture(withVectors = true, liveShape = false) {
+  const f = repairFixture(liveShape);
   cleanups.push(f.cleanup);
   const entities = new EntityRepository(f);
   const to = entities.add({ canonicalName: "Destination" }).id,
@@ -96,6 +96,52 @@ async function fixture(withVectors = true) {
   };
 }
 describe("orphan action actor repair", () => {
+  it("applies and resumes the explicit live-store override with audited SQL and mirror repair", async () => {
+    const f = await fixture(true, true);
+    const backup = repairBackupFixture(f.dataDir);
+    cleanups.push(backup.cleanup);
+    const run = (args: string[]) =>
+      spawnSync(process.execPath, ["--import", "tsx", "scripts/repair-action-actor.ts", ...args], {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        timeout: 20_000,
+      });
+    const args = ["--data-dir", f.dataDir, "--from", f.from, "--to", f.to];
+    const refused = run(args);
+    expect(refused.status).toBe(1);
+    expect(refused.stderr).toContain(
+      "The live demo store is forbidden; supply a stopped rehearsal copy",
+    );
+    const confirmed = [...args, "--live-store-confirmed", backup.path];
+    const dry = run(confirmed);
+    expect(dry.status, dry.stderr).toBe(0);
+    const override = { backup_path: backup.path };
+    const plan = JSON.parse(dry.stdout);
+    expect(plan.live_store_override).toEqual(override);
+    expect(plan.rows[0].audit.targets.live_store_override).toEqual(override);
+    expect(f.repo.get(f.action.id)).toEqual(f.action);
+    const applied = run([...confirmed, "--apply"]);
+    expect(applied.status, applied.stderr).toBe(0);
+    expect(JSON.parse(applied.stdout.trim().split("\n").at(-1)!).live_store_override).toEqual(
+      override,
+    );
+    expect(f.repo.get(f.action.id)).toEqual({ ...f.action, actor: f.to });
+    await f.table!.checkoutLatest();
+    const mirror = (await f.table!.list()).find((row) => row.id === f.action.id)!;
+    expect(mirror).toMatchObject({ actor: f.to, updated_at: 150 });
+    expect(Array.from(mirror.embedding as Iterable<number>)).toEqual([0.125, -0.5, 0.75]);
+    const resumed = run([
+      "--data-dir",
+      f.dataDir,
+      "--apply",
+      "--resume",
+      "--live-store-confirmed",
+      backup.path,
+    ]);
+    expect(resumed.status, resumed.stderr).toBe(0);
+    expect(f.audit.list()).toHaveLength(2);
+    for (const audit of f.audit.list()) expect(audit.targets.live_store_override).toEqual(override);
+  }, 30_000);
   it.each([undefined, 0, 1])(
     "refuses legacy journals before writes and resumes the current journal (version %s)",
     async (version) => {

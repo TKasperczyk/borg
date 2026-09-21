@@ -26,8 +26,8 @@ afterEach(() => {
   vi.restoreAllMocks();
   while (cleanups.length) cleanups.pop()!();
 });
-function fixture() {
-  const f = repairFixture();
+function fixture(liveShape = false) {
+  const f = repairFixture(liveShape);
   cleanups.push(f.cleanup);
   const repo = new AutobiographicalRepository(f),
     queue = new ReviewQueueRepository(f);
@@ -365,54 +365,76 @@ describe("operator-applied period rollover", () => {
     await expect(planPeriodRollover(f.input)).rejects.toThrow("Changed since planning");
     expect(f.audit.list()).toHaveLength(4);
   });
-  it("runs the actual CLI as dry run, requires backup, and supports apply/resume", () => {
-    const f = fixture();
-    const before = sqlInventory(f.db);
-    const args = [
-      "--data-dir",
-      f.dataDir,
-      "--review-id",
-      String(f.main.id),
-      "--dismiss",
-      String(f.duplicate.id),
-      "--dismiss",
-      String(f.narrative.id),
-      "--operator",
-      "CLI operator",
-    ];
-    const run = (flags: string[]) =>
-      spawnSync(
-        process.execPath,
-        ["--import", "tsx", "scripts/apply-period-rollover.ts", ...flags],
-        { cwd: process.cwd(), encoding: "utf8", timeout: 20_000 },
+  it.each([false, true])(
+    "runs the CLI dry run, backup and apply/resume (live-shaped path: %s)",
+    (liveShape) => {
+      const f = fixture(liveShape);
+      const before = sqlInventory(f.db);
+      const args = [
+        "--data-dir",
+        f.dataDir,
+        "--review-id",
+        String(f.main.id),
+        "--dismiss",
+        String(f.duplicate.id),
+        "--dismiss",
+        String(f.narrative.id),
+        "--operator",
+        "CLI operator",
+        ...(liveShape ? ["--live-store-confirmed", f.backup] : []),
+      ];
+      const run = (flags: string[]) =>
+        spawnSync(
+          process.execPath,
+          ["--import", "tsx", "scripts/apply-period-rollover.ts", ...flags],
+          { cwd: process.cwd(), encoding: "utf8", timeout: 20_000 },
+        );
+      if (liveShape) {
+        const refused = run(["--data-dir", f.dataDir, "--review-id", String(f.main.id)]);
+        expect(refused.status).toBe(1);
+        expect(refused.stderr).toContain(
+          "The live demo store is forbidden; supply a stopped rehearsal copy",
+        );
+      }
+      const dry = run(args);
+      expect(dry.status, dry.stderr).toBe(0);
+      const plan = JSON.parse(dry.stdout);
+      expect(plan.boundary).toBe(400);
+      expect(plan.dismissals).toHaveLength(2);
+      const override = liveShape ? { backup_path: f.backup } : null;
+      expect(plan.live_store_override).toEqual(override);
+      for (const audit of [...plan.audits, plan.completion_audit])
+        expect(audit.targets.live_store_override).toEqual(override);
+      expect(sqlInventory(f.db)).toEqual(before);
+      const missingBackup = run([...args, "--apply"]);
+      expect(missingBackup.status).toBe(1);
+      expect(missingBackup.stderr).toContain("--backup-verified");
+      expect(sqlInventory(f.db)).toEqual(before);
+      const applied = run([...args, "--backup-verified", f.backup, "--apply"]);
+      expect(applied.status, applied.stderr).toBe(0);
+      expect(JSON.parse(applied.stdout.trim().split("\n").at(-1)!).live_store_override).toEqual(
+        override,
       );
-    const dry = run(args);
-    expect(dry.status, dry.stderr).toBe(0);
-    const plan = JSON.parse(dry.stdout);
-    expect(plan.boundary).toBe(400);
-    expect(plan.dismissals).toHaveLength(2);
-    expect(sqlInventory(f.db)).toEqual(before);
-    const missingBackup = run([...args, "--apply"]);
-    expect(missingBackup.status).toBe(1);
-    expect(missingBackup.stderr).toContain("--backup-verified");
-    expect(sqlInventory(f.db)).toEqual(before);
-    const applied = run([...args, "--backup-verified", f.backup, "--apply"]);
-    expect(applied.status, applied.stderr).toBe(0);
-    expect(f.repo.currentPeriod()?.id).toBe(f.next.id);
-    const beforeRerun = sqlInventory(f.db);
-    const repeated = run([...args, "--backup-verified", f.backup, "--apply"]);
-    expect(repeated.status, repeated.stderr).toBe(0);
-    expect(repeated.stdout).toContain("no changes; nothing pending");
-    expect(sqlInventory(f.db)).toEqual(beforeRerun);
-    const resumed = run([
-      "--data-dir",
-      f.dataDir,
-      "--backup-verified",
-      f.backup,
-      "--apply",
-      "--resume",
-    ]);
-    expect(resumed.status, resumed.stderr).toBe(0);
-    expect(f.audit.list()).toHaveLength(4);
-  }, 30_000);
+      expect(f.repo.currentPeriod()?.id).toBe(f.next.id);
+      const beforeRerun = sqlInventory(f.db);
+      const repeated = run([...args, "--backup-verified", f.backup, "--apply"]);
+      expect(repeated.status, repeated.stderr).toBe(0);
+      expect(repeated.stdout).toContain("no changes; nothing pending");
+      expect(sqlInventory(f.db)).toEqual(beforeRerun);
+      const resumed = run([
+        "--data-dir",
+        f.dataDir,
+        "--backup-verified",
+        f.backup,
+        "--apply",
+        "--resume",
+        ...(liveShape ? ["--live-store-confirmed", f.backup] : []),
+      ]);
+      expect(resumed.status, resumed.stderr).toBe(0);
+      expect(f.audit.list()).toHaveLength(4);
+      for (const audit of f.audit.list())
+        expect(audit.targets.live_store_override).toEqual(override);
+    },
+    30_000,
+  );
 });

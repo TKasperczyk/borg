@@ -1,13 +1,25 @@
 # Commitment source-sender backfill (L)
 
 Stop all writers and use a backed-up rehearsal bank. No default data directory is opened;
-the live demo path is refused. Pending/unknown migrations and other pending repairs are refused.
+the live demo path is refused by default. Pending/unknown migrations and other pending repairs are refused.
 
 ```sh
 pnpm tsx scripts/backfill-commitment-committers.ts --data-dir /home/luth/tmp/bank-copy
 pnpm tsx scripts/backfill-commitment-committers.ts --data-dir /home/luth/tmp/bank-copy --apply
 pnpm tsx scripts/backfill-commitment-committers.ts --data-dir /home/luth/tmp/bank-copy --apply --resume
 ```
+
+For a stopped-service live apply, explicitly add `--live-store-confirmed <verified-backup-directory>`
+to the dry-run/apply commands with the live `--data-dir`. The backup path must exist, be a
+directory and contain a `borg.db` or `borg.db-clean` file. This confirmation skips both the
+lexical and resolved live-path refusals for that invocation only; it does not stop writers
+or verify backup freshness/consistency on the operator's behalf.
+
+The plan, apply summary and journal record `live_store_override: { "backup_path": "<canonical directory>" }`.
+Every correction audit, including the run summary, records it in `targets.live_store_override`.
+Without the flag the field is `null`. On `--resume`, supply the flag with the same backup
+directory again; omitting it, changing it, or adding it to an unconfirmed journal refuses.
+A recorded override alone never grants access on a later invocation.
 
 The default read-only plan lists **every NULL row**, all source entry IDs, indexed/missing
 joins, distinct non-NULL senders, raw stored before/after rows, identity events and audit inputs.

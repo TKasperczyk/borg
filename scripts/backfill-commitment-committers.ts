@@ -22,7 +22,7 @@ import {
   repairAudit,
   runRepairCli,
   type DataRepairPlan,
-  type RepairCheckpoint,
+  type RepairApplyOptions,
 } from "./audited-data-repair.js";
 
 type JoinedEntry = { entry_id: string; indexed: boolean; sender_entity_id: EntityId | null };
@@ -88,10 +88,14 @@ function repository(db: SqliteDatabase, plannedAt: number): CommitmentRepository
 function update(db: SqliteDatabase, row: CommitmentPlanRow, now: number) {
   return repository(db, now).backfillCommitter(row.commitment_id, row.resolved_sender!, reason);
 }
-export function planCommitterBackfill(dataDir: string, now = Date.now()): CommitterPlan {
-  dataDir = checkedPath(dataDir);
+export function planCommitterBackfill(
+  dataDir: string,
+  now = Date.now(),
+  liveStoreConfirmed?: string,
+): CommitterPlan {
+  dataDir = checkedPath(dataDir, liveStoreConfirmed);
   assertNoPending(dataDir);
-  const db = openDataRepairDatabase(dataDir);
+  const db = openDataRepairDatabase(dataDir, true, liveStoreConfirmed);
   try {
     // list() materializes expiry and the decoder normalizes legacy columns.
     // Snapshot raw storage so those values remain visible in plans and audits.
@@ -111,7 +115,7 @@ export function planCommitterBackfill(dataDir: string, now = Date.now()): Commit
       });
     const changed = rows.filter((r) => r.status === "single_sender");
     const plan: CommitterPlan = {
-      ...newPlan(KIND, dataDir, changed.length, now),
+      ...newPlan(KIND, dataDir, changed.length, now, liveStoreConfirmed),
       rows,
       identity_events: [],
     };
@@ -184,7 +188,7 @@ function preflight(db: SqliteDatabase, plan: CommitterPlan): void {
 }
 export async function applyCommitterBackfill(
   plan: CommitterPlan,
-  options: { resume?: boolean; checkpoint?: RepairCheckpoint } = {},
+  options: RepairApplyOptions = {},
 ): Promise<void> {
   await applyDataRepair(
     plan,
@@ -208,14 +212,18 @@ export async function applyCommitterBackfill(
 runRepairCli(import.meta.url, async () => {
   const args = repairArgs(process.argv.slice(2));
   const plan = args.resume
-    ? loadRepairPlan<CommitterPlan>(args.dataDir, KIND)
-    : planCommitterBackfill(args.dataDir);
+    ? loadRepairPlan<CommitterPlan>(args.dataDir, KIND, undefined, args.liveStoreConfirmed)
+    : planCommitterBackfill(args.dataDir, Date.now(), args.liveStoreConfirmed);
   await printPlan(plan);
   if (args.apply) {
-    await applyCommitterBackfill(plan, { resume: args.resume });
+    await applyCommitterBackfill(plan, {
+      resume: args.resume,
+      liveStoreConfirmed: args.liveStoreConfirmed,
+    });
     console.log(
       JSON.stringify({
         run_id: plan.runId,
+        live_store_override: plan.live_store_override ?? null,
         ...plan.summary,
         ...(plan.runId === null ? { status: "no changes; nothing pending" } : {}),
       }),

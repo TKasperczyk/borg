@@ -1,4 +1,5 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuditLog } from "../src/offline/audit-log.js";
@@ -17,15 +18,16 @@ import {
   repairArgs,
   repairPendingPath,
 } from "./audited-data-repair.js";
-import { repairFixture } from "./audited-data-repair-test-support.js";
+import { repairBackupFixture, repairFixture } from "./audited-data-repair-test-support.js";
+import { sqlInventory } from "./repair-entity-graph-storage.js";
 
 const cleanups: Array<() => void> = [];
 afterEach(() => {
   vi.restoreAllMocks();
   while (cleanups.length) cleanups.pop()!();
 });
-function fixture() {
-  const f = repairFixture();
+function fixture(liveShape = false) {
+  const f = repairFixture(liveShape);
   cleanups.push(f.cleanup);
   const repo = new CommitmentRepository(f);
   const entities = new EntityRepository(f);
@@ -57,6 +59,148 @@ function fixture() {
   return { ...f, repo, index, a, b, first, third, missing, single, multiple, zero, empty, partial };
 }
 describe("commitment committer backfill", () => {
+  const run = (args: string[]) =>
+    spawnSync(
+      process.execPath,
+      ["--import", "tsx", "scripts/backfill-commitment-committers.ts", ...args],
+      { cwd: process.cwd(), encoding: "utf8", timeout: 20_000 },
+    );
+  it.each(["lexical", "realpath"])(
+    "requires an explicit valid backup override for a live-shaped %s path",
+    (kind) => {
+      const f = fixture(true);
+      const backup = repairBackupFixture(
+        f.dataDir,
+        kind === "lexical" ? "borg.db" : "borg.db-clean",
+      );
+      cleanups.push(backup.cleanup);
+      const path = kind === "lexical" ? f.dataDir : join(f.fixtureRoot, "bank-alias");
+      if (kind === "realpath") symlinkSync(f.dataDir, path, "dir");
+      const args = ["--data-dir", path];
+      const refused = run(args);
+      expect(refused.status).toBe(1);
+      expect(refused.stderr).toContain(
+        "The live demo store is forbidden; supply a stopped rehearsal copy",
+      );
+      const confirmed = [...args, "--live-store-confirmed", backup.path];
+      const before = sqlInventory(f.db);
+      const dry = run(confirmed);
+      expect(dry.status, dry.stderr).toBe(0);
+      const plan = JSON.parse(dry.stdout);
+      const override = { backup_path: backup.path };
+      expect(plan.live_store_override).toEqual(override);
+      expect(
+        plan.rows.find((row: { audit: unknown }) => row.audit !== null).audit.targets
+          .live_store_override,
+      ).toEqual(override);
+      expect(plan.completion_audit.targets.live_store_override).toEqual(override);
+      expect(sqlInventory(f.db)).toEqual(before);
+      const applied = run([...confirmed, "--apply"]);
+      expect(applied.status, applied.stderr).toBe(0);
+      expect(JSON.parse(applied.stdout.trim().split("\n").at(-1)!).live_store_override).toEqual(
+        override,
+      );
+      expect(f.repo.get(f.single.id)?.committed_by_entity_id).toBe(f.a);
+      expect(f.audit.list()).toHaveLength(2);
+      for (const audit of f.audit.list())
+        expect(audit.targets.live_store_override).toEqual(override);
+      // Confirmation is local to an invocation, never a process-wide switch.
+      expect(() => checkedPath(path)).toThrow("forbidden");
+    },
+    30_000,
+  );
+  it.each(["missing", "file", "empty_directory", "database_directory"])(
+    "rejects an invalid live-store backup (%s)",
+    (kind) => {
+      const f = fixture(true);
+      const backup = join(f.fixtureRoot, "invalid-backup");
+      if (kind === "file") writeFileSync(backup, "not a directory");
+      else if (kind !== "missing") {
+        mkdirSync(backup);
+        if (kind === "database_directory") mkdirSync(join(backup, "borg.db"));
+      }
+      expect(() => repairArgs(["--data-dir", f.dataDir, "--live-store-confirmed", backup])).toThrow(
+        "--live-store-confirmed",
+      );
+      expect(f.repo.get(f.single.id)).toEqual(f.single);
+      expect(f.audit.list()).toEqual([]);
+    },
+  );
+  it.each([false, true])(
+    "requires the same backup again on resume (live-shaped path: %s)",
+    async (liveShape) => {
+      const f = fixture(liveShape);
+      const backup = repairBackupFixture(f.dataDir);
+      const other = repairBackupFixture(f.dataDir);
+      cleanups.push(backup.cleanup, other.cleanup);
+      const plan = planCommitterBackfill(f.dataDir, 2000, backup.path);
+      await expect(
+        applyCommitterBackfill(plan, {
+          liveStoreConfirmed: backup.path,
+          checkpoint: (point) => {
+            if (point === "after_journal") throw new Error("interrupted");
+          },
+        }),
+      ).rejects.toThrow("interrupted");
+      const pending = repairPendingPath(f.dataDir, plan.kind);
+      const journal = readFileSync(pending);
+      const before = sqlInventory(f.db);
+      const args = ["--data-dir", f.dataDir, "--apply", "--resume"];
+      for (const flags of [[], ["--live-store-confirmed", other.path]]) {
+        const result = run([...args, ...flags]);
+        expect(result.status).toBe(1);
+        expect(result.stderr).toContain(
+          liveShape && flags.length === 0 ? "forbidden" : "--live-store-confirmed",
+        );
+        expect(sqlInventory(f.db)).toEqual(before);
+        expect(readFileSync(pending)).toEqual(journal);
+      }
+      await expect(applyCommitterBackfill(plan, { resume: true })).rejects.toThrow(
+        liveShape ? "forbidden" : "--live-store-confirmed",
+      );
+      const resumed = run([...args, "--live-store-confirmed", backup.path]);
+      expect(resumed.status, resumed.stderr).toBe(0);
+      expect(f.repo.get(f.single.id)?.committed_by_entity_id).toBe(f.a);
+      expect(f.audit.list()).toHaveLength(2);
+      for (const audit of f.audit.list())
+        expect(audit.targets.live_store_override).toEqual({ backup_path: backup.path });
+    },
+    30_000,
+  );
+  it("refuses adding an override to a journal that did not record one", async () => {
+    const f = fixture();
+    const backup = repairBackupFixture(f.dataDir);
+    cleanups.push(backup.cleanup);
+    const plan = planCommitterBackfill(f.dataDir, 2000);
+    await expect(
+      applyCommitterBackfill(plan, {
+        checkpoint: (point) => {
+          if (point === "after_journal") throw new Error("interrupted");
+        },
+      }),
+    ).rejects.toThrow("interrupted");
+    expect(() => loadRepairPlan(f.dataDir, plan.kind, undefined, backup.path)).toThrow(
+      "--live-store-confirmed",
+    );
+    await expect(
+      applyCommitterBackfill(plan, { resume: true, liveStoreConfirmed: backup.path }),
+    ).rejects.toThrow("--live-store-confirmed");
+    expect(f.repo.get(f.single.id)).toEqual(f.single);
+    expect(f.audit.list()).toEqual([]);
+  });
+  it("revalidates the override backup before any apply write", async () => {
+    const f = fixture(true);
+    const backup = repairBackupFixture(f.dataDir);
+    cleanups.push(backup.cleanup);
+    const plan = planCommitterBackfill(f.dataDir, 2000, backup.path);
+    rmSync(join(backup.path, "borg.db"));
+    await expect(applyCommitterBackfill(plan, { liveStoreConfirmed: backup.path })).rejects.toThrow(
+      "must contain",
+    );
+    expect(f.repo.get(f.single.id)).toEqual(f.single);
+    expect(f.audit.list()).toEqual([]);
+    expect(existsSync(repairPendingPath(f.dataDir, plan.kind))).toBe(false);
+  });
   it("requires complete same-sender joins and lists unresolved sources separately", () => {
     const f = fixture();
     const bytes = readFileSync(join(f.dataDir, "borg.db"));

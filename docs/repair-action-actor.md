@@ -12,7 +12,19 @@ pnpm tsx scripts/repair-action-actor.ts --data-dir /home/luth/tmp/bank-copy --ap
 The default full JSON plan lists every exact matching action, including terminal/history
 rows, before/after SQL records and existing Lance mirror records/vectors. It refuses if
 `--from` has any entities row (even a redirect), if `--to` has none, if migrations are
-pending/unknown, or if another repair is pending. It also refuses the live demo path.
+pending/unknown, or if another repair is pending. It also refuses the live demo path by default.
+
+For a stopped-service live apply, explicitly add `--live-store-confirmed <verified-backup-directory>`
+with the live `--data-dir`. The backup must be an existing directory containing a `borg.db`
+or `borg.db-clean` file. This skips both lexical and resolved live-path refusals only for
+that invocation. Stopping writers and verifying backup freshness/consistency remain the
+operator's responsibility.
+
+The plan, apply summary and journal record `live_store_override: { "backup_path": "<canonical directory>" }`;
+every correction audit, including the run summary, carries it in `targets.live_store_override`.
+Without confirmation the field is `null`. Resume requires `--live-store-confirmed` with the
+same backup directory again. Missing/changed confirmation, or adding it to an unconfirmed
+journal, refuses; a journal never supplies authorization by itself.
 
 Apply flushes the plan, fsyncs a complete journal, and updates SQL through the actions
 repository in the same transaction as one `maintenance_audit` correction row per action.
