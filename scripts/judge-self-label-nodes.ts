@@ -310,6 +310,34 @@ function judgment(record: VerdictRecord) {
     dossier_hash: record.dossier_hash,
   };
 }
+function judgmentIdentity(
+  record: Pick<VerdictRecord, "node_id" | "dossier_hash" | "verdict">,
+): string {
+  return fingerprint({
+    node_id: record.node_id,
+    dossier_hash: record.dossier_hash,
+    verdict: record.verdict,
+  });
+}
+
+function unrecordedJudgments(db: SqliteDatabase, file: VerdictFile): VerdictRecord[] {
+  // Tuple lookup also recognizes audits written before judgment_id was persisted.
+  const recorded = db.prepare(`SELECT 1 FROM maintenance_audit
+    WHERE process = 'correction' AND action = ? AND reverted_at IS NULL
+      AND json_extract(targets, '$.node_id') = ?
+      AND json_extract(targets, '$.judgment.dossier_hash') = ?
+      AND json_extract(targets, '$.judgment.verdict') = ? LIMIT 1`);
+  return file.verdicts.filter(
+    (record) =>
+      recorded.get(
+        `judge-self-label:${record.verdict}`,
+        record.node_id,
+        record.dossier_hash,
+        record.verdict,
+      ) === undefined,
+  );
+}
+
 function planHash(plan: SelfLabelPlan): string {
   const { sha256: _hash, ...body } = plan;
   return fingerprint(body);
@@ -333,9 +361,11 @@ export async function planSelfLabelNodes(
       : verifyBackup(dataDir, input.backupVerified, input.liveStoreConfirmed);
   const override = verifyLiveStoreOverride(input.liveStoreConfirmed);
   let matchingEntities = file.matching_entities_report_only;
+  let toRecord: VerdictRecord[] = [];
   await readEvidence(dataDir, input, async (db, episodes) => {
     await assertDossiers(db, episodes, file);
     matchingEntities = selfLabelInventory(db).matchingEntities;
+    toRecord = unrecordedJudgments(db, file);
   });
   const graph = await planEntityGraphRepair(
     {
@@ -349,9 +379,10 @@ export async function planSelfLabelNodes(
     input.embeddingClient,
     {
       auditContext: { backup_verified: backup, live_store_override: override },
-      auditRecords: file.verdicts.map((row) => ({
+      auditRecords: toRecord.map((row) => ({
         action: `judge-self-label:${row.verdict}`,
         targets: {
+          judgment_id: judgmentIdentity(row),
           node_id: row.node_id,
           canonical_node_id: row.dossier.self.node_id,
           judged_at: row.judged_at,
@@ -398,6 +429,16 @@ export async function planSelfLabelNodes(
     } finally {
       projected.close();
     }
+  });
+  const newIds = new Set(toRecord.map(judgmentIdentity));
+  graph.reports.push({
+    category: "judgment_audits",
+    rows: file.verdicts.map((row) => ({
+      node_id: row.node_id,
+      judgment_id: judgmentIdentity(row),
+      verdict: row.verdict,
+      status: newIds.has(judgmentIdentity(row)) ? "record" : "already_recorded",
+    })),
   });
   graph.reports.push({
     category: "matching_entities_report_only",
@@ -460,7 +501,7 @@ export function loadSelfLabelPlan(dataDir: string, access: Access = {}): SelfLab
 export async function applySelfLabelNodes(
   plan: SelfLabelPlan,
   options: RepairOptions & Access & { backupVerified?: string; resume?: boolean } = {},
-): Promise<void> {
+): Promise<{ changed: boolean; run_id: RepairPlan["runId"] }> {
   const bank = checkedPath(plan.input.dataDir, options.liveStoreConfirmed);
   const metadata = plan.selfLabelJudgments;
   if (metadata.version !== 1 || plan.sha256 !== planHash(plan))
@@ -478,14 +519,41 @@ export async function applySelfLabelNodes(
   assertNoPending(bank, options.resume ? "entity-graph-repair" : undefined);
   if (options.resume) assertSame(loadSelfLabelPlan(bank, options), plan, "journal plan");
   const file = parseVerdictFile(metadata.verdictFile);
+  let noChanges = false;
   await readEvidence(bank, options, async (db, episodes) => {
     const committed = db
       .prepare(
         "SELECT 1 FROM maintenance_audit WHERE run_id = ? AND action = 'entity_graph_sql_committed'",
       )
       .get(plan.runId);
-    if (committed && !options.resume) refuse("Judged repair already committed; use --resume");
     await assertDossiers(db, episodes, file, committed ? metadata.afterHashes : undefined);
+    if (!options.resume || !committed) {
+      const pending = unrecordedJudgments(db, file).map(judgmentIdentity).sort();
+      // Reapplying an audit-only plan, including one prepared before another
+      // apply recorded these identities, has no new work and writes no journal.
+      if (!options.resume && !plan.sql.length && !plan.lance.length && pending.length === 0) {
+        noChanges = true;
+        return;
+      }
+      const planned = plan.additionalSql
+        .filter(
+          (change) =>
+            change.table === "maintenance_audit" &&
+            String(change.after?.action).startsWith("judge-self-label:"),
+        )
+        .map((change) => {
+          const targets = JSON.parse(String(change.after!.targets));
+          return judgmentIdentity({
+            node_id: targets.node_id,
+            dossier_hash: targets.judgment.dossier_hash,
+            verdict: targets.judgment.verdict,
+          });
+        })
+        .sort();
+      if (!committed)
+        assertSame(pending, planned, "judgment audits changed since planning; re-plan");
+    }
+    if (committed && !options.resume) refuse("Judged repair already committed; use --resume");
     if (
       options.resume &&
       !existsSync(pendingPath(bank)) &&
@@ -497,9 +565,11 @@ export async function applySelfLabelNodes(
     )
       refuse("Archived judged repair lacks its completion marker");
   });
+  if (noChanges) return { changed: false, run_id: null };
   const delegated: RepairOptions = { ...options, journalKind: KIND };
   if (options.resume) await resumeEntityGraphRepair(bank, delegated);
   else await applyEntityGraphRepair(plan, delegated);
+  return { changed: plan.runId !== null, run_id: plan.runId };
 }
 
 export async function main(argv = process.argv.slice(2)): Promise<void> {
@@ -566,6 +636,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       JSON.stringify(
         {
           mode: apply ? "apply" : "dry-run",
+          status: plan.runId === null ? "no changes" : "changes planned",
           plan,
           journal: plan.runId
             ? {
@@ -581,8 +652,18 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     ),
   );
   if (apply) {
-    await applySelfLabelNodes(plan, { backupVerified: backup, resume: args.resume, ...access });
-    process.stdout.write(JSON.stringify({ complete: true, run_id: plan.runId }) + "\n");
+    const result = await applySelfLabelNodes(plan, {
+      backupVerified: backup,
+      resume: args.resume,
+      ...access,
+    });
+    process.stdout.write(
+      JSON.stringify({
+        complete: true,
+        ...result,
+        status: result.changed ? "applied" : "no changes",
+      }) + "\n",
+    );
   }
 }
 runRepairCli(import.meta.url, main);

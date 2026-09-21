@@ -689,6 +689,124 @@ describe("judged self-label repair", () => {
     expect(existsSync(graph.pendingPath(f.dataDir))).toBe(false);
   });
 
+  it("reapplying unchanged other/unsure judgments produces no changes or duplicate audits", async () => {
+    const f = await fixture(),
+      file = await judged(f, true),
+      path = backup(f);
+    file.verdicts.find((row) => row.node_id === f.unsure.id)!.verdict = "unsure";
+    const first = await planned(f, file, path),
+      preparedBeforeApply = await planned(f, file, path);
+    await applySelfLabelNodes(first, { backupVerified: path });
+    const before = rows(f),
+      audits = f.audit.list();
+    for (const record of file.verdicts) {
+      expect(
+        audits.find((row) => row.targets.node_id === record.node_id)!.targets.judgment_id,
+      ).toBe(
+        fingerprint({
+          node_id: record.node_id,
+          dossier_hash: record.dossier_hash,
+          verdict: record.verdict,
+        }),
+      );
+    }
+    expect(await applySelfLabelNodes(first, { backupVerified: path })).toEqual({
+      changed: false,
+      run_id: null,
+    });
+    expect(await applySelfLabelNodes(preparedBeforeApply, { backupVerified: path })).toEqual({
+      changed: false,
+      run_id: null,
+    });
+    const again = await planned(f, file, path);
+    expect(again.runId).toBeNull();
+    expect(again.sql).toEqual([]);
+    expect(again.lance).toEqual([]);
+    expect(again.additionalSql).toEqual([]);
+    expect(again.completionSql).toEqual([]);
+    expect(
+      again.reports
+        .find((report) => report.category === "judgment_audits")!
+        .rows.every((row) => row.status === "already_recorded"),
+    ).toBe(true);
+    expect(await applySelfLabelNodes(again, { backupVerified: path })).toEqual({
+      changed: false,
+      run_id: null,
+    });
+    expect(rows(f)).toEqual(before);
+    expect(existsSync(graph.pendingPath(f.dataDir))).toBe(false);
+  });
+
+  it("recognizes older judgment audits without the explicit stable identity field", async () => {
+    const f = await fixture(),
+      file = await judged(f, true),
+      path = backup(f);
+    await applySelfLabelNodes(await planned(f, file, path), { backupVerified: path });
+    f.db
+      .prepare(
+        "UPDATE maintenance_audit SET targets = json_remove(targets, '$.judgment_id') WHERE action LIKE 'judge-self-label:%'",
+      )
+      .run();
+    const before = rows(f);
+    const again = await planned(f, file, path);
+    expect(again.runId).toBeNull();
+    await applySelfLabelNodes(again, { backupVerified: path });
+    expect(rows(f)).toEqual(before);
+  });
+
+  it("records a new audit when the dossier or verdict changes and still refuses stale evidence", async () => {
+    const f = await fixture(),
+      path = backup(f);
+    const original = await judgeSelfLabelNodes({ dataDir: f.dataDir, llm: llm(f, true).client });
+    await applySelfLabelNodes(await planned(f, original.file, path), { backupVerified: path });
+    f.db.prepare("UPDATE semantic_nodes SET confidence = 0.6 WHERE id = ?").run(f.unsure.id);
+    await expect(planned(f, original.file, path)).rejects.toThrow("Dossier hash mismatch");
+    const updated = await judgeSelfLabelNodes({
+      dataDir: f.dataDir,
+      out: original.path,
+      llm: llm(f, true).client,
+    });
+    const plan = await planned(f, updated.file, path);
+    expect(
+      plan.additionalSql.filter((row) => String(row.after?.action).startsWith("judge-self-label:")),
+    ).toHaveLength(1);
+    await applySelfLabelNodes(plan, { backupVerified: path });
+    updated.file.verdicts.find((row) => row.node_id === f.other.id)!.verdict = "unsure";
+    const differentVerdict = await planned(f, updated.file, path);
+    expect(
+      differentVerdict.additionalSql.filter((row) =>
+        String(row.after?.action).startsWith("judge-self-label:"),
+      ),
+    ).toHaveLength(1);
+    await applySelfLabelNodes(differentVerdict, { backupVerified: path });
+    const judgments = f.audit.list().filter((row) => row.action.startsWith("judge-self-label:"));
+    expect(judgments).toHaveLength(5);
+    expect(new Set(judgments.map((row) => row.targets.judgment_id)).size).toBe(5);
+  });
+
+  it("refuses a partially outdated audit plan before writing a journal", async () => {
+    const f = await fixture(),
+      file = await judged(f, true),
+      path = backup(f),
+      plan = await planned(f, file, path);
+    const change = plan.additionalSql.find((row) =>
+      String(row.after?.action).startsWith("judge-self-label:"),
+    )!.after!;
+    f.audit.record({
+      run_id: plan.runId!,
+      process: "correction",
+      action: String(change.action),
+      targets: JSON.parse(String(change.targets)),
+      reversal: JSON.parse(String(change.reversal)),
+    });
+    const before = rows(f);
+    await expect(applySelfLabelNodes(plan, { backupVerified: path })).rejects.toThrow(
+      "judgment audits changed since planning; re-plan",
+    );
+    expect(rows(f)).toEqual(before);
+    expect(existsSync(graph.pendingPath(f.dataDir))).toBe(false);
+  });
+
   it.each([
     "after_journal",
     "after_sqlite",
@@ -996,6 +1114,13 @@ describe("judged self-label repair", () => {
     );
     const path = backup(f);
     await main(["apply", "--data-dir", f.dataDir, "--verdicts", out, "--backup-verified", path]);
+    await main(["apply", "--data-dir", f.dataDir, "--verdicts", out, "--backup-verified", path]);
+    expect(JSON.parse(String(stdout.mock.calls.at(-1)![0]))).toMatchObject({
+      complete: true,
+      status: "no changes",
+      changed: false,
+      run_id: null,
+    });
     await main(["apply", "--data-dir", f.dataDir, "--resume", "--backup-verified", path]);
     expect(f.audit.list().filter((row) => row.action === "judge-self-label:other")).toHaveLength(3);
   });
