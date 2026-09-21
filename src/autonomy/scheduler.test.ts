@@ -1901,74 +1901,102 @@ describe("AutonomyScheduler", () => {
     },
   );
 
-  it("runs one prepared turn for three dormant questions and stamps all three", async () => {
-    const clock = new ManualClock(1_000_000);
-    const harness = await createOfflineTestHarness({ clock });
-    const watermarkRepository = new StreamWatermarkRepository({ db: harness.db, clock });
-    const questions = Array.from({ length: 3 }, (_, index) =>
-      harness.openQuestionsRepository.add({
-        question: `Question ${index}`,
-        urgency: 0.5,
-        source: "user",
-        provenance: { kind: "system" },
-        last_touched: clock.now() - 100_000 + index,
-      }),
-    );
-    const source = createOpenQuestionDormantTrigger({
-      openQuestionsRepository: harness.openQuestionsRepository,
-      watermarkRepository,
-      dormantMs: 50_000,
-      clock,
-    });
-    const createStreamWriter = (sessionId: typeof DEFAULT_SESSION_ID) =>
-      new StreamWriter({ dataDir: harness.tempDir, sessionId, clock });
-    const dispatcher = new ToolDispatcher({ createStreamWriter, clock });
-    const dispatch = vi.spyOn(dispatcher, "dispatch").mockResolvedValue({
-      callId: "prep",
-      toolName: "tool.episodic.search",
-      ok: true,
-      output: { episodes: [] },
-      durationMs: 1,
-    });
-    const turnRunner = {
-      run: vi.fn().mockResolvedValue(createStructuralTurnResult({ emissionKind: "suppressed" })),
-    };
-    const scheduler = createScheduler({
-      db: harness.db,
-      enabled: true,
-      intervalMs: 1_000,
-      maxWakesPerWindow: 1,
-      clock,
-      createStreamWriter,
-      watermarkRepository,
-      turnOrchestrator: turnRunner,
-      toolDispatcher: dispatcher,
-      sources: [source],
-    });
-    try {
-      expect(await scheduler.tick()).toMatchObject({ firedEvents: 1 });
-      expect(turnRunner.run).toHaveBeenCalledTimes(1);
-      expect(dispatch.mock.calls.map(([input]) => input.input)).toEqual(
-        questions.map((question) => ({ query: question.question, limit: 5 })),
+  it.each([false, true])(
+    "runs one prepared turn for three dormant questions (fleet governor enabled=%s)",
+    async (fleetEnabled) => {
+      const clock = new ManualClock(1_000_000);
+      const harness = await createOfflineTestHarness({ clock });
+      const watermarkRepository = new StreamWatermarkRepository({ db: harness.db, clock });
+      const questions = Array.from({ length: 3 }, (_, index) =>
+        harness.openQuestionsRepository.add({
+          question: `Question ${index}`,
+          urgency: 0.5,
+          source: "user",
+          provenance: { kind: "system" },
+          last_touched: clock.now() - 100_000 + index,
+        }),
       );
-      const payload = turnRunner.run.mock.calls[0]![0].autonomyTrigger.payload;
-      expect(payload.additional_questions).toHaveLength(2);
-      expect(
-        payload.additional_questions.every((question: Record<string, unknown>) =>
-          Array.isArray(question.related_episodes),
-        ),
-      ).toBe(true);
-      for (const question of questions) {
-        expect(harness.openQuestionsRepository.get(question.id)?.last_ruminated_at).toBe(
-          clock.now(),
+      // The oldest question predates the fleet anchor; only the third is fresh.
+      setFleetBrakeState(watermarkRepository, clock, {
+        empty_streak: 5,
+        streak_anchor_ts: questions[1]!.last_touched,
+        last_wake_ts: clock.now(),
+        bypass_count: 2,
+      });
+      const source = createOpenQuestionDormantTrigger({
+        openQuestionsRepository: harness.openQuestionsRepository,
+        watermarkRepository,
+        dormantMs: 50_000,
+        clock,
+      });
+      const createStreamWriter = (sessionId: typeof DEFAULT_SESSION_ID) =>
+        new StreamWriter({ dataDir: harness.tempDir, sessionId, clock });
+      const dispatcher = new ToolDispatcher({ createStreamWriter, clock });
+      const dispatch = vi.spyOn(dispatcher, "dispatch").mockResolvedValue({
+        callId: "prep",
+        toolName: "tool.episodic.search",
+        ok: true,
+        output: { episodes: [] },
+        durationMs: 1,
+      });
+      const turnRunner = {
+        run: vi.fn().mockResolvedValue(createStructuralTurnResult({ emissionKind: "suppressed" })),
+      };
+      const scheduler = createScheduler({
+        db: harness.db,
+        enabled: true,
+        intervalMs: 1_000,
+        maxWakesPerWindow: 1,
+        fleetBrake: { ...DEFAULT_FLEET_BRAKE_OPTIONS, enabled: fleetEnabled },
+        clock,
+        createStreamWriter,
+        watermarkRepository,
+        turnOrchestrator: turnRunner,
+        toolDispatcher: dispatcher,
+        sources: [source],
+      });
+      try {
+        expect(await scheduler.tick()).toMatchObject({ firedEvents: 1, fleetCooldownSkipped: 0 });
+        expect(turnRunner.run).toHaveBeenCalledTimes(1);
+        expect(dispatch.mock.calls.map(([input]) => input.input)).toEqual(
+          questions.map((question) => ({ query: question.question, limit: 5 })),
         );
+        const payload = turnRunner.run.mock.calls[0]![0].autonomyTrigger.payload;
+        expect(payload.additional_questions).toHaveLength(2);
+        expect(
+          payload.additional_questions.every((question: Record<string, unknown>) =>
+            Array.isArray(question.related_episodes),
+          ),
+        ).toBe(true);
+        expect(
+          [payload, ...payload.additional_questions].map((question) => question.last_touched),
+        ).toEqual(questions.map((question) => question.last_touched));
+        for (const question of questions) {
+          expect(harness.openQuestionsRepository.get(question.id)).toMatchObject({
+            last_touched: question.last_touched,
+            last_ruminated_at: clock.now(),
+            unresolved_rumination_ticks: 1,
+          });
+          expect(
+            watermarkRepository.get(
+              `autonomy:open-question-dormant:${question.id}:${question.last_touched}`,
+              DEFAULT_SESSION_ID,
+            ),
+          ).toMatchObject({ lastTs: question.last_touched });
+        }
+        expect(await scheduler.describe()).toMatchObject({
+          budget: { used_in_current_window: 1 },
+          fleet_brake: {
+            enabled: fleetEnabled,
+            ...(fleetEnabled ? { empty_streak: 6, bypass_count: 3 } : {}),
+          },
+        });
+        expect((await scheduler.tick()).firedEvents).toBe(0);
+      } finally {
+        await harness.cleanup();
       }
-      expect((await scheduler.describe()).budget.used_in_current_window).toBe(1);
-      expect((await scheduler.tick()).firedEvents).toBe(0);
-    } finally {
-      await harness.cleanup();
-    }
-  });
+    },
+  );
 
   it("fires due events once and respects trigger watermarks", async () => {
     const clock = new ManualClock(1_000_000);

@@ -209,6 +209,8 @@ describe("open question dormant trigger", () => {
     const events = await trigger.scan();
     expect(events).toHaveLength(1);
     const event = events[0]!;
+    expect(event.sortTs).toBe(questions[0]!.last_touched);
+    expect(event.stateTs).toBe(questions[2]!.last_touched);
     const presented = [event.payload, ...(event.payload.additional_questions ?? [])];
     expect(presented.map((question) => question.open_question_id)).toEqual(
       questions.slice(0, 3).map((question) => question.id),

@@ -93,6 +93,7 @@ export function createOpenQuestionDormantTrigger(
         : [
             {
               ...first,
+              stateTs: Math.max(...selected.map((event) => event.payload.last_touched)),
               payload: {
                 ...first.payload,
                 ...(selected.length === 1
