@@ -29,6 +29,7 @@ import {
   selfLabelInventory,
   type SelfLabelDossier,
   type VerdictFile,
+  type OperatorVerdicts,
 } from "./judge-self-label-nodes-dossier.js";
 import {
   applySelfLabelNodes,
@@ -37,6 +38,7 @@ import {
   main,
   planSelfLabelNodes,
   readVerdictFile,
+  recordSelfLabelNodes,
   writeVerdictFile,
 } from "./judge-self-label-nodes.js";
 
@@ -222,6 +224,46 @@ async function planned(
 }
 function rows(f: Fixture) {
   return Object.fromEntries(sqlInventory(f.db));
+}
+
+function operatorInput(f: Fixture, allOther = false): OperatorVerdicts {
+  return {
+    target_node_id: f.canonical.id,
+    judged_by: {
+      entity_id: f.self.id,
+      evidence: {
+        stream_entry_id: "opaque judgment reference",
+        session_id: "opaque operator thread",
+        timestamp: 1234,
+      },
+    },
+    recorded_by: { entity_id: f.duplicateEntity.id },
+    verdicts: [
+      {
+        node_id: f.same.id,
+        verdict: allOther ? "other" : "self",
+        reason: "  私の判断。\n",
+        confidence: 0,
+      },
+      { node_id: f.other.id, verdict: "other", reason: "Autre personne.", confidence: 1 },
+      { node_id: f.unsure.id, verdict: "unsure", reason: "不確か。", confidence: null },
+    ],
+  };
+}
+
+async function recorded(
+  f: Fixture,
+  input = operatorInput(f),
+  options: Partial<Parameters<typeof recordSelfLabelNodes>[0]> = {},
+) {
+  const operatorVerdicts = join(f.dataDir, "operator-input.json");
+  writeFileSync(operatorVerdicts, JSON.stringify(input));
+  return recordSelfLabelNodes({
+    dataDir: f.dataDir,
+    targetNode: f.canonical.id,
+    operatorVerdicts,
+    ...options,
+  });
 }
 
 describe("judged self-label repair", () => {
@@ -1529,6 +1571,7 @@ describe("judged self-label repair", () => {
       judgeSelfLabelNodes({ targetNode: f.canonical.id, dataDir: f.dataDir, llm: client.client }),
     ).rejects.toThrow("Pending or unknown migrations");
     expect(client.complete).not.toHaveBeenCalled();
+    await expect(recorded(f)).rejects.toThrow("Pending or unknown migrations");
     await expect(
       applySelfLabelNodes(plan, { targetNode: f.canonical.id, backupVerified: path }),
     ).rejects.toThrow("Pending or unknown migrations");
@@ -1597,6 +1640,7 @@ describe("judged self-label repair", () => {
       }),
     ).rejects.toThrow("interrupted");
     await expect(judged(f)).rejects.toThrow("Entity graph repair is pending");
+    await expect(recorded(f)).rejects.toThrow("Entity graph repair is pending");
     await expect(planned(f, plan.selfLabelJudgments.verdictFile, path)).rejects.toThrow(
       "Entity graph repair is pending",
     );
@@ -1730,4 +1774,506 @@ describe("judged self-label repair", () => {
       );
     },
   );
+});
+
+describe("recorded operator self-label repair", () => {
+  it.each(["self", "person", "group", "abstract"] as const)(
+    "records a complete set attributed to an existing %s entity without model or embedding calls",
+    async (kind) => {
+      const f = await fixture();
+      const input = operatorInput(f);
+      input.judged_by.entity_id =
+        kind === "self" ? f.self.id : f.entities.add({ kind, canonicalName: "判断者" }).id;
+      const model = vi.spyOn(clients, "createLlmFactory").mockImplementation(() => {
+        throw new Error("record must not create a judgment model");
+      });
+      const embedding = vi.spyOn(clients, "createEmbeddingClient").mockImplementation(() => {
+        throw new Error("record must not request embeddings");
+      });
+      const before = rows(f),
+        vectors = await f.table.list();
+      const { path, file } = await recorded(f, input);
+      expect(file.version).toBe(5);
+      expect(file.judge).toEqual({
+        kind: "operator",
+        judged_by: input.judged_by,
+        recorded_by: input.recorded_by,
+      });
+      expect(file).not.toHaveProperty("model");
+      expect(file).not.toHaveProperty("model_role");
+      expect(file.candidate_node_ids).toEqual([f.same.id, f.other.id, f.unsure.id].sort());
+      expect(file.target_node).toEqual({
+        id: f.canonical.id,
+        kind: "self",
+        label: f.canonical.label,
+      });
+      expect(file.matching_entities_report_only.map((row) => row.id)).toEqual([
+        f.duplicateEntity.id,
+      ]);
+      for (const row of file.verdicts) {
+        expect(row).toMatchObject(
+          input.verdicts.find((verdict) => verdict.node_id === row.node_id)!,
+        );
+        expect(row).not.toHaveProperty("model");
+        expect(row).not.toHaveProperty("model_role");
+        expect(row.judged_at).toBe(1234);
+        const dossier = await buildSelfLabelDossier(f.db, f.episodes, row.node_id, f.canonical.id);
+        expect(row.dossier).toEqual(dossier);
+        expect(row.dossier_hash).toBe(fingerprint(dossier));
+      }
+      expect(readVerdictFile(path)).toEqual(file);
+      expect(rows(f)).toEqual(before);
+      expect(await f.table.list()).toEqual(vectors);
+      expect(model).not.toHaveBeenCalled();
+      expect(embedding).not.toHaveBeenCalled();
+      expect(existsSync(graph.pendingPath(f.dataDir))).toBe(false);
+    },
+  );
+
+  it.each(["missing", "unknown", "noncandidate", "target", "missing-and-extra", "archived"])(
+    "refuses a %s candidate set and lists missing and extra IDs without writing output",
+    async (kind) => {
+      const f = await fixture(),
+        input = operatorInput(f);
+      const missing = kind === "missing" || kind === "missing-and-extra" ? f.same.id : undefined;
+      const extra =
+        kind === "noncandidate"
+          ? f.neighbor.id
+          : kind === "target"
+            ? f.canonical.id
+            : kind === "archived"
+              ? f.same.id
+              : kind === "missing"
+                ? undefined
+                : createSemanticNodeId();
+      if (missing) input.verdicts = input.verdicts.filter((row) => row.node_id !== missing);
+      if (kind === "archived")
+        f.db.prepare("UPDATE semantic_nodes SET archived = 1 WHERE id = ?").run(f.same.id);
+      else if (extra)
+        input.verdicts.push({
+          node_id: extra,
+          verdict: "unsure",
+          reason: "記録",
+          confidence: null,
+        });
+      const out = join(f.dataDir, "refused.json"),
+        before = rows(f);
+      await expect(recorded(f, input, { out })).rejects.toThrow(
+        `Operator verdict candidate set mismatch; missing: ${missing ?? "none"}; extra: ${extra ?? "none"}`,
+      );
+      expect(existsSync(out)).toBe(false);
+      expect(rows(f)).toEqual(before);
+    },
+  );
+
+  it("refuses an operator input that omits a quarantined candidate and names it as missing", async () => {
+    const f = await fixture(),
+      input = operatorInput(f),
+      out = join(f.dataDir, "missing-quarantined.json");
+    f.db.prepare("UPDATE semantic_nodes SET status = 'quarantined' WHERE id = ?").run(f.unsure.id);
+    input.verdicts = input.verdicts.filter((row) => row.node_id !== f.unsure.id);
+    const before = rows(f);
+    await expect(recorded(f, input, { out })).rejects.toThrow(
+      `Operator verdict candidate set mismatch; missing: ${f.unsure.id}; extra: none`,
+    );
+    expect(existsSync(out)).toBe(false);
+    expect(rows(f)).toEqual(before);
+  });
+
+  it("refuses duplicate input nodes", async () => {
+    const f = await fixture(),
+      input = operatorInput(f);
+    input.verdicts.push(input.verdicts[0]!);
+    await expect(recorded(f, input)).rejects.toThrow("Duplicate operator verdict node IDs");
+    expect(f.audit.list()).toEqual([]);
+  });
+
+  it.each(["judged_by", "recorded_by"] as const)("refuses an unknown %s entity", async (field) => {
+    const f = await fixture(),
+      input = operatorInput(f);
+    input[field]!.entity_id = "unknown-entity";
+    const out = join(f.dataDir, "refused.json");
+    await expect(recorded(f, input, { out })).rejects.toThrow(
+      `Unknown ${field} entity: unknown-entity`,
+    );
+    expect(existsSync(out)).toBe(false);
+    expect(f.audit.list()).toEqual([]);
+  });
+
+  it("requires the same eligible target in the input and selection", async () => {
+    const f = await fixture(),
+      input = operatorInput(f);
+    await expect(recorded(f, input, { targetNode: undefined })).rejects.toThrow(
+      "--target-node is required",
+    );
+    await expect(recorded(f, input, { targetNode: f.neighbor.id })).rejects.toThrow(
+      "--target-node must name an active",
+    );
+    input.target_node_id = f.same.id;
+    await expect(recorded(f, input)).rejects.toThrow("operator input target node");
+    const { file } = await recorded(
+      f,
+      {
+        ...input,
+        verdicts: input.verdicts.filter((row) => row.node_id !== f.same.id),
+      },
+      { targetNode: f.same.id },
+    );
+    expect(file.target_node).toEqual({ id: f.same.id, kind: "entity", label: f.same.label });
+    const plan = await planned(f, file, backup(f), undefined, f.same.id);
+    expect(
+      plan.reports.find((report) => report.category === "other_self_nodes_report_only")!.rows,
+    ).toEqual([expect.objectContaining({ id: f.canonical.id })]);
+  });
+
+  it("uses the guarded path rules, reuses an identical output and refuses changed input or evidence", async () => {
+    const f = await fixture(true),
+      override = backup(f);
+    await expect(recorded(f)).rejects.toThrow("live demo store is forbidden");
+    const result = await recorded(f, operatorInput(f), { liveStoreConfirmed: override });
+    const before = readFileSync(result.path, "utf8");
+    const again = await recorded(f, operatorInput(f), {
+      liveStoreConfirmed: override,
+      out: result.path,
+    });
+    expect(again.file).toEqual(result.file);
+    expect(readFileSync(result.path, "utf8")).toBe(before);
+    const input = operatorInput(f);
+    input.verdicts[0]!.reason = "Different recorded reason";
+    await expect(
+      recorded(f, input, { liveStoreConfirmed: override, out: result.path }),
+    ).rejects.toThrow("operator verdict output; preserve it and choose a new --out");
+    expect(readFileSync(result.path, "utf8")).toBe(before);
+    const rereferenced = operatorInput(f);
+    rereferenced.judged_by.evidence.stream_entry_id = "different judgment reference";
+    await expect(
+      recorded(f, rereferenced, { liveStoreConfirmed: override, out: result.path }),
+    ).rejects.toThrow("operator verdict output; preserve it and choose a new --out");
+    expect(readFileSync(result.path, "utf8")).toBe(before);
+    const client = llm(f);
+    await expect(
+      judgeSelfLabelNodes({
+        dataDir: f.dataDir,
+        out: result.path,
+        targetNode: f.canonical.id,
+        liveStoreConfirmed: override,
+        llm: client.client,
+      }),
+    ).rejects.toThrow("Operator verdicts cannot be model-judged");
+    expect(client.complete).not.toHaveBeenCalled();
+    expect(readFileSync(result.path, "utf8")).toBe(before);
+    f.db.prepare("UPDATE semantic_nodes SET description = 'changed' WHERE id = ?").run(f.same.id);
+    await expect(
+      recorded(f, operatorInput(f), {
+        liveStoreConfirmed: override,
+        out: result.path,
+      }),
+    ).rejects.toThrow("operator verdict output; preserve it and choose a new --out");
+    expect(readFileSync(result.path, "utf8")).toBe(before);
+  });
+
+  it("refuses to overwrite a model verdict file when recording", async () => {
+    const f = await fixture(),
+      result = await judgeSelfLabelNodes({
+        dataDir: f.dataDir,
+        targetNode: f.canonical.id,
+        llm: llm(f).client,
+      });
+    const before = readFileSync(result.path, "utf8");
+    await expect(recorded(f, operatorInput(f), { out: result.path })).rejects.toThrow(
+      "Verdict output contains model judgments",
+    );
+    expect(readFileSync(result.path, "utf8")).toBe(before);
+  });
+
+  it.each([true, false])(
+    "plans entity-attributed audits and only self merges (recorded_by: %s)",
+    async (transcribed) => {
+      const f = await fixture(),
+        input = operatorInput(f);
+      if (!transcribed) {
+        delete input.recorded_by;
+        delete input.judged_by.evidence.timestamp;
+        delete input.judged_by.evidence.session_id;
+      }
+      const { file } = await recorded(f, input),
+        before = rows(f);
+      const plan = await planned(f, file);
+      expect(plan.input.scope).toBe("explicit-node-merges");
+      expect(plan.input.nodeMerges).toEqual([{ from: f.same.id, into: f.canonical.id }]);
+      expect(
+        plan.sql
+          .filter((row) => row.table === "semantic_nodes")
+          .map((row) => row.after!.id)
+          .sort(),
+      ).toEqual([f.same.id, f.canonical.id].sort());
+      const audits = plan.additionalSql.filter((row) =>
+        String(row.after?.action).startsWith("judge-self-label:"),
+      );
+      expect(audits).toHaveLength(3);
+      for (const row of file.verdicts) {
+        const audit = audits.find(
+          (change) => change.after!.action === `judge-self-label:${row.verdict}`,
+        )!.after!;
+        expect(audit.process).toBe("correction");
+        const targets = JSON.parse(String(audit.targets));
+        expect(targets.judgment).toEqual({
+          verdict: row.verdict,
+          reason: row.reason,
+          confidence: row.confidence,
+          dossier_hash: row.dossier_hash,
+          judged_by: input.judged_by,
+          ...(transcribed ? { recorded_by: input.recorded_by } : {}),
+        });
+        expect(targets.judgment_id).toBe(
+          fingerprint({
+            node_id: row.node_id,
+            dossier_hash: row.dossier_hash,
+            verdict: row.verdict,
+          }),
+        );
+        expect(targets.node_id).toBe(row.node_id);
+        expect(targets.canonical_node_id).toBe(f.canonical.id);
+        expect(targets.judged_at).toBe(transcribed ? 1234 : null);
+        expect(JSON.parse(String(audit.reversal))).toEqual(
+          row.verdict === "self"
+            ? {
+                kind: "entity_graph_audit",
+                restore: "same run's entity_graph_sql_rows/entity_graph_lance_rows",
+              }
+            : { kind: "none", data_changes: false },
+        );
+      }
+      expect(rows(f)).toEqual(before);
+    },
+  );
+
+  it("applies non-merges once and re-plans them as already_recorded using the same tuple lookup", async () => {
+    const f = await fixture(),
+      { file } = await recorded(f, operatorInput(f, true)),
+      path = backup(f);
+    const plan = await planned(f, file, path),
+      before = rows(f),
+      vectors = await f.table.list();
+    expect(plan.sql).toEqual([]);
+    expect(plan.lance).toEqual([]);
+    await applySelfLabelNodes(plan, { targetNode: f.canonical.id, backupVerified: path });
+    const after = rows(f);
+    delete before.maintenance_audit;
+    delete after.maintenance_audit;
+    expect(after).toEqual(before);
+    expect(await f.table.list()).toEqual(vectors);
+    // An older audit without judgment_id still participates in the same identity lookup.
+    f.db
+      .prepare(
+        "UPDATE maintenance_audit SET targets = json_remove(targets, '$.judgment_id') WHERE action LIKE 'judge-self-label:%'",
+      )
+      .run();
+    const audits = f.audit.list();
+    const again = await planned(f, file, path);
+    expect(again.runId).toBeNull();
+    expect(again.additionalSql).toEqual([]);
+    expect(again.reports.find((report) => report.category === "judgment_audits")!.rows).toEqual(
+      file.verdicts.map((row) => ({
+        node_id: row.node_id,
+        verdict: row.verdict,
+        status: "already_recorded",
+        judgment_id: fingerprint({
+          node_id: row.node_id,
+          dossier_hash: row.dossier_hash,
+          verdict: row.verdict,
+        }),
+      })),
+    );
+    expect(
+      await applySelfLabelNodes(again, { targetNode: f.canonical.id, backupVerified: path }),
+    ).toEqual({ changed: false, run_id: null });
+    expect(f.audit.list()).toEqual(audits);
+  });
+
+  it("records a changed dossier after a model audit, then recognizes the identical operator judgment", async () => {
+    const f = await fixture(),
+      modelFile = await judged(f, true),
+      path = backup(f);
+    await applySelfLabelNodes(await planned(f, modelFile, path), {
+      targetNode: f.canonical.id,
+      backupVerified: path,
+    });
+    const modelAudit = f.audit.list().find((row) => row.targets.node_id === f.other.id)!;
+    expect(modelAudit.targets.judgment).toMatchObject({ verdict: "other", model: modelFile.model });
+    f.db.prepare("UPDATE semantic_nodes SET confidence = 0.6 WHERE id = ?").run(f.other.id);
+    const input = operatorInput(f, true);
+    for (const row of input.verdicts) row.verdict = "other";
+    const { file } = await recorded(f, input),
+      judgment = file.verdicts.find((row) => row.node_id === f.other.id)!;
+    expect(judgment.dossier_hash).not.toBe(
+      modelFile.verdicts.find((row) => row.node_id === f.other.id)!.dossier_hash,
+    );
+    const judgmentId = fingerprint({
+      node_id: judgment.node_id,
+      dossier_hash: judgment.dossier_hash,
+      verdict: judgment.verdict,
+    });
+    expect(judgmentId).not.toBe(modelAudit.targets.judgment_id);
+    const plan = await planned(f, file, path);
+    const changes = plan.additionalSql.filter((row) =>
+      String(row.after?.action).startsWith("judge-self-label:"),
+    );
+    expect(changes).toHaveLength(1);
+    expect(JSON.parse(String(changes[0]!.after!.targets))).toMatchObject({
+      node_id: f.other.id,
+      judgment_id: judgmentId,
+      judgment: { verdict: "other", judged_by: input.judged_by },
+    });
+    await applySelfLabelNodes(plan, { targetNode: f.canonical.id, backupVerified: path });
+    const audits = f.audit.list();
+    expect(audits.find((row) => row.id === modelAudit.id)).toEqual(modelAudit);
+    expect(audits.filter((row) => row.targets.node_id === f.other.id)).toHaveLength(2);
+    const operatorAudit = audits.find((row) => row.targets.judgment_id === judgmentId)!;
+    expect(operatorAudit.targets.judgment).toMatchObject({ judged_by: input.judged_by });
+    expect(operatorAudit.targets.judgment).not.toHaveProperty("model");
+    const again = await planned(f, file, path);
+    expect(again.runId).toBeNull();
+    expect(again.additionalSql).toEqual([]);
+    expect(
+      again.reports.find((report) => report.category === "judgment_audits")!.rows,
+    ).toContainEqual({
+      node_id: f.other.id,
+      verdict: "other",
+      judgment_id: judgmentId,
+      status: "already_recorded",
+    });
+    expect(f.audit.list()).toEqual(audits);
+  });
+
+  it("preserves the version-4 file, dossier hashes and model audit shape when planning", async () => {
+    const f = await fixture(),
+      original = await judged(f);
+    expect(original.version).toBe(4);
+    const hash = fingerprint(original),
+      file = parseVerdictFile(JSON.parse(JSON.stringify(original)));
+    const plan = await planned(f, file);
+    expect(file).toEqual(original);
+    expect(fingerprint(plan.selfLabelJudgments.verdictFile)).toBe(hash);
+    expect(plan.input.nodeMerges).toEqual([{ from: f.same.id, into: f.canonical.id }]);
+    for (const row of original.verdicts) {
+      const audit = plan.additionalSql.find(
+        (change) => change.after?.action === `judge-self-label:${row.verdict}`,
+      )!;
+      expect(JSON.parse(String(audit.after!.targets)).judgment).toEqual({
+        verdict: row.verdict,
+        reason: row.reason,
+        confidence: row.confidence,
+        model: row.model,
+        dossier_hash: row.dossier_hash,
+      });
+    }
+  });
+
+  it.each([
+    "after_journal",
+    "after_sqlite",
+    "after_lance:semantic_nodes",
+    "after_completion",
+    "after_archive",
+  ])("resumes an operator-file journal at %s without repeating audits", async (point) => {
+    const f = await fixture(),
+      { file } = await recorded(f),
+      path = backup(f);
+    const plan = await planned(f, file, path);
+    await expect(
+      applySelfLabelNodes(plan, {
+        targetNode: f.canonical.id,
+        backupVerified: path,
+        checkpoint: (at) => {
+          if (at === point) throw new Error("interrupted");
+        },
+      }),
+    ).rejects.toThrow("interrupted");
+    const resumed = loadSelfLabelPlan(f.dataDir);
+    expect(resumed.selfLabelJudgments.verdictFile).toEqual(file);
+    expect(resumed.selfLabelJudgments.version).toBe(1);
+    await applySelfLabelNodes(resumed, {
+      targetNode: f.canonical.id,
+      backupVerified: path,
+      resume: true,
+    });
+    expect(
+      f.db
+        .prepare("SELECT archived, superseded_by FROM semantic_nodes WHERE id = ?")
+        .get(f.same.id),
+    ).toEqual({ archived: 1, superseded_by: f.canonical.id });
+    const audits = f.audit.list().filter((row) => row.action.startsWith("judge-self-label:"));
+    expect(audits).toHaveLength(3);
+    expect(
+      audits.every(
+        (row) =>
+          fingerprint((row.targets.judgment as Record<string, unknown>).judged_by) ===
+          fingerprint(file.judge.judged_by),
+      ),
+    ).toBe(true);
+    expect(existsSync(graph.pendingPath(f.dataDir))).toBe(false);
+  });
+
+  it("retains the current candidate, dossier, store and target guards for operator plans", async () => {
+    const f = await fixture(),
+      { file } = await recorded(f),
+      spy = vi.spyOn(graph, "planEntityGraphRepair");
+    await expect(planned(f, { ...file, verdicts: file.verdicts.slice(1) })).rejects.toThrow(
+      "Failed or missing judgments",
+    );
+    await expect(planned(f, { ...file, data_dir: "/unrelated-bank" })).rejects.toThrow(
+      "verdict store",
+    );
+    await expect(planned(f, file, backup(f), undefined, f.same.id)).rejects.toThrow(
+      "selected target node since judging",
+    );
+    f.db.prepare("UPDATE semantic_nodes SET description = 'changed' WHERE id = ?").run(f.same.id);
+    await expect(planned(f, file)).rejects.toThrow("Dossier hash mismatch");
+    await f.addNode("person", "別名");
+    await expect(planned(f, file)).rejects.toThrow("Failed or missing judgments");
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("CLI records an input file, plans, applies and resumes it without creating clients", async () => {
+    const f = await fixture(),
+      input = operatorInput(f, true),
+      path = backup(f);
+    const inputPath = join(f.dataDir, "operator.json"),
+      out = join(f.dataDir, "recorded.json");
+    writeFileSync(inputPath, JSON.stringify(input));
+    const model = vi.spyOn(clients, "createLlmFactory"),
+      embedding = vi.spyOn(clients, "createEmbeddingClient");
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(((
+      _text: string,
+      callback?: (error?: Error | null) => void,
+    ) => {
+      callback?.();
+      return true;
+    }) as typeof process.stdout.write);
+    const args = ["--data-dir", f.dataDir, "--target-node", f.canonical.id];
+    await expect(main(["record", ...args])).rejects.toThrow("--operator-verdicts is required");
+    for (const command of ["judge", "plan", "apply"])
+      await expect(main([command, ...args, "--operator-verdicts", inputPath])).rejects.toThrow(
+        "--operator-verdicts is only for record",
+      );
+    await main(["record", ...args, "--operator-verdicts", inputPath, "--out", out]);
+    expect(JSON.parse(String(stdout.mock.calls.at(-1)![0]))).toMatchObject({
+      mode: "record",
+      verdict_file: out,
+    });
+    expect(readVerdictFile(out).version).toBe(5);
+    await main(["plan", ...args, "--verdicts", out]);
+    await main(["apply", ...args, "--verdicts", out, "--backup-verified", path]);
+    await main(["apply", ...args, "--resume", "--backup-verified", path]);
+    await main(["plan", ...args, "--verdicts", out]);
+    expect(JSON.parse(String(stdout.mock.calls.at(-1)![0]))).toMatchObject({
+      status: "no changes",
+    });
+    expect(model).not.toHaveBeenCalled();
+    expect(embedding).not.toHaveBeenCalled();
+    expect(f.audit.list().filter((row) => row.action.startsWith("judge-self-label:"))).toHaveLength(
+      3,
+    );
+  });
 });
