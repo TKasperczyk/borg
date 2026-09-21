@@ -31,6 +31,13 @@ export class OperatorAttentionRepository {
       this.options.db.prepare("SELECT COUNT(*) AS total FROM operator_attention_records").get()
         ?.total ?? 0,
     );
+    const subjectless = Number(
+      this.options.db
+        .prepare(
+          "SELECT COUNT(*) AS subjectless FROM operator_attention_records WHERE subject IS NULL",
+        )
+        .get()?.subjectless ?? 0,
+    );
     const records = this.options.db
       .prepare(
         `
@@ -51,6 +58,6 @@ export class OperatorAttentionRepository {
         }
         return operatorAttentionPromptRow(parsed.data);
       });
-    return { total, records };
+    return { total, subjectless, records };
   }
 }

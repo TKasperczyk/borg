@@ -249,6 +249,7 @@ describe("autonomy scheduler mechanism-evidence provider", () => {
         ({ observed_at: 2_000, window_wakes: [] }) as never;
       const index = {
         total: 1,
+        subjectless: 1,
         records: [
           operatorAttentionPromptRow({
             record_key: "attention",

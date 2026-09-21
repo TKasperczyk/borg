@@ -5523,6 +5523,79 @@ describe("EvidenceLedgerBuilder", () => {
     });
   });
 
+  it.each(["raw_stream", "recent_raw_stream"] as const)(
+    "preserves verbatim prior-session %s recall over derived evidence with the same provenance",
+    async (source) => {
+      const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+      tempDirs.push(tempDir);
+      const streamId = createStreamEntryId();
+      const verbatim = "昨日の約束は、金曜に確認することでした。";
+      const builder = new EvidenceLedgerBuilder({
+        createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+        relationalSlotRepository: { list: () => [] },
+        actionRepository: { list: () => [] },
+        currentSessionTranscriptTokenBudget: 50_000,
+      });
+      const ledger = await builder.build({
+        sessionId: DEFAULT_SESSION_ID,
+        nowMs: NOW_MS,
+        audienceEntityId: null,
+        currentUserMessage: "What did we agree?",
+        workingMemory: makeWorkingMemory(),
+        applicableCommitments: [],
+        retrievedEvidence: [
+          {
+            id: "prior-verbatim",
+            source,
+            text: verbatim,
+            provenance: { streamIds: [streamId] },
+            streamEntrySessionId: createSessionId(),
+            streamEntryKind: "user_msg",
+            recallIntentId: "intent-prior",
+            matchedTerms: [],
+            score: 0.9,
+            scoreBreakdown: {},
+          },
+        ],
+        retrievedEpisodes: [
+          makeRetrievedEpisode({
+            id: createEpisodeId(),
+            narrative: "A derived account of the agreement.",
+            sourceStreamIds: [streamId],
+            citationChain: [],
+          }),
+        ],
+        retrievedSemantic: null,
+        openQuestions: [],
+        pendingCorrections: [],
+        frameAnomaly: null,
+      });
+      expect(ledger.sections.find((section) => section.id === "episodes")?.entries).toHaveLength(1);
+
+      const compacted = compactEvidenceLedger(ledger, {
+        targetTokens: 20_000,
+        hardCapTokens: 40_000,
+      });
+      const rawSection = compacted.ledger.sections.find(
+        (section) => section.id === "retrieved_raw_stream_evidence",
+      )!;
+      expect(rawSection.entries).toEqual([
+        expect.objectContaining({
+          text: verbatim,
+          session_scope: "prior_session",
+          source_type: "prior_session_stream",
+          actor: "user",
+        }),
+      ]);
+      expect(renderSection(rawSection)).toContain(verbatim);
+      expect(renderEvidenceLedger(compacted.ledger)).toContain(verbatim);
+      expect(
+        compacted.ledger.sections.find((section) => section.id === "episodes")?.entries,
+      ).toEqual([]);
+      expect(compacted.traceSummary.dedupedEntryCount).toBe(1);
+    },
+  );
+
   it("dedupes retrieved raw stream evidence against current_session_transcript by stream id", async () => {
     // Sprint 8d.6.3 regression: same underlying stream entry must not
     // appear twice (once in transcript, once in retrieved_raw_stream_evidence).

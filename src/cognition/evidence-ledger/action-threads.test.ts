@@ -4,7 +4,7 @@ import {
   makeActionRecord,
   makeCompletedActionRecord,
 } from "../../test-support/factories/memory.js";
-import { createEntityId } from "../../util/ids.js";
+import { DEFAULT_SESSION_ID, createEntityId, createGoalId } from "../../util/ids.js";
 import {
   MEMORY_DISCLOSURE_INTERNAL_USE_NOTE,
   publicMemoryDisclosureLabel,
@@ -14,6 +14,7 @@ import type { ActionRecord } from "../../memory/actions/index.js";
 import {
   actionSalienceClass,
   allocateActionThreadRenderSlots,
+  buildActionThreads,
   renderActionThreadText,
   renderOlderActionThreadsSummary,
   type ActionThread,
@@ -284,6 +285,54 @@ describe("renderActionThreadText", () => {
     expect(text).toContain("records: 2, current: completed (closed by outcome)");
   });
 
+  it("renders a grouped thread when the oldest record is also the most recently updated", async () => {
+    const goalId = createGoalId();
+    const older = makeActionRecord({
+      goal_id: goalId,
+      description: "確認を続ける。",
+      state: "committed_to_do",
+      created_at: 1_000,
+      updated_at: 3_000,
+    });
+    const newer = makeActionRecord({
+      goal_id: goalId,
+      created_at: 2_000,
+      updated_at: 2_000,
+    });
+    const threads = await buildActionThreads({
+      records: [newer, older],
+      repository: {
+        list: () => [newer, older],
+        findSimilarDescriptionPairs: async () => [
+          { leftId: older.id, rightId: newer.id, similarity: 0.9 },
+        ],
+      },
+      resolver: {
+        currentSessionId: DEFAULT_SESSION_ID,
+        streamEntriesById: new Map(),
+        streamOrderById: new Map(),
+        episodeScopesById: new Map(),
+        episodeSourceStreamIdsById: new Map(),
+      },
+      similarityThreshold: 0.85,
+    });
+    expect(threads).toHaveLength(1);
+    const thread = threads[0]!;
+    expect(thread.records).toHaveLength(2);
+    expect(thread.origin.id).toBe(older.id);
+    expect(thread.current.id).toBe(older.id);
+    const text = renderActionThreadText(thread, undefined);
+    expect(text).toContain("originating_intent (committed_to_do since ");
+    expect(text).toContain("records: 2");
+    expect(text).toContain(
+      "grouped with this one by description similarity rather than by any recorded link",
+    );
+    expect(text).toContain(`current_intent: ${older.description}`);
+    expect(text).not.toContain("\naction:");
+    expect(text).not.toContain("separate record created");
+    expect(text).not.toContain("record-id order");
+  });
+
   // The disposition was printed with no date, so the page could say the originating record is closed
   // and never when. Whether it was still open when the current record was written is what separates
   // a fold the writer declined from a pair it could not see: the extractor's duplicate pool is drawn
@@ -355,6 +404,9 @@ describe("renderActionThreadText", () => {
       `records: 1, current: scheduled (open) since ${new Date(7_000).toISOString()}`,
     );
     expect(text).not.toContain("(open) at ");
+    expect(text).toContain(`action: ${record.description}`);
+    expect(text).not.toContain("grouped with this one");
+    expect(text).not.toContain("current_intent:");
   });
 
   // `selectThreadOrigin` compares `created_at` and falls through to an id tie-break. Every record

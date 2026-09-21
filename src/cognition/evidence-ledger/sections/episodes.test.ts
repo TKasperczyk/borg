@@ -221,12 +221,7 @@ describe("evidence-ledger episode section", () => {
         buckets,
       } as unknown as BuilderSectionContext);
 
-      // `addEntry` routes any prior_session row to prior_session_memory, so which bucket
-      // the row lands in is part of what a corrected scope changes. Read both.
-      return (
-        buckets.get("retrieved_raw_stream_evidence")?.entries[0] ??
-        buckets.get("prior_session_memory")?.entries[0]
-      );
+      return buckets.get("retrieved_raw_stream_evidence")?.entries[0];
     };
 
     const sectionOf = (evidence: EvidenceItem) => {
@@ -276,17 +271,13 @@ describe("evidence-ledger episode section", () => {
       expect(entry?.actor).toBe("assistant");
     });
 
-    it("sends a corrected prior_session row down the existing prior-session path", () => {
-      // The cost side of the correction, asserted rather than left to a deploy: a row the
-      // map could not place stayed in retrieved_raw_stream_evidence at full raw-stream
-      // trust. Named as prior_session it takes the route every resolvable prior-session
-      // row already takes -- a section compacted first, at the prior-session trust cap.
+    it("keeps corrected prior-session raw evidence in its source section with capped trust", () => {
       const evidence = rawStreamEvidence({
         streamEntrySessionId: otherSession,
         streamEntryKind: "agent_msg",
       });
 
-      expect(sectionOf(evidence)).toEqual(["prior_session_memory"]);
+      expect(sectionOf(evidence)).toEqual(["retrieved_raw_stream_evidence"]);
       expect(renderRow(evidence)?.trust_rank).toBeLessThan(RAW_STREAM_TRUST_RANK);
       expect(sectionOf(rawStreamEvidence({ streamEntryKind: "agent_msg" }))).toEqual([
         "retrieved_raw_stream_evidence",

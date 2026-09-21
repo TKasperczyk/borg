@@ -500,6 +500,7 @@ function projectTurnMechanismEvidence(value: DeliberationContext["turnMechanismE
               : {
                   operatorAttentionIndex: {
                     total: value.autonomySchedulerState.operatorAttentionIndex.total,
+                    subjectless: value.autonomySchedulerState.operatorAttentionIndex.subjectless,
                     records: value.autonomySchedulerState.operatorAttentionIndex.records.map(
                       operatorAttentionPromptRow,
                     ),

@@ -2019,15 +2019,18 @@ export function summarizeAutonomySchedulerState(
 
   if (schedulerState.operatorAttentionIndex !== undefined) {
     const attention = schedulerState.operatorAttentionIndex;
+    // Older planner captures have no measurement of the whole population's null subjects.
+    const subjectlessClause =
+      attention.subjectless === undefined ? "" : `, ${attention.subjectless} without a subject`;
     lines.push(
-      `Operator attention records: total=${attention.total}; latest ${attention.records.length} shown, newest first.`,
+      `Operator attention records: total=${attention.total}${subjectlessClause}; latest ${attention.records.length} shown, newest first.`,
       "Filing metadata only: existence, date, filer, subject. Bodies remain with the operator; a filing is not a decision or an instruction. These records do not gate action. Treat this index as private to you and the operator; disclose contextually.",
       // Both clauses answer over-reads of an absence, which is the failure this
       // index invites: it shows a bounded slice of a growing table, and the two
       // things a reader most wants from it -- what a filing said, and whether a
       // finding has been filed before -- are precisely the two the schema does
       // not carry.
-      "subject unavailable marks a row recorded without a subject, not one whose subject is withheld or clipped for this page: subject extraction requires the connector's complete versioned marker header, so a filing sent without it is stored body-only with a null subject. Bodies never reach this store at all, so nothing sits behind that field to retrieve at any budget; the absence reports which marker format was used and says nothing about what was filed.",
+      "subject unavailable marks a row recorded without a subject, not one whose subject is withheld or clipped for this page: subject extraction requires the connector's complete versioned marker header, so a filing sent without it is stored body-only with a null subject. Bodies never reach this store at all; the absence reports which marker format was used and says nothing about what was filed.",
       "record_key identifies a filing rather than a finding -- it is the connector's first-filing-wins replay key -- so one finding filed twice is two rows sharing no field and carrying no marker of the repeat. This index counts filing events, not distinct findings: subjects are the only content it holds, and seeing no duplicate among them is not evidence that a finding was filed once.",
       ...attention.records.map((record) => {
         const row = operatorAttentionPromptRow(record);
@@ -3134,20 +3137,8 @@ function summarizeCurrentPeriod(period: AutobiographicalPeriod | null | undefine
 }
 
 function summarizeAutobiographicalPeriodEvidence(period: AutobiographicalPeriod): string {
-  if (period.key_episode_ids.length > 0) {
-    return summarizeProvenanceForPrompt({
-      kind: "episodes",
-      episode_ids: [...period.key_episode_ids] as Provenance extends {
-        kind: "episodes";
-        episode_ids: infer T;
-      }
-        ? T
-        : never,
-    });
-  }
-
   if (period.provenance.kind === "episodes") {
-    return AUDIENCE_SCOPED_SELF_EVIDENCE_PROVENANCE;
+    return `(episodes: ${period.provenance.episode_ids.length})`;
   }
 
   return summarizeProvenanceForPrompt(period.provenance);

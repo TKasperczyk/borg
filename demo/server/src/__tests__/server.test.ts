@@ -1111,6 +1111,7 @@ describe("demo server", () => {
     expect(await resent.json()).toEqual({ inserted: false });
     expect(borg.operatorAttention.snapshot()).toEqual({
       total: 1,
+      subjectless: 0,
       records: [
         {
           ...record,
@@ -1142,6 +1143,7 @@ describe("demo server", () => {
       expect(response.status).toBe(400);
     }
     expect(borg.operatorAttention.snapshot().total).toBe(2);
+    expect(borg.operatorAttention.snapshot().subjectless).toBe(1);
     expect(JSON.stringify(borg.operatorAttention.snapshot())).not.toContain("NEVER STORE");
   });
 

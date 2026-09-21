@@ -33,6 +33,7 @@ import {
   createActionId,
   createCommitmentId,
   createEntityId,
+  createEpisodeId,
   createRelationalSlotId,
   createStreamEntryId,
 } from "../../../util/ids.js";
@@ -2010,6 +2011,60 @@ describe("buildBaseSystemPrompt", () => {
     expect(standingBlock).toContain("<current_sender_borg_role>creator</current_sender_borg_role>");
   });
 
+  it.each([
+    ["offline", 1, "(offline: self-narrator)"],
+    ["offline", 3, "(offline: self-narrator)"],
+    ["manual", 1, "(manual)"],
+    ["episodes", 1, "(episodes: 1)"],
+    ["episodes", 0, "(episodes: 1)"],
+  ] as const)(
+    "renders real %s period provenance with %i key episodes without ids or byte growth",
+    (kind, keyEpisodeCount, expectedProvenance) => {
+      const sourceId = createEpisodeId();
+      const keyEpisodeIds = Array.from({ length: keyEpisodeCount }, () => createEpisodeId());
+      const prompt = buildBaseSystemPrompt(
+        makeContext({
+          selfSnapshot: {
+            values: [],
+            goals: [],
+            traits: [],
+            currentPeriod: {
+              id: "abp_aaaaaaaaaaaaaaaa" as never,
+              label: "Continuity",
+              start_ts: NOW_MS,
+              end_ts: null,
+              narrative: "Learning to carry experience forward.",
+              key_episode_ids: keyEpisodeIds,
+              themes: [],
+              provenance:
+                kind === "offline"
+                  ? { kind, process: "self-narrator" }
+                  : kind === "episodes"
+                    ? { kind, episode_ids: [sourceId] }
+                    : { kind },
+              created_at: NOW_MS,
+              last_updated: NOW_MS,
+            },
+          },
+        }),
+        PROMPT_OPTIONS,
+      );
+      const block = extractBlock(prompt, "borg_current_period");
+      const line = `Current period: Continuity ${expectedProvenance}`;
+      const oldProvenance =
+        keyEpisodeCount === 0
+          ? "(from audience-scoped evidence)"
+          : `(from ${keyEpisodeIds.slice(0, 2).join(", ")}${keyEpisodeCount > 2 ? ", ..." : ""})`;
+      expect(block).toContain(line);
+      expect(block).not.toContain(sourceId);
+      for (const id of keyEpisodeIds) expect(block).not.toContain(id);
+      expect(block).toContain("disclosure_class=self_private");
+      expect(Buffer.byteLength(line)).toBeLessThan(
+        Buffer.byteLength(`Current period: Continuity ${oldProvenance}`),
+      );
+    },
+  );
+
   it("labels self-memory prompt blocks for executive focus, current period, and recent growth", () => {
     const goalAudienceId = createEntityId();
     const counterpartyEntityId = createEntityId();
@@ -2896,12 +2951,16 @@ describe("buildBaseSystemPrompt", () => {
     },
   );
 
-  it("renders the attention total, dates, filers and subjects beside wake rows on autonomous turns", () => {
+  it.each([
+    [125, 4, -40],
+    [163, 126, -38],
+  ])("renders attention totals %i/%i with a %i byte change", (total, subjectless, byteDelta) => {
     const schedulerState = makeSchedulerStateWithSources();
     const filer = createEntityId();
     schedulerState.windowWakes = [];
     schedulerState.operatorAttentionIndex = {
-      total: 125,
+      total,
+      subjectless,
       records: [
         operatorAttentionPromptRow({
           record_key: "new",
@@ -2934,7 +2993,16 @@ describe("buildBaseSystemPrompt", () => {
         "borg_mechanism_evidence",
       );
     const block = render();
-    expect(block).toContain("Operator attention records: total=125; latest 2 shown, newest first.");
+    expect(block).toContain(
+      `Operator attention records: total=${total}, ${subjectless} without a subject; latest 2 shown, newest first.`,
+    );
+    const before = block
+      .replace(`, ${subjectless} without a subject;`, ";")
+      .replace(
+        "Bodies never reach this store at all; ",
+        "Bodies never reach this store at all, so nothing sits behind that field to retrieve at any budget; ",
+      );
+    expect(Buffer.byteLength(block) - Buffer.byteLength(before)).toBe(byteDelta);
     expect(block).toContain(
       `2023-11-14T22:13:20.000Z | filer=${filer} | subject="件名 &lt;handoff&gt;"`,
     );
@@ -2959,8 +3027,10 @@ describe("buildBaseSystemPrompt", () => {
       expect(row).toContain(`origin_audience=${filer} private-to=unknown`);
       expect(row).toContain("I can use this internally");
     }
-    schedulerState.operatorAttentionIndex = { total: 0, records: [] };
-    expect(render()).toContain("Operator attention records: total=0; latest 0 shown");
+    schedulerState.operatorAttentionIndex = { total: 0, subjectless: 0, records: [] };
+    expect(render()).toContain(
+      "Operator attention records: total=0, 0 without a subject; latest 0 shown",
+    );
   });
 
   it("renders per-wake finalizer and stall counts, their legend, and null-safe totals", () => {
@@ -5572,9 +5642,7 @@ describe("buildBaseSystemPrompt", () => {
       "borg_affective_trajectory",
     );
 
-    expect(block).toContain(
-      "a subset of what was scored rather than a prefix of it",
-    );
+    expect(block).toContain("a subset of what was scored rather than a prefix of it");
     expect(block).toContain(
       "a trigger that opens with a transport tag instead of with text is a row written before that source changed",
     );
@@ -5873,7 +5941,9 @@ describe("buildAutonomousOutboundAuthorizationSection", () => {
     expect(absent).toContain(
       "No route list is rendered on this turn, and that absence is not itself a reading. The host drops this element whole on four separate conditions -- proactive outbound switched off in configuration, the scan counting my recent attempts hitting its cap so the count could not be trusted, the rolling post window already spent, and no authorized target existing at all -- and none of them leaves a mark here.",
     );
-    expect(absent).toContain("A refusal and an empty world look identical from where I am reading.");
+    expect(absent).toContain(
+      "A refusal and an empty world look identical from where I am reading.",
+    );
     // The finalizer availability label reads the same targets.length, so it
     // agrees by construction and cannot corroborate the absence.
     expect(absent).toContain(
@@ -5977,9 +6047,7 @@ describe("buildAutonomousOutboundAuthorizationSection", () => {
     // the finalizer, so the number is stale by the turn's own posts -- and the
     // dangerous reading is the negative one, where an unmoved count is taken as a
     // record that nothing was sent.
-    expect(section).toContain(
-      "unchanged because nothing re-read it, not because nothing was sent",
-    );
+    expect(section).toContain("unchanged because nothing re-read it, not because nothing was sent");
     expect(section).toContain("unless I subtract them myself");
   });
 
