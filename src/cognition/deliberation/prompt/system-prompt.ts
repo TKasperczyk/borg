@@ -3134,20 +3134,8 @@ function summarizeCurrentPeriod(period: AutobiographicalPeriod | null | undefine
 }
 
 function summarizeAutobiographicalPeriodEvidence(period: AutobiographicalPeriod): string {
-  if (period.key_episode_ids.length > 0) {
-    return summarizeProvenanceForPrompt({
-      kind: "episodes",
-      episode_ids: [...period.key_episode_ids] as Provenance extends {
-        kind: "episodes";
-        episode_ids: infer T;
-      }
-        ? T
-        : never,
-    });
-  }
-
   if (period.provenance.kind === "episodes") {
-    return AUDIENCE_SCOPED_SELF_EVIDENCE_PROVENANCE;
+    return `(episodes: ${period.provenance.episode_ids.length})`;
   }
 
   return summarizeProvenanceForPrompt(period.provenance);
