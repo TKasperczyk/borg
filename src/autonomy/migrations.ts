@@ -208,4 +208,17 @@ export const autonomyMigrations = [
       `);
     },
   },
+  {
+    id: 10,
+    name: "autonomy_wakes_turn_provider_failed",
+    up: (db) => {
+      // Historical error prose cannot establish a provider failure.
+      db.exec(`
+        ALTER TABLE autonomy_wakes
+        ADD COLUMN turn_provider_failed INTEGER NOT NULL DEFAULT 0 CHECK (
+          turn_provider_failed IN (0, 1)
+        );
+      `);
+    },
+  },
 ] as const satisfies readonly Migration[];

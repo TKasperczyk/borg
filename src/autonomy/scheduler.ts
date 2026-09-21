@@ -11,6 +11,7 @@ import {
 import { DEFAULT_SESSION_ID, goalIdHelpers, type GoalId, type SessionId } from "../util/ids.js";
 import type { ToolDispatcher } from "../tools/dispatcher.js";
 import { classifySuppressionReason } from "../cognition/generation/suppression-outcome.js";
+import { isLlmProviderTransportError } from "../llm/index.js";
 import type { TurnOrchestrator, TurnResult } from "../cognition/index.js";
 import { turnExecutionMetricsFromError } from "../cognition/turn-execution-metrics.js";
 import { memoryDisclosurePayloadFields } from "../memory/common/disclosure-serializers.js";
@@ -941,6 +942,7 @@ export class AutonomyScheduler {
     const fleetBrakeMetadata = this.readFleetBrakeState();
     const usedInCurrentWindow = this.options.wakeRepository.countSince(budgetCutoff, {
       excludePreparationFailures: true,
+      excludeTurnProviderFailures: true,
     });
     const currentWindowWakes = this.options.wakeRepository.listSince(
       budgetCutoff,
@@ -978,7 +980,7 @@ export class AutonomyScheduler {
       } else {
         group.outcome_counts[wake.outcome] += 1;
       }
-      if (!wake.preparation_failed) {
+      if (!wake.preparation_failed && !wake.turn_provider_failed) {
         oldestWakeAt = oldestWakeAt === null ? wake.ts : Math.min(oldestWakeAt, wake.ts);
       }
     }
@@ -1022,6 +1024,7 @@ export class AutonomyScheduler {
         trigger_name: wake.trigger_name,
         outcome: wake.outcome,
         preparation_failed: wake.preparation_failed,
+        turn_provider_failed: wake.turn_provider_failed,
         headway_bases: wake.headway_bases,
         finalizer_rounds: wake.finalizer_rounds,
         stall_retries: wake.stall_retries,
@@ -1038,6 +1041,7 @@ export class AutonomyScheduler {
         contemplative_used_in_current_window: this.options.wakeRepository.countSince(budgetCutoff, {
           sourceCategory: "contemplative",
           excludePreparationFailures: true,
+          excludeTurnProviderFailures: true,
         }),
         wakes_in_current_window_by_trigger: wakesInCurrentWindowByTrigger,
         // countSince/listSince admit ts === cutoff, so the oldest wake remains
@@ -1240,6 +1244,7 @@ export class AutonomyScheduler {
           const budgetCutoff = this.clock.now() - this.options.budgetWindowMs;
           const totalWakesInWindow = this.options.wakeRepository.countSince(budgetCutoff, {
             excludePreparationFailures: true,
+            excludeTurnProviderFailures: true,
           });
           const reservedContemplativeWakes = Math.min(
             this.options.maxWakesPerWindow,
@@ -1248,6 +1253,7 @@ export class AutonomyScheduler {
           const contemplativeWakesInWindow = this.options.wakeRepository.countSince(budgetCutoff, {
             sourceCategory: "contemplative",
             excludePreparationFailures: true,
+            excludeTurnProviderFailures: true,
           });
           const reservedContemplativeSlotsRemaining = Math.max(
             0,
@@ -1412,6 +1418,7 @@ export class AutonomyScheduler {
                 outcomeSummary,
                 null,
                 executionCounts,
+                { turnProviderFailed: isLlmProviderTransportError(error) },
               );
               if (isGlobalCircuitFailure(error)) {
                 this.updateFleetBrakeAfterGlobalError(

@@ -1832,6 +1832,74 @@ describe("AutonomyScheduler", () => {
     }
   });
 
+  it.each([
+    { provider: true, category: "operational" as const },
+    { provider: false, category: "operational" as const },
+    { provider: true, category: "contemplative" as const },
+    { provider: false, category: "contemplative" as const },
+  ])(
+    "accounts for $category turn failures (provider=$provider)",
+    async ({ provider, category }) => {
+      const clock = new ManualClock(1_000_000);
+      const harness = await createOfflineTestHarness({ clock });
+      const createStreamWriter = (sessionId: typeof DEFAULT_SESSION_ID) =>
+        new StreamWriter({ dataDir: harness.tempDir, sessionId, clock });
+      const failure = new Error("turn failed", {
+        cause: new LLMError("arbitrary wording", {
+          code: provider ? "LLM_CALL_TIMED_OUT" : "LLM_STRUCTURED_OUTPUT_PARSE_FAILED",
+        }),
+      });
+      const turnRunner = {
+        run: vi
+          .fn()
+          .mockRejectedValueOnce(failure)
+          .mockResolvedValue(createStructuralTurnResult({ emissionKind: "suppressed" })),
+      };
+      const source = createTestDueSource(
+        "typed-failure",
+        category === "contemplative" ? "scheduled_wake" : "goal_followup_due",
+        category,
+      );
+      const scheduler = createScheduler({
+        db: harness.db,
+        enabled: true,
+        intervalMs: 1_000,
+        maxWakesPerWindow: category === "contemplative" ? 1 : 2,
+        reservedContemplativeWakesPerWindow: 1,
+        clock,
+        createStreamWriter,
+        watermarkRepository: new StreamWatermarkRepository({ db: harness.db, clock }),
+        turnOrchestrator: turnRunner,
+        toolDispatcher: new ToolDispatcher({ createStreamWriter, clock }),
+        sources: [source],
+      });
+      try {
+        expect(await scheduler.tick()).toMatchObject({ errorCount: 1 });
+        expect(await scheduler.describe()).toMatchObject({
+          budget: {
+            used_in_current_window: provider ? 0 : 1,
+            contemplative_used_in_current_window: !provider && category === "contemplative" ? 1 : 0,
+            next_budget_slot_frees_at: provider ? null : clock.now() + 3_600_001,
+            wakes_in_current_window_by_trigger: [{ wake_count: 1, outcome_counts: { error: 1 } }],
+          },
+          window_wakes: [
+            { outcome: "error", preparation_failed: false, turn_provider_failed: provider },
+          ],
+        });
+        clock.advance(30_000);
+        expect(await scheduler.tick()).toMatchObject(
+          provider ? { firedEvents: 1, budgetSkipped: 0 } : { firedEvents: 0, budgetSkipped: 1 },
+        );
+        expect(turnRunner.run).toHaveBeenCalledTimes(provider ? 2 : 1);
+        expect((await scheduler.describe()).budget.next_budget_slot_frees_at).toBe(
+          (provider ? clock.now() : clock.now() - 30_000) + 3_600_001,
+        );
+      } finally {
+        await harness.cleanup();
+      }
+    },
+  );
+
   it("runs one prepared turn for three dormant questions and stamps all three", async () => {
     const clock = new ManualClock(1_000_000);
     const harness = await createOfflineTestHarness({ clock });

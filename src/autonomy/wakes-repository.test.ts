@@ -203,9 +203,12 @@ describe("AutonomyWakesRepository", () => {
       clock.advance(30 * 24 * 60 * 60_000);
 
       expect(repository.interruptOrphanedWakesAtStartup()).toBe(1);
-      expect(repository.listSince(0, 10).find((wake) => wake.id === ancientOrphan.id)).toMatchObject(
-        { outcome: "interrupted", outcome_detail: AUTONOMY_WAKE_STARTUP_INTERRUPTED_DETAIL },
-      );
+      expect(
+        repository.listSince(0, 10).find((wake) => wake.id === ancientOrphan.id),
+      ).toMatchObject({
+        outcome: "interrupted",
+        outcome_detail: AUTONOMY_WAKE_STARTUP_INTERRUPTED_DETAIL,
+      });
       // The sweep writes the constant directly rather than through
       // clampOutcomeDetail, so nothing truncates it if it grows past the bound.
       expect(AUTONOMY_WAKE_STARTUP_INTERRUPTED_DETAIL.length).toBeLessThanOrEqual(
@@ -390,6 +393,7 @@ describe("AutonomyWakesRepository", () => {
         { id: 7, name: "autonomy_wakes_headway_bases" },
         { id: 8, name: "autonomy_wakes_execution_counts" },
         { id: 9, name: "autonomy_wakes_preparation_failed" },
+        { id: 10, name: "autonomy_wakes_turn_provider_failed" },
       ]);
 
       const table = db
@@ -564,6 +568,76 @@ describe("AutonomyWakesRepository", () => {
         ]),
       );
       expect(() => db.prepare("UPDATE autonomy_wakes SET preparation_failed = 2").run()).toThrow();
+    } finally {
+      db.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("migrates and persists provider exemptions without reclassifying legacy errors", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-autonomy-provider-migration-"));
+    const dbPath = join(tempDir, "borg.db");
+    let db = openDatabase(dbPath, { migrations: autonomyMigrations.slice(0, 9) });
+    try {
+      db.prepare(
+        `INSERT INTO autonomy_wakes
+        (id, ts, trigger_name, wake_source_type, source_category, outcome, outcome_detail)
+        VALUES ('autonomy_wake_aaaaaaaaaaaaaaaa', 1000, 'scheduled_reflection', 'trigger', 'contemplative', 'error', 'provider timeout')`,
+      ).run();
+      db.close();
+      db = openDatabase(dbPath, { migrations: autonomyMigrations });
+      let repository = new AutonomyWakesRepository({ db, clock: new ManualClock(2_000) });
+      const failed = repository.record({
+        trigger_name: "scheduled_reflection",
+        wake_source_type: "trigger",
+        source_category: "contemplative",
+      });
+      repository.recordOutcome(failed.id, "error", "typed provider failure", null, undefined, {
+        turnProviderFailed: true,
+      });
+      // Terminal rows cannot have their budget classification overwritten.
+      repository.recordOutcome(failed.id, "error", "later model error");
+      const headway = repository.record({
+        trigger_name: "goal_followup_due",
+        wake_source_type: "trigger",
+      });
+      repository.recordOutcome(headway.id, "headway", null, null, undefined, {
+        turnProviderFailed: true,
+      });
+      db.close();
+      db = openDatabase(dbPath, { migrations: autonomyMigrations });
+      repository = new AutonomyWakesRepository({ db });
+      expect(repository.countSince(0)).toBe(3);
+      expect(
+        repository.countSince(0, {
+          excludePreparationFailures: true,
+          excludeTurnProviderFailures: true,
+        }),
+      ).toBe(2);
+      expect(
+        repository.countSince(0, {
+          excludeTurnProviderFailures: true,
+          sourceCategory: "contemplative",
+        }),
+      ).toBe(1);
+      expect(repository.summarizeOutcomeDetailsSince(0, "error").total).toBe(2);
+      expect(repository.listSince(0, 10)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: "autonomy_wake_aaaaaaaaaaaaaaaa",
+            turn_provider_failed: false,
+          }),
+          expect.objectContaining({
+            id: failed.id,
+            turn_provider_failed: true,
+            preparation_failed: false,
+          }),
+          expect.objectContaining({ id: headway.id, turn_provider_failed: false }),
+        ]),
+      );
+      expect(() =>
+        db.prepare("UPDATE autonomy_wakes SET turn_provider_failed = 2").run(),
+      ).toThrow();
     } finally {
       db.close();
       rmSync(tempDir, { recursive: true, force: true });

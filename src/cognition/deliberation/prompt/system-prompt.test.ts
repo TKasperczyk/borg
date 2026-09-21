@@ -3020,9 +3020,19 @@ describe("buildBaseSystemPrompt", () => {
     );
   });
 
-  it("renders preparation budget exemptions on their error rows without annotating legacy errors", () => {
+  it("renders preparation and provider budget exemptions on their error rows without annotating legacy errors", () => {
     const description: Pick<AutonomySchedulerDescription, "window_wakes"> = {
       window_wakes: [
+        {
+          ts: NOW_MS - 500,
+          trigger_name: "goal_followup_due",
+          outcome: "error",
+          preparation_failed: false,
+          turn_provider_failed: true,
+          headway_bases: null,
+          finalizer_rounds: 1,
+          stall_retries: 2,
+        },
         {
           ts: NOW_MS - 1_000,
           trigger_name: "open_question_dormant",
@@ -3045,8 +3055,8 @@ describe("buildBaseSystemPrompt", () => {
     };
     const schedulerState = makeSchedulerStateWithSources();
     schedulerState.windowWakes = description.window_wakes;
-    schedulerState.fleetBrake.window_outcomes.error = 2;
-    schedulerState.fleetBrake.window_error_reasons = { total: 2, without_detail: 2, reasons: [] };
+    schedulerState.fleetBrake.window_outcomes.error = 3;
+    schedulerState.fleetBrake.window_error_reasons = { total: 3, without_detail: 3, reasons: [] };
     const block = extractBlock(
       buildBaseSystemPrompt(
         makeContext({
@@ -3063,6 +3073,7 @@ describe("buildBaseSystemPrompt", () => {
     );
     const rows = block.split("\n").filter((line) => line.startsWith("- <wake "));
     expect(rows).toEqual([
+      '- <wake at="2023-11-14T22:13:19.500Z" tr="goal_followup_due" o="error" turn_provider_failed="true" budgeted="false" fr="1" sr="2" />',
       '- <wake at="2023-11-14T22:13:19.000Z" tr="open_question_dormant" o="error" preparation_failed="true" budgeted="false" fr="0" sr="0" />',
       '- <wake at="2023-11-14T22:13:18.000Z" tr="open_question_dormant" o="error" />',
     ]);
