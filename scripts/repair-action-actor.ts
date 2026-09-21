@@ -22,6 +22,8 @@ import {
   refuse,
   repairArgs,
   repairAudit,
+  repairDirectory,
+  repairPendingPath,
   runRepairCli,
   sameSnapshot,
   type DataRepairPlan,
@@ -29,6 +31,7 @@ import {
 } from "./audited-data-repair.js";
 
 const KIND = "repair-action-actor";
+const JOURNAL_VERSION = 1;
 type ActorPlanRow = {
   before: ActionRecord;
   after: ActionRecord;
@@ -37,12 +40,25 @@ type ActorPlanRow = {
   audit: MaintenanceAuditRecordInput;
 };
 export type ActorRepairPlan = DataRepairPlan & {
+  journal_version: typeof JOURNAL_VERSION;
   from: EntityId;
   to: EntityId;
   to_entity: Row;
   rows: ActorPlanRow[];
   mirror_table_present: boolean;
 };
+
+function assertJournalVersion(plan: ActorRepairPlan): void {
+  if (plan.journal_version === JOURNAL_VERSION) return;
+  const dataDir = checkedPath(plan.dataDir);
+  const pending = repairPendingPath(dataDir, KIND);
+  const path = existsSync(pending)
+    ? pending
+    : join(repairDirectory(dataDir, KIND), `${plan.runId}.json`);
+  refuse(
+    `Incompatible actor repair journal ${path}: journal_version ${plan.journal_version ?? "missing"}; expected ${JOURNAL_VERSION}. Preserve this journal and reconcile any partial apply before moving it aside; re-plan with the current script without --resume.`,
+  );
+}
 
 function entityPreflight(db: SqliteDatabase, from: EntityId, to: EntityId): Row {
   if (db.prepare("SELECT id FROM entities WHERE id = ?").get(from))
@@ -75,6 +91,17 @@ async function mirrorRow(table: LanceDbTable | null, id: string): Promise<Row | 
   return row ? { ...row, embedding: Array.from(row.embedding as Iterable<number>) } : null;
 }
 
+function sameMirrorSnapshot(current: Row | null, expected: Row | null): boolean {
+  if (current === null || expected === null) return current === expected;
+  // Identity and actor are mandatory assertions, even for an incomplete snapshot.
+  if (typeof expected.id !== "string" || typeof expected.actor !== "string") return false;
+  // Only additional, unrecorded fields may differ. Every recorded value remains strict.
+  return sameSnapshot(
+    Object.fromEntries(Object.keys(expected).map((key) => [key, current[key]])),
+    expected,
+  );
+}
+
 export async function planActionActorRepair(
   input: { dataDir: string; from: string; to: string },
   now = Date.now(),
@@ -90,6 +117,7 @@ export async function planActionActorRepair(
     const records = new ActionRepository({ db }).list({ actor: from });
     const plan: ActorRepairPlan = {
       ...newPlan(KIND, dataDir, records.length, now),
+      journal_version: JOURNAL_VERSION,
       from,
       to,
       to_entity: toEntity,
@@ -171,9 +199,10 @@ async function preflight(db: SqliteDatabase, plan: ActorRepairPlan): Promise<voi
     for (const row of plan.rows) {
       const current = await mirrorRow(table, row.before.id);
       const done = hasStep(db, plan, row.audit.action);
-      // A journaled SQL commit may have either mirror state, never another vector/metadata value.
-      if (done && sameSnapshot(current, row.mirror_after)) continue;
-      assertSame(current, row.mirror_before, `action mirror ${row.before.id}`);
+      // A journaled SQL commit may have either asserted mirror state.
+      if (done && sameMirrorSnapshot(current, row.mirror_after)) continue;
+      if (!sameMirrorSnapshot(current, row.mirror_before))
+        refuse(`Changed since planning: action mirror ${row.before.id}`);
     }
   });
 }
@@ -181,6 +210,8 @@ export async function applyActionActorRepair(
   plan: ActorRepairPlan,
   options: { resume?: boolean; checkpoint?: RepairCheckpoint } = {},
 ): Promise<void> {
+  // Reject incompatible plans before opening a writable store or touching the journal.
+  assertJournalVersion(plan);
   await applyDataRepair(
     plan,
     {
@@ -222,11 +253,8 @@ export async function applyActionActorRepair(
           for (const row of plan.rows) {
             if (row.mirror_before === null) continue;
             await repo.syncRepairedActorMirror(row.before.id, plan.from);
-            assertSame(
-              await mirrorRow(table, row.before.id),
-              row.mirror_after,
-              `updated mirror ${row.before.id}`,
-            );
+            if (!sameMirrorSnapshot(await mirrorRow(table, row.before.id), row.mirror_after))
+              refuse(`Changed since planning: updated mirror ${row.before.id}`);
             await checkpoint?.(`after_mirror:${row.before.id}`);
           }
         });
@@ -243,6 +271,7 @@ runRepairCli(import.meta.url, async () => {
   let plan: ActorRepairPlan;
   if (args.resume) {
     plan = loadRepairPlan<ActorRepairPlan>(args.dataDir, KIND);
+    assertJournalVersion(plan);
     if (args.values.from !== undefined) assertSame(args.values.from, plan.from, "--from");
     if (args.values.to !== undefined) assertSame(args.values.to, plan.to, "--to");
   } else {

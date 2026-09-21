@@ -27,10 +27,18 @@ Existing mirrors are then updated through the awaited actions repository repair 
 failures propagate and leave the journal pending. No embeddings are requested, and absent
 mirrors are reported rather than created. A run-summary audit precedes journal archival.
 
+The planner writes `journal_version: 1`. Resume rejects missing, older or unknown versions
+before any write and names the pending journal (or completed archive). Preserve an
+incompatible journal, reconcile any partial apply on a stopped copy, then move it outside
+the repair directory and re-plan with the current script without `--resume`. The script
+does not upgrade, discard or replay legacy journals automatically.
+
 Resume rechecks entity preconditions, SQL IDs/actors and every affected mirror/vector. It
-accepts only the planned actor states and exact mirror states, and avoids duplicate SQL
+accepts only the planned actor states and every recorded mirror field, and avoids duplicate SQL
 writes/audits. Metadata changes to sibling rows do not cause stale snapshot failures; a changed
-actor still refuses, including a change during the transaction. Keep writers
+actor still refuses, including a change during the transaction. Mirror comparisons ignore only
+additional fields absent from the recorded snapshot; ID, actor, recorded timestamps and vectors
+remain mandatory checks both after writing and on resume. Keep writers
 stopped until it completes. A zero-change rerun adds nothing. Audit snapshots support an
 operator-reviewed reversal; no automatic undo command is added. Source streams, entity rows,
 review rows and action lifecycle decisions are untouched.

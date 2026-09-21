@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -8,7 +8,7 @@ import {
 } from "../src/memory/actions/repository.js";
 import { actionRecordSchema } from "../src/memory/actions/types.js";
 import { EntityRepository } from "../src/memory/commitments/repository.js";
-import { LanceDbStore } from "../src/storage/lancedb/index.js";
+import { LanceDbStore, LanceDbTable, type LanceDbRow } from "../src/storage/lancedb/index.js";
 import {
   createActionId,
   createEntityId,
@@ -18,7 +18,8 @@ import {
 } from "../src/util/ids.js";
 import { quoteSqlString } from "../src/storage/codecs.js";
 import { repairFixture } from "./audited-data-repair-test-support.js";
-import { loadRepairPlan, repairPendingPath } from "./audited-data-repair.js";
+import { applyDataRepair, loadRepairPlan, repairPendingPath } from "./audited-data-repair.js";
+import { sqlInventory } from "./repair-entity-graph-storage.js";
 import {
   applyActionActorRepair,
   planActionActorRepair,
@@ -95,6 +96,154 @@ async function fixture(withVectors = true) {
   };
 }
 describe("orphan action actor repair", () => {
+  it.each([undefined, 0, 1])(
+    "refuses legacy journals before writes and resumes the current journal (version %s)",
+    async (version) => {
+      const f = await fixture();
+      const plan = await planActionActorRepair(f, 2000);
+      expect(plan.journal_version).toBe(1);
+      const beforeSql = sqlInventory(f.db);
+      const beforeDbBytes = readFileSync(join(f.dataDir, "borg.db"));
+      const mirrors = async () =>
+        (await f.table!.list())
+          .map(
+            (row): LanceDbRow => ({
+              ...row,
+              embedding: Array.from(row.embedding as Iterable<number>),
+            }),
+          )
+          .sort((a, b) => String(a.id).localeCompare(String(b.id)));
+      const beforeMirrors = await mirrors();
+      const interrupt = (point: string) => {
+        if (point === "after_journal") throw new Error("interrupted");
+      };
+      if (version === 1) {
+        await expect(applyActionActorRepair(plan, { checkpoint: interrupt })).rejects.toThrow(
+          "interrupted",
+        );
+      } else {
+        const legacy = structuredClone({ ...plan, journal_version: version });
+        for (const row of legacy.rows) {
+          // The old planner expected a lagging mirror timestamp to be copied from SQL.
+          row.mirror_after!.updated_at = row.after.updated_at;
+          row.audit.targets.mirror_after = row.mirror_after;
+          row.audit.reversal.mirror_expected_after = row.mirror_after;
+        }
+        // Use the real journal writer to produce a valid checksum for the legacy shape.
+        await expect(
+          applyDataRepair(
+            legacy,
+            {
+              preflight() {},
+              async finish() {
+                throw new Error("must stop after journaling");
+              },
+            },
+            { checkpoint: interrupt },
+          ),
+        ).rejects.toThrow("interrupted");
+      }
+      const pending = repairPendingPath(f.dataDir, plan.kind);
+      const journalBytes = readFileSync(pending);
+      const loaded = loadRepairPlan<ActorRepairPlan>(f.dataDir, plan.kind);
+      expect(loaded.journal_version).toBe(version);
+      expect(loaded.rows[0]!.mirror_before!.updated_at).toBe(150);
+      expect(loaded.rows[0]!.mirror_after!.updated_at).toBe(version === 1 ? 150 : 200);
+      if (version !== 1)
+        await expect(applyActionActorRepair(loaded, { resume: true })).rejects.toThrow(pending);
+      const result = spawnSync(
+        process.execPath,
+        [
+          "--import",
+          "tsx",
+          "scripts/repair-action-actor.ts",
+          "--data-dir",
+          f.dataDir,
+          "--apply",
+          "--resume",
+        ],
+        { cwd: process.cwd(), encoding: "utf8", timeout: 20_000 },
+      );
+      if (version === 1) {
+        expect(result.status, result.stderr).toBe(0);
+        expect(f.repo.get(f.action.id)).toEqual({ ...f.action, actor: f.to });
+        await f.table!.checkoutLatest();
+        expect(await mirrors()).toEqual(
+          beforeMirrors.map((row) => ({
+            ...row,
+            actor: row.id === f.action.id ? f.to : row.actor,
+          })),
+        );
+        expect(f.audit.list()).toHaveLength(2);
+        expect(existsSync(pending)).toBe(false);
+      } else {
+        expect(result.status).toBe(1);
+        expect(result.stderr).toContain("Incompatible actor repair journal");
+        expect(result.stderr).toContain(pending);
+        expect(result.stderr).toContain("re-plan");
+        expect(result.stdout).toBe("");
+        expect(readFileSync(pending)).toEqual(journalBytes);
+        expect(readFileSync(join(f.dataDir, "borg.db"))).toEqual(beforeDbBytes);
+        expect(sqlInventory(f.db)).toEqual(beforeSql);
+        await f.table!.checkoutLatest();
+        expect(await mirrors()).toEqual(beforeMirrors);
+        expect(f.audit.list()).toEqual([]);
+      }
+    },
+    30_000,
+  );
+  it.each(["unrecorded_field", "actor", "updated_at", "embedding"])(
+    "post-write and resume mirror checks tolerate only unrecorded fields (%s)",
+    async (field) => {
+      const f = await fixture();
+      const plan = await planActionActorRepair(f, 2000);
+      let written = false;
+      const sync = ActionRepository.prototype.syncRepairedActorMirror;
+      vi.spyOn(ActionRepository.prototype, "syncRepairedActorMirror").mockImplementation(
+        async function (this: ActionRepository, ...args) {
+          await sync.apply(this, args);
+          written = true;
+        },
+      );
+      const list = LanceDbTable.prototype.list;
+      vi.spyOn(LanceDbTable.prototype, "list").mockImplementation(async function (
+        this: LanceDbTable,
+        ...args
+      ) {
+        const rows = await list.apply(this, args);
+        if (!written) return rows;
+        // Model an extra storage field or an unexpected change after the mirror write.
+        return rows.map((row) =>
+          row.id !== f.action.id
+            ? row
+            : {
+                ...row,
+                [field]:
+                  field === "actor"
+                    ? f.from
+                    : field === "updated_at"
+                      ? 999
+                      : field === "embedding"
+                        ? [1, 0, 0]
+                        : "new storage metadata",
+              },
+        );
+      });
+      const apply = applyActionActorRepair(plan);
+      if (field === "unrecorded_field") {
+        await apply;
+        await applyActionActorRepair(loadRepairPlan<ActorRepairPlan>(f.dataDir, plan.kind), {
+          resume: true,
+        });
+        expect(f.audit.list()).toHaveLength(2);
+        expect(existsSync(repairPendingPath(f.dataDir, plan.kind))).toBe(false);
+      } else {
+        await expect(apply).rejects.toThrow(`updated mirror ${f.action.id}`);
+        expect(f.audit.list()).toHaveLength(1);
+        expect(existsSync(repairPendingPath(f.dataDir, plan.kind))).toBe(true);
+      }
+    },
+  );
   it("lists only exact orphan actors and applies audited repository/mirror updates without re-embedding", async () => {
     const f = await fixture();
     const plan = await planActionActorRepair(f, 2000);
