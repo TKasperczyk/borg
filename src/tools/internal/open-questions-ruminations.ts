@@ -75,6 +75,11 @@ const openQuestionsRuminationsOutputSchema = z
   .object({
     ruminations: z.array(ruminationForCognitionSchema),
     has_more: z.boolean(),
+    // Present when the queried question is a merge tombstone. The merge moved its notes onto this
+    // id, so an empty page there is a record living under another handle rather than a question
+    // that was never worked -- a distinction nothing else in this result carries. One hop: the id
+    // named here may itself have been merged onward.
+    open_question_merged_into: openQuestionIdSchema.optional(),
   })
   .strict();
 
@@ -87,6 +92,9 @@ export type OpenQuestionsRuminationsToolOptions = {
   }) => OpenQuestionRumination[] | Promise<OpenQuestionRumination[]>;
   getOpenQuestion: (id: OpenQuestionId) => OpenQuestion | null | Promise<OpenQuestion | null>;
   countRuminations: (id: OpenQuestionId) => number | Promise<number>;
+  mergeTombstonePrimaryId: (
+    id: OpenQuestionId,
+  ) => OpenQuestionId | null | Promise<OpenQuestionId | null>;
   clock?: Clock;
 };
 
@@ -143,6 +151,14 @@ export function createOpenQuestionsRuminationsTool(
       });
       const pageCandidates = candidates.slice(0, limit);
       const moreInStore = candidates.length > pageCandidates.length;
+      // A read keyed on a merged-away question returns nothing, because the merge carried its
+      // notes onto the primary. Without this pointer that empty page is indistinguishable from a
+      // question the loop never wrote a note against.
+      const mergedInto =
+        input.open_question_id === undefined
+          ? null
+          : await options.mergeTombstonePrimaryId(input.open_question_id);
+      const mergePointer = mergedInto === null ? {} : { open_question_merged_into: mergedInto };
       const nowMs = clock.now();
       const ruminations: RuminationForCognition[] = [];
 
@@ -188,6 +204,7 @@ export function createOpenQuestionsRuminationsTool(
         const exactOutput = {
           ruminations: [...ruminations, row],
           has_more: hasMoreAfterCandidate,
+          ...mergePointer,
         } satisfies OpenQuestionsRuminationsOutput;
 
         if (resultFitsBudget(exactOutput, DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET)) {
@@ -196,12 +213,13 @@ export function createOpenQuestionsRuminationsTool(
         }
 
         if (ruminations.length > 0) {
-          return { ruminations, has_more: true };
+          return { ruminations, has_more: true, ...mergePointer };
         }
 
         const metadataOutput = {
           ruminations: [withoutPayload(row)],
           has_more: hasMoreAfterCandidate,
+          ...mergePointer,
         };
         if (!resultFitsBudget(metadataOutput, DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET)) {
           throw new ToolError("Rumination metadata exceeds the result budget", {
@@ -214,6 +232,7 @@ export function createOpenQuestionsRuminationsTool(
       return {
         ruminations,
         has_more: ruminations.length < pageCandidates.length || moreInStore,
+        ...mergePointer,
       };
     },
   };

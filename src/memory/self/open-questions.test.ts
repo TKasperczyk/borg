@@ -283,6 +283,55 @@ describe("OpenQuestionsRepository", () => {
     }
   });
 
+  it("reads a merge pointer only from the tombstone key minted for that row", () => {
+    const db = openDatabase(":memory:", {
+      migrations: selfMigrations,
+    });
+    const repository = new OpenQuestionsRepository({
+      db,
+      clock: new FixedClock(10_000),
+    });
+
+    try {
+      const primary = repository.add({
+        question: "Which question survives the merge?",
+        urgency: 0.5,
+        source: "reflection",
+        provenance: manualProvenance,
+      });
+      const duplicate = repository.add({
+        question: "Is this the same question asked twice?",
+        urgency: 0.5,
+        source: "reflection",
+        provenance: manualProvenance,
+      });
+      const untouched = repository.add({
+        question: "What was never merged?",
+        urgency: 0.5,
+        source: "reflection",
+        provenance: manualProvenance,
+      });
+
+      repository.mergeDuplicate(primary.id, duplicate.id, {}, "Merged into the primary.");
+
+      expect(repository.mergeTombstonePrimaryId(duplicate.id)).toBe(primary.id);
+      // A content key is not a pointer, and neither is a row that does not exist.
+      expect(repository.mergeTombstonePrimaryId(primary.id)).toBeNull();
+      expect(repository.mergeTombstonePrimaryId(untouched.id)).toBeNull();
+
+      // update() recomputes dedupe_key from the row's content, so a tombstone key can be replaced
+      // by one that parses but names a different duplicate. That is not this row's pointer.
+      db.prepare("UPDATE open_questions SET dedupe_key = ? WHERE id = ?").run(
+        `merged:${primary.id}:into:${untouched.id}`,
+        duplicate.id,
+      );
+
+      expect(repository.mergeTombstonePrimaryId(duplicate.id)).toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+
   it("retains abandonment rumination evidence while resolution clears the active lifecycle", () => {
     const db = openDatabase(":memory:", {
       migrations: selfMigrations,

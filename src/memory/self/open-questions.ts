@@ -557,11 +557,46 @@ function reparentOpenQuestionHandles(
   return result;
 }
 
+const OPEN_QUESTION_MERGE_TOMBSTONE_PREFIX = "merged:";
+const OPEN_QUESTION_MERGE_TOMBSTONE_INFIX = ":into:";
+
 function openQuestionMergeTombstoneDedupeKey(
   duplicateId: OpenQuestionId,
   primaryId: OpenQuestionId,
 ): string {
-  return `merged:${duplicateId}:into:${primaryId}`;
+  return `${OPEN_QUESTION_MERGE_TOMBSTONE_PREFIX}${duplicateId}${OPEN_QUESTION_MERGE_TOMBSTONE_INFIX}${primaryId}`;
+}
+
+// Inverse of the key above. The grammar is machine-minted by the merge itself and carries only
+// ids, so reading it back is a source-handle lookup, not an interpretation of the row's prose.
+function parseOpenQuestionMergeTombstoneDedupeKey(
+  dedupeKey: string | null,
+): { duplicateId: OpenQuestionId; primaryId: OpenQuestionId } | null {
+  if (dedupeKey === null || !dedupeKey.startsWith(OPEN_QUESTION_MERGE_TOMBSTONE_PREFIX)) {
+    return null;
+  }
+
+  const infixIndex = dedupeKey.indexOf(
+    OPEN_QUESTION_MERGE_TOMBSTONE_INFIX,
+    OPEN_QUESTION_MERGE_TOMBSTONE_PREFIX.length,
+  );
+
+  if (infixIndex === -1) {
+    return null;
+  }
+
+  const duplicateId = openQuestionIdSchema.safeParse(
+    dedupeKey.slice(OPEN_QUESTION_MERGE_TOMBSTONE_PREFIX.length, infixIndex),
+  );
+  const primaryId = openQuestionIdSchema.safeParse(
+    dedupeKey.slice(infixIndex + OPEN_QUESTION_MERGE_TOMBSTONE_INFIX.length),
+  );
+
+  if (!duplicateId.success || !primaryId.success) {
+    return null;
+  }
+
+  return { duplicateId: duplicateId.data, primaryId: primaryId.data };
 }
 
 export class OpenQuestionsRepository {
@@ -1379,6 +1414,27 @@ export class OpenQuestionsRepository {
       .get(parsedId) as { total: number } | undefined;
 
     return row?.total ?? 0;
+  }
+
+  // Where a merged-away question's record went. A merge moves the duplicate's notes, stamps and
+  // handles onto the primary and leaves the pointer in dedupe_key, so a reader holding the
+  // duplicate's id otherwise sees an empty record and cannot tell it apart from a question the
+  // loop never worked. One hop: the primary may itself be a tombstone.
+  mergeTombstonePrimaryId(openQuestionId: OpenQuestionId): OpenQuestionId | null {
+    const parsedId = openQuestionIdSchema.parse(openQuestionId);
+    const row = this.db
+      .prepare("SELECT dedupe_key FROM open_questions WHERE id = ?")
+      .get(parsedId) as { dedupe_key: string | null } | undefined;
+
+    if (row === undefined) {
+      return null;
+    }
+
+    const parsed = parseOpenQuestionMergeTombstoneDedupeKey(row.dedupe_key);
+
+    // The key names the duplicate it was minted for. A key naming some other row is not this row's
+    // pointer and is not read as one.
+    return parsed === null || parsed.duplicateId !== parsedId ? null : parsed.primaryId;
   }
 
   // Time-range browse over ruminations regardless of the question's current status: a note written

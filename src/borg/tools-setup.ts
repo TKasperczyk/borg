@@ -296,6 +296,8 @@ export function buildToolDispatcher(options: BuildToolDispatcherOptions): ToolDi
           options.openQuestionsRepository.listRuminationsInRange(listOptions),
         getOpenQuestion: (id) => options.openQuestionsRepository.get(id),
         countRuminations: (id) => options.openQuestionsRepository.countRuminations(id),
+        mergeTombstonePrimaryId: (id) =>
+          options.openQuestionsRepository.mergeTombstonePrimaryId(id),
       }),
     )
     .register(

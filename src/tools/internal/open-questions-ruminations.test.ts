@@ -26,6 +26,7 @@ function toolFor(repository: OpenQuestionsRepository) {
     listRuminations: (input) => repository.listRuminationsInRange(input),
     getOpenQuestion: (id) => repository.get(id),
     countRuminations: (id) => repository.countRuminations(id),
+    mergeTombstonePrimaryId: (id) => repository.mergeTombstonePrimaryId(id),
     clock: new FixedClock(100_000),
   });
 }
@@ -337,6 +338,119 @@ describe("tool.openQuestions.ruminations", () => {
       expect(output.ruminations.map((row) => row.question_recorded_rumination_notes)).toEqual([
         5, 5,
       ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("names where a merged question's record went instead of returning a bare empty page", async () => {
+    const { db, repository } = openRepository();
+
+    try {
+      const primary = repository.add({
+        question: "Which of these is the question I am actually holding?",
+        urgency: 0.4,
+        source: "reflection",
+        provenance: manualProvenance,
+      });
+      const duplicate = repository.add({
+        question: "Am I holding two versions of one question?",
+        urgency: 0.4,
+        source: "reflection",
+        provenance: manualProvenance,
+      });
+      const dismissed = repository.add({
+        question: "Did anything ever cite this?",
+        urgency: 0.4,
+        source: "reflection",
+        provenance: manualProvenance,
+      });
+      repository.recordRumination({
+        open_question_id: duplicate.id,
+        note: "The duplicate's own pass, written before the merge.",
+        source_process: "offline_ruminator",
+        provenance: manualProvenance,
+        created_at: 11_000,
+      });
+      repository.mergeDuplicate(primary.id, duplicate.id, {}, "Merged into the primary.");
+      repository.abandon(dismissed.id, "stale_no_traction");
+
+      const tool = toolFor(repository);
+      const range = {
+        since: new Date(0).toISOString(),
+        until: new Date(20_000).toISOString(),
+      };
+      const tombstone = await tool.invoke(
+        { ...range, open_question_id: duplicate.id },
+        toolContext,
+      );
+
+      // The merge carried the note onto the primary, so the duplicate's own page is empty and
+      // has_more is false. The pointer is what separates that from a question never ruminated.
+      expect(tombstone.ruminations).toEqual([]);
+      expect(tombstone.has_more).toBe(false);
+      expect(tombstone.open_question_merged_into).toBe(primary.id);
+      expect(tool.outputSchema.safeParse(tombstone).success).toBe(true);
+
+      const carried = await tool.invoke({ ...range, open_question_id: primary.id }, toolContext);
+
+      expect(carried.ruminations.map((row) => row.note)).toEqual([
+        "The duplicate's own pass, written before the merge.",
+      ]);
+      expect(carried.open_question_merged_into).toBeUndefined();
+
+      // Abandonment that was not a merge leaves no pointer, and neither does a range browse.
+      const abandoned = await tool.invoke(
+        { ...range, open_question_id: dismissed.id },
+        toolContext,
+      );
+      const browse = await tool.invoke(range, toolContext);
+
+      expect(abandoned.open_question_merged_into).toBeUndefined();
+      expect(browse.open_question_merged_into).toBeUndefined();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("follows a merge chain one hop at a time rather than collapsing it", async () => {
+    const { db, repository } = openRepository();
+
+    try {
+      const terminal = repository.add({
+        question: "The question the chain ends on.",
+        urgency: 0.4,
+        source: "reflection",
+        provenance: manualProvenance,
+      });
+      const middle = repository.add({
+        question: "The question merged onward after taking a duplicate.",
+        urgency: 0.4,
+        source: "reflection",
+        provenance: manualProvenance,
+      });
+      const first = repository.add({
+        question: "The question merged first.",
+        urgency: 0.4,
+        source: "reflection",
+        provenance: manualProvenance,
+      });
+
+      repository.mergeDuplicate(middle.id, first.id, {}, "Merged into the middle question.");
+      repository.mergeDuplicate(terminal.id, middle.id, {}, "Merged onward.");
+
+      const tool = toolFor(repository);
+      const range = {
+        since: new Date(0).toISOString(),
+        until: new Date(20_000).toISOString(),
+      };
+      const fromFirst = await tool.invoke({ ...range, open_question_id: first.id }, toolContext);
+      const fromMiddle = await tool.invoke({ ...range, open_question_id: middle.id }, toolContext);
+
+      // Each hop is a separate true statement about a separate row; collapsing them would report
+      // a merge that never happened between these two ids.
+      expect(fromFirst.open_question_merged_into).toBe(middle.id);
+      expect(fromMiddle.open_question_merged_into).toBe(terminal.id);
     } finally {
       db.close();
     }
