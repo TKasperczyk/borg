@@ -1253,6 +1253,79 @@ describe("SelfNarratorProcess", () => {
     }
   });
 
+  it("leads a full period's revision evidence with the episodes this pass cited", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        createSelfNarratorResponse({
+          period_decision: "continue_current",
+          observation: {
+            category: "understanding",
+            what_changed: "Deployment review became a continuous practice.",
+            before_description: "Deployment review felt episodic.",
+            after_description: "Deployment review now connects planning and operations.",
+            confidence: 0.8,
+            evidence_episode_ids: ["ep_aaaaaaaaaaaaaaaa", "ep_bbbbbbbbbbbbbbbb"],
+          },
+        }),
+      ],
+    });
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+    });
+    const process = new SelfNarratorProcess({
+      autobiographicalRepository: harness.autobiographicalRepository,
+      growthMarkersRepository: harness.growthMarkersRepository,
+      registry: harness.registry,
+    });
+
+    try {
+      const priorKeyEpisodeIds = Array.from({ length: 8 }, () => createEpisodeId());
+      const current = harness.autobiographicalRepository.upsertPeriod({
+        label: "2026-Q1",
+        start_ts: Date.UTC(2026, 0, 1),
+        narrative: "Planning quarter.",
+        key_episode_ids: priorKeyEpisodeIds,
+        themes: ["planning"],
+        provenance: { kind: "offline", process: "self-narrator" },
+      });
+      await harness.episodicRepository.createEpisode(
+        createEpisodeFixture({
+          id: "ep_aaaaaaaaaaaaaaaa" as never,
+          title: "Deploy rehearsal",
+          narrative: "Deployment review became concrete.",
+          tags: ["deploy"],
+          created_at: Date.UTC(2026, 6, 10),
+          updated_at: Date.UTC(2026, 6, 10),
+        }),
+      );
+      await harness.episodicRepository.createEpisode(
+        createEpisodeFixture({
+          id: "ep_bbbbbbbbbbbbbbbb" as never,
+          title: "Deploy follow-up",
+          narrative: "Deployment review stayed active.",
+          tags: ["deploy"],
+          created_at: Date.UTC(2026, 6, 11),
+          updated_at: Date.UTC(2026, 6, 11),
+        }),
+      );
+
+      const plan = await process.plan(harness.createContext(), {});
+      await process.apply(harness.createContext(), plan);
+
+      expect(harness.reviewQueueRepository.getOpen()[0]?.refs).toMatchObject({
+        target_id: current.id,
+        patch: { key_episode_ids: priorKeyEpisodeIds },
+        evidence_episode_ids: [
+          "ep_aaaaaaaaaaaaaaaa",
+          "ep_bbbbbbbbbbbbbbbb",
+          ...priorKeyEpisodeIds.slice(0, 6),
+        ],
+      });
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
   it("skips invalid observations that do not cite enough supporting episodes", async () => {
     const llm = new FakeLLMClient({
       responses: [

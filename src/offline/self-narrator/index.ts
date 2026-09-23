@@ -92,6 +92,8 @@ const selfNarratorPlanItemSchema = z.discriminatedUnion("action", [
     previous: autobiographicalPeriodSchema,
     narrative: z.string(),
     key_episode_ids: z.array(episodeIdSchema),
+    // This pass's own citations; key_episode_ids stops admitting them once it holds eight.
+    evidence_episode_ids: z.array(episodeIdSchema).default([]),
     disclosure_label: memoryDisclosureLabelSchema,
     themes: z.array(z.string().min(1)),
   }),
@@ -693,6 +695,7 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
           previous: currentPeriod,
           narrative: nextNarrative ?? currentPeriod.narrative,
           key_episode_ids: nextKeyEpisodes,
+          evidence_episode_ids: keyEpisodeIds,
           disclosure_label: nextDisclosureLabel,
           themes: nextThemes,
         });
@@ -884,7 +887,12 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
                 themes: item.themes,
               },
               proposed_provenance: processProvenance,
-              evidence_episode_ids: item.key_episode_ids,
+              // The resolver judges the revision on a bounded head of this list, so it leads
+              // with what this pass cited rather than with the period's earliest key episodes.
+              evidence_episode_ids: uniqueValues([
+                ...item.evidence_episode_ids,
+                ...item.key_episode_ids,
+              ]).slice(0, 8),
             },
             reason: `self-narrator proposed revising autobiographical period ${item.period_id}`,
           });
