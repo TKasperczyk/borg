@@ -3764,6 +3764,83 @@ describe("AutonomyScheduler", () => {
     await scheduler.stop();
   });
 
+  // What the in-flight clause on a non-autonomous page may claim: the refused
+  // fire is a tick that cannot start, not a wake -- the in-flight tick starts
+  // its next admitted wake itself, with the flag still true.
+  it("starts the next admitted wake inside a tick whose interval fires are refused", async () => {
+    const clock = new ManualClock(1_000_000);
+    const harness = await createOfflineTestHarness({ clock });
+    cleanup = harness.cleanup;
+    const goalSource = createTestDueSource();
+    goalSource.scan = vi.fn(goalSource.scan);
+    const conditionSource = createTestDueSource("condition-1", "commitment_revoked");
+    conditionSource.scan = vi.fn().mockResolvedValue([
+      {
+        id: "condition-1",
+        sourceName: "commitment_revoked",
+        sourceType: "trigger",
+        watermarkProcessName: "autonomy:test:condition-1",
+        sortTs: 2_000,
+        payload: { commitment_id: "cmt_aaaaaaaaaaaaaaaa" },
+      },
+    ]);
+    let finishFirstTurn!: (result: TurnResult) => void;
+    const inFlightWhenSecondTurnStarted: boolean[] = [];
+    let scheduler!: AutonomyScheduler;
+    const turnRunner = {
+      run: vi
+        .fn()
+        .mockImplementationOnce(
+          () =>
+            new Promise<TurnResult>((resolve) => {
+              finishFirstTurn = resolve;
+            }),
+        )
+        .mockImplementationOnce(async () => {
+          inFlightWhenSecondTurnStarted.push((await scheduler.describe()).tick_in_flight);
+          return createStructuralTurnResult({ emissionKind: "message" });
+        }),
+    };
+    let intervalCallback!: () => void;
+    scheduler = createScheduler({
+      db: harness.db,
+      enabled: true,
+      intervalMs: 10_000,
+      maxWakesPerWindow: 6,
+      clock,
+      createStreamWriter: (sessionId) =>
+        new StreamWriter({ dataDir: harness.tempDir, sessionId, clock }),
+      watermarkRepository: new StreamWatermarkRepository({ db: harness.db, clock }),
+      turnOrchestrator: turnRunner,
+      toolDispatcher: new ToolDispatcher({
+        createStreamWriter: (sessionId) =>
+          new StreamWriter({ dataDir: harness.tempDir, sessionId, clock }),
+        clock,
+      }),
+      sources: [goalSource, conditionSource],
+      setIntervalFn: ((callback: () => void) => {
+        intervalCallback = callback;
+        return 1;
+      }) as unknown as typeof setInterval,
+      clearIntervalFn: vi.fn(),
+    });
+    scheduler.start();
+    const tick = scheduler.tick();
+    await vi.waitFor(() => expect(turnRunner.run).toHaveBeenCalledTimes(1));
+    clock.advance(10_000);
+    intervalCallback();
+    expect(await scheduler.describe()).toMatchObject({
+      tick_in_flight: true,
+      dropped_interval_fires: { since_interval_armed: 1, current_tick: 1 },
+    });
+    finishFirstTurn(createStructuralTurnResult({ emissionKind: "message" }));
+    expect(await tick).toMatchObject({ firedEvents: 2, droppedIntervalFires: 1 });
+    expect(turnRunner.run).toHaveBeenCalledTimes(2);
+    expect(inFlightWhenSecondTurnStarted).toEqual([true]);
+    expect(goalSource.scan).toHaveBeenCalledTimes(1);
+    await scheduler.stop();
+  });
+
   it("respects maxWakesPerWindow", async () => {
     const clock = new ManualClock(1_000_000);
     const harness = await createOfflineTestHarness({

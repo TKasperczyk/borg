@@ -2161,7 +2161,7 @@ export function summarizeAutonomySchedulerState(
     ? "No tick was in flight at that read, so an overdue amount below is the interval running behind, not a tick holding the stamp."
     : turnOrigin === "autonomous"
       ? "A tick was in flight at that read -- but this prompt is being built inside that tick, so the flag is true by construction on an autonomous turn and discriminates nothing here; the refusal count that follows does, being a fact about how long that tick has held rather than about which turn is reading it."
-      : "A tick was in flight at that read, and the interval drops every fire while one is: no wake can start, and the tick stamp below is held rather than moving, so an overdue amount there is a stuck tick and not a lagging interval.";
+      : "A tick was in flight at that read, and the interval drops every fire while one is: no tick can start, and the tick stamp below is held rather than moving, so an overdue amount there is a long tick and not a lagging interval.";
   lines.push(
     schedulerState.enabled
       ? `Scheduler loop: enabled in configuration -- that word is the config flag the scheduler was built with, not an observation that the loop is alive. ${inFlightClause}${droppedClause} Tick: ${tickClause}${gridClause}`

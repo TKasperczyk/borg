@@ -3179,12 +3179,12 @@ describe("buildBaseSystemPrompt", () => {
       absent: "of them by the tick that was in flight",
     },
     {
-      name: "stuck tick names itself on one read",
+      name: "a long tick names itself on one read",
       tickInFlight: true,
       droppedIntervalFires: { since_interval_armed: 121, current_tick: 117 },
       turnOrigin: "user" as const,
       expected: [
-        "a stuck tick and not a lagging interval",
+        "no tick can start, and the tick stamp below is held rather than moving, so an overdue amount there is a long tick and not a lagging interval",
         "Interval fires refused because a tick was already running: 121 since the loop was last armed, 117 of them by the tick that was in flight at that read.",
       ],
       absent: null,
