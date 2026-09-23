@@ -549,6 +549,40 @@ function auditContextFor(
 }
 
 describe("simulator overseer", () => {
+  it("keeps high effort across an overseer tool reminder", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "borg-overseer-effort-"));
+    try {
+      const requests: CapturedRequest[] = [];
+      const terminalClient = createClient([]);
+      await runOverseer({
+        transport: transportFor([]),
+        metricsPath: join(dir, "missing-metrics.jsonl"),
+        turnCounter: 1,
+        totalTurns: 1,
+        client: {
+          messages: {
+            stream(params) {
+              requests.push(params);
+              if (requests.length === 1)
+                return {
+                  async finalMessage() {
+                    return {
+                      content: [{ type: "thinking", thinking: "", signature: "sig" }],
+                    } as never;
+                  },
+                };
+              return terminalClient.messages.stream(params);
+            },
+          },
+        },
+      });
+      expect(requests).toHaveLength(2);
+      for (const request of requests) expect(request.output_config).toEqual({ effort: "high" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("demotes same-impact carryover findings without changing the cached incident", () => {
     const agentEntry = streamEntry({
       kind: "agent_msg",

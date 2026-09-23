@@ -18,6 +18,7 @@ import {
   type StreamEntryId,
 } from "../util/ids.js";
 import type { TurnTracer } from "../tracing/tracer.js";
+import { traceLlmToolChoiceTranslationHook } from "../tracing/llm-call-trace.js";
 import type { ImageMediaType, StoredAttachmentRecord } from "./types.js";
 import type { AttachmentRepository } from "./repository.js";
 
@@ -756,12 +757,11 @@ export class ImagePerceptionRepository {
 
     const uniquePayloadIds = [...new Set(payloadIds)];
     const placeholders = uniquePayloadIds.map(() => "?").join(", ");
-    const audienceWhere =
-      includeAllAudiences
-        ? ""
-        : audienceEntityId === null
-          ? "AND 0"
-          : `AND artifacts.audience_entity_id = ${quoteSqlString(audienceEntityId)}`;
+    const audienceWhere = includeAllAudiences
+      ? ""
+      : audienceEntityId === null
+        ? "AND 0"
+        : `AND artifacts.audience_entity_id = ${quoteSqlString(audienceEntityId)}`;
     const rows = this.db
       .prepare(
         `SELECT artifacts.artifact_id, artifacts.attachment_id, artifacts.payload_id,
@@ -846,8 +846,15 @@ async function callPerceptionWithRetry(input: {
   llmClient: LLMClient;
   model: string;
   attachmentId: AttachmentId;
+  tracer?: TurnTracer;
+  turnId?: string;
 }): Promise<ImagePerceptionArtifact> {
   let lastError: unknown;
+  const onToolChoiceTranslated = traceLlmToolChoiceTranslationHook({
+    tracer: input.tracer,
+    turnId: input.turnId,
+    label: "image-perception",
+  });
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
@@ -871,6 +878,7 @@ async function callPerceptionWithRetry(input: {
         max_tokens: 4096,
         temperature: 0,
         budget: "image-perception",
+        ...(onToolChoiceTranslated === undefined ? {} : { onToolChoiceTranslated }),
       });
       const call = findPerceptionToolCall(result);
 
@@ -976,6 +984,8 @@ export class ImagePerceptionService {
           llmClient: this.options.llmClient,
           model: this.model,
           attachmentId: attachment.attachment_id,
+          tracer: this.options.tracer,
+          turnId: input.turnId,
         }));
       const embeddingText = buildImagePerceptionEmbeddingText(artifact);
       const payloadId = createImagePerceptionId();
@@ -1078,9 +1088,9 @@ export class ImagePerceptionService {
       media_type: payload.media_type,
       perception_prompt_version: payload.perception_prompt_version,
       model: payload.model,
-        audience: attachment.audience,
-        audience_entity_id: attachment.audience_entity_id,
-        active: attachment.active,
+      audience: attachment.audience,
+      audience_entity_id: attachment.audience_entity_id,
+      active: attachment.active,
       created_turn_global: attachment.created_turn_global,
       created_at: attachment.created_at,
       text_embedding_ref: `image_perception_embeddings:${payload.payload_id}`,

@@ -64,6 +64,8 @@ async function runEmissionFinalizer(
     finalizerDynamicPromptCacheEnabled?: boolean;
     finalizerTransport?: Parameters<typeof runFinalizer>[0]["finalizerTransport"];
     finalizerAttempt?: Parameters<typeof runFinalizer>[0]["finalizerAttempt"];
+    thinking?: Parameters<typeof runFinalizer>[0]["thinking"];
+    effort?: Parameters<typeof runFinalizer>[0]["effort"];
     finalizerSurfaceVariant?: Parameters<typeof runFinalizer>[0]["finalizerSurfaceVariant"];
     tracer?: Parameters<typeof runFinalizer>[0]["tracer"];
     turnId?: string;
@@ -100,6 +102,8 @@ async function runEmissionFinalizer(
     userEntryId: undefined,
     maxTokens: 256,
     path: "system_1",
+    ...(options.thinking === undefined ? {} : { thinking: options.thinking }),
+    ...(options.effort === undefined ? {} : { effort: options.effort }),
     ...(options.finalizerAttempt === undefined
       ? {}
       : { finalizerAttempt: options.finalizerAttempt }),
@@ -223,6 +227,37 @@ describe("runFinalizer emission tools", () => {
       rmSync(tempDirs.pop() as string, { recursive: true, force: true });
     }
   });
+
+  it.each([undefined, "medium", "max"] as const)(
+    "keeps wire effort=%s constant when regeneration omits thinking",
+    async (effort) => {
+      const create = vi.fn().mockResolvedValue({
+        content: [
+          {
+            type: "tool_use",
+            id: "answer-effort",
+            name: "EmitAnswer",
+            input: { text: "Réponse." },
+          },
+        ],
+        usage: { input_tokens: 4, output_tokens: 2 },
+        stop_reason: "tool_use",
+      });
+      const client = new AnthropicLLMClient({ client: { messages: { create } } });
+      await runEmissionFinalizer(client, tempDirs, { thinking: { type: "adaptive" }, effort });
+      await runEmissionFinalizer(client, tempDirs, {
+        thinking: { type: "adaptive" },
+        effort,
+        finalizerAttempt: "regenerate",
+      });
+      expect(create).toHaveBeenCalledTimes(2);
+      expect(create.mock.calls[0]?.[0].thinking).toEqual({ type: "adaptive" });
+      expect(create.mock.calls[1]?.[0].thinking).toBeUndefined();
+      for (const [request] of create.mock.calls) {
+        expect(request.output_config).toEqual({ effort: effort ?? "high" });
+      }
+    },
+  );
 
   it("does not expose EmitContinueThought on active user turns", async () => {
     const llm = new FakeLLMClient({

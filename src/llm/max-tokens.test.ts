@@ -8,11 +8,11 @@ describe("llm max token ceilings", () => {
   });
 
   it("returns the Opus/Sonnet ceiling for newer generations, not the fallback", () => {
-    // Regression guard: a version-pinned family match sent claude-opus-5 to the
+    // Regression guard: a version-pinned family match sent a newer Opus to the
     // 8_192 fallback, silently cutting the output ceiling by ~87% on a model bump.
-    expect(getModelMaxOutputTokens("claude-opus-5")).toBe(64_000);
+    expect(getModelMaxOutputTokens("claude-opus-5-5")).toBe(64_000);
     expect(getModelMaxOutputTokens("claude-sonnet-5")).toBe(64_000);
-    expect(clampMaxOutputTokens("claude-opus-5", 80_000)).toBe(64_000);
+    expect(clampMaxOutputTokens("claude-opus-5-5", 80_000)).toBe(64_000);
   });
 
   it("returns the Haiku ceiling", () => {
@@ -25,10 +25,13 @@ describe("llm max token ceilings", () => {
     // NOTE: the ids below are deliberately hypothetical -- at time of writing
     // Opus and Sonnet have shipped a 5, Haiku has not (latest is 4.5). They
     // exist here only to prove the family matcher is version-generic: a future
-    // release must not fall through to the 8_192 default the way claude-opus-5
+    // release must not fall through to the 8_192 default the way a newer Opus
     // did when these patterns were pinned to `-4`.
     expect(getModelMaxOutputTokens("claude-haiku-6")).toBe(32_000);
     expect(getModelMaxOutputTokens("claude-opus-9")).toBe(64_000);
+    expect(getModelMaxOutputTokens("claude-opus-10")).toBe(64_000);
+    expect(getModelMaxOutputTokens("claude-sonnet-10")).toBe(64_000);
+    expect(getModelMaxOutputTokens("claude-haiku-10")).toBe(32_000);
   });
 
   it("returns the Qwen 3 ceiling for gateway-prefixed and bare model names", () => {

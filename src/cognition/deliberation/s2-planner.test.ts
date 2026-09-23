@@ -1,5 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { AnthropicLLMClient } from "../../llm/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import type { TurnTracer } from "../../tracing/tracer.js";
 import { AuthError, LLMError } from "../../util/errors.js";
@@ -129,6 +130,49 @@ async function capturePlannerToolInputSchema(turnOrigin?: TurnOrigin): Promise<T
 }
 
 describe("s2 planner", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it.each([undefined, "medium", "max"] as const)(
+    "keeps wire effort=%s stable across the planner structural retry",
+    async (effort) => {
+      vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const create = vi
+        .fn()
+        .mockResolvedValueOnce({
+          content: [{ type: "thinking", thinking: "", signature: "sig-plan" }],
+          usage: { input_tokens: 4, output_tokens: 3 },
+          stop_reason: "end_turn",
+        })
+        .mockResolvedValueOnce({
+          content: [
+            { type: "tool_use", id: "plan-retry", name: "EmitTurnPlan", input: validPlanInput() },
+          ],
+          usage: { input_tokens: 5, output_tokens: 4 },
+          stop_reason: "tool_use",
+        });
+      const client = new AnthropicLLMClient({ client: { messages: { create } } });
+      const result = await runS2Planner({
+        llmClient: client,
+        model: "claude-opus-5-5",
+        baseSystemPrompt: "base",
+        dialogueMessages: [{ role: "user", content: "Planifie la suite." }],
+        selfSnapshot: { values: [], goals: [], traits: [] },
+        maxTokens: 512,
+        thinking: { type: "adaptive" },
+        effort,
+      });
+      expect(result.plan).not.toBeNull();
+      expect(create).toHaveBeenCalledTimes(2);
+      expect(create.mock.calls[0]?.[0].thinking).toEqual({ type: "adaptive" });
+      expect(create.mock.calls[1]?.[0].thinking).toBeUndefined();
+      expect(create.mock.calls[0]?.[0].tool_choice).toBeUndefined();
+      expect(create.mock.calls[1]?.[0].tool_choice).toEqual({ type: "auto" });
+      for (const [request] of create.mock.calls) {
+        expect(request.output_config).toEqual({ effort: effort ?? "high" });
+      }
+    },
+  );
+
   it("sends the compact system blocks unchanged and traces their surface budget", async () => {
     const llm = new FakeLLMClient({
       responses: [
@@ -475,6 +519,21 @@ describe("s2 planner", () => {
     });
     expect(tracer.emit).not.toHaveBeenCalledWith("turn.token", expect.anything());
     expect(tracer.emit).not.toHaveBeenCalledWith("turn.token.flush", expect.anything());
+    llm.requests[0]?.onToolChoiceTranslated?.({
+      label: "cognition-plan",
+      model: "sonnet",
+      expected_tool: "EmitTurnPlan",
+      retry_fired: true,
+      attempt: 2,
+    });
+    expect(tracer.emit).toHaveBeenCalledWith("llm_call.tool_choice_translated", {
+      turnId: "turn-plan-stream",
+      label: "s2_planner",
+      model: "sonnet",
+      expected_tool: "EmitTurnPlan",
+      retry_fired: true,
+      attempt: 2,
+    });
   });
 
   it("emits exhaustion trace when both planner attempts omit EmitTurnPlan", async () => {

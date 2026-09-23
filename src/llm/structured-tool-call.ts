@@ -10,6 +10,7 @@ import {
   traceLlmCallError,
   traceLlmCallResponse,
   traceLlmCallRetryHook,
+  traceLlmToolChoiceTranslationHook,
   traceLlmSchemaRepair,
   traceLlmCallStarted,
 } from "../tracing/llm-call-trace.js";
@@ -18,6 +19,7 @@ import { BudgetExceededError, LLMError } from "../util/errors.js";
 import type { SessionId } from "../util/ids.js";
 import type { JsonValue } from "../util/json-value.js";
 import { parseErrorMessage } from "../util/zod-errors.js";
+import { addLlmUsage, getLlmErrorUsage } from "./usage.js";
 
 const MAX_REPAIR_ARGUMENT_CHARS = 4_000;
 const MAX_REPAIR_ISSUE_CHARS = 1_500;
@@ -121,30 +123,6 @@ export type CallStructuredToolResult<T> = {
 
 function emptyUsage(): StructuredToolCallUsage {
   return { input_tokens: 0, output_tokens: 0 };
-}
-
-function addResponseUsage(
-  usage: StructuredToolCallUsage,
-  response: LLMCompleteResult,
-): StructuredToolCallUsage {
-  return {
-    input_tokens: usage.input_tokens + response.input_tokens,
-    output_tokens: usage.output_tokens + response.output_tokens,
-    ...(usage.cache_creation_input_tokens === undefined &&
-    response.cache_creation_input_tokens === undefined
-      ? {}
-      : {
-          cache_creation_input_tokens:
-            (usage.cache_creation_input_tokens ?? 0) + (response.cache_creation_input_tokens ?? 0),
-        }),
-    ...(usage.cache_read_input_tokens === undefined &&
-    response.cache_read_input_tokens === undefined
-      ? {}
-      : {
-          cache_read_input_tokens:
-            (usage.cache_read_input_tokens ?? 0) + (response.cache_read_input_tokens ?? 0),
-        }),
-  };
 }
 
 function acceptedToolNames<T>(options: CallStructuredToolOptions<T>): readonly string[] {
@@ -339,8 +317,20 @@ export async function callStructuredTool<T>(
           sessionId: options.trace.sessionId,
           label: options.trace.label,
         });
-  const request =
-    onTransportRetry === undefined ? options.request : { ...options.request, onTransportRetry };
+  const translationTrace =
+    options.trace === undefined ? undefined : traceLlmToolChoiceTranslationHook(options.trace);
+  const request = {
+    ...options.request,
+    ...(onTransportRetry === undefined ? {} : { onTransportRetry }),
+    ...(translationTrace === undefined
+      ? {}
+      : {
+          onToolChoiceTranslated: (event) => {
+            options.request.onToolChoiceTranslated?.(event);
+            translationTrace(event);
+          },
+        }),
+  } satisfies LLMCompleteOptions;
 
   const errorAccounting = () => ({ attemptCount, usage: { ...usage } });
   const complete = async (
@@ -355,6 +345,8 @@ export async function callStructuredTool<T>(
     try {
       response = await options.llmClient.complete(nextRequest);
     } catch (error) {
+      const consumed = getLlmErrorUsage(error);
+      if (consumed !== undefined) usage = addLlmUsage(usage, consumed);
       traceError(options, error, attemptCount, schemaRepair);
 
       if (error instanceof BudgetExceededError) {
@@ -374,7 +366,7 @@ export async function callStructuredTool<T>(
       );
     }
 
-    usage = addResponseUsage(usage, response);
+    usage = addLlmUsage(usage, response);
     traceResponse(options, response, attemptCount, schemaRepair);
     return response;
   };

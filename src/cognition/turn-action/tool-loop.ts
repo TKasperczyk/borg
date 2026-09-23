@@ -21,7 +21,11 @@ import type { TurnTracer } from "../../tracing/tracer.js";
 import type { TurnOrigin } from "../types.js";
 import { DEFAULT_DELIBERATION_PLAN_CALL_TIMEOUT_MS } from "../deliberation/constants.js";
 import { buildUsageTraceBlock, toTraceJsonValue } from "../../tracing/tracer.js";
-import { summarizeToolSchemas, traceLlmCallRetryHook } from "../../tracing/llm-call-trace.js";
+import {
+  summarizeToolSchemas,
+  traceLlmCallRetryHook,
+  traceLlmToolChoiceTranslationHook,
+} from "../../tracing/llm-call-trace.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { LLMError } from "../../util/errors.js";
 import type { EntityId, SessionId } from "../../util/ids.js";
@@ -330,6 +334,12 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
     sessionId: options.sessionId,
     label: traceLabel,
   });
+  const onToolChoiceTranslated = traceLlmToolChoiceTranslationHook({
+    tracer: options.tracer,
+    turnId: options.turnId,
+    sessionId: options.sessionId,
+    label: traceLabel,
+  });
 
   while (true) {
     let autonomousRequestDeadline: number | null = null;
@@ -398,6 +408,7 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
         ? {}
         : { suppressRawTextStream: options.suppressRawTextStream }),
       ...(onTransportRetry === undefined ? {} : { onTransportRetry }),
+      ...(onToolChoiceTranslated === undefined ? {} : { onToolChoiceTranslated }),
       ...(autonomousRequestDeadline === null
         ? {}
         : {

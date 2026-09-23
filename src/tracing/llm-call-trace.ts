@@ -3,6 +3,7 @@ import type {
   LLMMessage,
   LLMToolDefinition,
   LLMTransportRetryEvent,
+  LLMToolChoiceTranslationEvent,
 } from "../llm/index.js";
 import type { SessionId } from "../util/ids.js";
 import type { JsonValue } from "../util/json-value.js";
@@ -92,6 +93,23 @@ export function traceLlmCallRetryHook(options: {
       retry_transport: event.retry_transport,
     });
   };
+}
+
+export function traceLlmToolChoiceTranslationHook(options: {
+  tracer?: TurnTracer;
+  turnId?: string;
+  sessionId?: SessionId;
+  label: string;
+}): ((event: LLMToolChoiceTranslationEvent) => void) | undefined {
+  const { tracer, turnId } = options;
+  if (tracer?.enabled !== true || turnId === undefined) return undefined;
+  return (event) =>
+    tracer.emit("llm_call.tool_choice_translated", {
+      ...event,
+      turnId,
+      ...(options.sessionId === undefined ? {} : { session_id: options.sessionId }),
+      label: options.label,
+    });
 }
 
 export type LlmSchemaRepairTraceStatus = "attempted" | "succeeded" | "failed";
