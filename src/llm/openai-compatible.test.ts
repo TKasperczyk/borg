@@ -1,9 +1,13 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { OpenAICompatibleLLMClient, type OpenAIChatCompletionsClient } from "./openai-compatible.js";
+import {
+  OpenAICompatibleLLMClient,
+  type OpenAIChatCompletionsClient,
+} from "./openai-compatible.js";
 import { callStructuredTool, isStructuredToolCallError } from "./structured-tool-call.js";
 import type { LLMCompleteOptions, LLMConverseOptions, LLMToolDefinition } from "./index.js";
 import { ConfigError, LLMError } from "../util/errors.js";
+import { getLlmErrorUsage } from "./usage.js";
 
 type CapturedParams = Record<string, unknown>;
 
@@ -48,7 +52,9 @@ function toolCallResponse(args: string) {
       {
         message: {
           content: null,
-          tool_calls: [{ id: "call_1", type: "function", function: { name: "EmitFacts", arguments: args } }],
+          tool_calls: [
+            { id: "call_1", type: "function", function: { name: "EmitFacts", arguments: args } },
+          ],
         },
         finish_reason: "tool_calls",
       },
@@ -58,6 +64,160 @@ function toolCallResponse(args: string) {
 }
 
 describe("OpenAICompatibleLLMClient", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  for (const method of ["complete", "converse"] as const) {
+    it.each([
+      { choice: { type: "any" as const }, retry: false, model: "claude-opus-5-5" },
+      { choice: { type: "any" as const }, retry: true, model: "claude-opus-5-5" },
+      {
+        choice: { type: "tool" as const, name: TOOL.name },
+        retry: false,
+        model: "claude-fable-5-1",
+      },
+      {
+        choice: { type: "tool" as const, name: TOOL.name },
+        retry: true,
+        model: "claude-mythos-5-1",
+      },
+    ])(
+      `${method} translates $model $choice.type with retry=$retry`,
+      async ({ choice, retry, model }) => {
+        const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+        const noTool = {
+          choices: [
+            {
+              message: {
+                content: "確認します。",
+                reasoning_content: "opaque gateway reasoning",
+                tool_calls: null,
+              },
+              finish_reason: "stop",
+            },
+          ],
+          usage: { prompt_tokens: 3, completion_tokens: 5 },
+        };
+        const tool = toolCallResponse('{"facts":["a"]}');
+        const create = vi
+          .fn()
+          .mockResolvedValueOnce(retry ? noTool : tool)
+          .mockResolvedValueOnce(tool);
+        const usageSink = vi.fn();
+        const onToolChoiceTranslated = vi.fn();
+        const client = new OpenAICompatibleLLMClient({
+          client: { chat: { completions: { create } } },
+          usageSink,
+          requestTimeoutMs: 9999,
+        });
+        const common = completeOptions({
+          model,
+          tool_choice: choice,
+          timeoutMs: 4321,
+          onToolChoiceTranslated,
+        });
+        const result =
+          method === "complete"
+            ? await client.complete(common)
+            : await client.converse({
+                ...common,
+                messages: [{ role: "user", content: [{ type: "text", text: "remember this" }] }],
+              });
+        expect(create).toHaveBeenCalledTimes(retry ? 2 : 1);
+        for (const [params, request] of create.mock.calls) {
+          expect(params.tool_choice).toBe("auto");
+          expect(request.timeout).toBe(4321);
+        }
+        if (retry)
+          expect(create.mock.calls[1]?.[0].messages).toEqual([
+            { role: "user", content: "remember this" },
+            { ...noTool.choices[0]!.message, role: "assistant" },
+            { role: "user", content: "Answer only by calling the EmitFacts tool." },
+          ]);
+        const usage = { input_tokens: retry ? 14 : 11, output_tokens: retry ? 12 : 7 };
+        expect(result).toMatchObject(usage);
+        expect(usageSink).toHaveBeenCalledExactlyOnceWith({
+          budget: common.budget,
+          model,
+          ...usage,
+        });
+        const event = {
+          label: common.budget,
+          model,
+          expected_tool: TOOL.name,
+          retry_fired: retry,
+          attempt: retry ? 2 : 1,
+        };
+        expect(onToolChoiceTranslated).toHaveBeenCalledExactlyOnceWith(event);
+        expect(warn).toHaveBeenCalledExactlyOnceWith("llm_call.tool_choice_translated", event);
+      },
+    );
+  }
+
+  it("leaves gateway missing-tool errors to the structured caller after one unnamed reminder", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const create = vi
+      .fn()
+      .mockResolvedValue({
+        choices: [{ message: { content: "..." }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 2, completion_tokens: 3 },
+      });
+    const client = new OpenAICompatibleLLMClient({ client: { chat: { completions: { create } } } });
+    await expect(
+      callStructuredTool({
+        llmClient: client,
+        request: completeOptions({
+          model: "claude-opus-5-5",
+          tool_choice: { type: "any" },
+          tools: [TOOL, { ...TOOL, name: "Other" }],
+        }),
+        toolName: TOOL.name,
+        parse: (input) => input,
+      }),
+    ).rejects.toMatchObject({
+      kind: "missing_tool_call",
+      usage: { input_tokens: 4, output_tokens: 6 },
+    });
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(create.mock.calls[1]?.[0].messages.at(-1).content).toBe(
+      "Answer only by calling one of the provided tools.",
+    );
+  });
+
+  it("carries completed gateway usage through a failed reminder", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const failure = new LLMError("gateway disconnected");
+    const create = vi
+      .fn()
+      .mockResolvedValueOnce({
+        choices: [{ message: { content: "..." }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 2, completion_tokens: 3 },
+      })
+      .mockRejectedValueOnce(failure);
+    const client = new OpenAICompatibleLLMClient({ client: { chat: { completions: { create } } } });
+    await expect(client.complete(completeOptions({ model: "claude-opus-5-5" }))).rejects.toBe(
+      failure,
+    );
+    expect(getLlmErrorUsage(failure)).toEqual({ input_tokens: 2, output_tokens: 3 });
+    expect(create).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["claude-opus-5-20261001", "claude-sonnet-5", "custom-model"])(
+    "preserves gateway forcing on %s",
+    async (model) => {
+      const create = vi.fn().mockResolvedValue(toolCallResponse("{}"));
+      const client = new OpenAICompatibleLLMClient({
+        client: { chat: { completions: { create } } },
+      });
+      await client.complete(completeOptions({ model }));
+      expect(create.mock.calls[0]?.[0].tool_choice).toEqual({
+        type: "function",
+        function: { name: TOOL.name },
+      });
+      await client.complete(completeOptions({ model, tool_choice: { type: "any" } }));
+      expect(create.mock.calls[1]?.[0].tool_choice).toBe("required");
+    },
+  );
+
   it("maps a forced tool_choice to OpenAI function-forcing and decodes tool args", async () => {
     let captured: CapturedParams = {};
     const client = new OpenAICompatibleLLMClient({
@@ -74,12 +234,18 @@ describe("OpenAICompatibleLLMClient", () => {
     expect(captured.tools).toEqual([
       {
         type: "function",
-        function: { name: "EmitFacts", description: "Emit extracted facts", parameters: TOOL.inputSchema },
+        function: {
+          name: "EmitFacts",
+          description: "Emit extracted facts",
+          parameters: TOOL.inputSchema,
+        },
       },
     ]);
 
     expect(result.stop_reason).toBe("tool_use");
-    expect(result.tool_calls).toEqual([{ id: "call_1", name: "EmitFacts", input: { facts: ["a", "b"] } }]);
+    expect(result.tool_calls).toEqual([
+      { id: "call_1", name: "EmitFacts", input: { facts: ["a", "b"] } },
+    ]);
     expect(result.input_tokens).toBe(11);
     expect(result.output_tokens).toBe(7);
   });
@@ -195,7 +361,9 @@ describe("OpenAICompatibleLLMClient", () => {
       }),
     });
 
-    const result = await client.complete(completeOptions({ tools: undefined, tool_choice: undefined }));
+    const result = await client.complete(
+      completeOptions({ tools: undefined, tool_choice: undefined }),
+    );
     expect(result.text).toBe("hello");
     expect(result.stop_reason).toBe("end_turn");
     expect(result.tool_calls).toEqual([]);
@@ -211,7 +379,11 @@ describe("OpenAICompatibleLLMClient", () => {
               message: {
                 content: "done",
                 tool_calls: [
-                  { id: "c2", type: "function", function: { name: "EmitFacts", arguments: '{"facts":[]}' } },
+                  {
+                    id: "c2",
+                    type: "function",
+                    function: { name: "EmitFacts", arguments: '{"facts":[]}' },
+                  },
                 ],
               },
               finish_reason: "tool_calls",
@@ -247,7 +419,13 @@ describe("OpenAICompatibleLLMClient", () => {
       {
         role: "assistant",
         content: "calling",
-        tool_calls: [{ id: "c1", type: "function", function: { name: "EmitFacts", arguments: '{"facts":[]}' } }],
+        tool_calls: [
+          {
+            id: "c1",
+            type: "function",
+            function: { name: "EmitFacts", arguments: '{"facts":[]}' },
+          },
+        ],
       },
       { role: "tool", tool_call_id: "c1", content: "ok" },
     ]);

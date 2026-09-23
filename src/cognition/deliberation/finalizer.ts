@@ -1127,10 +1127,10 @@ export async function runFinalizer(options: RunFinalizerOptions): Promise<Finali
     .map((tool) => tool.name);
   const effectiveThinking =
     options.finalizerAttempt === "regenerate" ? undefined : options.thinking;
-  const effectiveEffort = options.finalizerAttempt === "regenerate" ? undefined : options.effort;
-  // Auto tool_choice iff thinking will actually reach the model -- otherwise force
-  // an emission tool so a structured emission stays guaranteed (e.g. manual
-  // thinking on Opus is omitted by the client, so forcing is correct there).
+  // Keep request-level effort stable across regeneration for prompt caching;
+  // thinking compatibility must not discard the caller's configured effort.
+  // Request auto when explicit thinking reaches the model, otherwise request
+  // an emission tool. The shared client handles models without forced tool use.
   const useAutoToolChoice = willSendThinkingUnderAutoToolChoice(options.model, effectiveThinking);
   const finalizerTransport = options.finalizerTransport ?? "unary";
   let tokenSequence = 0;
@@ -1155,7 +1155,7 @@ export async function runFinalizer(options: RunFinalizerOptions): Promise<Finali
       // Buffered delivery keeps the finalizer's existing streaming deadline.
       timeoutMs: LLM_STREAMING_CALL_TIMEOUT_MS,
       ...(effectiveThinking === undefined ? {} : { thinking: effectiveThinking }),
-      ...(effectiveEffort === undefined ? {} : { effort: effectiveEffort }),
+      ...(options.effort === undefined ? {} : { effort: options.effort }),
       // Emission-tool protocol: the answer lives in the terminal tool input, so any
       // loose text the model emits under auto tool_choice must not reach the stream.
       suppressRawTextStream: true,
@@ -1163,8 +1163,8 @@ export async function runFinalizer(options: RunFinalizerOptions): Promise<Finali
       // thinking active. When thinking will be sent, omit toolChoice (auto): the
       // model thinks, then calls exactly one emission tool. The emission is read
       // from the terminal tool (loose text never leaks), and the invalid-tool retry
-      // net covers the rare turn that emits no terminal tool. Otherwise force a tool
-      // ("any") so an emission is guaranteed.
+      // net covers the rare turn that emits no terminal tool. Otherwise request
+      // "any"; the shared client translates it if the model cannot force tools.
       ...(useAutoToolChoice || emissionTools.length === 0
         ? {}
         : { toolChoice: { type: "any" as const } }),

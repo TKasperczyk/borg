@@ -73,6 +73,7 @@ export const TRACE_EVENT_TAXONOMY = {
   deliberation: [
     "llm_call.started",
     "llm_call.retried",
+    "llm_call.tool_choice_translated",
     "llm_call.completed",
     "llm_call.schema_repair.attempted",
     "llm_call.schema_repair.succeeded",

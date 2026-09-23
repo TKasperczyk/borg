@@ -1,4 +1,5 @@
 import type { LLMClient, TokenUsageEvent, TokenUsageSink } from "../llm/index.js";
+import { reportLlmErrorUsage } from "../llm/usage.js";
 import { BudgetExceededError } from "../util/errors.js";
 import type { OfflineProcessName } from "./types.js";
 
@@ -60,27 +61,40 @@ export class BudgetTracker {
 }
 
 export function wrapLlmClientWithSink(client: LLMClient, sink: TokenUsageSink): LLMClient {
+  async function account<T extends { input_tokens: number; output_tokens: number }>(
+    options: { budget: string; model: string },
+    call: () => Promise<T>,
+  ): Promise<T> {
+    let result: T;
+    try {
+      result = await call();
+    } catch (error) {
+      await reportLlmErrorUsage(error, sink, { budget: options.budget, model: options.model });
+      throw error;
+    }
+    // Keep the sink outside the catch: exceeding a cap has already counted this
+    // response and must not cause it to be recorded a second time.
+    await sink({
+      budget: options.budget,
+      model: options.model,
+      input_tokens: result.input_tokens,
+      output_tokens: result.output_tokens,
+    });
+    return result;
+  }
   return {
-    async complete(options) {
-      const result = await client.complete(options);
-      await sink({
-        budget: options.budget,
-        model: options.model,
-        input_tokens: result.input_tokens,
-        output_tokens: result.output_tokens,
-      });
-      return result;
-    },
-    async converse(options) {
-      const result = await client.converse(options);
-      await sink({
-        budget: options.budget,
-        model: options.model,
-        input_tokens: result.input_tokens,
-        output_tokens: result.output_tokens,
-      });
-      return result;
-    },
+    complete: (options) => account(options, () => client.complete(options)),
+    converse: (options) => account(options, () => client.converse(options)),
+    ...(client.streamComplete === undefined
+      ? {}
+      : {
+          streamComplete: (options) => account(options, () => client.streamComplete!(options)),
+        }),
+    ...(client.streamConverse === undefined
+      ? {}
+      : {
+          streamConverse: (options) => account(options, () => client.streamConverse!(options)),
+        }),
   };
 }
 

@@ -148,6 +148,32 @@ describe("classifyPersonaRoleBleed", () => {
 });
 
 describe("PersonaSession", () => {
+  it("keeps high effort across an empty-response nudge and the next conversation turn", async () => {
+    const requests: unknown[] = [];
+    const persona = new PersonaSession({
+      persona: tomPersona,
+      client: {
+        messages: {
+          stream(params) {
+            requests.push(params);
+            const text = requests.length === 1 ? "" : `persona turn ${requests.length}`;
+            return {
+              async finalMessage() {
+                return { content: [{ type: "text", text }] } as never;
+              },
+            };
+          },
+        },
+      },
+    });
+    const first = await persona.prepareNextTurn({ kind: "new_session" });
+    persona.commit(first, FIRST_BORG_REPLY);
+    await persona.prepareNextTurn({ kind: "normal", text: FIRST_BORG_REPLY });
+    expect(requests).toHaveLength(3);
+    for (const request of requests)
+      expect(request).toMatchObject({ output_config: { effort: "high" } });
+  });
+
   it("generates mock persona messages in sequence", async () => {
     const persona = new PersonaSession({
       persona: tomPersona,

@@ -34,9 +34,9 @@ describe("config", () => {
     expect(config.anthropic.auth).toBe("auto");
     expect(config.anthropic.apiKey).toBeUndefined();
     expect(config.anthropic.models).toEqual({
-      cognition: "claude-opus-5",
-      background: "claude-opus-5",
-      extraction: "claude-opus-5",
+      cognition: "claude-opus-5-5",
+      background: "claude-opus-5-5",
+      extraction: "claude-opus-5-5",
       recallExpansion: "claude-haiku-4-5-20251001",
       correctivePreference: "claude-sonnet-5",
       sharedStateCompiler: "claude-sonnet-5",
@@ -1231,9 +1231,9 @@ describe("config", () => {
 
   it("defaults recall expansion to the dedicated Haiku slot", () => {
     expect(DEFAULT_CONFIG.anthropic.models).toEqual({
-      cognition: "claude-opus-5",
-      background: "claude-opus-5",
-      extraction: "claude-opus-5",
+      cognition: "claude-opus-5-5",
+      background: "claude-opus-5-5",
+      extraction: "claude-opus-5-5",
       recallExpansion: "claude-haiku-4-5-20251001",
       correctivePreference: "claude-sonnet-5",
       sharedStateCompiler: "claude-sonnet-5",

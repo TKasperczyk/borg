@@ -6,6 +6,7 @@ import type {
   ContentBlock,
   Message,
   MessageParam,
+  OutputConfig,
   TextBlockParam,
   Tool,
   ToolUseBlock,
@@ -17,6 +18,8 @@ import { getFreshCredentials } from "../src/auth/claude-oauth.js";
 import { BORG_HOST_CAPABILITY_BOUNDARY_PROMPT } from "../src/cognition/prompts/host-capabilities.js";
 import {
   CLAUDE_CODE_IDENTITY_BLOCK_TEXT,
+  OAUTH_USER_AGENT,
+  DEFAULT_LLM_EFFORT,
   createOAuthFetch,
   toAnthropicContentBlocks,
   type LLMToolResultBlock,
@@ -41,9 +44,8 @@ import type {
   RejectedOverseerFinding,
 } from "./types.js";
 
-const OVERSEER_MODEL = "claude-opus-5";
+const OVERSEER_MODEL = "claude-opus-5-5";
 const OAUTH_BETAS = "oauth-2025-04-20,claude-code-20250219,interleaved-thinking-2025-05-14";
-const OAUTH_USER_AGENT = "claude-cli/2.1.2 (external, cli)";
 const SIMULTANEOUS_TS_TOLERANCE_MS = 100;
 const STREAM_ENTRY_ID_PATTERN = /\bstrm_[a-z0-9]+\b/g;
 const RECENT_NULL_TURN_USER_STATEMENT_LIMIT = 12;
@@ -99,6 +101,7 @@ type OverseerClient = {
       messages: MessageParam[];
       tools: Tool[];
       max_tokens: number;
+      output_config: OutputConfig;
     }): {
       finalMessage(): Promise<Message>;
     };
@@ -1270,6 +1273,7 @@ export async function runOverseer(options: RunOverseerOptions): Promise<Overseer
         // Bumped from 4_000: the expanded audit produces verdicts with
         // many turn-cited observations; previous runs were capping out.
         max_tokens: 8_000,
+        output_config: { effort: DEFAULT_LLM_EFFORT },
       })
       .finalMessage();
     messages.push({

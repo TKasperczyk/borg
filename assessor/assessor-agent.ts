@@ -3,6 +3,7 @@ import type {
   ContentBlock,
   Message,
   MessageParam,
+  OutputConfig,
   TextBlockParam,
   Tool,
   ToolUseBlock,
@@ -11,7 +12,10 @@ import { z } from "zod";
 
 import {
   CLAUDE_CODE_IDENTITY_BLOCK_TEXT,
+  OAUTH_USER_AGENT,
+  DEFAULT_LLM_EFFORT,
   createOAuthFetch,
+  isOpusModel,
   toAnthropicContentBlocks,
   type LLMToolResultBlock,
 } from "../src/llm/index.js";
@@ -27,18 +31,10 @@ import type {
   TracePhase,
 } from "./types.js";
 
-export const ASSESSOR_MODEL = "claude-opus-5";
+export const ASSESSOR_MODEL = "claude-opus-5-5";
 
 const OAUTH_BETAS = "oauth-2025-04-20,claude-code-20250219,interleaved-thinking-2025-05-14";
-const OAUTH_USER_AGENT = "claude-cli/2.1.2 (external, cli)";
 const DEFAULT_MAX_ASSESSOR_LLM_CALLS = 30;
-
-// Opus via OAuth rejects temperature:0 with a 400; omit temperature
-// for Opus models entirely. Verdicts are structured (submit_verdict tool
-// with a status enum) so determinism does not depend on temperature.
-function isOpusModel(model: string): boolean {
-  return model.startsWith("claude-opus-");
-}
 const DEFAULT_MAX_TURNS = 12;
 
 const verdictSchema = z.object({
@@ -74,6 +70,7 @@ type AssessorClient = {
       messages: MessageParam[];
       tools: Tool[];
       max_tokens: number;
+      output_config: OutputConfig;
       temperature?: number;
     }): {
       finalMessage(): Promise<Message>;
@@ -328,11 +325,10 @@ export class AssessorAgent {
           system: systemParam(prefix, this.scenario),
           messages,
           tools: ASSESSOR_TOOLS,
-          // Set to the standard Opus 4.6 max output. The Anthropic API
-          // requires max_tokens, and at this value it forces streaming
-          // mode (see the messages.stream call above). Verdict reasoning
-          // + tool calls fit well under this in practice.
+          // Keep the assessor's output budget at 32k. Verdict reasoning and
+          // tool calls fit under this in practice.
           max_tokens: 32_000,
+          output_config: { effort: DEFAULT_LLM_EFFORT },
           ...(isOpusModel(this.model) ? {} : { temperature: 0 }),
         })
         .finalMessage();

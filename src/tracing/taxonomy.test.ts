@@ -18,6 +18,7 @@ describe("trace taxonomy", () => {
     expect(phaseForTraceEventName("shared_state.compile.completed")).toBe("retrieval");
     expect(phaseForTraceEventName("shared_state.reconcile.completed")).toBe("retrieval");
     expect(phaseForTraceEventName("llm_call.schema_repair.attempted")).toBe("deliberation");
+    expect(phaseForTraceEventName("llm_call.tool_choice_translated")).toBe("deliberation");
     expect(phaseForTraceEventName("attachment.quarantined")).toBe("perception");
     expect(phaseForTraceEventName("image_perception.deactivated")).toBe("perception");
     expect(phaseForTraceEventName("image_perception.reactivated")).toBe("perception");

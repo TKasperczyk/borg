@@ -21,6 +21,7 @@ import OpenAI from "openai";
 
 import { ConfigError, LLMError } from "../util/errors.js";
 import { clampMaxOutputTokens, getModelMaxOutputTokens } from "./max-tokens.js";
+import { toolUseReminder, translateForcedToolUse } from "./tool-choice-compatibility.js";
 import type {
   LLMClient,
   LLMCompleteOptions,
@@ -48,7 +49,7 @@ type OpenAIChatMessageParam = {
     id: string;
     type: "function";
     function: { name: string; arguments: string };
-  }>;
+  }> | null;
   tool_call_id?: string;
 };
 
@@ -58,7 +59,7 @@ type OpenAIChatCompletionResponse = {
       content: string | null;
       tool_calls?: ReadonlyArray<{
         id: string;
-        type: string;
+        type: "function";
         function: { name: string; arguments: string };
       }> | null;
     };
@@ -344,12 +345,47 @@ export class OpenAICompatibleLLMClient implements LLMClient {
     // output_config (JSON-schema structured output) has no faithful translation
     // here, and silently dropping it would return an empty structured_output --
     // a silent-wrong-result trap. Fail fast: borg's structured paths use a forced
-    // tool_choice instead (which IS supported). No borg path currently sets it.
+    // tool_choice instead (translated below when the model requires auto).
+    // No borg path currently sets it.
     if (options.output_config !== undefined) {
       throw new LLMError(
         "OpenAICompatibleLLMClient does not support output_config structured outputs; use a forced tool_choice instead",
       );
     }
+
+    const translated = translateForcedToolUse({
+      options,
+      usageSink: this.usageSink,
+      hasToolUse: (response: OpenAIChatCompletionResponse) =>
+        response.choices[0]?.message.tool_calls?.some((call) => call.type === "function") === true,
+      getUsage: (response) => ({
+        input_tokens: response.usage?.prompt_tokens ?? 0,
+        output_tokens: response.usage?.completion_tokens ?? 0,
+      }),
+      withUsage: (response, usage) => ({
+        ...response,
+        usage: {
+          ...response.usage,
+          prompt_tokens: usage.input_tokens,
+          completion_tokens: usage.output_tokens,
+        },
+      }),
+      send: ({ previous, signal, expectedTool }) =>
+        this.createCompletion(
+          { ...options, signal, tool_choice: { type: "auto" } },
+          previous === undefined
+            ? messages
+            : [
+                ...messages,
+                // Preserve gateway-specific reasoning fields as well as visible text.
+                ...(previous.choices[0] === undefined
+                  ? []
+                  : [{ ...previous.choices[0].message, role: "assistant" as const }]),
+                { role: "user", content: toolUseReminder(expectedTool) },
+              ],
+        ),
+    });
+    if (translated !== undefined) return await translated;
 
     const hasTools = options.tools !== undefined && options.tools.length > 0;
     const requestedMaxTokens = options.max_tokens ?? getModelMaxOutputTokens(options.model);
@@ -371,17 +407,16 @@ export class OpenAICompatibleLLMClient implements LLMClient {
       }
     }
     // thinking / effort are advisory Anthropic extended-thinking hints with no
-    // OpenAI chat-completions equivalent; they are intentionally dropped. Callers
-    // needing guaranteed structured output must set a forced tool_choice (every
-    // borg structured-tool path does); without one, behaviour falls back to
-    // standard OpenAI auto tool-calling.
+    // OpenAI chat-completions equivalent; they are intentionally dropped. Forced
+    // choices use the same capability translation/reminder as the Anthropic path.
 
+    const timeoutMs = options.timeoutMs ?? this.requestTimeoutMs;
     const requestOptions =
-      this.requestTimeoutMs === undefined && options.signal === undefined
+      timeoutMs === undefined && options.signal === undefined
         ? undefined
         : {
             ...(options.signal === undefined ? {} : { signal: options.signal }),
-            ...(this.requestTimeoutMs === undefined ? {} : { timeout: this.requestTimeoutMs }),
+            ...(timeoutMs === undefined ? {} : { timeout: timeoutMs }),
           };
 
     try {

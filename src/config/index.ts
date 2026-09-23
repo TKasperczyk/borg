@@ -221,12 +221,13 @@ const evidenceLedgerConfigSchema = z
 const cognitionThinkingConfigSchema = z
   .object({
     enabled: z.boolean().default(false),
-    // "adaptive" (Opus 4.6+/Sonnet 4.6; the only supported mode on Opus 4.7/4.8)
+    // "adaptive" (Opus 4.6+/Sonnet 4.6; always on for Opus 5.5)
     // lets the model decide thinking depth and uses `effort`; "enabled" is the
     // deprecated manual budget_tokens mode for older models.
     mode: z.enum(["adaptive", "enabled"]).default("adaptive"),
-    // Adaptive-thinking effort -- soft depth guidance. Default "high" (the API's
-    // adaptive default: deep reasoning, bounded). NOTE: "max" is intentionally NOT
+    // Adaptive-thinking effort -- Borg keeps "high" for cognition and explicitly
+    // defaults all omitted request effort to high (the Opus 5.5 API default is
+    // medium). NOTE: "max" is intentionally NOT
     // the default -- empirically it thinks without bound and exhausts max_tokens
     // before emitting a tool, stalling the turn; use "high"/"xhigh" for deep
     // thinking that still emits.
@@ -332,7 +333,7 @@ const maintenanceProcessSchema = z.enum(OFFLINE_PROCESS_NAMES);
 export type PostGenerationGuardMode = z.infer<typeof postGenerationGuardModeSchema>;
 const anthropicModelsConfigSchema = z
   .object({
-    // The main cognition/extraction/background slots default to Opus 5.
+    // The main cognition/extraction/background slots default to Opus 5.5.
     // Recall expansion is a small structured fanout task and has its own
     // Haiku slot so it can stay fast without reusing background.
     // Creator-directive extraction is a nuanced semantic classification
@@ -340,9 +341,9 @@ const anthropicModelsConfigSchema = z
     // under-emits; it gets its own Sonnet slot -- stronger than the recall
     // Haiku, cheaper than the Opus cognition slot -- and only fires on
     // creator-in-operator turns, so the cost is bounded.
-    cognition: z.string().min(1).default("claude-opus-5"),
-    background: z.string().min(1).default("claude-opus-5"),
-    extraction: z.string().min(1).default("claude-opus-5"),
+    cognition: z.string().min(1).default("claude-opus-5-5"),
+    background: z.string().min(1).default("claude-opus-5-5"),
+    extraction: z.string().min(1).default("claude-opus-5-5"),
     recallExpansion: z.string().min(1).default("claude-haiku-4-5-20251001"),
     // Corrective preferences need careful interpretation of participant restrictions.
     correctivePreference: z.string().min(1).default("claude-sonnet-5"),

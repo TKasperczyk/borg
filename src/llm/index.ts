@@ -21,13 +21,37 @@ import {
   type GetFreshCredentialsOptions,
 } from "../auth/claude-oauth.js";
 import type { Clock } from "../util/clock.js";
-import { AuthError, ConfigError, findInErrorCauseChain, LLMError, describeError} from "../util/errors.js";
+import {
+  AuthError,
+  ConfigError,
+  findInErrorCauseChain,
+  LLMError,
+  describeError,
+} from "../util/errors.js";
 import type { AttachmentId } from "../util/ids.js";
 import { toAnthropicContentBlockMessages } from "./anthropic-content-blocks.js";
 import { clampMaxOutputTokens, getModelMaxOutputTokens } from "./max-tokens.js";
+import {
+  isOpusModel,
+  supportsForcedToolUse,
+  toolUseReminder,
+  translateForcedToolUse,
+  type LLMToolChoiceTranslationEvent,
+} from "./tool-choice-compatibility.js";
+export {
+  isOpusModel,
+  supportsForcedToolUse,
+  type LLMToolChoiceTranslationEvent,
+} from "./tool-choice-compatibility.js";
 
 const OAUTH_BETAS = "oauth-2025-04-20,claude-code-20250219,interleaved-thinking-2025-05-14";
-const OAUTH_USER_AGENT = "claude-cli/2.1.2 (external, cli)";
+// Opus 5.5 rejects older OAuth clients: "Claude Code 2.1.2 does not support this
+// model; version 2.1.280 or newer is required". Share this identity with eval clients.
+export const OAUTH_USER_AGENT = "claude-cli/2.1.280 (external, cli)";
+
+// Opus 5.5 defaults to medium at the API; keep Borg's omitted-effort policy
+// explicit and stable across conversation rounds, including SDK-direct clients.
+export const DEFAULT_LLM_EFFORT = "high";
 
 // Required as the first system block in OAuth mode. The Anthropic OAuth beta
 // endpoint validates identity before serving responses; anything short of
@@ -274,8 +298,8 @@ type LLMCallOptions = {
   max_tokens?: number;
   temperature?: number;
   thinking?: ThinkingConfigParam;
-  // Adaptive-thinking effort guidance (output_config.effort). Only meaningful
-  // when thinking is sent; ignored otherwise.
+  // Request-level effort (output_config.effort), independent of an explicit
+  // thinking field. Caller values win; omission uses DEFAULT_LLM_EFFORT.
   effort?: OutputConfig["effort"];
   // When streaming, suppress forwarding of visible text deltas to onTextDelta.
   // Used by the emission-tool protocol (finalizer): the user-facing content lives
@@ -286,6 +310,7 @@ type LLMCallOptions = {
   // fetch-layer deadline, connection blip). Observability only -- the call's
   // result is unaffected. Callers use this to trace rescued-vs-failed attempts.
   onTransportRetry?: (event: LLMTransportRetryEvent) => void;
+  onToolChoiceTranslated?: (event: LLMToolChoiceTranslationEvent) => void;
   budget: string;
 };
 
@@ -1760,14 +1785,6 @@ function normalizeSystemBlocks(
   }));
 }
 
-// Version-generic on purpose: every Opus generation from 4.6 onward removes or
-// deprecates the same two request fields (temperature, manual budget_tokens
-// thinking), so pinning this to a version digit silently re-enables a 400 on the
-// next model bump. Match the family, not the release.
-function isOpusModel(model: string): boolean {
-  return /^claude-opus-\d(?:[-._].+)?$/i.test(model.trim());
-}
-
 function resolveMaxTokens(options: Pick<LLMCallOptions, "max_tokens" | "model">): number {
   const requested = options.max_tokens ?? getModelMaxOutputTokens(options.model);
   return clampMaxOutputTokens(options.model, requested);
@@ -1782,6 +1799,12 @@ function shouldOmitThinking(
 ): boolean {
   if (options.thinking === undefined) {
     return false;
+  }
+
+  // These families always reason adaptively. Both disabled and manually
+  // budgeted thinking are rejected; omission leaves their adaptive default on.
+  if (!supportsForcedToolUse(options.model) && options.thinking.type !== "adaptive") {
+    return true;
   }
 
   // The API rejects thinking when tool_choice forces tool use ("Thinking may not
@@ -1804,34 +1827,27 @@ function shouldOmitThinking(
 // Whether thinking will actually be sent when a call uses auto/none tool_choice.
 // Call sites use this to choose tool_choice: when thinking WILL be sent they must
 // use auto (the API rejects forced tool use with thinking active); when it will
-// NOT (no thinking / disabled / manual-on-Opus, all of which the client omits),
-// they should force the emission tool so a structured emission stays guaranteed.
+// NOT, callers may request a forced emission. The transport translates that
+// request for models without forced tool use; omitted thinking on those models
+// still leaves their built-in adaptive reasoning on.
 export function willSendThinkingUnderAutoToolChoice(
   model: string,
   thinking: ThinkingConfigParam | undefined,
 ): boolean {
-  if (thinking === undefined || thinking.type === "disabled") {
-    return false;
-  }
-
-  if (thinking.type === "enabled" && isOpusModel(model)) {
-    return false;
-  }
-
-  return true;
+  return (
+    thinking !== undefined &&
+    thinking.type !== "disabled" &&
+    !shouldOmitThinking({ model, thinking })
+  );
 }
 
 function buildOutputConfig(
   base: LLMOutputConfig | undefined,
   effort: OutputConfig["effort"] | undefined,
-): OutputConfig | undefined {
-  if (base === undefined && (effort === undefined || effort === null)) {
-    return undefined;
-  }
-
+): OutputConfig {
   return {
     ...(base ?? {}),
-    ...(effort === undefined || effort === null ? {} : { effort }),
+    effort: effort ?? DEFAULT_LLM_EFFORT,
   };
 }
 
@@ -2071,13 +2087,10 @@ export class AnthropicLLMClient implements LLMClient {
     thinking?: ThinkingConfigParam;
   } {
     const omitThinking = shouldOmitThinking(options);
-    // effort guides adaptive-thinking depth; it only rides when thinking is
-    // actually sent, so drop it whenever thinking is absent or omitted.
+    // Effort must not vary when compatibility or structural retries omit
+    // thinking: always send the caller's value or the shared high default.
     const sendThinking = options.thinking !== undefined && !omitThinking;
-    const outputConfig = buildOutputConfig(
-      options.output_config,
-      sendThinking ? options.effort : undefined,
-    );
+    const outputConfig = buildOutputConfig(options.output_config, options.effort);
 
     return {
       model: options.model,
@@ -2085,7 +2098,7 @@ export class AnthropicLLMClient implements LLMClient {
       messages,
       tools: toAnthropicTools(options.tools),
       tool_choice: toAnthropicToolChoice(options.tool_choice),
-      ...(outputConfig === undefined ? {} : { output_config: outputConfig }),
+      output_config: outputConfig,
       max_tokens: resolveMaxTokens(options),
       ...(options.temperature !== undefined && !shouldOmitTemperature(options.model)
         ? { temperature: options.temperature }
@@ -2125,6 +2138,67 @@ export class AnthropicLLMClient implements LLMClient {
     this.initialization = Promise.resolve();
   }
 
+  private translatedToolChoiceMessage(
+    options: LLMCallOptions,
+    messages: MessageParam[],
+    send: (
+      options: LLMCallOptions,
+      messages: MessageParam[],
+      onTextDelta?: LLMStreamTextHandler,
+    ) => Promise<Message>,
+    timeout: { kind: "unary" | "streaming"; timeoutMs: number },
+    onTextDelta?: LLMStreamTextHandler,
+  ): Promise<Message> | undefined {
+    return translateForcedToolUse({
+      options,
+      usageSink: this.usageSink,
+      run: (run) => runWithLlmCallTimeout({ ...timeout, signal: options.signal, run }),
+      hasToolUse: (response: Message) => response.content.some(isToolUseBlock),
+      getUsage: (response) => ({
+        input_tokens: response.usage.input_tokens,
+        output_tokens: response.usage.output_tokens,
+        ...extractCacheUsage(response),
+      }),
+      withUsage: (response, usage) => ({ ...response, usage: { ...response.usage, ...usage } }),
+      send: async ({ previous, signal, expectedTool }) => {
+        // The first response may be discarded for a reminder retry. Keep its
+        // deltas private until accepted, and discard stalled-stream fragments
+        // when transport recovery replaces that response with a unary result.
+        const buffered: string[] = [];
+        const compatibleOptions: LLMCallOptions = {
+          ...options,
+          signal,
+          tool_choice: { type: "auto" },
+          onTransportRetry: (event) => {
+            buffered.length = 0;
+            options.onTransportRetry?.(event);
+          },
+        };
+        const wireToolName =
+          expectedTool !== null && this.auth?.kind === "oauth"
+            ? transformToolNameForOAuth(expectedTool)
+            : expectedTool;
+        const response = await send(
+          compatibleOptions,
+          previous === undefined
+            ? messages
+            : [
+                ...messages,
+                // Preserve the complete signed reasoning transcript, including empty
+                // and redacted thinking; these are protocol data, not display text.
+                { role: "assistant", content: previous.content },
+                { role: "user", content: toolUseReminder(wireToolName) },
+              ],
+          previous === undefined ? (delta) => buffered.push(delta) : onTextDelta,
+        );
+        if (previous === undefined && response.content.some(isToolUseBlock)) {
+          for (const delta of buffered) onTextDelta?.(delta);
+        }
+        return response;
+      },
+    });
+  }
+
   private async createRawMessage(
     options: LLMCallOptions,
     messages: MessageParam[],
@@ -2132,6 +2206,23 @@ export class AnthropicLLMClient implements LLMClient {
     callTimeoutMs = this.unaryCallTimeoutMs(),
     alignBufferedResponseHeaders = false,
   ): Promise<Message> {
+    const translated = this.translatedToolChoiceMessage(
+      options,
+      messages,
+      (compatibleOptions, compatibleMessages) =>
+        this.createRawMessage(
+          compatibleOptions,
+          compatibleMessages,
+          retrying,
+          callTimeoutMs,
+          alignBufferedResponseHeaders,
+        ),
+      { kind: "unary", timeoutMs: callTimeoutMs },
+    );
+    if (translated !== undefined) {
+      return await translated;
+    }
+
     await this.ensureInitialized();
 
     const client =
@@ -2219,7 +2310,26 @@ export class AnthropicLLMClient implements LLMClient {
     messages: MessageParam[],
     onTextDelta: LLMStreamTextHandler | undefined,
     retrying = false,
+    callTimeoutMs = this.streamingCallTimeoutMs(),
   ): Promise<Message> {
+    const translated = this.translatedToolChoiceMessage(
+      options,
+      messages,
+      (compatibleOptions, compatibleMessages, attemptTextDelta) =>
+        this.streamRawMessage(
+          compatibleOptions,
+          compatibleMessages,
+          attemptTextDelta,
+          retrying,
+          callTimeoutMs,
+        ),
+      { kind: "streaming", timeoutMs: callTimeoutMs },
+      onTextDelta,
+    );
+    if (translated !== undefined) {
+      return await translated;
+    }
+
     await this.ensureInitialized();
 
     const client = this.client;
@@ -2231,107 +2341,101 @@ export class AnthropicLLMClient implements LLMClient {
     const streamFactory = client.messages.stream?.bind(client.messages);
 
     if (streamFactory === undefined) {
-      return this.createRawMessage(
-        options,
-        messages,
-        retrying,
-        this.streamingCallTimeoutMs(),
-        true,
-      );
+      return this.createRawMessage(options, messages, retrying, callTimeoutMs, true);
     }
 
     try {
       return await runWithLlmCallTimeout({
         kind: "streaming",
-        timeoutMs: this.streamingCallTimeoutMs(),
+        timeoutMs: callTimeoutMs,
         signal: options.signal,
         run: (signal) =>
           runWithAnthropicTransportRetries(
             async (attempt) => {
-            if (attempt > 1) {
-              // Retry attempts switch to non-streaming: the stall mode lives in
-              // SSE delivery, and a buffered response rides through it. This
-              // also means a retry can never re-emit deltas already forwarded
-              // by the stalled first attempt.
-              const retryClient =
-                this.bufferedUnaryClient(this.streamingCallTimeoutMs()) ?? client;
-              return await retryClient.messages.create(
-                this.rawMessageParams(options, messages),
-                { signal, timeout: this.streamingCallTimeoutMs() },
-              );
-            }
-
-            const stream = streamFactory(this.rawMessageParams(options, messages), {
-              signal,
-            });
-
-            // Track per-content-block tool state so input_json_delta events can be
-            // forwarded as token chunks. For tools whose primary user-content lives in
-            // a known field (EmitAnswer.text, EmitObserve.reason, EmitNoOutput.reason)
-            // we extract that field's incremental value so the UI sees clean answer
-            // text. For other tools (S2's EmitTurnPlan, etc.) we forward the raw
-            // partial JSON so the structured thinking is visible as it forms.
-            const toolBlocks = new Map<
-              number,
-              { name: string; partial: string; lastExtracted: string; textFieldName?: string }
-            >();
-
-            for await (const event of stream) {
-              if (event.type === "content_block_start") {
-                if (event.content_block.type === "tool_use") {
-                  toolBlocks.set(event.index, {
-                    name: event.content_block.name,
-                    partial: "",
-                    lastExtracted: "",
-                    textFieldName: TOOL_STREAM_TEXT_FIELDS[event.content_block.name],
-                  });
-                }
-                continue;
+              if (attempt > 1) {
+                // Retry attempts switch to non-streaming: the stall mode lives in
+                // SSE delivery, and a buffered response rides through it. This
+                // also means a retry can never re-emit deltas already forwarded
+                // by the stalled first attempt.
+                const retryClient = this.bufferedUnaryClient(callTimeoutMs) ?? client;
+                return await retryClient.messages.create(this.rawMessageParams(options, messages), {
+                  signal,
+                  timeout: callTimeoutMs,
+                });
               }
 
-              if (event.type === "content_block_delta") {
-                if (event.delta.type === "text_delta") {
-                  // Under the emission-tool protocol, loose text emitted alongside the
-                  // tool is not user-facing (the answer rides in the tool input); skip it
-                  // so it never reaches the live stream.
-                  if (options.suppressRawTextStream !== true) {
-                    onTextDelta?.(event.delta.text);
+              const stream = streamFactory(this.rawMessageParams(options, messages), {
+                signal,
+                timeout: callTimeoutMs,
+              });
+
+              // Track per-content-block tool state so input_json_delta events can be
+              // forwarded as token chunks. For tools whose primary user-content lives in
+              // a known field (EmitAnswer.text, EmitObserve.reason, EmitNoOutput.reason)
+              // we extract that field's incremental value so the UI sees clean answer
+              // text. For other tools (S2's EmitTurnPlan, etc.) we forward the raw
+              // partial JSON so the structured thinking is visible as it forms.
+              const toolBlocks = new Map<
+                number,
+                { name: string; partial: string; lastExtracted: string; textFieldName?: string }
+              >();
+
+              for await (const event of stream) {
+                if (event.type === "content_block_start") {
+                  if (event.content_block.type === "tool_use") {
+                    toolBlocks.set(event.index, {
+                      name: event.content_block.name,
+                      partial: "",
+                      lastExtracted: "",
+                      textFieldName: TOOL_STREAM_TEXT_FIELDS[event.content_block.name],
+                    });
                   }
                   continue;
                 }
 
-                if (event.delta.type === "input_json_delta") {
-                  const block = toolBlocks.get(event.index);
-                  if (block === undefined) {
-                    continue;
-                  }
-
-                  block.partial += event.delta.partial_json;
-
-                  if (block.textFieldName === undefined) {
-                    // Unknown tool — forward raw partial JSON so the user sees
-                    // structured thinking accumulating.
-                    if (event.delta.partial_json.length > 0) {
-                      onTextDelta?.(event.delta.partial_json);
+                if (event.type === "content_block_delta") {
+                  if (event.delta.type === "text_delta") {
+                    // Under the emission-tool protocol, loose text emitted alongside the
+                    // tool is not user-facing (the answer rides in the tool input); skip it
+                    // so it never reaches the live stream.
+                    if (options.suppressRawTextStream !== true) {
+                      onTextDelta?.(event.delta.text);
                     }
                     continue;
                   }
 
-                  const extracted = extractPartialStringField(block.partial, block.textFieldName);
-                  if (extracted !== null && extracted.length > block.lastExtracted.length) {
-                    onTextDelta?.(extracted.slice(block.lastExtracted.length));
-                    block.lastExtracted = extracted;
+                  if (event.delta.type === "input_json_delta") {
+                    const block = toolBlocks.get(event.index);
+                    if (block === undefined) {
+                      continue;
+                    }
+
+                    block.partial += event.delta.partial_json;
+
+                    if (block.textFieldName === undefined) {
+                      // Unknown tool — forward raw partial JSON so the user sees
+                      // structured thinking accumulating.
+                      if (event.delta.partial_json.length > 0) {
+                        onTextDelta?.(event.delta.partial_json);
+                      }
+                      continue;
+                    }
+
+                    const extracted = extractPartialStringField(block.partial, block.textFieldName);
+                    if (extracted !== null && extracted.length > block.lastExtracted.length) {
+                      onTextDelta?.(extracted.slice(block.lastExtracted.length));
+                      block.lastExtracted = extracted;
+                    }
+                    continue;
                   }
-                  continue;
+                }
+
+                if (event.type === "content_block_stop") {
+                  toolBlocks.delete(event.index);
                 }
               }
 
-              if (event.type === "content_block_stop") {
-                toolBlocks.delete(event.index);
-              }
-            }
-
-            return await stream.finalMessage();
+              return await stream.finalMessage();
             },
             {
               stallMaxRetries: this.transportStallMaxRetries(),
@@ -2364,7 +2468,7 @@ export class AnthropicLLMClient implements LLMClient {
           );
         }
 
-        return this.streamRawMessage(options, messages, onTextDelta, true);
+        return this.streamRawMessage(options, messages, onTextDelta, true, callTimeoutMs);
       }
 
       if (isAuthenticationFailure(error) && this.auth?.kind === "oauth") {
@@ -2539,6 +2643,8 @@ export class AnthropicLLMClient implements LLMClient {
         attachmentResolver: this.options.attachmentResolver,
       }),
       options.onTextDelta,
+      false,
+      options.timeoutMs ?? this.streamingCallTimeoutMs(),
     );
     let structuredOutput: unknown;
 
