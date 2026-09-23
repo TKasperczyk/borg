@@ -33,6 +33,7 @@ import { toAnthropicContentBlockMessages } from "./anthropic-content-blocks.js";
 import { clampMaxOutputTokens, getModelMaxOutputTokens } from "./max-tokens.js";
 import {
   isOpusModel,
+  needsExplicitEffortDefault,
   supportsForcedToolUse,
   toolUseReminder,
   translateForcedToolUse,
@@ -40,6 +41,7 @@ import {
 } from "./tool-choice-compatibility.js";
 export {
   isOpusModel,
+  needsExplicitEffortDefault,
   supportsForcedToolUse,
   type LLMToolChoiceTranslationEvent,
 } from "./tool-choice-compatibility.js";
@@ -1844,10 +1846,19 @@ export function willSendThinkingUnderAutoToolChoice(
 function buildOutputConfig(
   base: LLMOutputConfig | undefined,
   effort: OutputConfig["effort"] | undefined,
-): OutputConfig {
+  model: string,
+): OutputConfig | undefined {
+  // Caller values win. The shared default rides only on the tier whose omitted
+  // effort changed (see needsExplicitEffortDefault); other models keep the
+  // request free of the field, which some of them reject.
+  const resolved =
+    effort ?? (needsExplicitEffortDefault(model) ? DEFAULT_LLM_EFFORT : undefined);
+  if (base === undefined && resolved === undefined) {
+    return undefined;
+  }
   return {
     ...(base ?? {}),
-    effort: effort ?? DEFAULT_LLM_EFFORT,
+    ...(resolved === undefined ? {} : { effort: resolved }),
   };
 }
 
@@ -2090,7 +2101,7 @@ export class AnthropicLLMClient implements LLMClient {
     // Effort must not vary when compatibility or structural retries omit
     // thinking: always send the caller's value or the shared high default.
     const sendThinking = options.thinking !== undefined && !omitThinking;
-    const outputConfig = buildOutputConfig(options.output_config, options.effort);
+    const outputConfig = buildOutputConfig(options.output_config, options.effort, options.model);
 
     return {
       model: options.model,

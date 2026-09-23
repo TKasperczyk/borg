@@ -729,6 +729,33 @@ describe("llm", () => {
       expect(create.mock.lastCall?.[0].output_config).toEqual({ effort: "high" });
     });
 
+    it.each([
+      ["claude-haiku-4-5-20251001", undefined],
+      ["claude-sonnet-5", undefined],
+      ["claude-opus-5", undefined],
+      ["claude-opus-5-5", { effort: "high" }],
+    ])("sends the shared effort default only where the omitted default changed: %s", async (model, expected) => {
+      vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const create = vi.fn().mockResolvedValue(toolResponse);
+      const client = new AnthropicLLMClient({ client: { messages: { create } } });
+      await client.complete({ model, tools, tool_choice: { type: "any" }, messages: [], budget: "background" });
+      expect(create.mock.lastCall?.[0].output_config).toEqual(expected);
+    });
+
+    it("keeps an explicit effort on models that never receive the default", async () => {
+      const create = vi.fn().mockResolvedValue(toolResponse);
+      const client = new AnthropicLLMClient({ client: { messages: { create } } });
+      await client.complete({
+        model: "claude-sonnet-5",
+        tools,
+        tool_choice: { type: "any" },
+        effort: "medium",
+        messages: [],
+        budget: "background",
+      });
+      expect(create.mock.lastCall?.[0].output_config).toEqual({ effort: "medium" });
+    });
+
     it.each([false, true])(
       "translates the unary fallback after a streaming stall with retry=%s",
       async (retry) => {
@@ -1213,8 +1240,9 @@ describe("llm", () => {
     });
 
     expect(create.mock.calls[0]?.[0]).toMatchObject({
-      output_config: { ...outputConfig, effort: "high" },
+      output_config: outputConfig,
     });
+    expect(create.mock.calls[0]?.[0].output_config.effort).toBeUndefined();
     expect(result).toMatchObject({
       text: '{"ok":true}',
       structured_output: { ok: true },

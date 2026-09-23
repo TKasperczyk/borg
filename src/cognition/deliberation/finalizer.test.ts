@@ -254,7 +254,7 @@ describe("runFinalizer emission tools", () => {
       expect(create.mock.calls[0]?.[0].thinking).toEqual({ type: "adaptive" });
       expect(create.mock.calls[1]?.[0].thinking).toBeUndefined();
       for (const [request] of create.mock.calls) {
-        expect(request.output_config).toEqual({ effort: effort ?? "high" });
+        expect(request.output_config).toEqual(effort === undefined ? undefined : { effort });
       }
     },
   );

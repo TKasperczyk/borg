@@ -13,6 +13,7 @@ import {
   CLAUDE_CODE_IDENTITY_BLOCK_TEXT,
   OAUTH_USER_AGENT,
   DEFAULT_LLM_EFFORT,
+  needsExplicitEffortDefault,
   createOAuthFetch,
   type LLMClient,
   type LLMCompleteResult,
@@ -41,7 +42,7 @@ type PersonaClient = {
       system?: string | TextBlockParam[];
       messages: MessageParam[];
       max_tokens: number;
-      output_config: OutputConfig;
+      output_config?: OutputConfig;
     }): {
       finalMessage(): Promise<Message>;
     };
@@ -628,7 +629,7 @@ export class PersonaSession {
         system: systemParam(initialized.systemPrefix, this.persona),
         messages: sanitizeMessages(messages),
         max_tokens: 4_000,
-        output_config: { effort: DEFAULT_LLM_EFFORT },
+        ...(needsExplicitEffortDefault(this.model) ? { output_config: { effort: DEFAULT_LLM_EFFORT } } : {}),
       })
       .finalMessage();
     return responseText(response);

@@ -14,6 +14,7 @@ import {
   CLAUDE_CODE_IDENTITY_BLOCK_TEXT,
   OAUTH_USER_AGENT,
   DEFAULT_LLM_EFFORT,
+  needsExplicitEffortDefault,
   createOAuthFetch,
   isOpusModel,
   toAnthropicContentBlocks,
@@ -70,7 +71,7 @@ type AssessorClient = {
       messages: MessageParam[];
       tools: Tool[];
       max_tokens: number;
-      output_config: OutputConfig;
+      output_config?: OutputConfig;
       temperature?: number;
     }): {
       finalMessage(): Promise<Message>;
@@ -328,7 +329,7 @@ export class AssessorAgent {
           // Keep the assessor's output budget at 32k. Verdict reasoning and
           // tool calls fit under this in practice.
           max_tokens: 32_000,
-          output_config: { effort: DEFAULT_LLM_EFFORT },
+          ...(needsExplicitEffortDefault(this.model) ? { output_config: { effort: DEFAULT_LLM_EFFORT } } : {}),
           ...(isOpusModel(this.model) ? {} : { temperature: 0 }),
         })
         .finalMessage();

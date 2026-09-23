@@ -20,6 +20,7 @@ import {
   CLAUDE_CODE_IDENTITY_BLOCK_TEXT,
   OAUTH_USER_AGENT,
   DEFAULT_LLM_EFFORT,
+  needsExplicitEffortDefault,
   createOAuthFetch,
   toAnthropicContentBlocks,
   type LLMToolResultBlock,
@@ -101,7 +102,7 @@ type OverseerClient = {
       messages: MessageParam[];
       tools: Tool[];
       max_tokens: number;
-      output_config: OutputConfig;
+      output_config?: OutputConfig;
     }): {
       finalMessage(): Promise<Message>;
     };
@@ -1273,7 +1274,7 @@ export async function runOverseer(options: RunOverseerOptions): Promise<Overseer
         // Bumped from 4_000: the expanded audit produces verdicts with
         // many turn-cited observations; previous runs were capping out.
         max_tokens: 8_000,
-        output_config: { effort: DEFAULT_LLM_EFFORT },
+        ...(needsExplicitEffortDefault(OVERSEER_MODEL) ? { output_config: { effort: DEFAULT_LLM_EFFORT } } : {}),
       })
       .finalMessage();
     messages.push({
