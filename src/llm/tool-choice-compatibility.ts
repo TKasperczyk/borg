@@ -39,6 +39,18 @@ export type LLMToolChoiceTranslationEvent = {
   attempt: number;
 };
 
+/**
+ * Whether a request that omits `effort` must send the shared default explicitly.
+ * Only the model tier that also dropped forced tool use (Opus >= 5.5, Fable >= 5.1,
+ * Mythos >= 5.1) changed the omitted-effort default (Opus 5.5 runs at medium where
+ * Opus 5 ran at high). Older tiers already default to high, and Haiku models reject
+ * the parameter outright ("This model does not support the effort parameter"), so
+ * the default is never sent to them.
+ */
+export function needsExplicitEffortDefault(model: string): boolean {
+  return !supportsForcedToolUse(model);
+}
+
 export function toolUseReminder(expectedTool: string | null): string {
   return expectedTool === null
     ? "Answer only by calling one of the provided tools."
