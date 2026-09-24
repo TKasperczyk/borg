@@ -16,7 +16,7 @@ import type {
   ActionRecordListFilter,
   ActionRecordPatch,
 } from "../../../memory/actions/index.js";
-import { createWorkingMemory } from "../../../memory/working/index.js";
+import { createWorkingMemory, WorkingMemoryStore } from "../../../memory/working/index.js";
 import { FakeLLMClient } from "../../../llm/test-support/fake-client.js";
 import type { LLMCompleteOptions } from "../../../llm/index.js";
 import { openDatabase } from "../../../storage/sqlite/index.js";
@@ -1604,5 +1604,213 @@ describe("runPostGenerationPhase outbound activity gate", () => {
     expect(record).toHaveBeenCalledTimes(2);
     expect(record).toHaveBeenCalledWith(expect.objectContaining({ kind: "borg_replied" }));
     expect(record).toHaveBeenCalledWith(expect.objectContaining({ kind: "turn_completed" }));
+  });
+});
+
+describe("runPostGenerationPhase regeneration record", () => {
+  // The record of a guard-regenerated message reaches the session's stored working memory through
+  // reflection persistence, which directed-outbound turns skip. The store is real, so the
+  // assertions read what the next turn would load rather than the state handed to reflection.
+  const cleanup: Array<() => void> = [];
+
+  afterEach(() => {
+    while (cleanup.length > 0) {
+      cleanup.pop()?.();
+    }
+  });
+
+  async function runRegeneratedMessageTurn(origin: "user" | "directed_outbound") {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-post-generation-regeneration-"));
+    cleanup.push(() => rmSync(tempDir, { recursive: true, force: true }));
+    const sessionId = createSessionId();
+    const turnId = "turn_regenerated_message";
+    const workingMemoryStore = new WorkingMemoryStore({
+      dataDir: tempDir,
+      clock: new FixedClock(1_000),
+    });
+    const stored = workingMemoryStore.save({
+      ...createWorkingMemory(sessionId, 1_000),
+      turn_counter: 3,
+      discourse_state: {
+        stop_until_substantive_content: null,
+        closure_pressure_history: [],
+        recent_suppressions: [],
+        recent_regenerations: [
+          { turn_id: "turn_earlier", mechanism: "commitment_guard_regeneration", ts: 1_000 },
+        ],
+      },
+    });
+    // The turn's own state diverges from the stored one; none of that may be persisted here.
+    const workingMemory = { ...stored, turn_counter: 7, mode: "problem_solving" as const };
+    const agentEntry = {
+      id: createStreamEntryId(),
+      kind: "agent_msg",
+      turn_id: turnId,
+      turn_status: "active",
+      content: "Redrafted note.",
+      session_id: sessionId,
+      timestamp: 10_000,
+      reply_target_entity_id: null,
+    };
+    const deliver = vi.fn(async () => ({
+      status: "transported" as const,
+      streamEntry: agentEntry,
+      sourceType: "demo",
+    }));
+    const reflectionRun = vi.fn(async () => undefined);
+
+    await runPostGenerationPhase({
+      options: {
+        config: {
+          ...DEFAULT_CONFIG,
+          generation: {
+            ...DEFAULT_CONFIG.generation,
+            evidenceLedger: {
+              ...DEFAULT_CONFIG.generation.evidenceLedger,
+              enabled: false,
+            },
+          },
+        },
+        clock: { now: () => 10_000 },
+        workingMemoryStore,
+        actionRepository: makeActionRepository([]),
+        tracer: { enabled: false, includePayloads: false, emit: vi.fn() },
+        sessionsRepository: {
+          get: () => ({
+            session_id: sessionId,
+            source_type: "demo",
+            audience_label: "Project Crew",
+            audience_entity_id: createEntityId(),
+          }),
+        },
+        outboundDelivery: { deliver },
+        turnActionCoordinator: {
+          run: vi.fn(async () => ({
+            actionResult: {
+              response: "Redrafted note.",
+              tool_calls: [],
+              intents: [],
+              workingMemory,
+              pending_action_merge_count: 0,
+            },
+            actionEmission: { kind: "message" },
+            deliberation: {
+              path: "system_1",
+              thoughts: [],
+              usage: { input_tokens: 0, output_tokens: 0, stop_reason: null },
+              retrievedEpisodes: [],
+              referencedEpisodeIds: [],
+            },
+            regenerationBreadcrumb: {
+              kind: "commitment_guard_regeneration",
+              turnId,
+              commitments: [{ id: "cmt_guarded", kind: "participant_preference" }],
+            },
+          })),
+        },
+        discourseStateService: {
+          appendClosurePressureHistory: vi.fn(
+            (arg: { workingMemory: unknown }) => arg.workingMemory,
+          ),
+          setStopState: vi.fn((arg: { workingMemory: unknown }) => arg.workingMemory),
+          markClosureLoopNamed: vi.fn((arg: { workingMemory: unknown }) => arg.workingMemory),
+        },
+        turnReflectionCoordinator: { run: reflectionRun },
+        turnActionStateService: { closeBorgSelfPerformedActions: vi.fn(async () => undefined) },
+        correctivePreferenceTurnService: { persistCommitment: vi.fn(async () => undefined) },
+        streamIngestionCoordinator: undefined,
+      } as never,
+      appendHookFailureEvent: vi.fn(async () => undefined),
+      llmClient: new FakeLLMClient({ responses: [] }),
+      sessionId,
+      sessionSourceType: null,
+      sessionAudienceRole: "participant" as const,
+      turnId,
+      turnInput: { userMessage: "Instruction", origin },
+      streamWriter: { append: vi.fn(async () => agentEntry) } as never,
+      lifecycleTracker: {
+        trackPendingActionMerges: vi.fn(),
+        trackReflectionEffects: vi.fn(),
+      } as never,
+      cognitionInput: "Instruction",
+      perception: { mode: "relational", entities: [] } as never,
+      workingMemory,
+      workingMood: null as never,
+      persistedPerceptionEntry: null as never,
+      persistedUserEntryId: createStreamEntryId(),
+      correctiveCommitment: null,
+      correctiveCommitmentSupersession: null,
+      correctiveCommitmentRetirement: null,
+      deliberation: {
+        path: "system_1",
+        thoughts: [],
+        usage: null,
+        retrievedEpisodes: [],
+        referencedEpisodeIds: [],
+      } as never,
+      retrievalPhase: {
+        applicableCommitments: [],
+        actionApplicableCommitments: [],
+        retrievedEpisodes: [],
+        selfSnapshot: null,
+        retrieval: { confidence: 1 },
+        executiveFocusWithStep: null,
+        selectedSkill: null,
+        proceduralContext: null,
+        evidenceLedgerContext: { ledger: null },
+      } as never,
+      origin,
+      autonomyTrigger: undefined,
+      closureLoopCurrentUserAct: null,
+      audienceEntityId: createEntityId(),
+      audienceIsGroup: true,
+      senderEntityId: null,
+      socialInteractionEntityId: null,
+      pendingSocialAttribution: null,
+      suppressionSet: null as never,
+      isUserTurn: origin === "user",
+      currentTurnFrameAnomaly: null,
+    });
+
+    return {
+      stored,
+      reloaded: workingMemoryStore.load(sessionId),
+      reflectionRun,
+      entry: {
+        turn_id: turnId,
+        mechanism: "commitment_guard_regeneration" as const,
+        ts: 10_000,
+        source_stream_entry_id: agentEntry.id,
+        commitments: [{ id: "cmt_guarded", kind: "participant_preference" }],
+      },
+    };
+  }
+
+  it("appends a directed-outbound turn's regeneration to the stored ring and changes nothing else", async () => {
+    const { stored, reloaded, entry } = await runRegeneratedMessageTurn("directed_outbound");
+
+    expect(reloaded).toEqual({
+      ...stored,
+      discourse_state: {
+        ...stored.discourse_state,
+        recent_regenerations: [...(stored.discourse_state?.recent_regenerations ?? []), entry],
+      },
+      updated_at: 10_000,
+    });
+  });
+
+  it("leaves the store to reflection persistence on an origin that runs it", async () => {
+    const { stored, reloaded, reflectionRun, entry } = await runRegeneratedMessageTurn("user");
+
+    expect(reloaded).toEqual(stored);
+    expect(reflectionRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        postActionWorkingMemory: expect.objectContaining({
+          discourse_state: expect.objectContaining({
+            recent_regenerations: [...(stored.discourse_state?.recent_regenerations ?? []), entry],
+          }),
+        }),
+      }),
+    );
   });
 });
