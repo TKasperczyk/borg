@@ -320,4 +320,82 @@ describe("evidence-ledger episode section", () => {
       expect(entry?.actor).toBe("user");
     });
   });
+
+  describe("warm recall of stream entries", () => {
+    const warmEvidence = (overrides: Partial<EvidenceItem>): EvidenceItem => ({
+      id: "warm_recall_raw_stream_unresolved",
+      source: "warm_recall",
+      text: "Warm-recalled stream detail.",
+      provenance: { streamIds: [createStreamEntryId()] },
+      recallIntentId: "warm_recall",
+      matchedTerms: [],
+      score: 0.15,
+      scoreBreakdown: { provenance: 1 },
+      ...overrides,
+    });
+
+    const renderRow = (evidence: EvidenceItem, streamEntriesById = new Map()) => {
+      const buckets = createSectionBuckets();
+      addRetrievedStructuredEvidenceSection({
+        input: { retrievedEvidence: [evidence] },
+        resolver: {
+          currentSessionId: DEFAULT_SESSION_ID,
+          streamEntriesById,
+          streamOrderById: new Map(),
+          episodeScopesById: new Map(),
+          episodeSourceStreamIdsById: new Map(),
+        },
+        buckets,
+      } as unknown as BuilderSectionContext);
+
+      return buckets.get("retrieved_memory_evidence")?.entries[0];
+    };
+
+    it("takes one entry's actor from its carried kind and leaves its scope to the resolver", () => {
+      const entry = renderRow(warmEvidence({ streamEntryKind: "agent_msg" }));
+
+      expect(entry?.actor).toBe("assistant");
+      expect(entry?.session_scope).toBe("global");
+      expect(entry?.source_type).toBe("system_metadata");
+      expect(entry?.value).toBe("warm_recall");
+    });
+
+    it("prefers the entry map over the carried kind when the map has the row", () => {
+      const streamId = createStreamEntryId();
+      const entry = renderRow(
+        warmEvidence({
+          provenance: { streamIds: [streamId] },
+          streamEntryKind: "agent_msg",
+        }),
+        new Map([
+          [
+            streamId,
+            {
+              id: streamId,
+              kind: "user_msg",
+              session_id: DEFAULT_SESSION_ID,
+              timestamp: NOW_MS,
+              content: "Live entry.",
+            },
+          ],
+        ]),
+      );
+
+      expect(entry?.session_scope).toBe("current_session");
+      expect(entry?.source_type).toBe("current_session_stream");
+      expect(entry?.actor).toBe("user");
+    });
+
+    it("keeps global and memory for a join that carries no kind", () => {
+      const entry = renderRow(
+        warmEvidence({
+          provenance: { streamIds: [createStreamEntryId(), createStreamEntryId()] },
+        }),
+      );
+
+      expect(entry?.session_scope).toBe("global");
+      expect(entry?.source_type).toBe("system_metadata");
+      expect(entry?.actor).toBe("memory");
+    });
+  });
 });

@@ -1081,6 +1081,10 @@ export class RetrievalPipeline {
       return null;
     }
 
+    // One entry's verbatim text says whose it is and when it was written, as a fresh
+    // raw-stream hit does. A join of several entries has no single author or instant.
+    const onlyEntry = orderedEntries.length === 1 ? orderedEntries[0] : undefined;
+
     return {
       id: `warm_recall_raw_stream_${handle.streamIds.join("_")}`,
       source: "warm_recall",
@@ -1093,6 +1097,9 @@ export class RetrievalPipeline {
       },
       recallIntentId: WARM_RECALL_INTENT_ID,
       matchedTerms: [],
+      ...(onlyEntry === undefined
+        ? {}
+        : { streamEntryKind: onlyEntry.kind, streamEntryAtMs: onlyEntry.timestamp }),
       score: warmRecallScore(stateHandle),
       scoreBreakdown: {
         provenance: 1,

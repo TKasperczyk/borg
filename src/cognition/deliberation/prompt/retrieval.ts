@@ -399,7 +399,8 @@ function verificationEvidenceCandidates(
             }),
       },
       payload: {
-        // Raw-stream rows only, and ahead of `text` deliberately: the payload is
+        // Rows holding one stream entry's text (raw-stream hits, warm recalls of a
+        // single entry), and ahead of `text` deliberately: the payload is
         // verbatim stream content, so a recalled entry that quotes a rendered
         // block reproduces that block exactly. Every other field on the row is
         // equally true of a quotation and of the thing quoted, which leaves the

@@ -114,7 +114,8 @@ export type EvidenceItem = {
   imageOriginFrame?: string;
   citationType?: "original_image" | "generated_perception_text" | "parent_user_message";
   imageUnavailableReason?: "budget" | "inactive";
-  // Raw-stream evidence only: the recalled entry's own kind and instant. This
+  // Set where a row holds one stream entry's text (raw-stream hits, single-entry
+  // warm recalls): the recalled entry's own kind and instant. This
   // payload is verbatim stream content, so a recalled entry that quotes a
   // rendered block arrives byte-identical to that block -- and every other
   // field on the row (score, disclosure, stream id) is true of both cases. The

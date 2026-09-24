@@ -111,11 +111,21 @@ export function addRetrievedStructuredEvidenceSection(context: BuilderSectionCon
     }
 
     const scope = evidenceItemScope(item, context.resolver);
+    const itemStreamIds = item.provenance?.streamIds ?? [];
+    // A row carrying a stream entry's kind is that entry's own text (on this lane, a warm
+    // recall of one entry): its author decides the actor exactly as on the raw-stream lane.
+    // Its scope stays the resolver's, since a corrected prior_session would move the row.
+    const actor =
+      item.streamEntryKind === undefined
+        ? ("memory" as const)
+        : itemStreamIds.every((id) => context.resolver.streamEntriesById.has(id))
+          ? rawStreamActor(itemStreamIds, context.resolver)
+          : actorForStreamEntry({ kind: item.streamEntryKind });
     const entry = cappedTrustRank({
       id: `retrieved_evidence:${item.id}`,
       source_type: evidenceItemSourceType(item, scope),
       session_scope: scope,
-      actor: "memory" as const,
+      actor,
       trust_rank:
         item.source === "warm_recall"
           ? WARM_RECALL_TRUST_RANK
