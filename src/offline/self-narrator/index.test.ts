@@ -6,6 +6,7 @@ import {
   selfPrivateMemoryDisclosureLabel,
 } from "../../memory/common/disclosure-label.js";
 import { memoryDisclosurePayloadFields } from "../../memory/common/disclosure-serializers.js";
+import { IdentityCasMismatchError } from "../../util/errors.js";
 import { createEpisodeId, createMaintenanceRunId, createStreamEntryId } from "../../util/ids.js";
 import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
 import { estimatePromptTokens } from "../../util/token-estimate.js";
@@ -1321,6 +1322,100 @@ describe("SelfNarratorProcess", () => {
           ...priorKeyEpisodeIds.slice(0, 6),
         ],
       });
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("refuses an older revision over one accepted after it was composed", async () => {
+    const observation = {
+      category: "understanding",
+      what_changed: "Deployment review became a continuous practice.",
+      before_description: "Deployment review felt episodic.",
+      after_description: "Deployment review now connects planning and operations.",
+      confidence: 0.8,
+      evidence_episode_ids: ["ep_aaaaaaaaaaaaaaaa", "ep_bbbbbbbbbbbbbbbb"],
+    };
+    const olderText = "Planning quarter; deployment review started.";
+    const newerText = "Planning quarter; deployment review became continuous.";
+    const llm = new FakeLLMClient({
+      responses: [
+        createSelfNarratorResponse({
+          period_decision: "continue_current",
+          observation,
+          period_narrative: olderText,
+        }),
+        createSelfNarratorResponse({
+          period_decision: "continue_current",
+          observation,
+          period_narrative: newerText,
+        }),
+      ],
+    });
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+    });
+    const process = new SelfNarratorProcess({
+      autobiographicalRepository: harness.autobiographicalRepository,
+      growthMarkersRepository: harness.growthMarkersRepository,
+      registry: harness.registry,
+    });
+
+    try {
+      const period = harness.autobiographicalRepository.upsertPeriod({
+        label: "2026-Q1",
+        start_ts: Date.UTC(2026, 0, 1),
+        narrative: "Planning quarter.",
+        themes: ["planning"],
+        provenance: { kind: "offline", process: "self-narrator" },
+      });
+      await harness.episodicRepository.createEpisode(
+        createEpisodeFixture({
+          id: "ep_aaaaaaaaaaaaaaaa" as never,
+          title: "Deploy rehearsal",
+          narrative: "Deployment review became concrete.",
+          tags: ["deploy"],
+          created_at: Date.UTC(2026, 6, 10),
+          updated_at: Date.UTC(2026, 6, 10),
+        }),
+      );
+      await harness.episodicRepository.createEpisode(
+        createEpisodeFixture({
+          id: "ep_bbbbbbbbbbbbbbbb" as never,
+          title: "Deploy follow-up",
+          narrative: "Deployment review stayed active.",
+          tags: ["deploy"],
+          created_at: Date.UTC(2026, 6, 11),
+          updated_at: Date.UTC(2026, 6, 11),
+        }),
+      );
+
+      // Two passes compose against the same text while neither proposal is decided yet.
+      for (let pass = 0; pass < 2; pass += 1) {
+        const plan = await process.plan(harness.createContext(), {});
+        await process.apply(harness.createContext(), plan);
+      }
+
+      const proposalFor = (text: string) =>
+        harness.reviewQueueRepository
+          .getOpen()
+          .find((item) => (item.refs.patch as { narrative?: string }).narrative === text);
+      const older = proposalFor(olderText);
+      const newer = proposalFor(newerText);
+
+      expect(older?.refs).toMatchObject({ expected_record_version: period.record_version });
+      expect(newer?.refs).toMatchObject({ expected_record_version: period.record_version });
+
+      await harness.reviewQueueRepository.resolve(newer!.id, "accept");
+      await expect(harness.reviewQueueRepository.resolve(older!.id, "accept")).rejects.toThrow(
+        IdentityCasMismatchError,
+      );
+
+      expect(harness.autobiographicalRepository.getPeriod(period.id)).toMatchObject({
+        narrative: newerText,
+        record_version: period.record_version! + 1,
+      });
+      expect(harness.reviewQueueRepository.get(older!.id)?.resolved_at).toBeNull();
     } finally {
       await harness.cleanup();
     }

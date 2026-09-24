@@ -265,6 +265,13 @@ export function stripReviewResolverRefs(refs: Record<string, unknown>): Record<s
 
   return next;
 }
+
+// The base version a proposal was composed against only fences its apply step;
+// it is not part of what a model judges or extracts, so model renderings omit it.
+export function reviewRefsForModel(refs: Record<string, unknown>): Record<string, unknown> {
+  const { expected_record_version: _applyFence, ...rest } = refs;
+  return rest;
+}
 type BeliefRevisionRefs = z.infer<typeof beliefRevisionRefsSchema>;
 export type BeliefRevisionReasonCode =
   | "evidence_invalidated"

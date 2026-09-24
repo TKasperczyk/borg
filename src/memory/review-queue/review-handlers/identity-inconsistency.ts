@@ -148,6 +148,7 @@ export const identityInconsistencyReviewRefsSchema = z.union([
       repair_op: z.literal("patch"),
       patch: nonEmptyAutobiographicalPeriodPatchSchema,
       next_period_open_payload: autobiographicalPeriodSchema.optional(),
+      expected_record_version: z.number().int().positive().optional(),
     })
     .strict(),
   z
@@ -402,6 +403,7 @@ export function createIdentityInconsistencyReviewQueueHandler(): ReviewQueueHand
             throughReview: true,
             reason: item.reason,
             reviewItemId: item.id,
+            expectedVersion: refs.expected_record_version,
           },
         );
         assertApplied({

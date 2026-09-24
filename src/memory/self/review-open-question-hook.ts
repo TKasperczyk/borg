@@ -1,5 +1,5 @@
 import { StreamWriter } from "../../stream/index.js";
-import type { ReviewQueueItem } from "../review-queue/review-queue.js";
+import { reviewRefsForModel, type ReviewQueueItem } from "../review-queue/review-queue.js";
 import {
   entityIdHelpers,
   episodeIdHelpers,
@@ -241,7 +241,7 @@ export async function enqueueOpenQuestionForReview(
       sourceTextProxy: JSON.stringify({
         kind: item.kind,
         reason: item.reason,
-        refs: item.refs,
+        refs: reviewRefsForModel(item.refs),
       }),
       onSearchFailure: (error) => {
         console.warn("Review open-question candidate search failed open", {

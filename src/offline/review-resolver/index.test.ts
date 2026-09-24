@@ -2506,6 +2506,57 @@ describe("review resolver autonomous mode", () => {
     });
   });
 
+  it("lands one of two revisions composed against the same period text", async () => {
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      reviewOpenQuestionExtractor: null,
+      configOverrides: AUTONOMOUS_OVERRIDES,
+    });
+    cleanup.push(harness.cleanup);
+    const period = harness.autobiographicalRepository.upsertPeriod({
+      label: "2026-Q3",
+      start_ts: Date.UTC(2026, 6, 1),
+      narrative: "Base text.",
+      provenance: { kind: "offline", process: "self-narrator" },
+    });
+    const enqueueRevision = (narrative: string) =>
+      harness.reviewQueueRepository.enqueue({
+        kind: "identity_inconsistency",
+        reason: `self-narrator proposed revising autobiographical period ${period.id}`,
+        refs: {
+          target_type: "autobiographical_period",
+          target_id: period.id,
+          repair_op: "patch",
+          patch: { narrative },
+          proposed_provenance: { kind: "offline", process: "self-narrator" },
+          evidence_episode_ids: [createEpisodeFixture().id],
+          expected_record_version: period.record_version,
+        },
+      });
+    const revisions = [enqueueRevision("First revision."), enqueueRevision("Second revision.")];
+    llm.pushResponse(identityResolverResponse({ verdict: "accept_repair" }));
+    llm.pushResponse(identityResolverResponse({ verdict: "accept_repair" }));
+
+    await runResolver(harness);
+
+    const landed = harness.autobiographicalRepository.getPeriod(period.id);
+    const items = revisions.map((item) => harness.reviewQueueRepository.get(item.id));
+    const stale = items.find((item) => item?.resolved_at === null);
+
+    expect(llm.requests).toHaveLength(2);
+    for (const request of llm.requests) {
+      expect(String(request.messages[0]?.content)).not.toContain("expected_record_version");
+    }
+    expect(landed?.record_version).toBe(period.record_version! + 1);
+    expect(items.filter((item) => item?.resolution === "accept")).toHaveLength(1);
+    expect(stale?.refs).toMatchObject({
+      __borg_review_resolver_diagnostic: { verdict: "apply_failed", attempts: 1 },
+    });
+    expect(["First revision.", "Second revision."]).toContain(landed?.narrative);
+    expect((stale?.refs.patch as { narrative: string }).narrative).not.toBe(landed?.narrative);
+  });
+
   it("selects an older identity review ahead of newer kinds at the pass cap", async () => {
     const clock = new ManualClock(1_000_000);
     const llm = new FakeLLMClient();

@@ -7,7 +7,7 @@ import {
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../../llm/index.js";
-import type { ReviewQueueItem } from "../review-queue/review-queue.js";
+import { reviewRefsForModel, type ReviewQueueItem } from "../review-queue/review-queue.js";
 import {
   episodeIdHelpers,
   openQuestionIdHelpers,
@@ -154,7 +154,7 @@ export class ReviewOpenQuestionExtractor {
                   id: item.id,
                   kind: item.kind,
                   reason: item.reason,
-                  refs: item.refs,
+                  refs: reviewRefsForModel(item.refs),
                 },
                 context,
               }),

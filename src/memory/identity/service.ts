@@ -7,7 +7,7 @@ import {
   type OpenQuestionId,
 } from "../../util/ids.js";
 import { type Provenance } from "../common/provenance.js";
-import { expectedRecordVersion } from "../common/cas.js";
+import { expectedRecordVersion, type IdentityCasOptions } from "../common/cas.js";
 import {
   CommitmentRepository,
   commitmentPatchSchema,
@@ -1014,7 +1014,7 @@ export class IdentityService {
     periodId: AutobiographicalPeriodId,
     patch: unknown,
     provenance: Provenance,
-    options: IdentityUpdateOptions = {},
+    options: IdentityUpdateOptions & IdentityCasOptions = {},
   ): IdentityUpdateResult<AutobiographicalPeriod> {
     const current = this.options.autobiographicalRepository.getPeriod(periodId);
 
@@ -1060,7 +1060,7 @@ export class IdentityService {
           provenance,
         },
         {
-          expectedVersion: expectedRecordVersion(current),
+          expectedVersion: expectedRecordVersion(current, options),
         },
       );
 

@@ -893,6 +893,9 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
                 ...item.evidence_episode_ids,
                 ...item.key_episode_ids,
               ]).slice(0, 8),
+              // The patch replaces the whole narrative, so it may only land on the version this
+              // pass read; a revision accepted in between would otherwise vanish unseen.
+              expected_record_version: item.previous.record_version,
             },
             reason: `self-narrator proposed revising autobiographical period ${item.period_id}`,
           });
