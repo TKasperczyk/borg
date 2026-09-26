@@ -252,6 +252,44 @@ describe("inner life internal tools", () => {
     });
   });
 
+  // This tool and the post-turn reflector both store provenance online_reflector / reflector,
+  // so the transition trace is the one record that names which writer resolved the question.
+  // The tool passed its source path without a tracer, and the event was never emitted.
+  it("traces an applied resolution under the tool's own source path", async () => {
+    const record = sampleOpenQuestion({ status: "resolved" });
+    const emit = vi.fn();
+    const tool = createOpenQuestionsResolveTool({
+      episodicRepository: { getMany: async () => [] },
+      entryIndex: { lookupEntriesById: (ids) => new Map(ids.map((id) => [id, {} as never])) },
+      identityService: {
+        resolveOpenQuestion: () => ({ status: "applied" as const, record }),
+      },
+      disclosureLabelForEvidence: async () => selfPrivateMemoryDisclosureLabel(),
+      tracer: { enabled: true, emit },
+    });
+
+    const result = await tool.invoke(
+      {
+        open_question_id: record.id,
+        resolution_note: "Settled from the thread.",
+        resolution_evidence_stream_entry_ids: [createStreamEntryId()],
+      },
+      context,
+    );
+
+    expect(result).toMatchObject({ status: "applied", openQuestion: { id: record.id } });
+    expect(emit).toHaveBeenCalledTimes(1);
+    expect(emit).toHaveBeenCalledWith("open_question_resolution.transitioned", {
+      turnId: context.turnId,
+      oq_id: record.id,
+      source_path: "tool.openQuestions.resolve",
+      decision: "resolved",
+      decision_reason: "autonomous_tool",
+      evidence_episode_count: 0,
+      evidence_stream_entry_count: 1,
+    });
+  });
+
   it("returns recent episodes with disclosure labels", async () => {
     const sourceStreamId = createStreamEntryId();
     const candidate: EpisodeSearchCandidate = {

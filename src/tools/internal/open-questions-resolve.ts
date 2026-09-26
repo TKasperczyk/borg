@@ -9,7 +9,10 @@ import {
 } from "../../memory/common/index.js";
 import { memoryDisclosureLabelMetadataSchema } from "../../memory/common/disclosure-label.js";
 import { episodeIdSchema, type EpisodicRepository } from "../../memory/episodic/index.js";
-import type { ResolveOpenQuestionIdentityService } from "../../memory/lifecycle-ops/index.js";
+import type {
+  LifecycleTracer,
+  ResolveOpenQuestionIdentityService,
+} from "../../memory/lifecycle-ops/index.js";
 import { resolveOpenQuestionThroughIdentityService } from "../../memory/lifecycle-ops/index.js";
 import {
   openQuestionIdSchema,
@@ -70,6 +73,9 @@ export type OpenQuestionsResolveToolOptions = {
     episodeIds: readonly z.infer<typeof episodeIdSchema>[],
     streamEntryIds: readonly z.infer<typeof streamEntryIdSchema>[],
   ) => Promise<MemoryDisclosureLabel>;
+  // The stored provenance is online_reflector either way, so this trace is the only record
+  // that tells a resolution made by this tool from one made by the post-turn reflector.
+  tracer?: LifecycleTracer;
 };
 
 function disclosureLabelForQuestion(question: OpenQuestion): MemoryDisclosureLabel {
@@ -142,6 +148,7 @@ export function createOpenQuestionsResolveTool(
           evidence_episode_ids: evidenceEpisodeIds,
           evidence_stream_entry_ids: evidenceStreamEntryIds,
         },
+        tracer: options.tracer,
         turnId: context.turnId,
         traceSourcePath: "tool.openQuestions.resolve",
         traceDecisionReason: "autonomous_tool",

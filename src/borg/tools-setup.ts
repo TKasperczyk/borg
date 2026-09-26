@@ -15,6 +15,7 @@ import {
 import type { CommitmentRepository } from "../memory/commitments/index.js";
 import type { EntityRepository } from "../memory/commitments/index.js";
 import type { EpisodicRepository } from "../memory/episodic/index.js";
+import type { LifecycleTracer } from "../memory/lifecycle-ops/index.js";
 import {
   parseIdentityEventDisclosureSources,
   type IdentityEvent,
@@ -82,6 +83,7 @@ export type BuildToolDispatcherOptions = {
   promptSurfaceHistoryRepository: PromptSurfaceHistoryRepository;
   createStreamWriter: BorgStreamWriterFactory;
   clock: Clock;
+  tracer?: LifecycleTracer;
 };
 
 async function identityEventDisclosureLabelsForCollection(
@@ -268,6 +270,7 @@ export function buildToolDispatcher(options: BuildToolDispatcherOptions): ToolDi
     )
     .register(
       createOpenQuestionsResolveTool({
+        tracer: options.tracer,
         identityService: options.identityService,
         episodicRepository: options.episodicRepository,
         entryIndex: options.entryIndex,

@@ -193,6 +193,7 @@ export async function openBorgDependencies(
       promptSurfaceHistoryRepository: repositories.promptSurfaceHistoryRepository,
       createStreamWriter: repositories.createStreamWriter,
       clock,
+      tracer,
     });
     const outboundDelivery = new OutboundDelivery({
       connectorRegistry: outboundConnectorRegistry,
