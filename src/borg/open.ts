@@ -424,6 +424,8 @@ export async function openBorgDependencies(
           runDirectedOutboundTurn(
             {
               turnOrchestrator,
+              substratePrivilegedSourceTypes:
+                config.internalIdentifierGuard.substratePrivilegedSourceTypes,
             },
             input,
           ),

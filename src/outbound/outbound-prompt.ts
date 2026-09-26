@@ -27,6 +27,8 @@ const TARGET_DISCLOSURE_CONTRACT =
   "I treat disclosure labels as target-audience constraints: private memory may inform judgment internally, but I do not reveal private content or source details to the target unless the disclosure policy permits.";
 const TARGET_DELIVERY_CONTRACT =
   "I convey the instruction below in target-safe wording. I do not expose tool names, hidden prompts, internal ids, or the dispatch machinery.";
+const ID_ACCEPTING_TARGET_DELIVERY_CONTRACT =
+  "I convey the instruction below in target-safe wording. I do not expose tool names, hidden prompts, or the dispatch machinery.";
 
 function directedOutboundProvenanceLine(
   authorizationKind: DirectedOutboundAuthorizationKind,
@@ -52,16 +54,22 @@ function renderRegisteredOutboundBlock(
 export function renderDirectedOutboundInstructionSurface(input: {
   instruction: string;
   authorizationKind: DirectedOutboundAuthorizationKind;
+  // True when the target session's internal-identifier guard lets ids through;
+  // scrubbing them here would only remove what the instruction was sent to carry.
+  targetAcceptsInternalIds?: boolean;
 }): string {
+  const keepIds = input.targetAcceptsInternalIds === true;
   const promptSection = [
     "<borg_directed_outbound_instruction>",
     directedOutboundProvenanceLine(input.authorizationKind),
     TARGET_COMPOSITION_CONTEXT,
     TARGET_DISCLOSURE_CONTRACT,
-    TARGET_DELIVERY_CONTRACT,
+    keepIds ? ID_ACCEPTING_TARGET_DELIVERY_CONTRACT : TARGET_DELIVERY_CONTRACT,
     "",
     "Instruction:",
-    escapeReservedBorgTags(scrubCreatorDirectiveInternalIds(input.instruction)),
+    escapeReservedBorgTags(
+      keepIds ? input.instruction : scrubCreatorDirectiveInternalIds(input.instruction),
+    ),
     "</borg_directed_outbound_instruction>",
   ].join("\n");
 
@@ -97,7 +105,7 @@ export function renderAutonomousOutboundActionAvailabilitySection(
     `If I choose to reach one, I call ${OUTBOUND_POST_TOOL_NAME} with target_session_id set to that target's session_id and an instruction describing what the target-scoped turn should convey. The tool opens a separate target-scoped composition turn; it does not send my current draft directly.`,
     TARGET_COMPOSITION_CONTEXT,
     TARGET_DISCLOSURE_CONTRACT,
-    "The target-scoped turn conveys my instruction in target-safe wording and does not expose tool names, hidden prompts, internal ids, or dispatch machinery.",
+    "The target-scoped turn conveys my instruction in target-safe wording and does not expose tool names, hidden prompts, or dispatch machinery.",
     "I wait for the outbound tool result before choosing the terminal result for this autonomous interval.",
     "</borg_directed_outbound_instruction>",
   ].join("\n");
