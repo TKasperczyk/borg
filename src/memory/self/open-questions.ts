@@ -1072,8 +1072,9 @@ export class OpenQuestionsRepository {
   findByHandles(options: OpenQuestionHandleLookupOptions): OpenQuestion[] {
     const streamEntryIds = uniqueNonEmptyStrings(options.streamEntryIds);
     const episodeIds = uniqueNonEmptyStrings(options.episodeIds);
+    const semanticNodeIds = uniqueNonEmptyStrings(options.semanticNodeIds);
 
-    if (streamEntryIds.length === 0 && episodeIds.length === 0) {
+    if (streamEntryIds.length === 0 && episodeIds.length === 0 && semanticNodeIds.length === 0) {
       return [];
     }
 
@@ -1134,6 +1135,18 @@ export class OpenQuestionsRepository {
         )`,
       );
       values.push(...episodeIds, ...episodeIds, ...episodeIds);
+    }
+
+    // A contradiction-sourced row can carry node ids and nothing else. The open-row draw reaches it
+    // through node overlap, so without this arm its closure is also the last time any page shows it.
+    if (semanticNodeIds.length > 0) {
+      handleFilters.push(
+        `EXISTS (
+          SELECT 1 FROM json_each(open_questions.related_semantic_node_ids)
+          WHERE value IN (${semanticNodeIds.map(() => "?").join(", ")})
+        )`,
+      );
+      values.push(...semanticNodeIds);
     }
 
     filters.push(`(${handleFilters.join(" OR ")})`);

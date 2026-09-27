@@ -4964,6 +4964,86 @@ describe("EvidenceLedgerBuilder", () => {
     }
   });
 
+  it("admits a closed open question through a semantic node on this page", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new FixedClock(NOW_MS),
+    });
+    const currentEntry = await writer.append({
+      kind: "user_msg",
+      content: "Die beiden Aussagen über den Zeitplan passen nicht zusammen.",
+    });
+    const db = openDatabase(join(tempDir, "open-questions.db"), {
+      migrations: selfMigrations,
+    });
+    const repository = new OpenQuestionsRepository({
+      db,
+      clock: new FixedClock(NOW_MS),
+    });
+    const node = makeSemanticNode({
+      episodeId: createEpisodeId(),
+      label: "Schedule claim",
+    });
+
+    try {
+      const dismissed = repository.add({
+        question: "Do the two schedule claims contradict each other?",
+        urgency: 0.5,
+        related_semantic_node_ids: [node.id, createSemanticNodeId()],
+        source: "contradiction",
+      });
+      repository.abandon(dismissed.id, "stale_no_traction");
+      const builder = new EvidenceLedgerBuilder({
+        createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+        relationalSlotRepository: { list: () => [] },
+        actionRepository: { list: () => [] },
+        openQuestionsRepository: repository,
+        currentSessionTranscriptTokenBudget: 50_000,
+      });
+      const build = (retrievedSemantic: RetrievedSemantic | null) =>
+        builder.build({
+          sessionId: DEFAULT_SESSION_ID,
+          audienceEntityId: null,
+          currentUserMessage: String(currentEntry.content),
+          currentUserEntry: currentEntry,
+          workingMemory: makeWorkingMemory(),
+          applicableCommitments: [],
+          retrievedEvidence: [],
+          retrievedEpisodes: [],
+          retrievedSemantic,
+          openQuestions: [],
+          pendingCorrections: [],
+          frameAnomaly: null,
+        });
+      const openQuestionIds = async (retrievedSemantic: RetrievedSemantic | null) =>
+        (
+          (await build(retrievedSemantic)).sections.find(
+            (section) => section.id === "open_questions",
+          )?.entries ?? []
+        ).map((entry) => entry.id);
+
+      expect(
+        await openQuestionIds({
+          supports: [],
+          contradicts: [],
+          categories: [],
+          matched_node_ids: [node.id],
+          matched_nodes: [node],
+          support_hits: [],
+          causal_hits: [],
+          contradiction_hits: [],
+          category_hits: [],
+        }),
+      ).toEqual([`open_question:${dismissed.id}`]);
+      expect(await openQuestionIds(null)).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
   it("keeps assistant replies raw under transcript budget pressure while compacting observe markers", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);

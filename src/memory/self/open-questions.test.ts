@@ -1025,6 +1025,52 @@ describe("OpenQuestionsRepository", () => {
     }
   });
 
+  it("finds a closed row whose only handles are semantic node ids", () => {
+    const db = openDatabase(":memory:", {
+      migrations: selfMigrations,
+    });
+    const repository = new OpenQuestionsRepository({
+      db,
+      clock: new FixedClock(10_000),
+    });
+    const nodeId = createSemanticNodeId();
+    const unrelatedNodeId = createSemanticNodeId();
+    const dismissed = repository.add({
+      question: "Do the two claims about the schedule contradict each other?",
+      urgency: 0.5,
+      related_semantic_node_ids: [nodeId, createSemanticNodeId()],
+      source: "contradiction",
+    });
+    const stillOpen = repository.add({
+      question: "¿Sigue abierta la otra contradicción sobre el horario?",
+      urgency: 0.9,
+      related_semantic_node_ids: [nodeId],
+      source: "contradiction",
+    });
+    const lifecycle = ["resolved", "abandoned"] as const;
+
+    repository.abandon(dismissed.id, "stale_no_traction");
+
+    try {
+      expect(
+        repository
+          .findByHandles({ semanticNodeIds: [nodeId], statuses: lifecycle })
+          .map((question) => question.id),
+      ).toEqual([dismissed.id]);
+      expect(
+        repository.findByHandles({ streamEntryIds: [], episodeIds: [], statuses: lifecycle }),
+      ).toEqual([]);
+      expect(
+        repository.findByHandles({ semanticNodeIds: [unrelatedNodeId], statuses: lifecycle }),
+      ).toEqual([]);
+      expect(
+        repository.findByHandles({ semanticNodeIds: [nodeId] }).map((question) => question.id),
+      ).toEqual([stillOpen.id, dismissed.id]);
+    } finally {
+      db.close();
+    }
+  });
+
   it("retrieves cosine candidates globally across audience scopes", async () => {
     const firstText = "Which private uncertainty belongs to the first audience?";
     const secondText = "¿Qué incertidumbre equivalente pertenece a la segunda audiencia?";

@@ -122,6 +122,10 @@ export function relevantOpenQuestionEpisodeIds(input: EvidenceLedgerBuildInput):
   return episodeIds;
 }
 
+export function relevantOpenQuestionSemanticNodeIds(input: EvidenceLedgerBuildInput): Set<string> {
+  return new Set(input.retrievedSemantic?.matched_node_ids ?? []);
+}
+
 // A zero is self-describing only while nothing has stamped the row. Zero beside a live
 // last_ruminated_at is a third state -- the loop selected this question and the pass recorded
 // nothing -- and it renders identically to never-selected, so that case gets its own sentence

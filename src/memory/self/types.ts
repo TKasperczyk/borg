@@ -397,6 +397,7 @@ export type OpenQuestionSearchCandidate = {
 export type OpenQuestionHandleLookupOptions = {
   streamEntryIds?: readonly string[];
   episodeIds?: readonly string[];
+  semanticNodeIds?: readonly string[];
   statuses?: readonly OpenQuestionStatus[];
   visibleToAudienceEntityId?: EntityId | null;
   limit?: number;

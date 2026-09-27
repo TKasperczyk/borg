@@ -10,6 +10,7 @@ import {
   openQuestionStateMetadata,
   openQuestionStreamEntryIds,
   relevantOpenQuestionEpisodeIds,
+  relevantOpenQuestionSemanticNodeIds,
   relevantOpenQuestionStreamIds,
 } from "../open-question-handles.js";
 import {
@@ -54,6 +55,7 @@ export async function addOpenQuestionsSection(context: BuilderSectionContext): P
     for (const question of context.repos.openQuestions.findByHandles({
       streamEntryIds: [...streamIds],
       episodeIds: [...episodeIds],
+      semanticNodeIds: [...relevantOpenQuestionSemanticNodeIds(context.input)],
       statuses: LIFECYCLE_OPEN_QUESTION_STATUSES,
     })) {
       questionsById.set(question.id, question);
