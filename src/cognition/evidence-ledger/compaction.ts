@@ -204,7 +204,7 @@ const STATUS_COMPOSED_OMISSION_SECTIONS = new Map<EvidenceLedgerSectionId, strin
     "open_questions",
     ` A status-bearing row reaches this section by one of two admissions, and they take disjoint statuses: ${formatStatusList(
       HANDLE_MATCHED_OPEN_QUESTION_STATUSES,
-    )} only by handle match on this turn's stream and episode ids, ${formatStatusList(
+    )} only by handle match on this turn's ids, ${formatStatusList(
       DRAWN_OPEN_QUESTION_STATUSES,
     )} only by the scored retrieval draw. So an absent status reports that the one admission able to carry it produced nothing here.`,
   ],
