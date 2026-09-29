@@ -977,6 +977,14 @@ export class Reflector {
       context.workingMemory.pending_actions,
       intentUpdates,
     );
+    const pendingIntentKeys = new Set(context.workingMemory.pending_actions.map(intentKey));
+    const unmatchedIntentUpdates = intentUpdates.filter(
+      (update) => !pendingIntentKeys.has(intentKey(update)),
+    );
+
+    if (unmatchedIntentUpdates.length > 0) {
+      this.emitIntentUpdateUnmatched(context, unmatchedIntentUpdates);
+    }
 
     await this.persistActionRecords(context, resolvedIntentUpdates, streamWriter, effects);
 
@@ -1706,6 +1714,29 @@ export class Reflector {
       reason: "frame_anomaly",
       kind: context.frameAnomaly?.kind ?? "unknown",
       count,
+    });
+  }
+
+  private emitIntentUpdateUnmatched(
+    context: ReflectionContext,
+    updates: readonly ReflectionOutput["intent_updates"][number][],
+  ): void {
+    const tracer = this.options.tracer;
+
+    if (tracer?.enabled !== true || context.turnId === undefined) {
+      return;
+    }
+
+    tracer.emit("reflector.intent_update.rejected", {
+      turnId: context.turnId,
+      ...(context.sessionId !== undefined ? { session_id: context.sessionId } : {}),
+      reason: "no_matching_pending_action",
+      count: updates.length,
+      updates: updates.map((update) => ({
+        description: update.description,
+        next_action: update.next_action,
+        status: update.status,
+      })),
     });
   }
 

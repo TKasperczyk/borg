@@ -2697,6 +2697,110 @@ describe("reflector", () => {
     });
   });
 
+  it("traces an intent update that matches no held pending action", async () => {
+    const pendingIntents: Array<{ description: string; next_action: string | null }> = [
+      {
+        description: "Check the Atlas rollout after tests finish",
+        next_action: "review deploy status",
+      },
+    ];
+    const llm = new FakeLLMClient({
+      responses: [
+        createReflectionResponse(
+          [],
+          [],
+          [
+            {
+              description: "Check the Atlas rollout after the tests finish",
+              next_action: "review deploy status",
+              actor: "borg",
+              status: "completed",
+              evidence: "The current turn reported the rollout checked.",
+            },
+          ],
+        ),
+      ],
+    });
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+    });
+    cleanup.push(harness.cleanup);
+    const tracer = new CaptureTracer();
+    const reflector = createHarnessReflector(harness, {
+      clock: harness.clock,
+      llmClient: harness.llmClient,
+      model: "haiku",
+      proceduralEvidenceRepository: harness.proceduralEvidenceRepository,
+      tracer,
+    });
+    const workingMemory = createWorkingMemoryFixture({
+      turn_counter: 2,
+      pending_actions: pendingIntents,
+      mode: "problem_solving" as const,
+    });
+
+    const { workingMemory: reflected } = await reflector.reflect(
+      {
+        turnId: "turn-unmatched-intent",
+        userMessage: "The Atlas rollout is checked.",
+        workingMemory,
+        selfSnapshot: {
+          values: [],
+          goals: [],
+          traits: [],
+        },
+        deliberationResult: {
+          path: "system_1",
+          response: "Good, that closes it.",
+          thoughts: [],
+          tool_calls: [],
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            stop_reason: "end_turn",
+          },
+          decision_reason: "confidence",
+          retrievedEpisodes: [],
+          referencedEpisodeIds: null,
+          intents: [],
+          thoughtsPersisted: false,
+        },
+        actionResult: {
+          response: "Good, that closes it.",
+          tool_calls: [],
+          intents: [],
+          workingMemory,
+        },
+        retrievedEpisodes: [],
+        retrievalConfidence: createRetrievalConfidence(),
+        suppressionSet: new SuppressionSet(),
+        currentTurnStreamEntryIds: [createStreamEntryId()],
+      },
+      harness.streamWriter,
+    );
+
+    expect(reflected.pending_actions).toEqual(pendingIntents);
+    expect(harness.actionRepository.list({ state: "completed" })).toEqual([]);
+    expect(tracer.events).toContainEqual({
+      event: "reflector.intent_update.rejected",
+      data: {
+        turnId: "turn-unmatched-intent",
+        reason: "no_matching_pending_action",
+        count: 1,
+        updates: [
+          {
+            description: "Check the Atlas rollout after the tests finish",
+            next_action: "review deploy status",
+            status: "completed",
+          },
+        ],
+      },
+    });
+    expect(
+      tracer.events.filter((event) => event.event === "reflector.intent_update.completed"),
+    ).toEqual([]);
+  });
+
   it("preserves a pending procedural attempt when reflection returns no procedural outcome for it", async () => {
     // Sprint 53: omitted outcomes leave the attempt pending so a later
     // turn can grade it. The orchestrator expires attempts via TTL.
