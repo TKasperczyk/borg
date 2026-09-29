@@ -2997,7 +2997,9 @@ function summarizeWorkingMemory(
       "These are unresolved operational follow-ups, not facts about the user.",
       "I do not treat them as authoritative claims about identity, relationships, or biography.",
     );
-    for (const action of workingMemory.pending_actions.slice(0, 8)) {
+    // The list is oldest-first and the store keeps its newest entries at the
+    // cap, so the render cap keeps the newest too.
+    for (const action of workingMemory.pending_actions.slice(-8)) {
       lines.push(
         `- ${action.description.trim()}${
           action.next_action === null ? "" : ` -> ${action.next_action.trim()}`

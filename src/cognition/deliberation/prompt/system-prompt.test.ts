@@ -2520,6 +2520,27 @@ describe("buildBaseSystemPrompt", () => {
     expect(block).toContain("</pending_actions>");
   });
 
+  it("renders the newest eight pending actions when more are held", () => {
+    const actions = Array.from({ length: 9 }, (_, index) => ({
+      description: `Follow-up item ${String(index).padStart(2, "0")}`,
+      next_action: null,
+    }));
+    const prompt = buildBaseSystemPrompt(
+      makeContext({
+        workingMemory: {
+          ...makeContext().workingMemory,
+          pending_actions: actions,
+        },
+      }),
+      PROMPT_OPTIONS,
+    );
+    const block = extractBlock(prompt, "borg_working_state");
+    const rendered = block.split("\n").filter((line) => line.startsWith("- Follow-up item "));
+
+    expect(rendered).toEqual(actions.slice(1).map((action) => `- ${action.description}`));
+    expect(block).not.toContain("Follow-up item 00");
+  });
+
   it("renders pending and completed actions as distinct prompt sections", () => {
     const pending = "Check the Atlas rollout after tests finish";
     const completed = "Reviewed the Atlas rollback result";
