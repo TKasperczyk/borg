@@ -8,7 +8,7 @@ import { z } from "zod";
 import type { Message, MessageStreamEvent } from "@anthropic-ai/sdk/resources/messages/messages.js";
 
 import { writeJsonFileAtomic } from "../util/atomic-write.js";
-import { AuthError, LLMError } from "../util/errors.js";
+import { AuthError, LLMError, describeErrorWithCauses } from "../util/errors.js";
 import {
   AnthropicLLMClient,
   CLAUDE_CODE_IDENTITY_BLOCK_TEXT,
@@ -2199,6 +2199,38 @@ describe("llm", () => {
     ]);
   });
 
+  it("keeps the network cause under fetch failed inside the bounded failure description", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new TypeError("fetch failed", {
+          cause: new Error("connect ECONNREFUSED 127.0.0.1:443"),
+        });
+      }),
+    );
+    const client = new AnthropicLLMClient({
+      env: {
+        ANTHROPIC_AUTH_TOKEN: "oauth-token",
+      },
+    });
+
+    let caught: unknown;
+    try {
+      await client.complete({
+        model: "claude-sonnet-4-5",
+        messages: [{ role: "user", content: "hello" }],
+        max_tokens: 32,
+        budget: "test",
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(describeErrorWithCauses(caught)).toBe(
+      "LLMError: Anthropic connection failed after 3 attempts; caused by Error: Connection error.; caused by TypeError: fetch failed; caused by Error: connect ECONNREFUSED 127.0.0.1:443",
+    );
+  });
+
   it("retries a unary call once when it dies with a stall-class error", async () => {
     const create = vi
       .fn()
@@ -3314,7 +3346,7 @@ describe("llm", () => {
     expect(deltas.join("")).not.toContain("self_report");
   });
 
-  it("lifts stalled stream errors from the Anthropic request failure cause", async () => {
+  it("surfaces a stalled stream error thrown at the top level as itself", async () => {
     const stalledError = new LLMError("Anthropic SSE stream stalled after 20ms without a chunk", {
       code: "LLM_STREAM_STALLED",
     });
@@ -3341,12 +3373,7 @@ describe("llm", () => {
         max_tokens: 32,
         budget: "test",
       }),
-    ).rejects.toMatchObject({
-      code: "LLM_STREAM_STALLED",
-      cause: {
-        code: "LLM_STREAM_STALLED",
-      },
-    });
+    ).rejects.toBe(stalledError);
   });
 
   it("lifts event-stalled stream errors through the same retryable transport path", async () => {

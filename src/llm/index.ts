@@ -1083,6 +1083,12 @@ function findAnthropicConnectionError(error: unknown): Error | undefined {
 function rethrowRetryableLlmTransportErrorAtTopLevel(error: unknown): void {
   const retryableError = findRetryableLlmTransportError(error);
 
+  // Already at the top: a re-wrap would only repeat this link and spend one of
+  // describeErrorWithCauses' bounded links on the copy.
+  if (retryableError === error) {
+    throw error;
+  }
+
   if (retryableError !== undefined) {
     throw new LLMError(retryableError.message, {
       code: retryableError.code,
