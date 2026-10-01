@@ -174,6 +174,119 @@ describe("formatAutonomyTriggerContext epoch annotation", () => {
     );
   });
 
+  describe("an open question's text under the context cap", () => {
+    const DORMANT = {
+      source_name: "open_question_dormant",
+      source_type: "trigger",
+      event_id: "oq_aaaaaaaaaaaaaaaa:1787050000000",
+      sort_ts: 1_787_050_000_000,
+    } as const;
+    const relatedEpisodes = (offset: number) =>
+      Array.from({ length: 5 }, (_, index) => ({
+        id: `ep_${String(offset + index).padStart(16, "a")}`,
+        title: `Epizod ${offset + index}: ${"tytuł ".repeat(80)}`,
+        narrative: "narracja epizodu ".repeat(400),
+        citation_chain: Array.from({ length: 12 }, (_, entry) => ({
+          id: `strm_${String((offset + index) * 12 + entry).padStart(16, "b")}`,
+          content: "wpis strumienia ".repeat(200),
+          disclosure: "disclosure_class=public",
+        })),
+      }));
+    const parsePayload = (rendered: string) =>
+      JSON.parse(
+        rendered.slice(
+          rendered.indexOf("payload:\n") + "payload:\n".length,
+          rendered.indexOf("\nnote on this dormant-question wake"),
+        ),
+      );
+
+    it("keeps every presented question whole while its related episodes absorb the cut", () => {
+      const primary = `Czy przypisałem „to słowo” właściwej osobie — ${"i skąd wziąłem tę atrybucję, ".repeat(5)}koniec?`;
+      const additional = `この質問は最後まで読めるか。${"どの欄を比べれば決まるのか。".repeat(80)}終わり`;
+      const rendered = formatAutonomyTriggerContext({
+        ...DORMANT,
+        payload: {
+          open_question_id: "oq_aaaaaaaaaaaaaaaa",
+          question: primary,
+          urgency: 0.65,
+          last_touched: 1_787_050_000_000,
+          unresolved_rumination_ticks: 0,
+          last_ruminated_at: null,
+          related_episodes: relatedEpisodes(0),
+          additional_questions: [
+            {
+              open_question_id: "oq_bbbbbbbbbbbbbbbb",
+              question: additional,
+              urgency: 0.6,
+              last_touched: 1_787_050_100_000,
+              unresolved_rumination_ticks: 0,
+              last_ruminated_at: null,
+              related_episodes: relatedEpisodes(5),
+            },
+          ],
+        },
+      });
+
+      expect(rendered.length).toBeLessThanOrEqual(AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS);
+      expect(rendered).not.toContain("payload_fields_omitted");
+      const payload = parsePayload(rendered);
+      expect(payload.question).toBe(primary);
+      expect(payload.additional_questions[0].question).toBe(additional);
+      const episodes = [
+        ...payload.related_episodes,
+        ...payload.additional_questions[0].related_episodes,
+      ];
+      expect(episodes).toHaveLength(10);
+      for (const episode of episodes) {
+        expect(episode.narrative).toContain("[ELIDED]");
+        expect(episode.citation_chain).toHaveLength(12);
+        expect(episode.citation_chain[0].disclosure).toBe("disclosure_class=public");
+      }
+    });
+
+    it("still excerpts a question field on a record that is not an open question", () => {
+      const question = "Is this a goal note rather than an open question? ".repeat(10);
+      const rendered = formatAutonomyTriggerContext({
+        ...BASE,
+        payload: {
+          goal_id: "goal_aaaaaaaaaaaaaaaa",
+          question,
+          related_episodes: relatedEpisodes(0),
+        },
+      });
+
+      expect(rendered.length).toBeLessThanOrEqual(AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS);
+      expect(rendered).not.toContain(question);
+      expect(rendered).toMatch(/"question": "Is this a goal note[^"]*\[ELIDED\]/);
+    });
+
+    it("excerpts a question that cannot fit whole before dropping any field", () => {
+      const question = "Czy to pytanie się zmieści? ".repeat(1_500);
+      const rendered = formatAutonomyTriggerContext({
+        ...DORMANT,
+        payload: {
+          open_question_id: "oq_aaaaaaaaaaaaaaaa",
+          question,
+          urgency: 0.65,
+          last_touched: 1_787_050_000_000,
+          unresolved_rumination_ticks: 0,
+          last_ruminated_at: null,
+          disclosure: "disclosure_class=self_private",
+          related_episodes: relatedEpisodes(0),
+        },
+      });
+
+      expect(question.length).toBeGreaterThan(AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS);
+      expect(rendered.length).toBeLessThanOrEqual(AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS);
+      expect(rendered).not.toContain("payload_fields_omitted");
+      const payload = parsePayload(rendered);
+      expect(payload.question).toContain("[ELIDED]");
+      expect(payload.question.startsWith("Czy to pytanie się zmieści?")).toBe(true);
+      expect(payload.disclosure).toBe("disclosure_class=self_private");
+      expect(payload.related_episodes).toHaveLength(5);
+    });
+  });
+
   it("stays silent on dormancy for a wake that carries no open question", () => {
     const rendered = formatAutonomyTriggerContext({
       ...BASE,

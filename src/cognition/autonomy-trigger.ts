@@ -115,7 +115,23 @@ const AUTONOMY_TRIGGER_EXCERPT_NOTICE =
   `each recent identity event's old-to-new change excerpt is bounded to ${IDENTITY_EVENT_COGNITION_CHANGE_EXCERPT_MAX_CHARS} chars. ` +
   "Head+tail excerpts are not summaries, and omitted characters remain available in the source records.";
 
-function excerptPayloadText(value: unknown, maxChars: number): unknown {
+// Disclosure labels stay whole at every depth. So does an open question's own text: it is
+// the subject of the wake that carries it, and the ruminations reader returns question text
+// only beside a note, so for a question with no notes an excerpt here can leave it unread.
+// The evidence attached to the question absorbs the cut instead.
+function keepsWhole(
+  record: Record<string, unknown>,
+  key: string,
+  keepQuestionText: boolean,
+): boolean {
+  return (
+    key === "disclosure" ||
+    key === "disclosure_label" ||
+    (keepQuestionText && key === "question" && typeof record.open_question_id === "string")
+  );
+}
+
+function excerptPayloadText(value: unknown, maxChars: number, keepQuestionText: boolean): unknown {
   if (typeof value === "string") {
     const marker = "[ELIDED]";
     if (value.length <= Math.max(marker.length, maxChars)) {
@@ -126,19 +142,20 @@ function excerptPayloadText(value: unknown, maxChars: number): unknown {
   }
 
   if (Array.isArray(value)) {
-    return value.map((entry) => excerptPayloadText(entry, maxChars));
+    return value.map((entry) => excerptPayloadText(entry, maxChars, keepQuestionText));
   }
 
   if (value === null || typeof value !== "object") {
     return value;
   }
 
+  const record = value as Record<string, unknown>;
   return Object.fromEntries(
-    Object.entries(value).map(([key, entry]) => [
+    Object.entries(record).map(([key, entry]) => [
       key,
-      key === "disclosure" || key === "disclosure_label"
+      keepsWhole(record, key, keepQuestionText)
         ? entry
-        : excerptPayloadText(entry, maxChars),
+        : excerptPayloadText(entry, maxChars, keepQuestionText),
     ]),
   );
 }
@@ -184,6 +201,7 @@ function boundAutonomyTriggerContext(context: AutonomyTriggerContext): string {
   const events = context.payload.recent_identity_events;
   let eventCount = Array.isArray(events) ? events.length : 0;
   let omittedPayloadFields = 0;
+  let keepQuestionText = true;
   const retainedPayload = { ...context.payload };
   const render = (maxChars: number): string => {
     const payload = Object.fromEntries(
@@ -191,9 +209,9 @@ function boundAutonomyTriggerContext(context: AutonomyTriggerContext): string {
         key,
         key === "recent_identity_events" && Array.isArray(events)
           ? events.slice(0, eventCount).map((event) => excerptIdentityEvent(event, maxChars))
-          : key === "disclosure" || key === "disclosure_label"
+          : keepsWhole(retainedPayload, key, keepQuestionText)
             ? value
-            : excerptPayloadText(value, maxChars),
+            : excerptPayloadText(value, maxChars, keepQuestionText),
       ]),
     );
     const notice = [
@@ -218,6 +236,11 @@ function boundAutonomyTriggerContext(context: AutonomyTriggerContext): string {
   // Reserve every selected event's metadata before spending any room on text.
   // If metadata alone exceeds the cap, exclude an explicitly counted suffix.
   let bounded = render(0);
+  // Question text that overflows on its own is excerpted before any whole field is dropped.
+  if (bounded.length > AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS) {
+    keepQuestionText = false;
+    bounded = render(0);
+  }
   while (bounded.length > AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS && eventCount > 0) {
     eventCount -= 1;
     bounded = render(0);
