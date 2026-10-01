@@ -2222,6 +2222,12 @@ export class Reflector {
             max_tokens: this.maxTokens,
             budget: "reflection",
           },
+          trace: {
+            tracer: this.options.tracer,
+            turnId: context.turnId,
+            sessionId: context.sessionId,
+            label: "reflector",
+          },
           toolName: REFLECTION_TOOL_NAME,
           parse: (input) => {
             const parsed = strictReflectionOutputSchema.safeParse(input);

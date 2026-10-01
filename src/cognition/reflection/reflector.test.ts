@@ -2697,6 +2697,96 @@ describe("reflector", () => {
     });
   });
 
+  it("traces the reflection call when its response carries no tool call", async () => {
+    const pendingIntents = [
+      {
+        description: "Check the Atlas rollout after tests finish",
+        next_action: "review deploy status",
+      },
+    ];
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "The rollout check is done, so the pending action",
+          input_tokens: 8,
+          output_tokens: 768,
+          stop_reason: "max_tokens",
+          tool_calls: [],
+        },
+      ],
+    });
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+    });
+    cleanup.push(harness.cleanup);
+    const tracer = new CaptureTracer();
+    const reflector = createHarnessReflector(harness, {
+      clock: harness.clock,
+      llmClient: harness.llmClient,
+      model: "haiku",
+      proceduralEvidenceRepository: harness.proceduralEvidenceRepository,
+      tracer,
+    });
+    const workingMemory = createWorkingMemoryFixture({
+      turn_counter: 2,
+      pending_actions: pendingIntents,
+      mode: "problem_solving" as const,
+    });
+
+    const { workingMemory: reflected } = await reflector.reflect(
+      {
+        turnId: "turn-missing-reflection-call",
+        userMessage: "The Atlas rollout is checked.",
+        workingMemory,
+        selfSnapshot: {
+          values: [],
+          goals: [],
+          traits: [],
+        },
+        deliberationResult: {
+          path: "system_1",
+          response: "Good, that closes it.",
+          thoughts: [],
+          tool_calls: [],
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            stop_reason: "end_turn",
+          },
+          decision_reason: "confidence",
+          retrievedEpisodes: [],
+          referencedEpisodeIds: null,
+          intents: [],
+          thoughtsPersisted: false,
+        },
+        actionResult: {
+          response: "Good, that closes it.",
+          tool_calls: [],
+          intents: [],
+          workingMemory,
+        },
+        retrievedEpisodes: [],
+        retrievalConfidence: createRetrievalConfidence(),
+        suppressionSet: new SuppressionSet(),
+        currentTurnStreamEntryIds: [createStreamEntryId()],
+      },
+      harness.streamWriter,
+    );
+
+    expect(reflected.pending_actions).toEqual(pendingIntents);
+    const reflectorCalls = tracer.events.filter(
+      (event) => event.event.startsWith("llm_call.") && event.data.label === "reflector",
+    );
+    expect(reflectorCalls.map((event) => event.event)).toEqual([
+      "llm_call.started",
+      "llm_call.completed",
+    ]);
+    expect(reflectorCalls[1]?.data).toMatchObject({
+      turnId: "turn-missing-reflection-call",
+      stopReason: "max_tokens",
+    });
+  });
+
   it("traces an intent update that matches no held pending action", async () => {
     const pendingIntents: Array<{ description: string; next_action: string | null }> = [
       {
