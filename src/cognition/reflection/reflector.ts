@@ -526,17 +526,44 @@ function intentKey(intent: IntentRecord): string {
   ]);
 }
 
+// Returns the key of the held pending action an update resolves, or null.
+// A null next_action on the update identifies nothing beyond the description,
+// so it resolves by description when exactly one held key carries it.
+function heldIntentKeyForUpdate(
+  pendingActions: readonly IntentRecord[],
+  update: IntentRecord,
+): string | null {
+  const key = intentKey(update);
+  const pendingKeys = new Set(pendingActions.map((intent) => intentKey(intent)));
+
+  if (pendingKeys.has(key)) {
+    return key;
+  }
+
+  if (update.next_action !== null) {
+    return null;
+  }
+
+  const description = update.description.trim().toLowerCase();
+  const sameDescriptionKeys = new Set(
+    pendingActions
+      .filter((intent) => intent.description.trim().toLowerCase() === description)
+      .map((intent) => intentKey(intent)),
+  );
+
+  return sameDescriptionKeys.size === 1 ? [...sameDescriptionKeys][0]! : null;
+}
+
 function selectResolvedIntentKeys(
   pendingActions: readonly IntentRecord[],
   updates: readonly ReflectionOutput["intent_updates"][number][],
 ): Set<string> {
-  const pendingKeys = new Set(pendingActions.map((intent) => intentKey(intent)));
   const resolved = new Set<string>();
 
   for (const update of updates) {
-    const key = intentKey(update);
+    const key = heldIntentKeyForUpdate(pendingActions, update);
 
-    if (pendingKeys.has(key)) {
+    if (key !== null) {
       resolved.add(key);
     }
   }
@@ -548,14 +575,13 @@ function selectResolvedIntentUpdates(
   pendingActions: readonly IntentRecord[],
   updates: readonly ReflectionOutput["intent_updates"][number][],
 ): ReflectionOutput["intent_updates"] {
-  const pendingKeys = new Set(pendingActions.map((intent) => intentKey(intent)));
   const selected: ReflectionOutput["intent_updates"] = [];
   const selectedKeys = new Set<string>();
 
   for (const update of updates) {
-    const key = intentKey(update);
+    const key = heldIntentKeyForUpdate(pendingActions, update);
 
-    if (!pendingKeys.has(key) || selectedKeys.has(key)) {
+    if (key === null || selectedKeys.has(key)) {
       continue;
     }
 
@@ -977,9 +1003,8 @@ export class Reflector {
       context.workingMemory.pending_actions,
       intentUpdates,
     );
-    const pendingIntentKeys = new Set(context.workingMemory.pending_actions.map(intentKey));
     const unmatchedIntentUpdates = intentUpdates.filter(
-      (update) => !pendingIntentKeys.has(intentKey(update)),
+      (update) => heldIntentKeyForUpdate(context.workingMemory.pending_actions, update) === null,
     );
 
     if (unmatchedIntentUpdates.length > 0) {
