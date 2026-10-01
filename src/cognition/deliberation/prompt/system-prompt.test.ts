@@ -2968,7 +2968,7 @@ describe("buildBaseSystemPrompt", () => {
       // tick admits its whole due list serially, that wait is the turns ahead of it
       // at any budget state, which the freed-slot wording confined to the ceiling.
       expect(block).toContain(
-        "A refusal at that ceiling returns before any wake row exists, so it writes nothing and the event stays due: no count here separates a stretch in which every admission was refused from one in which nothing was due. One tick admits every due event it can, in admission order, not by which fell due first, each turn finishing before the next is admitted: self-scheduled fire times already reached go ahead of everything, and the rest are ordered by the stamp their own source minted, oldest first -- except on the tick that probes recovery once a brake pause has elapsed, which puts contemplative sources first. So a wake can trail the event it names by an unbounded stretch, and that distance is queue position rather than the trigger's cadence.",
+        "A refusal at that ceiling returns before any wake row exists, so the event stays due: no count here separates a stretch in which every admission was refused from one in which nothing was due. One tick admits every due event it can, in admission order, not by which fell due first, each turn finishing before the next is admitted: self-scheduled fire times already reached go ahead of everything, and the rest are ordered by the stamp their own source minted, oldest first -- except on the tick that probes recovery once a brake pause has elapsed, which puts contemplative sources first. So a wake can trail the event it names by an unbounded stretch, and that distance is queue position rather than the trigger's cadence.",
       );
     },
   );
