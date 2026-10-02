@@ -720,6 +720,8 @@ describe("TurnTracer", () => {
       "turn_phase.started",
       "turn_phase.completed",
       "turn_phase.started",
+      "llm_call.started",
+      "llm_call.completed",
       "reflection.completed",
       "turn_phase.completed",
       "action_archive_scan.completed",
