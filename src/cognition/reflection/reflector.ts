@@ -151,7 +151,7 @@ const OPEN_QUESTION_CREATE_TOOL_NAME = "tool.openQuestions.create";
 const OPEN_QUESTION_RESOLVE_TOOL_NAME = "tool.openQuestions.resolve";
 const SCHEDULED_WAKE_CREATE_TOOL_NAME = "tool.scheduledWakes.create";
 // Thinking counts against max_tokens, so this must fit the reasoning as well as the payload.
-const DEFAULT_REFLECTION_MAX_TOKENS = 4_000;
+const DEFAULT_REFLECTION_MAX_TOKENS = 16_000;
 const REFLECTION_GOAL_PROGRESS_NOTES_CHAR_BUDGET = 1_200;
 // Candidate labels can grow quickly; established traits are the stable vocabulary,
 // while the strongest 40 candidates give the reflector reuse handles without unbounded prompt growth.

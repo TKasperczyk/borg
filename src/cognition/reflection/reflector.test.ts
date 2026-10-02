@@ -3420,7 +3420,7 @@ describe("reflector", () => {
 
     await reflector.reflect(createOpenQuestionReflectionContext(), harness.streamWriter);
 
-    expect(llm.requests[0]?.max_tokens).toBe(4_000);
+    expect(llm.requests[0]?.max_tokens).toBe(16_000);
   });
 
   it("passes current trait vocabulary with established traits and capped strongest candidates", async () => {
