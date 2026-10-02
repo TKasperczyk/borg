@@ -419,7 +419,7 @@ async function judgeSemanticRevision(input: {
             type: "tool",
             name: SHARED_STATE_SEMANTIC_REVISION_TOOL_NAME,
           },
-          max_tokens: 1_500,
+          max_tokens: 4_000,
           temperature: 0,
           budget: "shared-state-semantic-revision",
         },
