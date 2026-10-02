@@ -7,7 +7,7 @@ import { OPEN_QUESTION_STATUSES } from "../../memory/self/index.js";
 import { LIFECYCLE_OPEN_QUESTION_STATUSES } from "./open-question-handles.js";
 import { allSectionIds, emptySectionCountRecord } from "./budget.js";
 import { estimateEvidenceLedgerTokens, cloneLedgerWithSections } from "./ledger-copy.js";
-import { dedupeEvidenceLedgerByProvenance } from "./provenance-dedupe.js";
+import { dedupeEvidenceLedgerByProvenance, provenanceDedupeEntryKey } from "./provenance-dedupe.js";
 import { reconcileAutobiographicalRecallCapMetadata } from "./autobiographical-recall-cap-metadata.js";
 import { renderSection } from "./section-rendering.js";
 import {
@@ -885,6 +885,33 @@ function dropFullLedgerSectionsToHardCap(
   return droppedSections;
 }
 
+function dedupeAndCapFullLedger(
+  ledger: EvidenceLedger,
+  options: EvidenceLedgerCompactionOptions,
+  excludedEntryKeys: ReadonlySet<string>,
+) {
+  const deduped = dedupeEvidenceLedgerByProvenance(ledger, { excludedEntryKeys });
+  const dedupedLedger = reconcileAutobiographicalRecallCapMetadata({
+    factLedger: ledger,
+    renderedLedger: deduped.ledger,
+  });
+
+  return { deduped, dedupedLedger, states: compactFullLedgerSections(dedupedLedger, options) };
+}
+
+function cutAbsorbingEntryKeys(
+  absorbingEntryKeys: ReadonlySet<string>,
+  states: readonly FullLedgerSectionState[],
+): string[] {
+  const keptEntryKeys = new Set(
+    states.flatMap((state) =>
+      state.section.entries.map((entry) => provenanceDedupeEntryKey(state.section.id, entry.id)),
+    ),
+  );
+
+  return [...absorbingEntryKeys].filter((key) => !keptEntryKeys.has(key));
+}
+
 export function compactEvidenceLedger(
   ledger: EvidenceLedger,
   options: EvidenceLedgerCompactionOptions = {},
@@ -898,13 +925,24 @@ export function compactEvidenceLedger(
     DEFAULT_FULL_LEDGER_HARD_CAP_TOKENS,
   );
   const preDedupeTokens = estimateEvidenceLedgerTokens(ledger);
-  const deduped = dedupeEvidenceLedgerByProvenance(ledger);
-  const dedupedLedger = reconcileAutobiographicalRecallCapMetadata({
-    factLedger: ledger,
-    renderedLedger: deduped.ledger,
-  });
+  // A folded row reaches the page only through its canonical, and the fold runs before the section
+  // caps, so a canonical the cap cuts would take its folded rows off the page with no count. Cut
+  // canonicals sit out the next pass, leaving their rows to stand alone; exclusions only
+  // accumulate, so the passes end.
+  const excludedEntryKeys = new Set<string>();
+  let pass = dedupeAndCapFullLedger(ledger, options, excludedEntryKeys);
+  let cutKeys = cutAbsorbingEntryKeys(pass.deduped.absorbingEntryKeys, pass.states);
+
+  while (cutKeys.length > 0) {
+    for (const key of cutKeys) {
+      excludedEntryKeys.add(key);
+    }
+    pass = dedupeAndCapFullLedger(ledger, options, excludedEntryKeys);
+    cutKeys = cutAbsorbingEntryKeys(pass.deduped.absorbingEntryKeys, pass.states);
+  }
+
+  const { deduped, dedupedLedger, states } = pass;
   const postDedupeTokens = estimateEvidenceLedgerTokens(dedupedLedger);
-  const states = compactFullLedgerSections(dedupedLedger, options);
   const preCapTokens = postDedupeTokens;
   const postSectionCapTokens = totalFullLedgerPromptTokens(dedupedLedger, states);
   let droppedSections: EvidenceLedgerSectionId[] = [];
