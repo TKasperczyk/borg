@@ -899,8 +899,8 @@ function dedupeAndCapFullLedger(
   return { deduped, dedupedLedger, states: compactFullLedgerSections(dedupedLedger, options) };
 }
 
-function cutAbsorbingEntryKeys(
-  absorbingEntryKeys: ReadonlySet<string>,
+function cutFoldGroupEntryKeys(
+  foldedEntryKeysByCanonicalKey: ReadonlyMap<string, readonly string[]>,
   states: readonly FullLedgerSectionState[],
 ): string[] {
   const keptEntryKeys = new Set(
@@ -909,7 +909,9 @@ function cutAbsorbingEntryKeys(
     ),
   );
 
-  return [...absorbingEntryKeys].filter((key) => !keptEntryKeys.has(key));
+  return [...foldedEntryKeysByCanonicalKey].flatMap(([canonicalKey, foldedEntryKeys]) =>
+    keptEntryKeys.has(canonicalKey) ? [] : [canonicalKey, ...foldedEntryKeys],
+  );
 }
 
 export function compactEvidenceLedger(
@@ -926,19 +928,21 @@ export function compactEvidenceLedger(
   );
   const preDedupeTokens = estimateEvidenceLedgerTokens(ledger);
   // A folded row reaches the page only through its canonical, and the fold runs before the section
-  // caps, so a canonical the cap cuts would take its folded rows off the page with no count. Cut
-  // canonicals sit out the next pass, leaving their rows to stand alone; exclusions only
-  // accumulate, so the passes end.
+  // caps, so a canonical the cap cuts would take its folded rows off the page with no count. A cut
+  // canonical and the rows it folded sit out the next pass and stand alone under their own
+  // sections' caps. Excluding only the canonical would let the rest regroup, and grouping is
+  // transitive, so the remainder would fold into whichever kept row its chain of shared handles
+  // reaches. Exclusions only accumulate, so the passes end.
   const excludedEntryKeys = new Set<string>();
   let pass = dedupeAndCapFullLedger(ledger, options, excludedEntryKeys);
-  let cutKeys = cutAbsorbingEntryKeys(pass.deduped.absorbingEntryKeys, pass.states);
+  let cutKeys = cutFoldGroupEntryKeys(pass.deduped.foldedEntryKeysByCanonicalKey, pass.states);
 
   while (cutKeys.length > 0) {
     for (const key of cutKeys) {
       excludedEntryKeys.add(key);
     }
     pass = dedupeAndCapFullLedger(ledger, options, excludedEntryKeys);
-    cutKeys = cutAbsorbingEntryKeys(pass.deduped.absorbingEntryKeys, pass.states);
+    cutKeys = cutFoldGroupEntryKeys(pass.deduped.foldedEntryKeysByCanonicalKey, pass.states);
   }
 
   const { deduped, dedupedLedger, states } = pass;

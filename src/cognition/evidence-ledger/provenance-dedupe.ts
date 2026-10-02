@@ -276,14 +276,15 @@ export function provenanceDedupeEntryKey(
 }
 
 // An excluded entry stays in its section but joins no group, so it neither absorbs nor is folded.
-// `absorbingEntryKeys` names the canonicals that folded at least one row into themselves.
+// `foldedEntryKeysByCanonicalKey` maps each canonical that folded at least one row into itself to
+// the keys of the rows it folded.
 export function dedupeEvidenceLedgerByProvenance(
   ledger: EvidenceLedger,
   options: { excludedEntryKeys?: ReadonlySet<string> } = {},
 ): {
   ledger: EvidenceLedger;
   dedupedEntryCount: number;
-  absorbingEntryKeys: Set<string>;
+  foldedEntryKeysByCanonicalKey: Map<string, string[]>;
 } {
   const refs: LedgerEntryRef[] = [];
   const parents = new DisjointSet<number>(() => -1);
@@ -364,7 +365,7 @@ export function dedupeEvidenceLedgerByProvenance(
   const canonicalByRef = new Map<LedgerEntryRef, EvidenceLedgerEntry>();
   const droppedRefs = new Set<LedgerEntryRef>();
   const droppedCountsBySectionIndex = new Map<number, number>();
-  const absorbingEntryKeys = new Set<string>();
+  const foldedEntryKeysByCanonicalKey = new Map<string, string[]>();
   let dedupedEntryCount = 0;
 
   for (const group of groups.values()) {
@@ -395,6 +396,8 @@ export function dedupeEvidenceLedgerByProvenance(
         : mergeRetrievedOpenQuestionEntries(group, openQuestionMerge),
     );
 
+    const foldedEntryKeys: string[] = [];
+
     for (const ref of group) {
       if (ref !== canonical && !isProvenanceDedupeProtected(ref)) {
         droppedRefs.add(ref);
@@ -403,8 +406,16 @@ export function dedupeEvidenceLedgerByProvenance(
           (droppedCountsBySectionIndex.get(ref.sectionIndex) ?? 0) + 1,
         );
         dedupedEntryCount += 1;
-        absorbingEntryKeys.add(provenanceDedupeEntryKey(canonical.sectionId, canonical.entry.id));
+        foldedEntryKeys.push(provenanceDedupeEntryKey(ref.sectionId, ref.entry.id));
       }
+    }
+
+    if (foldedEntryKeys.length > 0) {
+      const canonicalKey = provenanceDedupeEntryKey(canonical.sectionId, canonical.entry.id);
+      foldedEntryKeysByCanonicalKey.set(canonicalKey, [
+        ...(foldedEntryKeysByCanonicalKey.get(canonicalKey) ?? []),
+        ...foldedEntryKeys,
+      ]);
     }
   }
 
@@ -449,6 +460,6 @@ export function dedupeEvidenceLedgerByProvenance(
   return {
     ledger: cloneLedgerWithSections(ledger, sections),
     dedupedEntryCount,
-    absorbingEntryKeys,
+    foldedEntryKeysByCanonicalKey,
   };
 }
