@@ -3404,6 +3404,25 @@ describe("reflector", () => {
     expect(llm.requests[0]?.system).toContain(SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE);
   });
 
+  it("leaves the reflection call room to reason before its tool call", async () => {
+    const llm = new FakeLLMClient({
+      responses: [createReflectionResponse()],
+    });
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+    });
+    cleanup.push(harness.cleanup);
+    const reflector = createHarnessReflector(harness, {
+      clock: harness.clock,
+      llmClient: harness.llmClient,
+      model: "claude-opus-5-5",
+    });
+
+    await reflector.reflect(createOpenQuestionReflectionContext(), harness.streamWriter);
+
+    expect(llm.requests[0]?.max_tokens).toBe(4_000);
+  });
+
   it("passes current trait vocabulary with established traits and capped strongest candidates", async () => {
     const llm = new FakeLLMClient({
       responses: [createReflectionResponse()],
