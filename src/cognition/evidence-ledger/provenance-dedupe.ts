@@ -124,12 +124,79 @@ function evidenceHandles(
   return handles;
 }
 
+const OBJECT_ID_PREFIXES = [
+  ["current_session_stream:", "stream"],
+  ["episode:", "episode"],
+  ["semantic_node:", "semantic_node"],
+  ["semantic_edge:", "semantic_edge"],
+  ["open_question:", "open_question"],
+] as const;
+
+// A retrieved row's metadata names the object it renders next to the evidence that object rests on
+// (an episode row also carries its source stream ids), so the most specific id present is the object.
+const RETRIEVED_OBJECT_ID_KEYS = [
+  ["open_question_id", "open_question"],
+  ["commitment_id", "commitment"],
+  ["image_perception_id", "image_perception"],
+  ["edge_id", "semantic_edge"],
+  ["node_id", "semantic_node"],
+  ["episode_id", "episode"],
+] as const;
+
+// The one object a row renders, as opposed to the evidence it cites. Two rows with the same object
+// show the same memory twice, so they fold even inside one section, where rows that merely share
+// evidence stay apart. A row naming no single object has none and folds only by provenance.
+function objectHandle(entry: EvidenceLedgerEntry): string | null {
+  for (const [prefix, type] of OBJECT_ID_PREFIXES) {
+    const value = suffixAfterPrefix(entry.id, prefix);
+
+    if (value !== null && value.length > 0) {
+      return `${type}:${value}`;
+    }
+  }
+
+  if (
+    entry.id.startsWith("commitment:") ||
+    entry.id.startsWith("group_commitment:") ||
+    entry.id.startsWith("participant_commitment:")
+  ) {
+    const commitmentId = suffixAfterLastColon(entry.id);
+    return commitmentId === null ? null : `commitment:${commitmentId}`;
+  }
+
+  // A raw-stream row's text is the message itself; elsewhere a stream id is only evidence.
+  if (entry.id.startsWith("retrieved_stream:")) {
+    const streamIds = metadataStringArray(entry.state_metadata, "stream_ids");
+    return streamIds.length === 1 ? `stream:${streamIds[0]!}` : null;
+  }
+
+  if (!entry.id.startsWith("retrieved_evidence:")) {
+    return null;
+  }
+
+  for (const [key, type] of RETRIEVED_OBJECT_ID_KEYS) {
+    const value = metadataString(entry.state_metadata?.[key]);
+
+    if (value !== null) {
+      return `${type}:${value}`;
+    }
+  }
+
+  return null;
+}
+
+// How a row groups in one dedupe pass. By default it groups by every evidence handle it carries.
+// "object" groups it only with rows rendering the same object; "standalone" groups it with none.
+export type ProvenanceDedupeGrouping = "object" | "standalone";
+
 type LedgerEntryRef = {
   sectionId: EvidenceLedgerSectionId;
   sectionIndex: number;
   entryIndex: number;
   entry: EvidenceLedgerEntry;
   handles: Set<string>;
+  sourceHandles: Set<string>;
+  object: string | null;
 };
 
 function isProvenanceDedupeProtected(ref: LedgerEntryRef): boolean {
@@ -173,7 +240,7 @@ function citationHandles(refs: readonly LedgerEntryRef[]): string[] {
   return [
     ...new Set(
       refs
-        .flatMap((ref) => [...ref.handles])
+        .flatMap((ref) => [...ref.sourceHandles])
         .sort((left, right) => {
           return citationRank(left) - citationRank(right) || left.localeCompare(right);
         }),
@@ -275,12 +342,25 @@ export function provenanceDedupeEntryKey(
   return `${sectionId}\u0000${entryId}`;
 }
 
-// An excluded entry stays in its section but joins no group, so it neither absorbs nor is folded.
+function sameObjectGroups(group: readonly LedgerEntryRef[]): LedgerEntryRef[][] {
+  const groupsByObject = new Map<string, LedgerEntryRef[]>();
+
+  for (const ref of group) {
+    if (ref.object !== null) {
+      groupsByObject.set(ref.object, [...(groupsByObject.get(ref.object) ?? []), ref]);
+    }
+  }
+
+  return [...groupsByObject.values()].filter((objectGroup) => objectGroup.length > 1);
+}
+
+// A row keyed in `groupingByEntryKey` groups as its value says; every other row groups by all its
+// evidence handles. A standalone row stays in its section but neither absorbs nor is folded.
 // `foldedEntryKeysByCanonicalKey` maps each canonical that folded at least one row into itself to
 // the keys of the rows it folded.
 export function dedupeEvidenceLedgerByProvenance(
   ledger: EvidenceLedger,
-  options: { excludedEntryKeys?: ReadonlySet<string> } = {},
+  options: { groupingByEntryKey?: ReadonlyMap<string, ProvenanceDedupeGrouping> } = {},
 ): {
   ledger: EvidenceLedger;
   dedupedEntryCount: number;
@@ -323,10 +403,19 @@ export function dedupeEvidenceLedgerByProvenance(
 
   for (const [sectionIndex, section] of ledger.sections.entries()) {
     for (const [entryIndex, entry] of section.entries.entries()) {
+      const sourceHandles = evidenceHandles(section.id, entry);
+      const object = objectHandle(entry);
+      const grouping = options.groupingByEntryKey?.get(
+        provenanceDedupeEntryKey(section.id, entry.id),
+      );
+      // Object handles live in their own namespace, so an "object" row never joins a row that
+      // groups by evidence handles.
       const handles =
-        options.excludedEntryKeys?.has(provenanceDedupeEntryKey(section.id, entry.id)) === true
-          ? new Set<string>()
-          : evidenceHandles(section.id, entry);
+        grouping === undefined
+          ? sourceHandles
+          : grouping === "object" && object !== null
+            ? new Set([`object:${object}`])
+            : new Set<string>();
       const refIndex = refs.length;
       refs.push({
         sectionId: section.id,
@@ -334,6 +423,8 @@ export function dedupeEvidenceLedgerByProvenance(
         entryIndex,
         entry,
         handles,
+        sourceHandles,
+        object,
       });
       parents.add(refIndex);
 
@@ -368,14 +459,19 @@ export function dedupeEvidenceLedgerByProvenance(
   const foldedEntryKeysByCanonicalKey = new Map<string, string[]>();
   let dedupedEntryCount = 0;
 
-  for (const group of groups.values()) {
-    const sectionIds = new Set(group.map((ref) => ref.sectionId));
-    const openQuestionMerge = retrievedOpenQuestionMerge(group);
-
-    if (group.length <= 1 || (sectionIds.size <= 1 && openQuestionMerge === null)) {
-      continue;
+  const foldGroups = [...groups.values()].flatMap((group) => {
+    if (group.length <= 1) {
+      return [];
     }
 
+    return new Set(group.map((ref) => ref.sectionId)).size > 1 ||
+      retrievedOpenQuestionMerge(group) !== null
+      ? [group]
+      : sameObjectGroups(group);
+  });
+
+  for (const group of foldGroups) {
+    const openQuestionMerge = retrievedOpenQuestionMerge(group);
     const canonical =
       openQuestionMerge?.canonical ??
       (() => {

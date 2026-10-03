@@ -7,7 +7,11 @@ import { OPEN_QUESTION_STATUSES } from "../../memory/self/index.js";
 import { LIFECYCLE_OPEN_QUESTION_STATUSES } from "./open-question-handles.js";
 import { allSectionIds, emptySectionCountRecord } from "./budget.js";
 import { estimateEvidenceLedgerTokens, cloneLedgerWithSections } from "./ledger-copy.js";
-import { dedupeEvidenceLedgerByProvenance, provenanceDedupeEntryKey } from "./provenance-dedupe.js";
+import {
+  dedupeEvidenceLedgerByProvenance,
+  provenanceDedupeEntryKey,
+  type ProvenanceDedupeGrouping,
+} from "./provenance-dedupe.js";
 import { reconcileAutobiographicalRecallCapMetadata } from "./autobiographical-recall-cap-metadata.js";
 import { renderSection } from "./section-rendering.js";
 import {
@@ -888,9 +892,9 @@ function dropFullLedgerSectionsToHardCap(
 function dedupeAndCapFullLedger(
   ledger: EvidenceLedger,
   options: EvidenceLedgerCompactionOptions,
-  excludedEntryKeys: ReadonlySet<string>,
+  groupingByEntryKey: ReadonlyMap<string, ProvenanceDedupeGrouping>,
 ) {
-  const deduped = dedupeEvidenceLedgerByProvenance(ledger, { excludedEntryKeys });
+  const deduped = dedupeEvidenceLedgerByProvenance(ledger, { groupingByEntryKey });
   const dedupedLedger = reconcileAutobiographicalRecallCapMetadata({
     factLedger: ledger,
     renderedLedger: deduped.ledger,
@@ -929,19 +933,19 @@ export function compactEvidenceLedger(
   const preDedupeTokens = estimateEvidenceLedgerTokens(ledger);
   // A folded row reaches the page only through its canonical, and the fold runs before the section
   // caps, so a canonical the cap cuts would take its folded rows off the page with no count. A cut
-  // canonical and the rows it folded sit out the next pass and stand alone under their own
-  // sections' caps. Excluding only the canonical would let the rest regroup, and grouping is
-  // transitive, so the remainder would fold into whichever kept row its chain of shared handles
-  // reaches. Exclusions only accumulate, so the passes end.
-  const excludedEntryKeys = new Set<string>();
-  let pass = dedupeAndCapFullLedger(ledger, options, excludedEntryKeys);
+  // canonical and the rows it folded group in the next pass only with rows rendering the same
+  // object, and a group cut again at that grouping stands alone. Letting the rest regroup by shared
+  // handles would fold it into whichever kept row its transitive chain of handles reaches. Each cut
+  // moves its rows one grouping further down, so the passes end.
+  const groupingByEntryKey = new Map<string, ProvenanceDedupeGrouping>();
+  let pass = dedupeAndCapFullLedger(ledger, options, groupingByEntryKey);
   let cutKeys = cutFoldGroupEntryKeys(pass.deduped.foldedEntryKeysByCanonicalKey, pass.states);
 
   while (cutKeys.length > 0) {
     for (const key of cutKeys) {
-      excludedEntryKeys.add(key);
+      groupingByEntryKey.set(key, groupingByEntryKey.has(key) ? "standalone" : "object");
     }
-    pass = dedupeAndCapFullLedger(ledger, options, excludedEntryKeys);
+    pass = dedupeAndCapFullLedger(ledger, options, groupingByEntryKey);
     cutKeys = cutFoldGroupEntryKeys(pass.deduped.foldedEntryKeysByCanonicalKey, pass.states);
   }
 
