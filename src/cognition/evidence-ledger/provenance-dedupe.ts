@@ -186,8 +186,9 @@ function objectHandle(entry: EvidenceLedgerEntry): string | null {
 }
 
 // How a row groups in one dedupe pass. By default it groups by every evidence handle it carries.
-// "object" groups it only with rows rendering the same object; "standalone" groups it with none.
-export type ProvenanceDedupeGrouping = "object" | "standalone";
+// "object" groups it only with rows rendering the same object; "section_object" only with those of
+// them in its own section.
+export type ProvenanceDedupeGrouping = "object" | "section_object";
 
 type LedgerEntryRef = {
   sectionId: EvidenceLedgerSectionId;
@@ -355,7 +356,8 @@ function sameObjectGroups(group: readonly LedgerEntryRef[]): LedgerEntryRef[][] 
 }
 
 // A row keyed in `groupingByEntryKey` groups as its value says; every other row groups by all its
-// evidence handles. A standalone row stays in its section but neither absorbs nor is folded.
+// evidence handles. A keyed row naming no object stays in its section but neither absorbs nor is
+// folded.
 // `foldedEntryKeysByCanonicalKey` maps each canonical that folded at least one row into itself to
 // the keys of the rows it folded.
 export function dedupeEvidenceLedgerByProvenance(
@@ -408,14 +410,18 @@ export function dedupeEvidenceLedgerByProvenance(
       const grouping = options.groupingByEntryKey?.get(
         provenanceDedupeEntryKey(section.id, entry.id),
       );
-      // Object handles live in their own namespace, so an "object" row never joins a row that
-      // groups by evidence handles.
+      // Object handles live in their own namespaces, so a keyed row never joins a row that groups
+      // another way.
       const handles =
         grouping === undefined
           ? sourceHandles
-          : grouping === "object" && object !== null
-            ? new Set([`object:${object}`])
-            : new Set<string>();
+          : object === null
+            ? new Set<string>()
+            : new Set([
+                grouping === "object"
+                  ? `object:${object}`
+                  : `section_object:${section.id}:${object}`,
+              ]);
       const refIndex = refs.length;
       refs.push({
         sectionId: section.id,

@@ -918,6 +918,25 @@ function cutFoldGroupEntryKeys(
   );
 }
 
+// Moves each row of a cut canonical's fold group one grouping down, and reports whether any moved.
+function moveCutFoldGroupsDown(
+  groupingByEntryKey: Map<string, ProvenanceDedupeGrouping>,
+  pass: ReturnType<typeof dedupeAndCapFullLedger>,
+): boolean {
+  let moved = false;
+
+  for (const key of cutFoldGroupEntryKeys(pass.deduped.foldedEntryKeysByCanonicalKey, pass.states)) {
+    const grouping = groupingByEntryKey.get(key);
+
+    if (grouping !== "section_object") {
+      groupingByEntryKey.set(key, grouping === undefined ? "object" : "section_object");
+      moved = true;
+    }
+  }
+
+  return moved;
+}
+
 export function compactEvidenceLedger(
   ledger: EvidenceLedger,
   options: EvidenceLedgerCompactionOptions = {},
@@ -934,19 +953,16 @@ export function compactEvidenceLedger(
   // A folded row reaches the page only through its canonical, and the fold runs before the section
   // caps, so a canonical the cap cuts would take its folded rows off the page with no count. A cut
   // canonical and the rows it folded group in the next pass only with rows rendering the same
-  // object, and a group cut again at that grouping stands alone. Letting the rest regroup by shared
-  // handles would fold it into whichever kept row its transitive chain of handles reaches. Each cut
-  // moves its rows one grouping further down, so the passes end.
+  // object, and a group cut again at that grouping only with those rows in its own section: split
+  // from them, a cut row's own duplicate would stand in that section in place of a kept row.
+  // Letting the rest regroup by shared handles would fold it into whichever kept row its transitive
+  // chain of handles reaches. A cut at the last grouping takes one memory out of its own section,
+  // counted there once, and moves nothing; every earlier cut moves rows down, so the passes end.
   const groupingByEntryKey = new Map<string, ProvenanceDedupeGrouping>();
   let pass = dedupeAndCapFullLedger(ledger, options, groupingByEntryKey);
-  let cutKeys = cutFoldGroupEntryKeys(pass.deduped.foldedEntryKeysByCanonicalKey, pass.states);
 
-  while (cutKeys.length > 0) {
-    for (const key of cutKeys) {
-      groupingByEntryKey.set(key, groupingByEntryKey.has(key) ? "standalone" : "object");
-    }
+  while (moveCutFoldGroupsDown(groupingByEntryKey, pass)) {
     pass = dedupeAndCapFullLedger(ledger, options, groupingByEntryKey);
-    cutKeys = cutFoldGroupEntryKeys(pass.deduped.foldedEntryKeysByCanonicalKey, pass.states);
   }
 
   const { deduped, dedupedLedger, states } = pass;

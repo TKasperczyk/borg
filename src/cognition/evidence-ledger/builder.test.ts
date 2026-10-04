@@ -2764,6 +2764,69 @@ describe("EvidenceLedgerBuilder", () => {
     expect(compacted.traceSummary.omittedEntryCountsBySection.open_questions).toBe(0);
   });
 
+  it("keeps a cut open-question row's retrieval twin folded with it instead of in a kept row's place", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const questions = [makeOpenQuestion(createEpisodeId()), makeOpenQuestion(createEpisodeId())];
+    const evidence: EvidenceItem[] = questions.map((question, index) => ({
+      id: `evidence_open_question_${question.id}_followup`,
+      source: "open_question",
+      text: question.question,
+      provenance: {
+        openQuestionId: question.id,
+      },
+      recallIntentId: "intent-open-question-followup",
+      matchedTerms: [],
+      score: 0.8 - index * 0.1,
+      scoreBreakdown: {
+        salience: 0.7,
+      },
+    }));
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+      relationalSlotRepository: { list: () => [] },
+      actionRepository: { list: () => [] },
+      currentSessionTranscriptTokenBudget: 50_000,
+    });
+
+    const ledger = await builder.build({
+      sessionId: DEFAULT_SESSION_ID,
+      nowMs: NOW_MS,
+      audienceEntityId: null,
+      currentUserMessage: "What remains unresolved?",
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [],
+      retrievedEvidence: evidence,
+      retrievedEpisodes: [],
+      retrievedSemantic: null,
+      openQuestions: questions,
+      pendingCorrections: [],
+      frameAnomaly: null,
+    });
+    const compacted = compactEvidenceLedger(ledger, {
+      targetTokens: 20_000,
+      hardCapTokens: 40_000,
+      sectionOptions: {
+        open_questions: {
+          maxEntries: 1,
+          maxTokens: 2_500,
+        },
+      },
+    });
+    const entries =
+      compacted.ledger.sections.find((section) => section.id === "open_questions")?.entries ?? [];
+
+    expect(entries.map((entry) => entry.id)).toEqual([
+      `open_question:${questions[0]!.id}`,
+      "evidence_ledger_omitted:open_questions",
+    ]);
+    expect(entries[0]?.state).toContain("score=0.80");
+    expect(entries[1]?.text).toContain("omitted 1 lower-priority entries");
+    expect(entries[1]?.text).toContain("Omitted by state: open 1.");
+    expect(compacted.traceSummary.dedupedEntryCount).toBe(2);
+    expect(compacted.traceSummary.omittedEntryCountsBySection.open_questions).toBe(1);
+  });
+
   it("renders relational slots scoped and ordered by active participant", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
