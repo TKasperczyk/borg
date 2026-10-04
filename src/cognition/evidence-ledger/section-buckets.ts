@@ -31,6 +31,9 @@ const PRIOR_SESSION_DIRECT_SECTION_IDS = new Set<EvidenceLedgerSectionId>([
   "prior_session_memory",
   // Keep verbatim recall above derived evidence in provenance dedupe, regardless of scope.
   "retrieved_raw_stream_evidence",
+  // Its omitted line tallies cut questions by status, and a question's retrieval twin is
+  // scoped apart from its lifecycle row; a moved row would leave both behind.
+  "open_questions",
 ]);
 
 export type SectionBucket = {

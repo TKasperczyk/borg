@@ -2348,6 +2348,8 @@ describe("EvidenceLedgerBuilder", () => {
         session_scope: "prior_session",
         text: "Prior Barcelona narrative.",
       }),
+    ]);
+    expect(ledger.sections.find((section) => section.id === "open_questions")?.entries).toEqual([
       expect.objectContaining({
         source_type: "system_metadata",
         session_scope: "prior_session",
@@ -2825,6 +2827,92 @@ describe("EvidenceLedgerBuilder", () => {
     expect(entries[1]?.text).toContain("Omitted by state: open 1.");
     expect(compacted.traceSummary.dedupedEntryCount).toBe(2);
     expect(compacted.traceSummary.omittedEntryCountsBySection.open_questions).toBe(1);
+  });
+
+  it("keeps a prior-session open question in open_questions with its retrieval twin, so that section's cut and tally cover it", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const priorEntry: StreamEntry = {
+      id: createStreamEntryId(),
+      timestamp: NOW_MS - 60_000,
+      kind: "user_msg",
+      content: "An older session raised the callback question.",
+      turn_status: "active",
+      session_id: createSessionId(),
+      compressed: false,
+      sender_entity_id: null,
+      reply_target_entity_id: null,
+    };
+    const priorEpisodeId = createEpisodeId();
+    const question = makeOpenQuestion(priorEpisodeId);
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+      relationalSlotRepository: { list: () => [] },
+      actionRepository: { list: () => [] },
+      currentSessionTranscriptTokenBudget: 50_000,
+    });
+
+    const ledger = await builder.build({
+      sessionId: DEFAULT_SESSION_ID,
+      nowMs: NOW_MS,
+      audienceEntityId: null,
+      currentUserMessage: "What remains unresolved?",
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [],
+      retrievedEvidence: [
+        {
+          id: `evidence_open_question_${question.id}_followup`,
+          source: "open_question",
+          text: question.question,
+          provenance: {
+            openQuestionId: question.id,
+          },
+          recallIntentId: "intent-open-question-followup",
+          matchedTerms: [],
+          score: 0.8,
+          scoreBreakdown: {
+            salience: 0.7,
+          },
+        },
+      ],
+      retrievedEpisodes: [
+        makeRetrievedEpisode({
+          id: priorEpisodeId,
+          narrative: "Prior callback narrative.",
+          sourceStreamIds: [priorEntry.id],
+          citationChain: [priorEntry],
+        }),
+      ],
+      retrievedSemantic: null,
+      openQuestions: [question],
+      pendingCorrections: [],
+      frameAnomaly: null,
+    });
+    const compacted = compactEvidenceLedger(ledger, {
+      targetTokens: 20_000,
+      hardCapTokens: 40_000,
+      sectionOptions: {
+        prior_session_memory: {
+          maxEntries: 1,
+          maxTokens: 2_500,
+        },
+      },
+    });
+    const sectionEntries = (sectionId: string) =>
+      compacted.ledger.sections.find((section) => section.id === sectionId)?.entries ?? [];
+    const openQuestionEntries = sectionEntries("open_questions");
+
+    expect(openQuestionEntries.map((entry) => entry.id)).toEqual([`open_question:${question.id}`]);
+    expect(openQuestionEntries[0]).toMatchObject({
+      session_scope: "prior_session",
+      via_retrieval: true,
+    });
+    expect(openQuestionEntries[0]?.state).toContain("open");
+    expect(openQuestionEntries[0]?.state).toContain("score=0.80");
+    expect(sectionEntries("prior_session_memory").map((entry) => entry.id)).toEqual([
+      `episode:${priorEpisodeId}`,
+    ]);
+    expect(compacted.traceSummary.dedupedEntryCount).toBe(1);
   });
 
   it("renders relational slots scoped and ordered by active participant", async () => {
