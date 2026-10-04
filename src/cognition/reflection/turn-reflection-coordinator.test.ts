@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import type { OpenQuestion } from "../../memory/self/index.js";
 import { createWorkingMemory } from "../../memory/working/index.js";
 import type { StreamEntry } from "../../stream/index.js";
 import { FixedClock } from "../../util/clock.js";
@@ -98,6 +99,100 @@ describe("TurnReflectionCoordinator", () => {
         currentTurnStreamEntryIds: [inboundEntryId, persistedAgentEntry.id],
         currentTurnProducedStreamEntryIds: [persistedAgentEntry.id],
         currentTurnJournalEntryIds: [23],
+      }),
+      expect.anything(),
+    );
+  });
+
+  it("hands the reflector this turn's recalled open questions ahead of the urgency draw", async () => {
+    const sessionId = createSessionId();
+    const workingMemory = createWorkingMemory(sessionId, 1_000);
+    const question = (id: string, status: OpenQuestion["status"] = "open") =>
+      ({ id, status }) as OpenQuestion;
+    const byUrgency = Array.from({ length: 20 }, (_, index) => question(`oq_urgent_${index}`));
+    const recalled = question("oq_recalled_below_cut");
+    const reflect = vi.fn(async () => ({
+      workingMemory,
+      effects: {
+        createdActionIds: [],
+        createdExecutiveStepIds: [],
+        createdOpenQuestionIds: [],
+        updatedExecutiveSteps: [],
+        updatedGoals: [],
+        retiredGoalIds: [],
+        resolvedOpenQuestions: [],
+        updatedEpisodeStats: [],
+      },
+    }));
+    const coordinator = new TurnReflectionCoordinator({
+      moodRepository: { update: vi.fn() },
+      socialRepository: { recordInteractionWithId: vi.fn() },
+      openQuestionsRepository: { list: vi.fn(() => byUrgency) },
+      workingMemoryStore: { save: vi.fn() },
+      pendingProceduralAttemptTracker: { update: vi.fn(() => []) },
+      createReflector: vi.fn(() => ({ reflect }) as unknown as Reflector),
+      clock: new FixedClock(1_000),
+      tracer: {
+        enabled: false,
+        includePayloads: false,
+        emit: vi.fn(),
+      },
+    });
+    const run = (recalledOpenQuestions?: readonly OpenQuestion[]) =>
+      coordinator.run({
+        llmClient: {} as never,
+        sessionId,
+        turnId: "turn-recalled-question",
+        origin: "autonomous",
+        userMessage: "",
+        perception: {} as PerceptionResult,
+        workingMood: { valence: 0, arousal: 0, dominant_emotion: "neutral" },
+        postActionWorkingMemory: workingMemory,
+        selfSnapshot: {} as never,
+        deliberation: { retrievedEpisodes: [] } as never,
+        actionResult: { response: "", tool_calls: [], intents: [], workingMemory },
+        retrievedEpisodes: [],
+        ...(recalledOpenQuestions === undefined ? {} : { recalledOpenQuestions }),
+        retrievalConfidence: { confidence: 1, degraded: false, reason: null } as never,
+        executiveFocus: null as never,
+        selectedSkill: null,
+        proceduralContext: null,
+        audienceEntityId: null,
+        socialInteractionEntityId: null,
+        pendingSocialAttribution: null,
+        suppressionSet: { snapshot: () => [] } as never,
+        persistedAgentEntry: {
+          id: createStreamEntryId(),
+          timestamp: 1_000,
+          kind: "internal_event",
+          content: { kind: "train_of_thought_continued" },
+          session_id: sessionId,
+        } as StreamEntry,
+        isUserTurn: false,
+        streamWriter: {} as never,
+        onHookFailure: vi.fn(),
+        trackReflectionEffects: vi.fn(),
+      });
+
+    await run();
+    await run([recalled, byUrgency[5]!, question("oq_recalled_resolved", "resolved")]);
+
+    expect(reflect).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ activeOpenQuestions: byUrgency }),
+      expect.anything(),
+    );
+    // Before: a recalled question ranked below the urgency cut was never in the list, so the
+    // reflector could not resolve it. After: it leads, a duplicate keeps one slot, a recalled
+    // row that is no longer open is skipped, and the list stays at twenty.
+    expect(reflect).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        activeOpenQuestions: [
+          recalled,
+          byUrgency[5],
+          ...byUrgency.filter((_, index) => index !== 5).slice(0, 18),
+        ],
       }),
       expect.anything(),
     );

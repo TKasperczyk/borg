@@ -1612,6 +1612,7 @@ describe("runPostGenerationPhase regeneration record", () => {
   // reflection persistence, which directed-outbound turns skip. The store is real, so the
   // assertions read what the next turn would load rather than the state handed to reflection.
   const cleanup: Array<() => void> = [];
+  const recalledOpenQuestion = { id: "oq_recalled_this_turn", status: "open" };
 
   afterEach(() => {
     while (cleanup.length > 0) {
@@ -1753,7 +1754,7 @@ describe("runPostGenerationPhase regeneration record", () => {
         actionApplicableCommitments: [],
         retrievedEpisodes: [],
         selfSnapshot: null,
-        retrieval: { confidence: 1 },
+        retrieval: { confidence: 1, open_questions: [recalledOpenQuestion] },
         executiveFocusWithStep: null,
         selectedSkill: null,
         proceduralContext: null,
@@ -1811,6 +1812,14 @@ describe("runPostGenerationPhase regeneration record", () => {
           }),
         }),
       }),
+    );
+  });
+
+  it("hands reflection the open questions this turn's retrieval recalled", async () => {
+    const { reflectionRun } = await runRegeneratedMessageTurn("user");
+
+    expect(reflectionRun).toHaveBeenCalledWith(
+      expect.objectContaining({ recalledOpenQuestions: [recalledOpenQuestion] }),
     );
   });
 });
