@@ -1726,7 +1726,10 @@ describe("RuminatorProcess", () => {
       // threshold is interpolated from config rather than restated -- so a threshold change moves
       // the prompt with it instead of leaving a second copy of the number behind to drift.
       expect(prompt).toContain('"unresolved_rumination_ticks":3');
-      expect(prompt).toContain("counts the recorded rumination notes");
+      // A completed dormant-question wake advances the count without a note, so it is not a
+      // count of recorded notes.
+      expect(prompt).toContain("recorded notes and completed dormant-question wakes");
+      expect(prompt).not.toContain("recorded-note ticks");
       expect(prompt).not.toContain("counts the passes");
       expect(prompt).toContain("have reached 7");
       expect(prompt).not.toContain("have reached 4");

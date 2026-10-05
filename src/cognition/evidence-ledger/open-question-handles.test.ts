@@ -96,16 +96,16 @@ describe("openQuestionStateMetadata", () => {
     // reached. Naming only the two conjuncts invites reading an over-threshold row as evidence
     // that one of them fired, when the predicate was never consulted on that pass at all.
     expect(live?.unresolved_rumination_ticks_note).toContain("is not evaluated at all on a pass");
-    // The store advances this only when a note is recorded (stampRuminationForRun's note-less
-    // branch writes last_ruminated_at alone), so a sentence that calls it a count of passes
-    // invites reading a gap between the count and the notes as a lost note.
+    // stampRuminationForRun's note-less branch writes last_ruminated_at alone, so a sentence that
+    // calls this a count of passes invites reading a gap between the count and the notes as a lost
+    // note.
     expect(live?.unresolved_rumination_ticks_note).toContain("recorded no note");
-    // Both fields are on the object, so the one inference the pair supports belongs beside them:
-    // a stamp later than the newest note is a pass that recorded nothing, and the page should not
-    // leave a reader to discover that by drawing the notes and comparing dates by hand.
-    expect(live?.unresolved_rumination_ticks_note).toContain(
-      "later than the newest note tool.openQuestions.ruminations returns",
-    );
+    // A completed dormant-question wake (commitFired) also advances it, and writes no note, so a
+    // row can carry ticks with no notes at all; a scope of note-bearing passes alone is false there.
+    expect(live?.unresolved_rumination_ticks_note).toContain("completed dormant-question wakes");
+    // A note-bearing pass stamps at or just after its own note, and a wake or a note-less pass
+    // stamps with no note, so a stamp later than the newest note does not say which one wrote it.
+    expect(live?.unresolved_rumination_ticks_note).not.toContain("later than the newest note");
   });
 
   it("names the third state: zero notes beside a live stamp", () => {

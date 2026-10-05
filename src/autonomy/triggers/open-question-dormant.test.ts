@@ -235,6 +235,8 @@ describe("open question dormant trigger", () => {
         last_ruminated_at: clock.now(),
         unresolved_rumination_ticks: 1,
       });
+      // The tick comes with no rumination note: the ledger and ruminator copy count these wakes.
+      expect(harness.openQuestionsRepository.countRuminations(question.id)).toBe(0);
     }
     expect(harness.openQuestionsRepository.get(questions[3]!.id)?.last_ruminated_at).toBeNull();
     expect((await trigger.scan()).map((remaining) => remaining.payload.open_question_id)).toEqual([
