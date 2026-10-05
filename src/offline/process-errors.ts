@@ -1,3 +1,7 @@
+import {
+  isStructuredToolCallError,
+  type StructuredToolCallError,
+} from "../llm/structured-tool-call.js";
 import { findInErrorCauseChain } from "../util/errors.js";
 import { formatZodErrorIssues, isZodError } from "../util/zod-errors.js";
 
@@ -110,13 +114,25 @@ function httpErrorDetail(error: unknown): string | undefined {
   return `${prefix}${truncateMessage(detail, MAX_CAUSE_ERROR_DETAIL_LENGTH - prefix.length)}`;
 }
 
+function missingToolCallDetail(error: unknown): string | undefined {
+  const toolCallError = findInErrorCauseChain(
+    error,
+    (candidate): candidate is StructuredToolCallError =>
+      isStructuredToolCallError(candidate, "missing_tool_call"),
+  );
+
+  return toolCallError === undefined
+    ? undefined
+    : `stop_reason=${toolCallError.stopReason ?? "unknown"}, output_tokens=${toolCallError.usage.output_tokens}`;
+}
+
 export function formatOfflineProcessErrorMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   const validationDetail = formatZodErrorIssues(error, {
     maxIssues: MAX_OFFLINE_ERROR_DETAILS,
     maxCharacters: MAX_CAUSE_ERROR_DETAIL_LENGTH,
   });
-  const causeDetail = validationDetail ?? httpErrorDetail(error);
+  const causeDetail = validationDetail ?? httpErrorDetail(error) ?? missingToolCallDetail(error);
 
   if (causeDetail === undefined) {
     return truncateMessage(message, MAX_OFFLINE_ERROR_MESSAGE_LENGTH);

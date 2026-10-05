@@ -648,6 +648,56 @@ describe("RuminatorProcess", () => {
     }
   });
 
+  it("records a missing tool call against its question with the stop reason and output tokens", async () => {
+    const questionText = "What still explains the rollout tension?";
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      embeddingClient: new TestEmbeddingClient(new Map([[questionText, [1, 0, 0, 0]]])),
+    });
+    const process = new RuminatorProcess({
+      openQuestionsRepository: harness.openQuestionsRepository,
+      growthMarkersRepository: harness.growthMarkersRepository,
+      registry: harness.registry,
+    });
+
+    try {
+      await harness.episodicRepository.createEpisode(
+        createEpisodeFixture({ created_at: 2_000_000, significance: 0.95 }, [1, 0, 0, 0]),
+      );
+      const question = harness.openQuestionsRepository.add({
+        question: questionText,
+        urgency: 0.5,
+        source: "reflection",
+        created_at: 1_000_000,
+        last_touched: 1_000_000,
+        provenance: { kind: "manual" },
+      });
+      llm.pushResponse({
+        text: "The evidence does not settle this yet.",
+        input_tokens: 50,
+        output_tokens: 2_310,
+        stop_reason: "end_turn",
+        tool_calls: [],
+      });
+
+      const plan = await process.plan(harness.createContext(), {});
+
+      expect(plan.errors).toEqual([
+        {
+          process: "ruminator",
+          message: `Ruminator did not emit tool ${RUMINATOR_TOOL_NAME}: stop_reason=end_turn, output_tokens=2310`,
+          code: "RUMINATOR_INVALID",
+          target_type: "open_question",
+          target_id: question.id,
+        },
+      ]);
+      expect((await process.apply(harness.createContext(), plan)).errors).toEqual(plan.errors);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
   it("unwraps parameter scaffolding from a string tensions value", async () => {
     const clock = new FixedClock(3_000_000);
     const questionText = "What still explains the Atlas rollout tension?";

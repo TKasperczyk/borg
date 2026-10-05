@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
+import { StructuredToolCallError } from "../llm/structured-tool-call.js";
 import { LLMError } from "../util/errors.js";
 import { serializeJsonValue } from "../util/json-value.js";
 
@@ -178,6 +179,28 @@ describe("offlineProcessError", () => {
 
     expect(formatOfflineProcessErrorMessage(gatewayError)).toBe(
       "Bad Request: HTTP 422: guided grammar compilation failed",
+    );
+  });
+
+  it("keeps the stop reason and output tokens of a missing tool call wrapped as the cause", () => {
+    const missingToolCall = (stopReason: string | null) =>
+      new StructuredToolCallError("Structured tool call EmitDecision was missing", {
+        kind: "missing_tool_call",
+        toolName: "EmitDecision",
+        acceptedToolNames: ["EmitDecision"],
+        stopReason,
+        usage: { input_tokens: 900, output_tokens: 2_310 },
+      });
+
+    expect(
+      formatOfflineProcessErrorMessage(
+        new LLMError("Process did not emit tool EmitDecision", {
+          cause: missingToolCall("end_turn"),
+        }),
+      ),
+    ).toBe("Process did not emit tool EmitDecision: stop_reason=end_turn, output_tokens=2310");
+    expect(formatOfflineProcessErrorMessage(missingToolCall(null))).toBe(
+      "Structured tool call EmitDecision was missing: stop_reason=unknown, output_tokens=2310",
     );
   });
 });

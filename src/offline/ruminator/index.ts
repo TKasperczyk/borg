@@ -476,6 +476,8 @@ export const ruminatorPlanSchema = z.object({
         process: z.literal("ruminator"),
         message: z.string(),
         code: z.string().optional(),
+        target_type: z.literal("open_question").optional(),
+        target_id: z.string().optional(),
       }),
     )
     .default([]),
@@ -620,6 +622,7 @@ function invalidResolutionResponse(error: unknown): unknown {
   if (isStructuredToolCallError(error, "missing_tool_call")) {
     return new StorageError(`Ruminator did not emit tool ${RUMINATOR_TOOL_NAME}`, {
       code: "RUMINATOR_INVALID",
+      cause: error,
     });
   }
 
@@ -1645,7 +1648,12 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
               throw error;
             }
 
-            errors.push(offlineProcessError(this.name, error));
+            errors.push(
+              offlineProcessError(this.name, error, {
+                target_type: "open_question",
+                target_id: question.id,
+              }),
+            );
           }
         }
 

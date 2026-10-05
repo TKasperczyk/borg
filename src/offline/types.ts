@@ -55,7 +55,7 @@ export type OfflineProcessError = {
   process: OfflineProcessName;
   message: string;
   code?: string;
-  target_type?: "episode" | "semantic_node" | "semantic_edge";
+  target_type?: "episode" | "semantic_node" | "semantic_edge" | "open_question";
   target_id?: string;
 };
 
