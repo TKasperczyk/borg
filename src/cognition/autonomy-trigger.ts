@@ -115,10 +115,11 @@ const AUTONOMY_TRIGGER_EXCERPT_NOTICE =
   `each recent identity event's old-to-new change excerpt is bounded to ${IDENTITY_EVENT_COGNITION_CHANGE_EXCERPT_MAX_CHARS} chars. ` +
   "Head+tail excerpts are not summaries, and omitted characters remain available in the source records.";
 
-// Disclosure labels stay whole at every depth. So does an open question's own text: it is
-// the subject of the wake that carries it, and the ruminations reader returns question text
-// only beside a note, so for a question with no notes an excerpt here can leave it unread.
-// The evidence attached to the question absorbs the cut instead.
+// Disclosure labels stay whole at every depth. So does an open question's id, the handle any
+// action on it takes, and its own text: it is the subject of the wake that carries it, and the
+// ruminations reader returns question text only beside a note, so for a question with no notes
+// an excerpt here can leave it unread. The evidence attached to the question absorbs the cut
+// instead.
 function keepsWhole(
   record: Record<string, unknown>,
   key: string,
@@ -127,8 +128,53 @@ function keepsWhole(
   return (
     key === "disclosure" ||
     key === "disclosure_label" ||
+    (key === "open_question_id" && typeof record.open_question_id === "string") ||
     (keepQuestionText && key === "question" && typeof record.open_question_id === "string")
   );
+}
+
+function isPresentedQuestion(value: unknown): value is Record<string, unknown> & {
+  related_episodes: unknown[];
+} {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    typeof (value as Record<string, unknown>).open_question_id === "string" &&
+    Array.isArray((value as Record<string, unknown>).related_episodes)
+  );
+}
+
+function relatedEpisodeCount(payload: Record<string, unknown>): number {
+  const additional = Array.isArray(payload.additional_questions)
+    ? payload.additional_questions
+    : [];
+  return [payload, ...additional]
+    .filter(isPresentedQuestion)
+    .reduce((total, question) => total + question.related_episodes.length, 0);
+}
+
+// Removes `count` related episodes whole from the end of the payload: the last presented
+// question's lowest-ranked episode first, the primary question's last.
+function omitTrailingRelatedEpisodes(
+  payload: Record<string, unknown>,
+  count: number,
+): Record<string, unknown> {
+  let remaining = count;
+  const trim = (question: unknown): unknown => {
+    if (remaining === 0 || !isPresentedQuestion(question)) {
+      return question;
+    }
+    const kept = Math.max(0, question.related_episodes.length - remaining);
+    remaining -= question.related_episodes.length - kept;
+    return { ...question, related_episodes: question.related_episodes.slice(0, kept) };
+  };
+  const additional = payload.additional_questions;
+  return trim(
+    Array.isArray(additional)
+      ? { ...payload, additional_questions: [...additional].reverse().map(trim).reverse() }
+      : payload,
+  ) as Record<string, unknown>;
 }
 
 function excerptPayloadText(value: unknown, maxChars: number, keepQuestionText: boolean): unknown {
@@ -201,15 +247,17 @@ function boundAutonomyTriggerContext(context: AutonomyTriggerContext): string {
   const events = context.payload.recent_identity_events;
   let eventCount = Array.isArray(events) ? events.length : 0;
   let omittedPayloadFields = 0;
+  let omittedRelatedEpisodes = 0;
   let keepQuestionText = true;
   const retainedPayload = { ...context.payload };
   const render = (maxChars: number): string => {
+    const source = omitTrailingRelatedEpisodes(retainedPayload, omittedRelatedEpisodes);
     const payload = Object.fromEntries(
-      Object.entries(retainedPayload).map(([key, value]) => [
+      Object.entries(source).map(([key, value]) => [
         key,
         key === "recent_identity_events" && Array.isArray(events)
           ? events.slice(0, eventCount).map((event) => excerptIdentityEvent(event, maxChars))
-          : keepsWhole(retainedPayload, key, keepQuestionText)
+          : keepsWhole(source, key, keepQuestionText)
             ? value
             : excerptPayloadText(value, maxChars, keepQuestionText),
       ]),
@@ -236,10 +284,22 @@ function boundAutonomyTriggerContext(context: AutonomyTriggerContext): string {
   // Reserve every selected event's metadata before spending any room on text.
   // If metadata alone exceeds the cap, exclude an explicitly counted suffix.
   let bounded = render(0);
-  // Question text that overflows on its own is excerpted before any whole field is dropped.
   if (bounded.length > AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS) {
-    keepQuestionText = false;
-    bounded = render(0);
+    // The questions' related episodes leave whole, from the end, while that can still let the
+    // question text fit beside the labels and structure that stay whole. Question text that
+    // cannot is excerpted before any whole field is dropped.
+    omittedRelatedEpisodes = relatedEpisodeCount(retainedPayload);
+    if (render(0).length <= AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS) {
+      omittedRelatedEpisodes = 0;
+      while (bounded.length > AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS) {
+        omittedRelatedEpisodes += 1;
+        bounded = render(0);
+      }
+    } else {
+      omittedRelatedEpisodes = 0;
+      keepQuestionText = false;
+      bounded = render(0);
+    }
   }
   while (bounded.length > AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS && eventCount > 0) {
     eventCount -= 1;

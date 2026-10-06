@@ -244,6 +244,131 @@ describe("formatAutonomyTriggerContext epoch annotation", () => {
       }
     });
 
+    it("drops trailing related episodes before excerpting questions that fit beside whole labels", () => {
+      const label = (disclosure_class: string, audience: string[]) => ({
+        disclosure: `disclosure_class=${disclosure_class} origin_audience=${audience.join(",")} private-to=${audience.join(",")}; I can use this internally; I do not disclose it to the current audience unless authorized`,
+        disclosure_label: {
+          disclosure_class,
+          origin_audience_entity_ids: audience,
+          private_to_entity_ids: audience,
+          public_to_entity_ids: [],
+        },
+      });
+      // The shape tool.episodic.search returns: every episode and citation carries both labels.
+      const labelledEpisodes = (offset: number, citations: number[]) =>
+        citations.map((count, index) => ({
+          id: `ep_${String(offset + index).padStart(16, "c")}`,
+          title: `Wątek ${offset + index}: ${"tytuł ".repeat(20)}`,
+          narrative: "narracja epizodu ".repeat(100),
+          participants: Array.from({ length: 7 }, (_, n) => `ent_${String(n).padStart(16, "d")}`),
+          tags: Array.from({ length: 8 }, (_, n) => `znacznik ${n}`),
+          source_stream_ids: Array.from(
+            { length: 5 },
+            (_, n) => `strm_${String((offset + index) * 10 + n).padStart(16, "e")}`,
+          ),
+          start_time: 1_787_050_000_000,
+          end_time: 1_787_050_300_000,
+          ...label("relationship_private", ["ent_ffffffffffffffff"]),
+          score: 0.5 - (offset + index) / 100,
+          score_breakdown: {
+            similarity: 0,
+            decayed_salience: 0.5498351895770041,
+            time_relevance: 0,
+          },
+          citation_chain: Array.from({ length: count }, (_, entry) => ({
+            id: `strm_${String((offset + index) * 10 + entry).padStart(16, "g")}`,
+            kind: "user_msg",
+            timestamp: 1_787_050_000_000,
+            content: "wpis strumienia ".repeat(30),
+            ...label("relationship_private", ["ent_ffffffffffffffff"]),
+          })),
+        }));
+      const primary = `Is a durable cursor what separates a process that recovers from backlog from one that stays stuck? ${"Which field would tell the two apart before I lean on it? ".repeat(19)}End.`;
+      const additional = `Czy ta twardość jest wiernością zobowiązaniu, ${"czy własną formą elegancji, za którą się chowam, ".repeat(5)}koniec?`;
+      const payload = {
+        open_question_id: "oq_aaaaaaaaaaaaaaaa",
+        question: primary,
+        urgency: 0.3,
+        last_touched: 1_787_050_000_000,
+        unresolved_rumination_ticks: 0,
+        last_ruminated_at: null,
+        ...label("relationship_private", ["ent_hhhhhhhhhhhhhhhh", "ent_iiiiiiiiiiiiiiii"]),
+        additional_questions: [
+          {
+            open_question_id: "oq_bbbbbbbbbbbbbbbb",
+            question: additional,
+            urgency: 0.45,
+            last_touched: 1_787_050_100_000,
+            unresolved_rumination_ticks: 1,
+            last_ruminated_at: 1_787_050_100_004,
+            ...label("self_private", []),
+            related_episodes: labelledEpisodes(5, [3, 1, 1, 3, 1]),
+          },
+        ],
+        related_episodes: labelledEpisodes(0, [3, 2, 3, 1, 1]),
+        prior_self_thought: {
+          text: "poprzednia myśl ".repeat(150),
+          updated_at: 1_787_050_200_000,
+          self_entity_id: "ent_jjjjjjjjjjjjjjjj",
+          ...label("self_private", []),
+        },
+      };
+      const rendered = formatAutonomyTriggerContext({ ...DORMANT, payload });
+
+      expect(rendered.length).toBeLessThanOrEqual(AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS);
+      expect(rendered).not.toContain("payload_fields_omitted");
+      const parsed = parsePayload(rendered);
+      expect(parsed.question).toBe(primary);
+      expect(parsed.open_question_id).toBe("oq_aaaaaaaaaaaaaaaa");
+      expect(parsed.additional_questions[0].question).toBe(additional);
+      expect(parsed.additional_questions[0].open_question_id).toBe("oq_bbbbbbbbbbbbbbbb");
+      expect(parsed.prior_self_thought.disclosure_label).toEqual(
+        payload.prior_self_thought.disclosure_label,
+      );
+      // The last question's lowest-ranked episodes go first; what stays keeps its order and labels.
+      const scores = (episodes: Array<{ score: number }>) => episodes.map((entry) => entry.score);
+      const kept = parsed.additional_questions[0].related_episodes;
+      expect(kept.length).toBeLessThan(5);
+      expect(scores(kept)).toEqual(
+        scores(payload.additional_questions[0]!.related_episodes).slice(0, kept.length),
+      );
+      expect(scores(parsed.related_episodes)).toEqual(scores(payload.related_episodes));
+      for (const episode of [...parsed.related_episodes, ...kept]) {
+        expect(episode.disclosure_label).toEqual(payload.related_episodes[0]!.disclosure_label);
+      }
+    });
+
+    it("keeps a presented question's id whole when the shared budget is shorter than it", () => {
+      const rendered = formatAutonomyTriggerContext({
+        ...DORMANT,
+        payload: {
+          open_question_id: "oq_aaaaaaaaaaaaaaaa",
+          question: "Który znacznik rozstrzyga?",
+          last_touched: 1_787_050_000_000,
+          related_episodes: [
+            {
+              id: "ep_cccccccccccccccc",
+              tags: Array.from({ length: 1_400 }, (_, n) => `znacznik numer ${n} `.repeat(3)),
+            },
+          ],
+          additional_questions: [
+            {
+              open_question_id: "oq_bbbbbbbbbbbbbbbb",
+              question: "どの欄が決めるのか?",
+              related_episodes: [],
+            },
+          ],
+        },
+      });
+
+      expect(rendered.length).toBeLessThanOrEqual(AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS);
+      const parsed = parsePayload(rendered);
+      expect(parsed.related_episodes[0].id).toContain("[ELIDED]");
+      expect(parsed.open_question_id).toBe("oq_aaaaaaaaaaaaaaaa");
+      expect(parsed.additional_questions[0].open_question_id).toBe("oq_bbbbbbbbbbbbbbbb");
+      expect(parsed.additional_questions[0].question).toBe("どの欄が決めるのか?");
+    });
+
     it("still excerpts a question field on a record that is not an open question", () => {
       const question = "Is this a goal note rather than an open question? ".repeat(10);
       const rendered = formatAutonomyTriggerContext({
