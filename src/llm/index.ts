@@ -2171,6 +2171,13 @@ export class AnthropicLLMClient implements LLMClient {
       usageSink: this.usageSink,
       run: (run) => runWithLlmCallTimeout({ ...timeout, signal: options.signal, run }),
       hasToolUse: (response: Message) => response.content.some(isToolUseBlock),
+      describe: (response) => ({
+        stop_reason: response.stop_reason,
+        text_chars: response.content.reduce(
+          (chars, block) => (block.type === "text" ? chars + block.text.length : chars),
+          0,
+        ),
+      }),
       getUsage: (response) => ({
         input_tokens: response.usage.input_tokens,
         output_tokens: response.usage.output_tokens,

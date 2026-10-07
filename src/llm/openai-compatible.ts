@@ -358,6 +358,10 @@ export class OpenAICompatibleLLMClient implements LLMClient {
       usageSink: this.usageSink,
       hasToolUse: (response: OpenAIChatCompletionResponse) =>
         response.choices[0]?.message.tool_calls?.some((call) => call.type === "function") === true,
+      describe: (response) => ({
+        stop_reason: response.choices[0]?.finish_reason ?? null,
+        text_chars: response.choices[0]?.message.content?.length ?? 0,
+      }),
       getUsage: (response) => ({
         input_tokens: response.usage?.prompt_tokens ?? 0,
         output_tokens: response.usage?.completion_tokens ?? 0,

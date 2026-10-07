@@ -146,6 +146,7 @@ describe("OpenAICompatibleLLMClient", () => {
           expected_tool: TOOL.name,
           retry_fired: retry,
           attempt: retry ? 2 : 1,
+          ...(retry ? { first_stop_reason: "stop", first_text_chars: 6 } : {}),
         };
         expect(onToolChoiceTranslated).toHaveBeenCalledExactlyOnceWith(event);
         expect(warn).toHaveBeenCalledExactlyOnceWith("llm_call.tool_choice_translated", event);

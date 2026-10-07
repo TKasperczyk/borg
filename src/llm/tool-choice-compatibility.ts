@@ -37,6 +37,10 @@ export type LLMToolChoiceTranslationEvent = {
   expected_tool: string | null;
   retry_fired: boolean;
   attempt: number;
+  // Present when retry_fired: the first response, which the caller never receives
+  // but the model reads back as its own turn before the reminder.
+  first_stop_reason?: string | null;
+  first_text_chars?: number;
 };
 
 /**
@@ -70,6 +74,7 @@ export function translateForcedToolUse<Response>(args: {
     expectedTool: string | null;
   }) => Promise<Response>;
   hasToolUse: (response: Response) => boolean;
+  describe: (response: Response) => { stop_reason: string | null; text_chars: number };
   getUsage: (response: Response) => LLMUsage;
   withUsage: (response: Response, usage: LLMUsage) => Response;
   run?: (operation: (signal?: AbortSignal | null) => Promise<Response>) => Promise<Response>;
@@ -89,12 +94,14 @@ export function translateForcedToolUse<Response>(args: {
 
   return (async () => {
     let retryFired = false;
+    let firstShape: { stop_reason: string | null; text_chars: number } | undefined;
     let usage: LLMUsage | undefined;
     const run = async (signal?: AbortSignal | null): Promise<Response> => {
       const first = await args.send({ previous: undefined, signal, expectedTool });
       usage = args.getUsage(first);
       if (args.hasToolUse(first)) return first;
       retryFired = true;
+      firstShape = args.describe(first);
       const second = await args.send({ previous: first, signal, expectedTool });
       usage = addLlmUsage(usage, args.getUsage(second));
       return args.withUsage(second, usage);
@@ -111,12 +118,15 @@ export function translateForcedToolUse<Response>(args: {
       });
       throw error;
     } finally {
-      const event = {
+      const event: LLMToolChoiceTranslationEvent = {
         label: options.budget,
         model: options.model,
         expected_tool: expectedTool,
         retry_fired: retryFired,
         attempt: retryFired ? 2 : 1,
+        ...(firstShape === undefined
+          ? {}
+          : { first_stop_reason: firstShape.stop_reason, first_text_chars: firstShape.text_chars }),
       };
       console.warn("llm_call.tool_choice_translated", event);
       options.onToolChoiceTranslated?.(event);

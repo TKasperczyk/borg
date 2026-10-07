@@ -313,6 +313,7 @@ describe("llm", () => {
           expected_tool: "lookup",
           retry_fired: retry,
           attempt: retry ? 2 : 1,
+          ...(retry ? { first_stop_reason: "end_turn", first_text_chars: 0 } : {}),
         });
       });
     }
@@ -325,18 +326,21 @@ describe("llm", () => {
             { ...thinkingBlock, thinking: "Je consulte les données." },
             { type: "text" as const, text: "Un instant.", citations: null },
           ],
+          textChars: 11,
         },
-        { name: "empty thinking", content: [thinkingBlock] },
+        { name: "empty thinking", content: [thinkingBlock], textChars: 0 },
         {
           name: "redacted thinking",
           content: [{ type: "redacted_thinking" as const, data: "signed-opaque-data" }],
+          textChars: 0,
         },
         {
           name: "text only",
           content: [{ type: "text" as const, text: "確認します。", citations: null }],
+          textChars: 6,
         },
-      ])(`${method} preserves $name before the reminder`, async ({ content }) => {
-        vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      ])(`${method} preserves $name before the reminder`, async ({ content, textChars }) => {
+        const log = vi.spyOn(console, "warn").mockImplementation(() => undefined);
         const first = createMessageBody({ content });
         const original = structuredClone(first);
         const create = vi.fn().mockResolvedValueOnce(first).mockResolvedValueOnce(toolResponse);
@@ -359,6 +363,11 @@ describe("llm", () => {
           { role: "user", content: "Answer only by calling the lookup tool." },
         ]);
         expect(first).toEqual(original);
+        // Thinking is not counted; the model reads this text back before the reminder.
+        expect(log).toHaveBeenCalledExactlyOnceWith(
+          "llm_call.tool_choice_translated",
+          expect.objectContaining({ first_stop_reason: "end_turn", first_text_chars: textChars }),
+        );
       });
     }
 
@@ -549,6 +558,8 @@ describe("llm", () => {
         expected_tool: null,
         retry_fired: true,
         attempt: 2,
+        first_stop_reason: "end_turn",
+        first_text_chars: 0,
       });
     });
 
@@ -1043,6 +1054,8 @@ describe("llm", () => {
         expected_tool: "lookup",
         retry_fired: true,
         attempt: 2,
+        first_stop_reason: "end_turn",
+        first_text_chars: 0,
       });
     });
   });

@@ -231,12 +231,16 @@ describe("production LLM compatibility wiring", () => {
         retry_fired: retry,
         attempt: retry ? 2 : 1,
       });
+      const first = retry ? { first_stop_reason: "end_turn", first_text_chars: 0 } : {};
+      expect("first_text_chars" in entries[1]).toBe(retry);
+      expect(entries[1]).toMatchObject(first);
       expect(warn).toHaveBeenCalledExactlyOnceWith("llm_call.tool_choice_translated", {
         label: request.budget,
         model: request.model,
         expected_tool: "EmitFacts",
         retry_fired: retry,
         attempt: retry ? 2 : 1,
+        ...first,
       });
     },
   );
