@@ -1469,4 +1469,61 @@ describe("SelfNarratorProcess", () => {
       await harness.cleanup();
     }
   });
+
+  it("keeps valid observations after an invalid one and counts each rejection", async () => {
+    const valid = (what_changed: string) => ({
+      theme: "understanding",
+      category: "understanding",
+      what_changed,
+      before_description: null,
+      after_description: null,
+      confidence: 0.7,
+      evidence_episode_ids: ["ep_aaaaaaaaaaaaaaaa", "ep_bbbbbbbbbbbbbbbb"],
+    });
+    const response = createSelfNarratorResponse({ observation: valid("First valid change.") });
+    const outside = (what_changed: string) => ({
+      ...valid(what_changed),
+      evidence_episode_ids: ["ep_aaaaaaaaaaaaaaaa", "ep_zzzzzzzzzzzzzzzz"],
+    });
+    response.tool_calls[0]!.input.observations.push(
+      outside("First invalid change."),
+      valid("Second valid change."),
+      outside("Second invalid change."),
+    );
+    const llm = new FakeLLMClient({ responses: [response] });
+    const harness = await createOfflineTestHarness({ llmClient: llm });
+    const process = new SelfNarratorProcess({
+      autobiographicalRepository: harness.autobiographicalRepository,
+      growthMarkersRepository: harness.growthMarkersRepository,
+      registry: harness.registry,
+    });
+
+    try {
+      await harness.episodicRepository.createEpisode(
+        createEpisodeFixture({ id: "ep_aaaaaaaaaaaaaaaa" as never }),
+      );
+      await harness.episodicRepository.createEpisode(
+        createEpisodeFixture({
+          id: "ep_bbbbbbbbbbbbbbbb" as never,
+          created_at: 2_000_000,
+          updated_at: 2_000_000,
+        }),
+      );
+
+      const plan = await process.plan(harness.createContext(), {});
+
+      expect(
+        plan.items.flatMap((item) =>
+          item.action === "add_growth_marker" ? [item.marker.what_changed] : [],
+        ),
+      ).toEqual(["First valid change.", "Second valid change."]);
+      const rejection = expect.objectContaining({
+        code: "SELF_NARRATOR_INVALID_REF",
+        message: expect.stringContaining("outside candidates"),
+      });
+      expect(plan.errors).toEqual([rejection, rejection]);
+    } finally {
+      await harness.cleanup();
+    }
+  });
 });

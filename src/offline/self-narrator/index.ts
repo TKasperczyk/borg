@@ -538,17 +538,30 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
             }
             const allowedIds = new Set<string>(sourceEpisodes.map((episode) => episode.id));
 
+            // An invalid observation is rejected on its own: its siblings are still checked.
             for (const observation of response.observations.slice(0, maxObservationsPerRun)) {
               if (observation.evidence_episode_ids.length < minSupportEpisodes) {
-                throw new StorageError("Self-narrator observation cited too few episodes", {
-                  code: "SELF_NARRATOR_INVALID_REF",
-                });
+                errors.push(
+                  offlineProcessError(
+                    this.name,
+                    new StorageError("Self-narrator observation cited too few episodes", {
+                      code: "SELF_NARRATOR_INVALID_REF",
+                    }),
+                  ),
+                );
+                continue;
               }
 
               if (!observation.evidence_episode_ids.every((id) => allowedIds.has(id))) {
-                throw new StorageError("Self-narrator referenced episodes outside candidates", {
-                  code: "SELF_NARRATOR_INVALID_REF",
-                });
+                errors.push(
+                  offlineProcessError(
+                    this.name,
+                    new StorageError("Self-narrator referenced episodes outside candidates", {
+                      code: "SELF_NARRATOR_INVALID_REF",
+                    }),
+                  ),
+                );
+                continue;
               }
 
               const evidenceEpisodeIds = observation.evidence_episode_ids.map(
