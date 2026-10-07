@@ -345,12 +345,9 @@ describe("formatAutonomyTriggerContext epoch annotation", () => {
           open_question_id: "oq_aaaaaaaaaaaaaaaa",
           question: "Który znacznik rozstrzyga?",
           last_touched: 1_787_050_000_000,
-          related_episodes: [
-            {
-              id: "ep_cccccccccccccccc",
-              tags: Array.from({ length: 1_400 }, (_, n) => `znacznik numer ${n} `.repeat(3)),
-            },
-          ],
+          tags: Array.from({ length: 1_400 }, (_, n) => `znacznik numer ${n} `.repeat(3)),
+          // Dropping it would not let its id fit whole, so it stays, excerpted.
+          related_episodes: [{ id: "ep_cccccccccccccccc" }],
           additional_questions: [
             {
               open_question_id: "oq_bbbbbbbbbbbbbbbb",
@@ -464,6 +461,87 @@ describe("formatAutonomyTriggerContext epoch annotation", () => {
       expect(payload.additional_questions[0].question.startsWith("この問いは残るか。")).toBe(true);
       expect(payload.additional_questions[0].question).toContain("[ELIDED]");
       expect(payload.additional_questions[0].disclosure_label).toEqual(label.disclosure_label);
+    });
+
+    it("drops trailing related episodes, counted, before their evidence ids would be cut", () => {
+      const label = {
+        disclosure:
+          "disclosure_class=relationship_private origin_audience=ent_ssssssssssssssss private-to=ent_ssssssssssssssss; I can use this internally; I do not disclose it to the current audience unless authorized",
+        disclosure_label: {
+          disclosure_class: "relationship_private",
+          origin_audience_entity_ids: ["ent_ssssssssssssssss"],
+          private_to_entity_ids: ["ent_ssssssssssssssss"],
+          public_to_entity_ids: [],
+        },
+      };
+      const streamId = (n: number) => `strm_${String(n).padStart(16, "r")}`;
+      // Every episode and citation carries whole labels, as tool.episodic.search returns them.
+      const labelledEpisodes = (offset: number) =>
+        Array.from({ length: 6 }, (_, index) => ({
+          id: `ep_${String(offset + index).padStart(16, "p")}`,
+          title: `Odcinek ${offset + index}: ${"tytuł ".repeat(20)}`,
+          narrative: "narracja epizodu ".repeat(60),
+          participants: ["Tom", `ent_${String(offset + index).padStart(16, "q")}`],
+          source_stream_ids: [streamId((offset + index) * 2), streamId((offset + index) * 2 + 1)],
+          ...label,
+          citation_chain: [0, 1].map((entry) => ({
+            id: streamId((offset + index) * 2 + entry),
+            kind: "user_msg",
+            content: "wpis strumienia ".repeat(30),
+            ...label,
+          })),
+        }));
+      const payload = {
+        open_question_id: "oq_aaaaaaaaaaaaaaaa",
+        question: "Czy wcześniejsze ostrzeżenie było już tą samą diagnozą?",
+        last_touched: 1_787_050_000_000,
+        ...label,
+        related_episodes: labelledEpisodes(0),
+        additional_questions: [
+          {
+            open_question_id: "oq_bbbbbbbbbbbbbbbb",
+            question: "この沈黙は選択だったのか、それとも切れた配線だったのか。",
+            last_touched: 1_787_050_100_000,
+            ...label,
+            related_episodes: labelledEpisodes(6),
+          },
+        ],
+      };
+      const handles = (episode: {
+        id: string;
+        source_stream_ids: string[];
+        citation_chain: Array<{ id: string }>;
+      }) => [episode.id, ...episode.source_stream_ids, ...episode.citation_chain.map((c) => c.id)];
+
+      let partial = 0;
+      for (let cap = 4_000; cap <= AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS; cap += 1_000) {
+        const rendered = formatAutonomyTriggerContext({ ...DORMANT, payload }, cap);
+        expect(rendered.length).toBeLessThanOrEqual(cap);
+        expect(rendered).not.toContain("payload_fields_omitted");
+        const parsed = parsePayload(rendered);
+        expect(parsed.question).toBe(payload.question);
+        expect(parsed.additional_questions[0].question).toBe(
+          payload.additional_questions[0]!.question,
+        );
+        const primary = parsed.related_episodes;
+        const additional = parsed.additional_questions[0].related_episodes;
+        const omitted = Number(/related_episodes_omitted: (\d+)\./.exec(rendered)?.[1] ?? 0);
+        expect(primary.length + additional.length + omitted).toBe(12);
+        if (additional.length > 0) {
+          expect(primary).toHaveLength(6);
+        }
+        // What stays is the highest-ranked prefix of each list, every evidence id whole.
+        expect(primary.map(handles)).toEqual(
+          payload.related_episodes.slice(0, primary.length).map(handles),
+        );
+        expect(additional.map(handles)).toEqual(
+          payload.additional_questions[0]!.related_episodes.slice(0, additional.length).map(handles),
+        );
+        if (omitted > 0 && omitted < 12) {
+          partial += 1;
+        }
+      }
+      expect(partial).toBeGreaterThan(0);
     });
   });
 

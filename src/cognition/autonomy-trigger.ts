@@ -157,6 +157,37 @@ function relatedEpisodeCount(payload: Record<string, unknown>): number {
     .reduce((total, question) => total + question.related_episodes.length, 0);
 }
 
+// The ids a resolution can cite as evidence: each related episode's own id, its source stream
+// entries and its citations.
+function relatedEpisodeHandleChars(payload: Record<string, unknown>): number {
+  const additional = Array.isArray(payload.additional_questions)
+    ? payload.additional_questions
+    : [];
+  const handles = [payload, ...additional]
+    .filter(isPresentedQuestion)
+    .flatMap((question) => question.related_episodes)
+    .flatMap((episode) => {
+      if (episode === null || typeof episode !== "object" || Array.isArray(episode)) {
+        return [];
+      }
+      const record = episode as Record<string, unknown>;
+      const citations = Array.isArray(record.citation_chain) ? record.citation_chain : [];
+      return [
+        record.id,
+        ...(Array.isArray(record.source_stream_ids) ? record.source_stream_ids : []),
+        ...citations.map((citation) =>
+          citation !== null && typeof citation === "object"
+            ? (citation as Record<string, unknown>).id
+            : undefined,
+        ),
+      ];
+    });
+  return handles.reduce<number>(
+    (longest, handle) => (typeof handle === "string" ? Math.max(longest, handle.length) : longest),
+    0,
+  );
+}
+
 // Removes `count` related episodes whole from the end of the payload: the last presented
 // question's lowest-ranked episode first, the primary question's last.
 function omitTrailingRelatedEpisodes(
@@ -329,6 +360,21 @@ function boundAutonomyTriggerContext(
     delete retainedPayload[otherFields.pop()!];
     omittedPayloadFields += 1;
     bounded = render(0);
+  }
+  // An episode whose ids are excerpted cannot be cited, so episodes leave whole, from the end,
+  // while that can still let the shared budget reach their longest id.
+  const handleChars = relatedEpisodeHandleChars(retainedPayload);
+  if (handleChars > 0 && render(handleChars).length > maxChars) {
+    const omittedBefore = omittedRelatedEpisodes;
+    omittedRelatedEpisodes = relatedEpisodeCount(retainedPayload);
+    if (render(handleChars).length <= maxChars) {
+      omittedRelatedEpisodes = omittedBefore;
+      while (render(handleChars).length > maxChars) {
+        omittedRelatedEpisodes += 1;
+      }
+    } else {
+      omittedRelatedEpisodes = omittedBefore;
+    }
   }
 
   // Price the final serialization, including JSON escapes, calendar siblings,
