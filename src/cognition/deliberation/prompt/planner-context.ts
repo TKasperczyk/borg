@@ -1980,23 +1980,28 @@ function renderTurnStateSkill(context: DeliberationContext): RenderedTurnStateFr
   };
 }
 
+const PLANNER_AUTONOMY_TRIGGER_MAX_CHARS = 4_000;
+
 function renderTurnStateAutonomyTrigger(
   context: DeliberationContext,
   disclosureAttribute: string,
 ): RenderedTurnStateFragment {
-  const autonomyTrigger =
-    context.autonomyTrigger === null || context.autonomyTrigger === undefined
-      ? null
-      : headTailPlannerExcerpt(formatAutonomyTriggerContext(context.autonomyTrigger), 4_000);
+  const trigger = context.autonomyTrigger;
+  if (trigger === null || trigger === undefined) {
+    return { lines: [], rowCount: 0, truncationCount: 0, omissionCount: 0 };
+  }
+  // Bound the payload structurally at the planner's cap, so a presented question's id and text
+  // outlast its evidence; a head+tail crop of the shared rendering cut whole questions out of the
+  // middle. The crop remains for structure that stays whole and still exceeds the cap.
+  const formatted = formatAutonomyTriggerContext(trigger, PLANNER_AUTONOMY_TRIGGER_MAX_CHARS);
+  const autonomyTrigger = headTailPlannerExcerpt(formatted, PLANNER_AUTONOMY_TRIGGER_MAX_CHARS);
   return {
-    lines:
-      autonomyTrigger === null
-        ? []
-        : [
-            `  <autonomy_trigger disclosure="${disclosureAttribute}">${escapeXmlText(autonomyTrigger.text)}</autonomy_trigger>`,
-          ],
-    rowCount: autonomyTrigger === null ? 0 : 1,
-    truncationCount: autonomyTrigger?.truncated === true ? 1 : 0,
+    lines: [
+      `  <autonomy_trigger disclosure="${disclosureAttribute}">${escapeXmlText(autonomyTrigger.text)}</autonomy_trigger>`,
+    ],
+    rowCount: 1,
+    truncationCount:
+      autonomyTrigger.truncated || formatted !== formatAutonomyTriggerContext(trigger) ? 1 : 0,
     omissionCount: 0,
   };
 }

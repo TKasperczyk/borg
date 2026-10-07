@@ -110,10 +110,13 @@ function carriesTruncatedIdentityEventChange(payload: Record<string, unknown>): 
   });
 }
 
-const AUTONOMY_TRIGGER_EXCERPT_NOTICE =
-  `excerpt_notice: borg_autonomy_trigger content is mechanically bounded to ${AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS} chars; ` +
-  `each recent identity event's old-to-new change excerpt is bounded to ${IDENTITY_EVENT_COGNITION_CHANGE_EXCERPT_MAX_CHARS} chars. ` +
-  "Head+tail excerpts are not summaries, and omitted characters remain available in the source records.";
+function autonomyTriggerExcerptNotice(maxChars: number): string {
+  return (
+    `excerpt_notice: borg_autonomy_trigger content is mechanically bounded to ${maxChars} chars; ` +
+    `each recent identity event's old-to-new change excerpt is bounded to ${IDENTITY_EVENT_COGNITION_CHANGE_EXCERPT_MAX_CHARS} chars. ` +
+    "Head+tail excerpts are not summaries, and omitted characters remain available in the source records."
+  );
+}
 
 // Disclosure labels stay whole at every depth. So does an open question's id, the handle any
 // action on it takes, and its own text: it is the subject of the wake that carries it, and the
@@ -237,10 +240,13 @@ function excerptIdentityEvent(event: unknown, maxChars: number): unknown {
   };
 }
 
-function boundAutonomyTriggerContext(context: AutonomyTriggerContext): string {
+function boundAutonomyTriggerContext(
+  context: AutonomyTriggerContext,
+  maxChars: number,
+): string {
   const rendered = renderAutonomyTriggerContext(context);
   const nestedExcerptWasTruncated = carriesTruncatedIdentityEventChange(context.payload);
-  if (!nestedExcerptWasTruncated && rendered.length <= AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS) {
+  if (!nestedExcerptWasTruncated && rendered.length <= maxChars) {
     return rendered;
   }
 
@@ -250,23 +256,24 @@ function boundAutonomyTriggerContext(context: AutonomyTriggerContext): string {
   let omittedRelatedEpisodes = 0;
   let keepQuestionText = true;
   const retainedPayload = { ...context.payload };
-  const render = (maxChars: number): string => {
+  const render = (stringBudget: number): string => {
     const source = omitTrailingRelatedEpisodes(retainedPayload, omittedRelatedEpisodes);
     const payload = Object.fromEntries(
       Object.entries(source).map(([key, value]) => [
         key,
         key === "recent_identity_events" && Array.isArray(events)
-          ? events.slice(0, eventCount).map((event) => excerptIdentityEvent(event, maxChars))
+          ? events.slice(0, eventCount).map((event) => excerptIdentityEvent(event, stringBudget))
           : keepsWhole(source, key, keepQuestionText)
             ? value
-            : excerptPayloadText(value, maxChars, keepQuestionText),
+            : excerptPayloadText(value, stringBudget, keepQuestionText),
       ]),
     );
     const notice = [
-      AUTONOMY_TRIGGER_EXCERPT_NOTICE,
+      autonomyTriggerExcerptNotice(maxChars),
       Array.isArray(events)
         ? `recent_identity_events_omitted: ${events.length - eventCount}.`
         : null,
+      omittedRelatedEpisodes > 0 ? `related_episodes_omitted: ${omittedRelatedEpisodes}.` : null,
       omittedPayloadFields > 0 ? `payload_fields_omitted: ${omittedPayloadFields}.` : null,
     ]
       .filter((part) => part !== null)
@@ -277,21 +284,21 @@ function boundAutonomyTriggerContext(context: AutonomyTriggerContext): string {
   };
 
   const uncut = render(Number.POSITIVE_INFINITY);
-  if (uncut.length <= AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS) {
+  if (uncut.length <= maxChars) {
     return uncut;
   }
 
   // Reserve every selected event's metadata before spending any room on text.
   // If metadata alone exceeds the cap, exclude an explicitly counted suffix.
   let bounded = render(0);
-  if (bounded.length > AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS) {
+  if (bounded.length > maxChars) {
     // The questions' related episodes leave whole, from the end, while that can still let the
     // question text fit beside the labels and structure that stay whole. Question text that
     // cannot is excerpted before any whole field is dropped.
     omittedRelatedEpisodes = relatedEpisodeCount(retainedPayload);
-    if (render(0).length <= AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS) {
+    if (render(0).length <= maxChars) {
       omittedRelatedEpisodes = 0;
-      while (bounded.length > AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS) {
+      while (bounded.length > maxChars) {
         omittedRelatedEpisodes += 1;
         bounded = render(0);
       }
@@ -301,7 +308,15 @@ function boundAutonomyTriggerContext(context: AutonomyTriggerContext): string {
       bounded = render(0);
     }
   }
-  while (bounded.length > AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS && eventCount > 0) {
+  // A dropped trailing field can be additional_questions, which the wake latches whether or not
+  // they were shown, so the related episodes leave before any field does. They leave together:
+  // episodes that only fit at a zero text budget would leave every excerpt, the questions'
+  // included, almost empty.
+  if (bounded.length > maxChars && relatedEpisodeCount(retainedPayload) > 0) {
+    omittedRelatedEpisodes = relatedEpisodeCount(retainedPayload);
+    bounded = render(0);
+  }
+  while (bounded.length > maxChars && eventCount > 0) {
     eventCount -= 1;
     bounded = render(0);
   }
@@ -310,7 +325,7 @@ function boundAutonomyTriggerContext(context: AutonomyTriggerContext): string {
   const otherFields = Object.keys(retainedPayload).filter(
     (key) => key !== "recent_identity_events",
   );
-  while (bounded.length > AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS && otherFields.length > 0) {
+  while (bounded.length > maxChars && otherFields.length > 0) {
     delete retainedPayload[otherFields.pop()!];
     omittedPayloadFields += 1;
     bounded = render(0);
@@ -319,11 +334,11 @@ function boundAutonomyTriggerContext(context: AutonomyTriggerContext): string {
   // Price the final serialization, including JSON escapes, calendar siblings,
   // domain notes, and the notice. Short values use only the room they need.
   let low = 0;
-  let high = AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS;
+  let high = maxChars;
   while (low <= high) {
     const candidateBudget = Math.floor((low + high) / 2);
     const candidate = render(candidateBudget);
-    if (candidate.length <= AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS) {
+    if (candidate.length <= maxChars) {
       bounded = candidate;
       low = candidateBudget + 1;
     } else {
@@ -369,6 +384,9 @@ function renderAutonomyTriggerContext(context: AutonomyTriggerContext): string {
     .join("\n");
 }
 
-export function formatAutonomyTriggerContext(context: AutonomyTriggerContext): string {
-  return boundAutonomyTriggerContext(context);
+export function formatAutonomyTriggerContext(
+  context: AutonomyTriggerContext,
+  maxChars = AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS,
+): string {
+  return boundAutonomyTriggerContext(context, maxChars);
 }

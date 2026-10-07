@@ -410,6 +410,61 @@ describe("formatAutonomyTriggerContext epoch annotation", () => {
       expect(payload.disclosure).toBe("disclosure_class=self_private");
       expect(payload.related_episodes).toHaveLength(5);
     });
+
+    it("omits related episodes, counted, before any field under a cap smaller than their labels", () => {
+      const label = {
+        disclosure:
+          "disclosure_class=relationship_private origin_audience=ent_kkkkkkkkkkkkkkkk,ent_llllllllllllllll private-to=ent_kkkkkkkkkkkkkkkk,ent_llllllllllllllll; I can use this internally; I do not disclose it to the current audience unless authorized",
+        disclosure_label: {
+          disclosure_class: "relationship_private",
+          origin_audience_entity_ids: ["ent_kkkkkkkkkkkkkkkk", "ent_llllllllllllllll"],
+          private_to_entity_ids: ["ent_kkkkkkkkkkkkkkkk", "ent_llllllllllllllll"],
+          public_to_entity_ids: [],
+        },
+      };
+      const labelledEpisodes = (offset: number) =>
+        Array.from({ length: 5 }, (_, index) => ({
+          id: `ep_${String(offset + index).padStart(16, "m")}`,
+          narrative: "narracja epizodu ".repeat(100),
+          ...label,
+          citation_chain: [{ id: `strm_${String(offset + index).padStart(16, "n")}`, ...label }],
+        }));
+      const additional = `この問いは残るか。${"どの欄が決めるのか。".repeat(500)}終わり`;
+      const rendered = formatAutonomyTriggerContext(
+        {
+          ...DORMANT,
+          payload: {
+            open_question_id: "oq_aaaaaaaaaaaaaaaa",
+            question: "Czy to pytanie zostanie na stronie?",
+            last_touched: 1_787_050_000_000,
+            ...label,
+            related_episodes: labelledEpisodes(0),
+            additional_questions: [
+              {
+                open_question_id: "oq_bbbbbbbbbbbbbbbb",
+                question: additional,
+                last_touched: 1_787_050_100_000,
+                ...label,
+                related_episodes: labelledEpisodes(5),
+              },
+            ],
+          },
+        },
+        4_000,
+      );
+
+      expect(rendered.length).toBeLessThanOrEqual(4_000);
+      expect(rendered).toContain("mechanically bounded to 4000 chars");
+      expect(rendered).toContain("related_episodes_omitted: 10.");
+      expect(rendered).not.toContain("payload_fields_omitted");
+      const payload = parsePayload(rendered);
+      expect(payload.question).toBe("Czy to pytanie zostanie na stronie?");
+      expect(payload.related_episodes).toEqual([]);
+      expect(payload.additional_questions[0].open_question_id).toBe("oq_bbbbbbbbbbbbbbbb");
+      expect(payload.additional_questions[0].question.startsWith("この問いは残るか。")).toBe(true);
+      expect(payload.additional_questions[0].question).toContain("[ELIDED]");
+      expect(payload.additional_questions[0].disclosure_label).toEqual(label.disclosure_label);
+    });
   });
 
   it("stays silent on dormancy for a wake that carries no open question", () => {

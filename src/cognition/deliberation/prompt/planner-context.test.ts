@@ -22,6 +22,7 @@ import {
   type EntityId,
 } from "../../../util/ids.js";
 import type { DeliberationContext, SelfSnapshotGoal } from "../types.js";
+import { formatAutonomyTriggerContext } from "../../autonomy-trigger.js";
 import { OUTBOUND_POST_TOOL_NAME } from "../../../tools/internal/outbound-post-name.js";
 import { buildBaseSystemPrompt } from "./system-prompt.js";
 import {
@@ -2214,13 +2215,84 @@ describe("compact planner context", () => {
       );
       const surface = taggedBlock(allSystemText(planner), "autonomy_trigger");
       expect(surface).toMatch(/^<autonomy_trigger[^>]*>excerpt_notice:/);
-      expect(surface).toContain("mechanically bounded to 32000 chars");
+      expect(surface).toContain("mechanically bounded to 4000 chars");
       expect(surface).toContain("old-to-new change excerpt is bounded to 1500 chars");
       expect(surface).toContain("recent_identity_events_omitted: 0");
       expect(surface.match(/excerpt_notice:/g)).toHaveLength(1);
-      expect(surface).toContain("HEAD+TAIL EXCERPT");
+      expect(surface).toContain("[ELIDED]");
     },
   );
+
+  it("keeps every presented dormant question's id and opening on the planner surface", () => {
+    const audience = ["ent_aaaaaaaaaaaaaaaa", "ent_bbbbbbbbbbbbbbbb", "ent_cccccccccccccccc"];
+    const label = {
+      disclosure: `disclosure_class=relationship_private origin_audience=${audience.join(",")} private-to=${audience.join(",")}; I can use this internally; I do not disclose it to the current audience unless authorized`,
+      disclosure_label: {
+        disclosure_class: "relationship_private",
+        origin_audience_entity_ids: audience,
+        private_to_entity_ids: audience,
+        public_to_entity_ids: [],
+      },
+    };
+    const episodes = (offset: number) =>
+      Array.from({ length: 5 }, (_, index) => ({
+        id: `ep_${String(offset + index).padStart(16, "d")}`,
+        title: `Wątek ${offset + index}`,
+        narrative: "narracja epizodu ".repeat(100),
+        ...label,
+        citation_chain: Array.from({ length: 2 }, (_, entry) => ({
+          id: `strm_${String((offset + index) * 2 + entry).padStart(16, "e")}`,
+          content: "wpis strumienia ".repeat(30),
+          ...label,
+        })),
+      }));
+    const trigger = {
+      source_name: "open_question_dormant",
+      source_type: "trigger" as const,
+      event_id: "oq_ffffffffffffffff:1786492800000",
+      sort_ts: NOW_MS - 86_400_000,
+      payload: {
+        open_question_id: "oq_ffffffffffffffff",
+        question: `Czy wczesna flaga była diagnozą? ${"Które pole by to rozstrzygnęło? ".repeat(20)}Koniec.`,
+        urgency: 0.41,
+        last_touched: NOW_MS - 86_400_000,
+        unresolved_rumination_ticks: 4,
+        last_ruminated_at: NOW_MS - 86_000_000,
+        ...label,
+        additional_questions: [
+          {
+            open_question_id: "oq_gggggggggggggggg",
+            question: `この問いは計画の頁に届くか。${"どの欄が決めるのか。".repeat(40)}終わり`,
+            urgency: 0.34,
+            last_touched: NOW_MS - 86_300_000,
+            unresolved_rumination_ticks: 1,
+            last_ruminated_at: null,
+            ...label,
+            related_episodes: episodes(5),
+          },
+        ],
+        related_episodes: episodes(0),
+      },
+    };
+    // A head+tail crop of the shared rendering, the planner's former bound, cut the second
+    // question out of the middle while the wake still latched it.
+    expect(headTailPlannerExcerpt(formatAutonomyTriggerContext(trigger), 4_000).text).not.toContain(
+      "oq_gggggggggggggggg",
+    );
+
+    const surface = taggedBlock(
+      allSystemText(build(context({ turnOrigin: "autonomous", autonomyTrigger: trigger }))),
+      "autonomy_trigger",
+    );
+    expect(surface).toContain('"open_question_id": "oq_ffffffffffffffff"');
+    expect(surface).toContain('"open_question_id": "oq_gggggggggggggggg"');
+    expect(surface).toContain("Czy wczesna flaga była diagnozą?");
+    expect(surface).toContain("この問いは計画の頁に届くか。");
+    expect(surface).toContain("mechanically bounded to 4000 chars");
+    expect(surface).toContain("related_episodes_omitted: 10.");
+    expect(surface).not.toContain("payload_fields_omitted");
+    expect(surface).not.toContain("HEAD+TAIL EXCERPT");
+  });
 
   it("keeps the generic excerpt shape mechanical and announces every cut", () => {
     const source = `HEAD_${"x".repeat(500)}_TAIL`;
