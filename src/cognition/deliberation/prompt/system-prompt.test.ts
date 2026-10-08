@@ -4811,7 +4811,7 @@ describe("buildBaseSystemPrompt", () => {
 
     expect(withInvalidTool).toContain('"text_chars":0');
     expect(withInvalidTool).toContain("text_chars=0 means the attempt halted before writing");
-    expect(withInvalidTool).toContain("no draft of that answer exists anywhere");
+    expect(withInvalidTool).toContain("A non-empty draft is captured as undelivered_draft");
     expect(withInvalidTool).toContain("A diagnostic with no text_chars at all predates the field");
 
     // The note is inert on a list with no invalid-tool entry, and copy that explains a
