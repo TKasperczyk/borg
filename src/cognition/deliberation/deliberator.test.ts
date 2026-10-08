@@ -1734,6 +1734,32 @@ describe("deliberator", () => {
     });
   });
 
+  // A regenerate that stops at refusal writes nothing. The initial attempt's prose is
+  // the only draft the turn has, and keeping only the last attempt's text dropped it.
+  it("keeps the initial attempt's draft when the regenerate writes nothing", async () => {
+    const draft = "Odpowiedź napisana, ale bez wywołania narzędzia.";
+    const llm = new FakeLLMClient({ responses: [draft, ""] });
+    const deliberator = createDeliberator(llm, tempDirs);
+
+    const result = await deliberator.run(
+      simpleDeliberationContext({ turnId: "turn-invalid-tool-regenerate-empty" }),
+    );
+
+    expect(result.emitted).toBe(false);
+    expect(result.emission).toEqual({
+      kind: "suppressed",
+      reason: "invalid_tool_after_regenerate",
+      finalizer_invalid_tool: {
+        tool_name: "none",
+        reason: "expected exactly one emission tool call, got 0",
+        attempt: "regenerate",
+        text_chars: 0,
+      },
+      undelivered_draft: { text: draft },
+    });
+    expect(llm.requests).toHaveLength(2);
+  });
+
   it.each([
     {
       label: "no terminal emission tool",

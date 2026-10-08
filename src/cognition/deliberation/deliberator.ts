@@ -385,10 +385,11 @@ function finalizerSuppressionReason(result: FinalizerResult): GenerationSuppress
   }
 }
 
-// The text length travels with the diagnostic because it is the only thing that
-// separates a draft that exists from one that never did, and `buildFinalizerEmission`
-// gates `undelivered_draft` on the same number (> 0). Without it on the entry, a
-// silence with no draft beside it reads the same whether the draft rolled out of the
+// The text length travels with the diagnostic because it separates an attempt that
+// wrote prose from one that never did. It counts only this attempt: when a regenerate
+// writes nothing, `buildFinalizerEmission` keeps the initial attempt's draft, so
+// text_chars=0 beside an `undelivered_draft` is not a contradiction. Without the count,
+// a silence with no draft beside it reads the same whether the draft rolled out of the
 // recency window or was never written -- and the reason code cannot tell them apart.
 function finalizerInvalidToolDiagnostic(
   decision: InvalidToolDecision,
@@ -531,6 +532,10 @@ function buildFinalizerEmission(
       "finalizer_failed" | "invalid_tool_after_regenerate"
     >;
     invalidToolDiagnosticAttempt?: FinalizerInvalidToolDiagnostic["attempt"];
+    // The initial attempt's prose, for a regenerate that ended invalid. A regenerate
+    // that stops at refusal writes nothing, and keeping only its text would drop the
+    // draft the initial attempt did write.
+    initialAttemptText?: string;
   } = {},
 ): FinalizerEmission {
   const suppressionReason =
@@ -539,10 +544,14 @@ function buildFinalizerEmission(
       : finalizerSuppressionReason(result);
 
   if (suppressionReason !== null) {
+    const draftText =
+      result.decision.kind !== "invalid_tool"
+        ? ""
+        : result.text.length > 0
+          ? result.text
+          : (options.initialAttemptText ?? "");
     const undeliveredDraft =
-      result.decision.kind === "invalid_tool" && result.text.length > 0
-        ? ({ text: result.text } satisfies UndeliveredDraft)
-        : undefined;
+      draftText.length > 0 ? ({ text: draftText } satisfies UndeliveredDraft) : undefined;
     const noOutputSemanticCategories =
       result.decision.kind === "no_output" ? result.decision.no_output_categories : undefined;
     const noOutputStructuralFlags =
@@ -793,6 +802,7 @@ export class Deliberator {
           : {
               invalidToolSuppressionReason: "invalid_tool_after_regenerate",
               invalidToolDiagnosticAttempt: finalizerRetry.invalidToolAfterRegenerate.attempt,
+              initialAttemptText: response.text,
             }),
       },
     );
