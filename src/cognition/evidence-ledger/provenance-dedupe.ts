@@ -638,3 +638,78 @@ export function dedupeEvidenceLedgerByProvenance(
     foldedEntryKeysByCanonicalKey,
   };
 }
+
+// A row folded into a kept canonical reaches the page only as ids, so it is redundant only while
+// the page shows the evidence it rests on: a handle of the canonical's own, or an object a kept row
+// renders or folded rows render that rest on the page themselves. Lists the folded rows of kept
+// canonicals resting on anything else, each with the folded rows that render its object. A row
+// rendering the canonical's own object is that memory again and is never listed.
+export function foldedEntryKeysWithEvidenceOffPage(
+  ledger: EvidenceLedger,
+  foldedEntryKeysByCanonicalKey: ReadonlyMap<string, readonly string[]>,
+  keptEntryKeys: ReadonlySet<string>,
+): string[] {
+  type Row = { sourceHandles: Set<string>; object: string | null };
+  const rowsByKey = new Map<string, Row>();
+
+  for (const section of ledger.sections) {
+    for (const entry of section.entries) {
+      rowsByKey.set(provenanceDedupeEntryKey(section.id, entry.id), {
+        sourceHandles: evidenceHandles(section.id, entry),
+        object: objectHandle(entry),
+      });
+    }
+  }
+
+  const folds = [...foldedEntryKeysByCanonicalKey].flatMap(([canonicalKey, foldedEntryKeys]) => {
+    const canonical = rowsByKey.get(canonicalKey);
+
+    if (canonical === undefined || !keptEntryKeys.has(canonicalKey)) {
+      return [];
+    }
+
+    return foldedEntryKeys.flatMap((key) => {
+      const row = rowsByKey.get(key);
+      return row === undefined ? [] : [{ key, row, canonical }];
+    });
+  });
+  const onPage = new Set(
+    [...keptEntryKeys].flatMap((key) => {
+      const object = rowsByKey.get(key)?.object;
+      return object === null || object === undefined ? [] : [object];
+    }),
+  );
+  const restsOnPage = ({ row, canonical }: { row: Row; canonical: Row }) =>
+    [...row.sourceHandles].every(
+      (handle) => handle === row.object || canonical.sourceHandles.has(handle) || onPage.has(handle),
+    );
+
+  for (let grew = true; grew; ) {
+    grew = false;
+
+    for (const { row } of folds) {
+      const { object } = row;
+
+      if (
+        object !== null &&
+        !onPage.has(object) &&
+        folds.every((other) => other.row.object !== object || restsOnPage(other))
+      ) {
+        onPage.add(object);
+        grew = true;
+      }
+    }
+  }
+
+  const offPage = folds.filter(
+    (fold) =>
+      (fold.row.object === null || fold.row.object !== fold.canonical.object) &&
+      !restsOnPage(fold),
+  );
+  const offPageKeys = new Set(offPage.map((fold) => fold.key));
+  const offPageObjects = new Set(offPage.flatMap((fold) => fold.row.object ?? []));
+
+  return folds.flatMap(({ key, row }) =>
+    offPageKeys.has(key) || (row.object !== null && offPageObjects.has(row.object)) ? [key] : [],
+  );
+}

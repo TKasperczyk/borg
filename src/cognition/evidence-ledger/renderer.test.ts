@@ -904,6 +904,96 @@ describe("compactEvidenceLedger", () => {
     expect(compacted.traceSummary.dedupedEntryCount).toBe(3);
   });
 
+  it("keeps a row on the page when the canonical it shares a handle with leaves its other evidence off it", () => {
+    const ledger = makeLedger();
+
+    section(ledger, "current_session_transcript").entries.push(
+      syntheticEntry({
+        id: "current_session_stream:strm_a",
+        source_type: "current_session_stream",
+        text: "Transcript row strm_a.",
+        trust_rank: 95,
+      }),
+    );
+    section(ledger, "episodes").entries.push(
+      syntheticEntry({
+        id: "episode:ep_x",
+        source_type: "episode",
+        text: "Episode compiled from strm_a and strm_b.",
+        trust_rank: 52,
+        state_metadata: { episode_id: "ep_x", source_stream_ids: ["strm_a", "strm_b"] },
+      }),
+    );
+    section(ledger, "recent_lived_experience").entries.push(
+      syntheticEntry({
+        id: "recent_lived_experience:day",
+        source_type: "system_metadata",
+        text: "Day summary drawn from strm_a and strm_c.",
+        trust_rank: 49,
+        state_metadata: { source_stream_ids: ["strm_a", "strm_c"] },
+      }),
+    );
+
+    const compacted = compactEvidenceLedger(ledger, {
+      targetTokens: 20_000,
+      hardCapTokens: 40_000,
+    });
+
+    expect(
+      section(compacted.ledger, "current_session_transcript").entries.map((entry) => [
+        entry.id,
+        entry.citations,
+      ]),
+    ).toEqual([["current_session_stream:strm_a", undefined]]);
+    expect(
+      section(compacted.ledger, "episodes").entries.map((entry) => [entry.text, entry.citations]),
+    ).toEqual([["Episode compiled from strm_a and strm_b.", undefined]]);
+    expect(
+      section(compacted.ledger, "recent_lived_experience").entries.map((entry) => [
+        entry.text,
+        entry.citations,
+      ]),
+    ).toEqual([["Day summary drawn from strm_a and strm_c.", undefined]]);
+    expect(compacted.traceSummary.dedupedEntryCount).toBe(0);
+  });
+
+  it("folds a row whose evidence the kept rows all show", () => {
+    const ledger = makeLedger();
+
+    section(ledger, "current_session_transcript").entries.push(
+      ...["strm_a", "strm_b"].map((streamId) =>
+        syntheticEntry({
+          id: `current_session_stream:${streamId}`,
+          source_type: "current_session_stream",
+          text: `Transcript row ${streamId}.`,
+          trust_rank: 95,
+        }),
+      ),
+    );
+    section(ledger, "episodes").entries.push(
+      syntheticEntry({
+        id: "episode:ep_x",
+        source_type: "episode",
+        text: "Episode compiled from strm_a and strm_b.",
+        trust_rank: 52,
+        state_metadata: { episode_id: "ep_x", source_stream_ids: ["strm_a", "strm_b"] },
+      }),
+    );
+
+    const compacted = compactEvidenceLedger(ledger, {
+      targetTokens: 20_000,
+      hardCapTokens: 40_000,
+    });
+
+    expect(section(compacted.ledger, "episodes").entries).toEqual([]);
+    expect(
+      section(compacted.ledger, "current_session_transcript").entries.flatMap(
+        (entry) => entry.citations ?? [],
+      ),
+    ).toEqual(["ep_x", "strm_a", "strm_b"]);
+    expect(compacted.traceSummary.dedupedEntryCount).toBe(1);
+  });
+
   it("keeps a node's rows in one group when the cap cuts an episode its node row shares", () => {
     const ledger = makeLedger();
 

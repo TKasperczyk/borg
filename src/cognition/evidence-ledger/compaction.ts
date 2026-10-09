@@ -9,6 +9,7 @@ import { allSectionIds, emptySectionCountRecord } from "./budget.js";
 import { estimateEvidenceLedgerTokens, cloneLedgerWithSections } from "./ledger-copy.js";
 import {
   dedupeEvidenceLedgerByProvenance,
+  foldedEntryKeysWithEvidenceOffPage,
   provenanceDedupeEntryKey,
   type ProvenanceDedupeGrouping,
 } from "./provenance-dedupe.js";
@@ -905,27 +906,20 @@ function dedupeAndCapFullLedger(
 
 function cutFoldGroupEntryKeys(
   foldedEntryKeysByCanonicalKey: ReadonlyMap<string, readonly string[]>,
-  states: readonly FullLedgerSectionState[],
+  keptEntryKeys: ReadonlySet<string>,
 ): string[] {
-  const keptEntryKeys = new Set(
-    states.flatMap((state) =>
-      state.section.entries.map((entry) => provenanceDedupeEntryKey(state.section.id, entry.id)),
-    ),
-  );
-
   return [...foldedEntryKeysByCanonicalKey].flatMap(([canonicalKey, foldedEntryKeys]) =>
     keptEntryKeys.has(canonicalKey) ? [] : [canonicalKey, ...foldedEntryKeys],
   );
 }
 
-// Moves each row of a cut canonical's fold group one grouping down, and reports whether any moved.
-function moveCutFoldGroupsDown(
+function moveEntryKeysDown(
   groupingByEntryKey: Map<string, ProvenanceDedupeGrouping>,
-  pass: ReturnType<typeof dedupeAndCapFullLedger>,
+  entryKeys: readonly string[],
 ): boolean {
   let moved = false;
 
-  for (const key of cutFoldGroupEntryKeys(pass.deduped.foldedEntryKeysByCanonicalKey, pass.states)) {
+  for (const key of entryKeys) {
     const grouping = groupingByEntryKey.get(key);
 
     if (grouping !== "section_object") {
@@ -935,6 +929,32 @@ function moveCutFoldGroupsDown(
   }
 
   return moved;
+}
+
+// Moves each row of a cut canonical's fold group one grouping down; once no cut moves a row, moves
+// each row a kept canonical folded whose evidence is off the page instead. Reports whether any moved.
+function moveCutFoldGroupsDown(
+  ledger: EvidenceLedger,
+  groupingByEntryKey: Map<string, ProvenanceDedupeGrouping>,
+  pass: ReturnType<typeof dedupeAndCapFullLedger>,
+): boolean {
+  const keptEntryKeys = new Set(
+    pass.states.flatMap((state) =>
+      state.section.entries.map((entry) => provenanceDedupeEntryKey(state.section.id, entry.id)),
+    ),
+  );
+  const { foldedEntryKeysByCanonicalKey } = pass.deduped;
+
+  return (
+    moveEntryKeysDown(
+      groupingByEntryKey,
+      cutFoldGroupEntryKeys(foldedEntryKeysByCanonicalKey, keptEntryKeys),
+    ) ||
+    moveEntryKeysDown(
+      groupingByEntryKey,
+      foldedEntryKeysWithEvidenceOffPage(ledger, foldedEntryKeysByCanonicalKey, keptEntryKeys),
+    )
+  );
 }
 
 export function compactEvidenceLedger(
@@ -956,11 +976,13 @@ export function compactEvidenceLedger(
   // object, and a group cut again at that grouping only with those rows in its own section: split
   // from them, a cut row's own duplicate would stand in that section in place of a kept row.
   // A cut at the last grouping takes one memory out of its own section, counted there once, and
-  // moves nothing; every earlier cut moves rows down, so the passes end.
+  // moves nothing; every earlier cut moves rows down, so the passes end. A kept canonical's folded
+  // row whose evidence the page does not show moves down the same way: it shares one handle with
+  // the canonical, and the rest of what it says would leave the page under that row.
   const groupingByEntryKey = new Map<string, ProvenanceDedupeGrouping>();
   let pass = dedupeAndCapFullLedger(ledger, options, groupingByEntryKey);
 
-  while (moveCutFoldGroupsDown(groupingByEntryKey, pass)) {
+  while (moveCutFoldGroupsDown(ledger, groupingByEntryKey, pass)) {
     pass = dedupeAndCapFullLedger(ledger, options, groupingByEntryKey);
   }
 
