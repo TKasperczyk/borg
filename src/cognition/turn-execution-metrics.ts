@@ -10,6 +10,8 @@ import type {
 } from "../llm/index.js";
 
 export type TurnExecutionMetrics = {
+  /** Whole questions on finalizer requests actually sent, unioned across regeneration. */
+  shownOpenQuestionIds?: string[];
   finalizer_rounds: number;
   stall_retries: number;
 };

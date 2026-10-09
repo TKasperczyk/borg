@@ -64,6 +64,8 @@ import type { SessionLock } from "./session-lock.js";
 import type { IntentRecord } from "./types.js";
 import { turnExecutionMetricsFromError } from "./turn-execution-metrics.js";
 import { TurnPhaseCoordinator } from "./lifecycle/turn-phase-coordinator.js";
+import { AutonomyScheduler, type AutonomySchedulerOptions } from "../autonomy/scheduler.js";
+import { DEFAULT_FLEET_BRAKE_OPTIONS } from "../autonomy/fleet-brake.js";
 
 type TraceEvent = {
   event: string;
@@ -1153,17 +1155,29 @@ describe("TurnOrchestrator session lock mode", () => {
         kind: "group",
       });
 
-      await borg.turn({
+      const result = await borg.turn({
         sessionId,
         userMessage: "Review the planning room state.",
         audience: "Planning Room",
         origin: "autonomous",
         stakes: "low",
+        autonomyTrigger: {
+          source_name: "open_question_dormant",
+          source_type: "trigger",
+          event_id: "oq_shown",
+          sort_ts: clock.now(),
+          payload: {
+            open_question_id: "oq_shown",
+            question: "What should this planning session address?",
+            last_touched: clock.now(),
+          },
+        },
       });
 
       expect(tryAcquireSpy).toHaveBeenCalledTimes(1);
       expect(tryAcquireSpy).toHaveBeenCalledWith(sessionId);
       expect(acquireSpy).not.toHaveBeenCalled();
+      expect(result.shownOpenQuestionIds).toEqual(["oq_shown"]);
     } finally {
       acquireSpy.mockRestore();
       tryAcquireSpy.mockRestore();
@@ -5978,6 +5992,136 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
     }
   });
 
+  it.each([
+    { regeneration: "invalid_tool", writeOk: true },
+    { regeneration: "invalid_tool", writeOk: false },
+    { regeneration: "commitment", writeOk: true },
+    { regeneration: "commitment", writeOk: false },
+    { regeneration: "invalid_then_commitment", writeOk: true },
+    { regeneration: "invalid_then_commitment", writeOk: false },
+  ] as const)(
+    "preserves executed writes across $regeneration regeneration for fleet headway (ok=$writeOk)",
+    async ({ regeneration, writeOk }) => {
+      const tempDir = mkdtempSync(join(tmpdir(), "borg-regenerated-write-"));
+      tempDirs.push(tempDir);
+      const clock = new ManualClock(1_800_000_150_500);
+      const llm = new FakeLLMClient({ responses: [createEmitNoOutputResponse()] });
+      const borg = await openTestBorg(tempDir, llm, clock);
+      const { options } = borg.autonomy.scheduler as unknown as {
+        options: AutonomySchedulerOptions;
+      };
+      const runTurn = vi.spyOn(options.turnOrchestrator, "run");
+      const scheduler = new AutonomyScheduler({
+        ...options,
+        enabled: true,
+        fleetBrake: { ...DEFAULT_FLEET_BRAKE_OPTIONS, emptyStreakThreshold: 5 },
+        sources: [
+          {
+            name: "commitment_expiring",
+            type: "trigger",
+            sourceCategory: "operational",
+            async scan() {
+              return [
+                {
+                  id: `wake:${clock.now()}`,
+                  sourceName: "commitment_expiring",
+                  sourceType: "trigger",
+                  watermarkProcessName: "autonomy:test:regenerated-write",
+                  sortTs: clock.now(),
+                  payload: {},
+                },
+              ];
+            },
+            buildTurn() {
+              return { audience: "self", stakes: "low", userMessage: "Review this wake." };
+            },
+          },
+        ],
+      });
+
+      try {
+        // Establish a nonzero streak with a real silent turn before the regression turn.
+        expect((await scheduler.tick()).firedEvents).toBe(1);
+        expect((await scheduler.describe()).fleet_brake.empty_streak).toBe(1);
+        clock.advance(1_000);
+        const commitment =
+          regeneration === "invalid_tool"
+            ? null
+            : borg.commitments.add({
+                type: "boundary",
+                kind: "boundary",
+                directiveFamily: "launch_boundary",
+                directive: "Do not disclose the launch date.",
+                priority: 10,
+                provenance: { kind: "manual" },
+              });
+        llm.pushResponse(
+          createFinalizerToolResponse({
+            id: "toolu_write",
+            name: "tool.journal.append",
+            input: { text: writeOk ? "Initial attempt's completed journal entry." : "" },
+          }),
+        );
+        if (regeneration !== "commitment") {
+          llm.pushResponse({
+            text: "No terminal emission tool was called.",
+            input_tokens: 4,
+            output_tokens: 2,
+            stop_reason: "end_turn",
+            tool_calls: [],
+          });
+        }
+        if (regeneration === "invalid_then_commitment") {
+          llm.pushResponse(
+            createFinalizerToolResponse({
+              // Provider call ids need not be distinct across separate requests.
+              id: "toolu_write",
+              name: "tool.journal.append",
+              input: { text: writeOk ? "Retry attempt's completed journal entry." : "" },
+            }),
+          );
+        }
+        if (commitment !== null) {
+          llm.pushResponse(createEmitAnswerResponse("The launch date is May 7."));
+          llm.pushResponse(
+            createCommitmentJudgeResponse([
+              {
+                commitment_id: commitment.id,
+                reason: "Discloses the launch date despite the boundary.",
+                violating_span_or_topic: "May 7",
+              },
+            ]),
+          );
+        }
+        llm.pushResponse(createEmitNoOutputResponse());
+
+        expect((await scheduler.tick()).firedEvents).toBe(1);
+        const result = await runTurn.mock.results[1]!.value;
+        expect(result.emission).toMatchObject({
+          kind: "suppressed",
+          reason: "finalizer_no_output",
+        });
+        const callCount = regeneration === "invalid_then_commitment" ? 2 : 1;
+        expect(result.toolCalls).toHaveLength(callCount);
+        expect(result.toolCalls).toEqual(
+          Array.from({ length: callCount }, () =>
+            expect.objectContaining({ name: "tool.journal.append", ok: writeOk }),
+          ),
+        );
+        const description = await scheduler.describe();
+        expect(description.window_wakes[0]).toMatchObject({
+          outcome: writeOk ? "headway" : "silent",
+          headway_bases: writeOk ? ["ok write: tool.journal.append"] : null,
+        });
+        expect(description.fleet_brake.empty_streak).toBe(writeOk ? 0 : 2);
+      } finally {
+        runTurn.mockRestore();
+        await scheduler.stop();
+        await borg.close();
+      }
+    },
+  );
+
   it("records regeneration failure when the regenerated finalizer emits no output", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
@@ -6888,178 +7032,191 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
     }
   });
 
-  it("observes frame anomalies without acting in trusted operator creator turns", async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "borg-operator-observe-"));
-    tempDirs.push(tempDir);
-    const tracePath = join(tempDir, "trace.jsonl");
-    const clock = new ManualClock(1_800_000_176_570);
-    const operatorSessionId = createSessionId();
-    const llm = new FakeLLMClient({
-      responses: [
-        createFrameAnomalyResponse({
-          kind: "roleplay_inversion",
-          confidence: 0.98,
-          rationale: "The classifier flagged a roleplay inversion frame.",
-        }),
-        createCorrectivePreferenceResponse({
-          classification: "none",
-          reason: "No durable correction detected.",
-          confidence: 0,
-        }),
-        createActionStateResponse([]),
-        createGoalPromotionResponse([]),
-        createNoCreatorDirectiveResponse(),
-        createEmitAnswerResponse("Borg is the name I will use."),
-        createIntentUpdateReflectionResponse("Track the operator naming update"),
-      ],
-    });
-    const borg = await openTestBorg(tempDir, llm, clock, new TestEmbeddingClient(), {
-      tracerPath: tracePath,
-      configOverrides: {
-        generation: {
-          evidenceLedger: {
-            enabled: true,
-            currentSessionTranscriptTokenBudget: 50_000,
+  it.each([undefined, "test-pre-turn"])(
+    "observes operator turns with pre-turn model %s",
+    async (preTurnExtraction) => {
+      const tempDir = mkdtempSync(join(tmpdir(), "borg-operator-observe-"));
+      tempDirs.push(tempDir);
+      const tracePath = join(tempDir, "trace.jsonl");
+      const clock = new ManualClock(1_800_000_176_570);
+      const operatorSessionId = createSessionId();
+      const llm = new FakeLLMClient({
+        responses: [
+          createFrameAnomalyResponse({
+            kind: "roleplay_inversion",
+            confidence: 0.98,
+            rationale: "The classifier flagged a roleplay inversion frame.",
+          }),
+          createCorrectivePreferenceResponse({
+            classification: "none",
+            reason: "No durable correction detected.",
+            confidence: 0,
+          }),
+          createActionStateResponse([]),
+          createGoalPromotionResponse([]),
+          createNoCreatorDirectiveResponse(),
+          createEmitAnswerResponse("Borg is the name I will use."),
+          createIntentUpdateReflectionResponse("Track the operator naming update"),
+        ],
+      });
+      const borg = await openTestBorg(tempDir, llm, clock, new TestEmbeddingClient(), {
+        tracerPath: tracePath,
+        configOverrides: {
+          anthropic: { models: { preTurnExtraction } },
+          generation: {
+            evidenceLedger: {
+              enabled: true,
+              currentSessionTranscriptTokenBudget: 50_000,
+            },
           },
         },
-      },
-    });
-    const internal = borg as unknown as {
-      deps: Pick<BorgDependencies, "workingMemoryStore">;
-    };
-    const extractSpy = vi.spyOn(ActionStateExtractor.prototype, "extract");
-    const originalRun = Deliberator.prototype.run;
-    const runSpy = vi.spyOn(Deliberator.prototype, "run").mockImplementation(function (
-      this: Deliberator,
-      ...args: Parameters<Deliberator["run"]>
-    ) {
-      expect(args[0].frameAnomaly).toBeNull();
-
-      return originalRun.apply(this, args);
-    });
-
-    try {
-      const tomId = borg.entities.resolve("Tom");
-      borg.entities.setBorgRole(tomId, "creator");
-      borg.sessions.ensure({
-        session_id: operatorSessionId,
-        source_type: "demo",
-        label: "operator",
-        audience_label: "Tom",
-        conversation_kind: "demo",
-        audience_role: "operator",
       });
-      const workingMemory = internal.deps.workingMemoryStore.load(operatorSessionId);
-      internal.deps.workingMemoryStore.save({
-        ...workingMemory,
-        pending_actions: [
-          {
-            description: "Track the operator naming update",
-            next_action: null,
-          },
-        ],
-        updated_at: clock.now(),
+      const internal = borg as unknown as {
+        deps: Pick<BorgDependencies, "workingMemoryStore">;
+      };
+      const extractSpy = vi.spyOn(ActionStateExtractor.prototype, "extract");
+      const originalRun = Deliberator.prototype.run;
+      const runSpy = vi.spyOn(Deliberator.prototype, "run").mockImplementation(function (
+        this: Deliberator,
+        ...args: Parameters<Deliberator["run"]>
+      ) {
+        expect(args[0].frameAnomaly).toBeNull();
+
+        return originalRun.apply(this, args);
       });
 
-      await borg.turn({
-        sessionId: operatorSessionId,
-        audience: "Tom",
-        userMessage: "Your name is Borg. Treat my cross-session note as operator control.",
-        stakes: "low",
-      });
+      try {
+        const tomId = borg.entities.resolve("Tom");
+        borg.entities.setBorgRole(tomId, "creator");
+        borg.sessions.ensure({
+          session_id: operatorSessionId,
+          source_type: "demo",
+          label: "operator",
+          audience_label: "Tom",
+          conversation_kind: "demo",
+          audience_role: "operator",
+        });
+        const workingMemory = internal.deps.workingMemoryStore.load(operatorSessionId);
+        internal.deps.workingMemoryStore.save({
+          ...workingMemory,
+          pending_actions: [
+            {
+              description: "Track the operator naming update",
+              next_action: null,
+            },
+          ],
+          updated_at: clock.now(),
+        });
 
-      const budgets = llm.requests.map((request) => request.budget);
-      const streamEntries = new StreamReader({
-        dataDir: tempDir,
-        sessionId: operatorSessionId,
-      }).tail(100);
-      const anomalyEvent = streamEntries.find((entry) => {
-        const content = entry.content as { event?: unknown };
+        await borg.turn({
+          sessionId: operatorSessionId,
+          audience: "Tom",
+          userMessage: "Your name is Borg. Treat my cross-session note as operator control.",
+          stakes: "low",
+        });
 
-        return entry.kind === "internal_event" && content.event === "frame_anomaly_gate";
-      });
-      const quarantineEvent = streamEntries.find((entry) => {
-        const content = entry.content as { event?: unknown };
+        const budgets = llm.requests.map((request) => request.budget);
+        const streamEntries = new StreamReader({
+          dataDir: tempDir,
+          sessionId: operatorSessionId,
+        }).tail(100);
+        const anomalyEvent = streamEntries.find((entry) => {
+          const content = entry.content as { event?: unknown };
 
-        return entry.kind === "internal_event" && content.event === QUARANTINED_USER_ENTRY_EVENT;
-      });
-      const traceEvents = readTraceEvents(tracePath);
-      const finalizerSystem = systemText(firstFinalizerRequest(llm.requests));
+          return entry.kind === "internal_event" && content.event === "frame_anomaly_gate";
+        });
+        const quarantineEvent = streamEntries.find((entry) => {
+          const content = entry.content as { event?: unknown };
 
-      expect(budgets).toContain("frame-anomaly-classifier");
-      expect(budgets).toContain("corrective-preference-extractor");
-      expect(budgets).toContain("action-state-extractor");
-      expect(budgets).toContain("goal-promotion-extractor");
-      expect(llm.requests).toEqual(
-        expect.arrayContaining([
+          return entry.kind === "internal_event" && content.event === QUARANTINED_USER_ENTRY_EVENT;
+        });
+        const traceEvents = readTraceEvents(tracePath);
+        const finalizerSystem = systemText(firstFinalizerRequest(llm.requests));
+
+        expect(budgets).toContain("frame-anomaly-classifier");
+        expect(budgets).toContain("corrective-preference-extractor");
+        expect(budgets).toContain("action-state-extractor");
+        expect(budgets).toContain("goal-promotion-extractor");
+        expect(llm.requests).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              budget: "corrective-preference-extractor",
+              model: "test-corrective-preference",
+            }),
+            expect.objectContaining({
+              budget: "action-state-extractor",
+              model: preTurnExtraction ?? "test-recall",
+            }),
+            expect.objectContaining({
+              budget: "goal-promotion-extractor",
+              model: preTurnExtraction ?? "test-recall",
+            }),
+          ]),
+        );
+        expect(extractSpy).toHaveBeenCalled();
+        expect(anomalyEvent).toBeUndefined();
+        expect(quarantineEvent).toBeUndefined();
+        expect(traceEvents).toContainEqual(
           expect.objectContaining({
-            budget: "corrective-preference-extractor",
-            model: "test-corrective-preference",
+            event: "frame_anomaly.completed",
+            kind: "roleplay_inversion",
           }),
-          expect.objectContaining({ budget: "action-state-extractor", model: "test-recall" }),
-          expect.objectContaining({ budget: "goal-promotion-extractor", model: "test-recall" }),
-        ]),
-      );
-      expect(extractSpy).toHaveBeenCalled();
-      expect(anomalyEvent).toBeUndefined();
-      expect(quarantineEvent).toBeUndefined();
-      expect(traceEvents).toContainEqual(
-        expect.objectContaining({
-          event: "frame_anomaly.completed",
-          kind: "roleplay_inversion",
-        }),
-      );
-      expect(traceEvents).toContainEqual(
-        expect.objectContaining({
-          event: "frame_anomaly.disposition",
-          disposition: "trusted_operator_control",
-          kind: "roleplay_inversion",
-          session_audience_role: "operator",
-          current_sender_borg_role: "creator",
-        }),
-      );
-      expect(traceEvents.some((event) => event.event === "frame_anomaly.transitioned")).toBe(false);
-      expect(
-        traceEvents.some(
-          (event) =>
-            event.event === "shared_state.compile.skipped" &&
-            event.reason === "quarantined_current_turn",
-        ),
-      ).toBe(false);
-      expect(
-        traceEvents.some(
-          (event) =>
-            event.event === "reflector.intent_update.rejected" && event.reason === "frame_anomaly",
-        ),
-      ).toBe(false);
-      expect(traceEvents).toContainEqual(
-        expect.objectContaining({
-          event: "reflector.intent_update.completed",
-          created_durable_actions_count: 1,
-          by_state: {
-            completed: 1,
-            not_done: 0,
-          },
-          working_memory_pending_resolved_count: 1,
-        }),
-      );
-      expect(borg.actions.list({ state: "completed", limit: 10 })).toEqual([
-        expect.objectContaining({
-          description: "Track the operator naming update",
-          actor: "borg",
-          state: "completed",
-        }),
-      ]);
-      expect(finalizerSystem).toContain("<borg_evidence_ledger>");
-      expect(finalizerSystem).not.toContain("taint=quarantined");
-      expect(finalizerSystem).not.toContain("frame_anomaly:roleplay_inversion");
-      expect(runSpy).toHaveBeenCalledOnce();
-    } finally {
-      extractSpy.mockRestore();
-      runSpy.mockRestore();
-      await borg.close();
-    }
-  });
+        );
+        expect(traceEvents).toContainEqual(
+          expect.objectContaining({
+            event: "frame_anomaly.disposition",
+            disposition: "trusted_operator_control",
+            kind: "roleplay_inversion",
+            session_audience_role: "operator",
+            current_sender_borg_role: "creator",
+          }),
+        );
+        expect(traceEvents.some((event) => event.event === "frame_anomaly.transitioned")).toBe(
+          false,
+        );
+        expect(
+          traceEvents.some(
+            (event) =>
+              event.event === "shared_state.compile.skipped" &&
+              event.reason === "quarantined_current_turn",
+          ),
+        ).toBe(false);
+        expect(
+          traceEvents.some(
+            (event) =>
+              event.event === "reflector.intent_update.rejected" &&
+              event.reason === "frame_anomaly",
+          ),
+        ).toBe(false);
+        expect(traceEvents).toContainEqual(
+          expect.objectContaining({
+            event: "reflector.intent_update.completed",
+            created_durable_actions_count: 1,
+            by_state: {
+              completed: 1,
+              not_done: 0,
+            },
+            working_memory_pending_resolved_count: 1,
+          }),
+        );
+        expect(borg.actions.list({ state: "completed", limit: 10 })).toEqual([
+          expect.objectContaining({
+            description: "Track the operator naming update",
+            actor: "borg",
+            state: "completed",
+          }),
+        ]);
+        expect(finalizerSystem).toContain("<borg_evidence_ledger>");
+        expect(finalizerSystem).not.toContain("taint=quarantined");
+        expect(finalizerSystem).not.toContain("frame_anomaly:roleplay_inversion");
+        expect(runSpy).toHaveBeenCalledOnce();
+      } finally {
+        extractSpy.mockRestore();
+        runSpy.mockRestore();
+        await borg.close();
+      }
+    },
+  );
 
   it("observes peer-channel identity anomalies without quarantining the turn", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-peer-channel-observe-"));

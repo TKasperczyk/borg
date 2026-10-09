@@ -104,6 +104,7 @@ import {
 } from "./turn-execution-metrics.js";
 
 export type TurnResult = {
+  shownOpenQuestionIds?: readonly string[];
   turn_id: string;
   mode: CognitiveMode;
   path: "system_1" | "system_2" | "suppressed";
@@ -121,6 +122,7 @@ export type TurnResult = {
   retrievedEpisodeIds: string[];
   referencedEpisodeIds: string[];
   intents: IntentRecord[];
+  /** Nonterminal call outcomes across all attempts, including replaced emissions. */
   toolCalls: ToolLoopCallRecord[];
   finalizer_rounds: number;
   stall_retries: number;
@@ -310,15 +312,18 @@ export class TurnOrchestrator {
       entityRepository: options.entityRepository,
       tracer: this.tracer,
     });
+    const preTurnExtractionModel =
+      options.config.anthropic.models.preTurnExtraction ??
+      options.config.anthropic.models.recallExpansion;
     const turnActionStateService = new TurnActionStateService({
-      model: options.config.anthropic.models.recallExpansion,
+      model: preTurnExtractionModel,
       actionRepository: options.actionRepository,
       embeddingClient: options.embeddingClient,
       clock: this.clock,
       tracer: this.tracer,
     });
     const turnGoalPromotionService = new TurnGoalPromotionService({
-      model: options.config.anthropic.models.recallExpansion,
+      model: preTurnExtractionModel,
       identityService: options.identityService,
       goalsRepository: options.goalsRepository,
       executiveStepsRepository: options.executiveStepsRepository,

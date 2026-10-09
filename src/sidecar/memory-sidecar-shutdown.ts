@@ -1,9 +1,7 @@
+import { settleBeforeDeadline, type DeadlineSettlement } from "../util/deadline.js";
 import type { MaintenanceRunId } from "../util/ids.js";
 
-export type MemorySidecarShutdownPhase =
-  | { status: "completed" }
-  | { status: "timed_out" }
-  | { status: "error"; error: unknown };
+export type MemorySidecarShutdownPhase = DeadlineSettlement;
 
 export type MemorySidecarShutdownResult = {
   abandonedRunIds: MaintenanceRunId[];
@@ -21,25 +19,6 @@ export type DrainMemorySidecarOptions = {
   onAbandoned?: (runIds: readonly MaintenanceRunId[]) => void;
   now?: () => number;
 };
-
-async function settleBeforeDeadline(
-  work: () => Promise<void>,
-  deadlineReached: Promise<void>,
-): Promise<MemorySidecarShutdownPhase> {
-  let completed: Promise<MemorySidecarShutdownPhase>;
-  try {
-    completed = work().then<MemorySidecarShutdownPhase, MemorySidecarShutdownPhase>(
-      () => ({ status: "completed" }),
-      (error: unknown) => ({ status: "error", error }),
-    );
-  } catch (error) {
-    completed = Promise.resolve({ status: "error", error });
-  }
-  return Promise.race([
-    completed,
-    deadlineReached.then<MemorySidecarShutdownPhase>(() => ({ status: "timed_out" })),
-  ]);
-}
 
 export async function drainMemorySidecar(
   options: DrainMemorySidecarOptions,

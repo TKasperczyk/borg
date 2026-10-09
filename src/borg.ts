@@ -7,7 +7,8 @@ import type {
   TurnResult,
 } from "./cognition/index.js";
 import { createBorgFacades } from "./borg/facade.js";
-import { closeBorgDependencies } from "./borg/lifecycle.js";
+import { closeBorgDependencies, drainBorgDependencies } from "./borg/lifecycle.js";
+import { CognitionError } from "./util/errors.js";
 import { openBorgDependencies } from "./borg/open.js";
 import type { BorgFacades } from "./borg/public-facade.js";
 import type { BorgDependencies, BorgOpenOptions } from "./borg/types.js";
@@ -34,6 +35,9 @@ export type { BorgEnqueueMessageInput, BorgEnqueueMessageResult } from "./cognit
  * operational state. Repository construction and storage wiring stay internal.
  */
 export class Borg {
+  private admissionClosed = false;
+  private drainPromise: Promise<void> | null = null;
+  private readonly admittedOperations = new Set<Promise<unknown>>();
   readonly stream: BorgFacades["stream"];
   readonly episodic: BorgFacades["episodic"];
   readonly self: BorgFacades["self"];
@@ -99,14 +103,36 @@ export class Borg {
    * deliberation, generation, persistence, and post-turn maintenance hooks.
    */
   turn(input: TurnInput): Promise<TurnResult> {
-    return this.deps.turnOrchestrator.run(input);
+    return this.runAdmittedOperation(async () => await this.deps.turnOrchestrator.run(input));
   }
 
   /**
    * Durably enqueue an inbound chat message without running a cognition turn.
    */
   enqueueMessage(input: BorgEnqueueMessageInput): Promise<BorgEnqueueMessageResult> {
-    return this.deps.messageEnqueuer.enqueueMessage(input);
+    return this.runAdmittedOperation(
+      async () => await this.deps.messageEnqueuer.enqueueMessage(input),
+    );
+  }
+
+  private async runAdmittedOperation<T>(run: () => Promise<T>): Promise<T> {
+    if (this.admissionClosed) {
+      throw new CognitionError("Borg is shutting down", { code: "BORG_SHUTTING_DOWN" });
+    }
+    const operation = run();
+    this.admittedOperations.add(operation);
+    try {
+      return await operation;
+    } finally {
+      this.admittedOperations.delete(operation);
+    }
+  }
+
+  /** Close turn/enqueue admission synchronously, then drain accepted work and its tails. */
+  beginShutdown(): Promise<void> {
+    this.admissionClosed = true;
+    this.drainPromise ??= drainBorgDependencies(this.deps, [...this.admittedOperations]);
+    return this.drainPromise;
   }
 
   /**
@@ -156,8 +182,11 @@ export class Borg {
     return new Borg(await openBorgDependencies(options));
   }
 
-  /** Close underlying storage and runtime resources. */
-  async close(): Promise<void> {
-    await closeBorgDependencies(this.deps);
+  /** Close resources; drain:false is for store closure after beginShutdown's deadline expires. */
+  async close(options: { drain?: boolean } = {}): Promise<void> {
+    this.admissionClosed = true;
+    await closeBorgDependencies(this.deps, {
+      drain: options.drain === false ? false : () => this.beginShutdown(),
+    });
   }
 }

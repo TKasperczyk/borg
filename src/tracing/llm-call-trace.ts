@@ -75,6 +75,7 @@ export function traceLlmCallRetryHook(options: {
   turnId?: string;
   sessionId?: SessionId;
   label: string;
+  extra?: TracePayloadExtension;
 }): ((event: LLMTransportRetryEvent) => void) | undefined {
   const { tracer, turnId } = options;
 
@@ -84,6 +85,7 @@ export function traceLlmCallRetryHook(options: {
 
   return (event) => {
     tracer.emit("llm_call.retried", {
+      ...options.extra,
       turnId,
       ...(options.sessionId === undefined ? {} : { session_id: options.sessionId }),
       label: options.label,
@@ -100,11 +102,13 @@ export function traceLlmToolChoiceTranslationHook(options: {
   turnId?: string;
   sessionId?: SessionId;
   label: string;
+  extra?: TracePayloadExtension;
 }): ((event: LLMToolChoiceTranslationEvent) => void) | undefined {
   const { tracer, turnId } = options;
   if (tracer?.enabled !== true || turnId === undefined) return undefined;
   return (event) =>
     tracer.emit("llm_call.tool_choice_translated", {
+      ...options.extra,
       ...event,
       turnId,
       ...(options.sessionId === undefined ? {} : { session_id: options.sessionId }),

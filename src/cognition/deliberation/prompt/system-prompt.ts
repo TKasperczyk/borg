@@ -1261,7 +1261,10 @@ function buildUntrustedBasePromptSections(
       content:
         context.autonomyTrigger === null || context.autonomyTrigger === undefined
           ? null
-          : summarizeAutonomyTriggerForPrompt(context.autonomyTrigger),
+          : summarizeAutonomyTriggerForPrompt(
+              context.autonomyTrigger,
+              context.autonomyTriggerPresentation?.text,
+            ),
     },
   ];
 }
@@ -1645,13 +1648,14 @@ function summarizeExecutiveFocus(focus: ExecutiveFocus | null | undefined): stri
 
 function summarizeAutonomyTriggerForPrompt(
   context: NonNullable<DeliberationContext["autonomyTrigger"]>,
+  presentationText?: string,
 ): string {
   const scoreBasis = context.presentation?.score_basis;
 
   return [
     scoreBasis === undefined ? null : "Wake-time trigger selection:",
     scoreBasis === undefined ? null : `Score basis: ${renderExecutiveGoalScoreBasis(scoreBasis)}`,
-    formatAutonomyTriggerContext(context),
+    presentationText ?? formatAutonomyTriggerContext(context),
   ]
     .filter((line): line is string => line !== null)
     .join("\n");
@@ -2251,7 +2255,7 @@ export function summarizeAutonomySchedulerState(
       brake.streak_anchor_ts === null
         ? ""
         : ` current empty streak began ${new Date(brake.streak_anchor_ts).toISOString()}`
-    } -- empty_streak counts consecutive completed operational wakes whose silence was chosen or whose emission failed, with no time bound. A post-generation guard block leaves it unchanged: the entity produced output and the harness withheld it, so that wake neither advances nor resets this streak. Errored and busy-skipped wakes are transparent in the same way, so the streak is consecutive within this filtered operational subsequence rather than within the wake sequence, and one streak can span any number of intervening wakes and any amount of wall-clock. error_streak counts something narrower than the error tally below: only a wake that failed inside the turn, with a provider or auth fault, increments it. Wakes that fail before the turn is built, and in-turn failures of any other kind, record error without touching it -- and any successful wake, contemplative included, resets it to zero. So error_streak=0 beside a non-zero error count is the ordinary case, not a sign that the errors were separated by successes. bypass_count is neither a streak nor a window count: it counts freshness bypasses spent, and a bypass is only ever offered while the empty-streak cooldown is actively holding, so a clear cooldown freezes the counter rather than resetting it, and a deadline bypass does not spend one. It returns to zero only on an operational wake that came back with headway, or a contemplative wake that delivered an outbound post -- neither the cooldown expiring nor the budget window rolling clears it, so a non-zero value can outlive the cooldown that produced it and is not a count over the window below. At ${brake.freshness_bypass_cap} a fresh concern stops earning a bypass and is refused along with everything else the cooldown is holding.`,
+    } -- empty_streak counts consecutive completed operational wakes whose silence was chosen or whose emission failed, without headway from an ok write tool call, with no time bound. A post-generation guard block leaves it unchanged when the wake has no other headway: the entity produced output and the harness withheld it, so that wake neither advances nor resets this streak. Errored and busy-skipped wakes are transparent in the same way, so the streak is consecutive within this filtered operational subsequence rather than within the wake sequence, and one streak can span any number of intervening wakes and any amount of wall-clock. error_streak counts something narrower than the error tally below: only a wake that failed inside the turn, with a provider or auth fault, increments it. Wakes that fail before the turn is built, and in-turn failures of any other kind, record error without touching it -- and any successful wake, contemplative included, resets it to zero. So error_streak=0 beside a non-zero error count is the ordinary case, not a sign that the errors were separated by successes. bypass_count is neither a streak nor a window count: it counts freshness bypasses spent, and a bypass is only ever offered while the empty-streak cooldown is actively holding, so a clear cooldown freezes the counter rather than resetting it, and a deadline bypass does not spend one. It returns to zero only on an operational wake that came back with headway, or a contemplative wake that delivered an outbound post -- neither the cooldown expiring nor the budget window rolling clears it, so a non-zero value can outlive the cooldown that produced it and is not a count over the window below. At ${brake.freshness_bypass_cap} a fresh concern stops earning a bypass and is refused along with everything else the cooldown is holding.`,
   );
   lines.push(
     `Outcome tally over the budget window above, both source categories: headway=${
@@ -2270,7 +2274,7 @@ export function summarizeAutonomySchedulerState(
   lines.push(
     `headway is a predicate over how the turn ended, not a measure of whether the interval did anything. A wake is recorded headway when its terminal emission was ${HEADWAY_EMISSION_KINDS.join(
       " or ",
-    )} (a self-report is emitted as a message), a tool.outbound.post inside it came back delivered, or -- on a wake that names a goal -- the turn recorded progress on that goal or changed its snapshotted active status by successfully retiring it through its own tool call or reflection. A closure by another actor between the scan and this accounting is not this wake's headway. silent is the whole complement, so a wake that read, searched and reasoned for minutes and then closed with no output is recorded here identically to one that produced nothing at all. An emission still counts for this fleet-level outcome, but only goal progress or a retirement attributable to this turn resets that goal's empty-wake backoff. Continuing a thought writes a journal entry as part of that same emission, so a journal entry and a headway on one interval are two effects of one decision rather than either being evidence of the other, and tool.journal.append writes that same journal mid-turn without ending it -- so which outcome a wake recorded is not recoverable from what it left in the journal.`,
+    )} (a self-report is emitted as a message), a tool.outbound.post inside it came back delivered, any other registered write tool returned ok (including no-op and requires_review results), or -- on a wake that names a goal -- the turn recorded progress on that goal or changed its snapshotted active status by successfully retiring it through its own tool call or reflection. A closure by another actor between the scan and this accounting is not this wake's headway. silent is the whole complement, so a wake that read, searched and reasoned for minutes and then closed with no output is recorded here identically to one that produced nothing at all. An emission still counts for this fleet-level outcome, but only goal progress or a retirement attributable to this turn resets that goal's empty-wake backoff. Continuing a thought writes a journal entry as part of that same emission, so a journal entry and a headway on one interval are two effects of one decision rather than either being evidence of the other, and an ok tool.journal.append also counts as headway mid-turn without ending it. Read-only or failed calls do not count as write headway, and an outbound post still counts only when delivered.`,
   );
   lines.push(...renderWakeHeadwayReasonLines(brake.window_headway_reasons));
   // error=N alone cannot separate one provider outage repeated N times from N

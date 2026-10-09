@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { join } from "node:path";
 
 import Anthropic from "@anthropic-ai/sdk";
@@ -435,6 +436,170 @@ describe("AutonomyScheduler", () => {
     await cleanup?.();
     cleanup = undefined;
   });
+
+  it.each(["ended", "expired"])(
+    "defers operational scans without consuming state until maintenance %s",
+    async (release) => {
+      const clock = new ManualClock(1_000_000);
+      const harness = await createOfflineTestHarness({ clock });
+      cleanup = harness.cleanup;
+      const watermarkRepository = new StreamWatermarkRepository({ db: harness.db, clock });
+      const writer = (sessionId: typeof DEFAULT_SESSION_ID) =>
+        new StreamWriter({ dataDir: harness.tempDir, sessionId, clock });
+      const operational = createTestDueSource("operational");
+      const contemplative = createTestDueSource("scheduled", "scheduled_wake", "contemplative");
+      const operationalScan = vi.spyOn(operational, "scan");
+      let passStartedAt: number | null = clock.now();
+      const runner = {
+        run: vi.fn().mockResolvedValue(createStructuralTurnResult({ emissionKind: "message" })),
+      };
+      const scheduler = createScheduler({
+        db: harness.db,
+        enabled: true,
+        intervalMs: 1000,
+        maxWakesPerWindow: 6,
+        clock,
+        createStreamWriter: writer,
+        watermarkRepository,
+        toolDispatcher: new ToolDispatcher({ createStreamWriter: writer, clock }),
+        turnOrchestrator: runner,
+        sources: [operational, contemplative],
+        maintenancePassStartedAt: () => passStartedAt,
+      });
+      const first = await scheduler.tick();
+      expect(first).toMatchObject({ firedEvents: 1, maintenanceHeldSources: [operational.name] });
+      expect(operationalScan).not.toHaveBeenCalled();
+      expect(watermarkRepository.get("autonomy:test:operational", DEFAULT_SESSION_ID)).toBeNull();
+      expect((await scheduler.describe()).budget.used_in_current_window).toBe(1);
+      // Repeated polls do not reset the fixed pass start, charge an operational wake, or mutate its brake.
+      const brakeBefore = watermarkRepository.get(FLEET_BRAKE_PROCESS_NAME, DEFAULT_SESSION_ID);
+      await scheduler.tick();
+      expect(operationalScan).not.toHaveBeenCalled();
+      expect(watermarkRepository.get(FLEET_BRAKE_PROCESS_NAME, DEFAULT_SESSION_ID)).toEqual(
+        brakeBefore,
+      );
+      if (release === "ended") passStartedAt = null;
+      else clock.advance(90 * 60_000);
+      await scheduler.tick();
+      expect(operationalScan).toHaveBeenCalledOnce();
+      expect(
+        watermarkRepository.get("autonomy:test:operational", DEFAULT_SESSION_ID),
+      ).not.toBeNull();
+    },
+  );
+
+  it("rechecks maintenance after a scan and graceful stop after completed bookkeeping", async () => {
+    const harness = await createOfflineTestHarness();
+    cleanup = harness.cleanup;
+    const clock = harness.clock;
+    const watermarkRepository = new StreamWatermarkRepository({ db: harness.db, clock });
+    const writer = (sessionId: typeof DEFAULT_SESSION_ID) =>
+      new StreamWriter({ dataDir: harness.tempDir, sessionId, clock });
+    let passStartedAt: number | null = null;
+    const first = createTestDueSource("first");
+    const second = createTestDueSource("second");
+    const scan = first.scan.bind(first);
+    first.scan = async () => {
+      const events = await scan();
+      passStartedAt = clock.now();
+      return events;
+    };
+    const runner = {
+      run: vi.fn().mockResolvedValue(createStructuralTurnResult({ emissionKind: "message" })),
+    };
+    const dispatcher = new ToolDispatcher({ createStreamWriter: writer, clock });
+    const preparation = vi.spyOn(dispatcher, "dispatch");
+    const scheduler = createScheduler({
+      db: harness.db,
+      enabled: true,
+      intervalMs: 1000,
+      maxWakesPerWindow: 6,
+      clock,
+      createStreamWriter: writer,
+      watermarkRepository,
+      toolDispatcher: dispatcher,
+      turnOrchestrator: runner,
+      sources: [first, second],
+      maintenancePassStartedAt: () => passStartedAt,
+    });
+    expect(await scheduler.tick()).toMatchObject({
+      firedEvents: 0,
+      events: [expect.objectContaining({ status: "maintenance_skipped" })],
+    });
+    expect(preparation).not.toHaveBeenCalled();
+    expect((await scheduler.describe()).budget.used_in_current_window).toBe(0);
+    passStartedAt = null;
+    first.scan = scan;
+    let stop: Promise<void> | undefined;
+    first.onFired = async () => {
+      stop = scheduler.stop();
+    };
+    expect(await scheduler.tick()).toMatchObject({ firedEvents: 1 });
+    await stop;
+    expect(runner.run).toHaveBeenCalledOnce();
+    expect(watermarkRepository.get("autonomy:test:first", DEFAULT_SESSION_ID)).not.toBeNull();
+    expect(watermarkRepository.get("autonomy:test:second", DEFAULT_SESSION_ID)).toBeNull();
+    expect((await scheduler.tick()).status).toBe("disabled");
+  });
+
+  it.each([
+    {
+      name: "tool.openQuestions.resolve",
+      scope: "write",
+      ok: true,
+      status: "requires_review",
+      headway: true,
+    },
+    { name: "tool.goals.retire", scope: "write", ok: true, status: "no_op", headway: true },
+    { name: "tool.journal.append", scope: "write", ok: false, status: "error", headway: false },
+    { name: "tool.episodic.search", scope: "read", ok: true, status: "ok", headway: false },
+    { name: "tool.outbound.post", scope: "write", ok: true, status: "refused", headway: false },
+  ] as const)(
+    "counts registered write headway: $name $status",
+    async ({ name, scope, ok, status, headway }) => {
+      const harness = await createOfflineTestHarness();
+      cleanup = harness.cleanup;
+      const clock = harness.clock;
+      const watermarkRepository = new StreamWatermarkRepository({ db: harness.db, clock });
+      const writer = (sessionId: typeof DEFAULT_SESSION_ID) =>
+        new StreamWriter({ dataDir: harness.tempDir, sessionId, clock });
+      const dispatcher = new ToolDispatcher({ createStreamWriter: writer, clock });
+      dispatcher.register({
+        name,
+        writeScope: scope,
+        description: "test",
+        allowedOrigins: ["autonomous"],
+        inputSchema: z.unknown(),
+        outputSchema: z.unknown(),
+        async invoke() {
+          return {};
+        },
+      });
+      const result = createStructuralTurnResult({ emissionKind: "suppressed" });
+      result.toolCalls = [
+        { callId: "write", name, ok, input: {}, output: { status }, durationMs: 1 },
+      ];
+      const scheduler = createScheduler({
+        db: harness.db,
+        enabled: true,
+        intervalMs: 1000,
+        maxWakesPerWindow: 6,
+        clock,
+        createStreamWriter: writer,
+        watermarkRepository,
+        toolDispatcher: dispatcher,
+        turnOrchestrator: { run: vi.fn().mockResolvedValue(result) },
+        fleetBrake: TEST_FLEET_BRAKE,
+        sources: [createTestDueSource()],
+      });
+      expect((await scheduler.tick()).firedEvents).toBe(1);
+      const description = await scheduler.describe();
+      expect(description.fleet_brake.empty_streak).toBe(headway ? 0 : 1);
+      expect(description.window_wakes[0]?.headway_bases).toEqual(
+        headway ? [`ok write: ${name}`] : null,
+      );
+    },
+  );
 
   it("recognizes only the two structural per-goal empty-wake payload shapes", () => {
     const baseEvent = {
@@ -1901,9 +2066,14 @@ describe("AutonomyScheduler", () => {
     },
   );
 
-  it.each([false, true])(
+  it.each([
+    { fleetEnabled: false, shown: [0, 1, 2] },
+    { fleetEnabled: true, shown: [0, 1, 2] },
+    { fleetEnabled: false, shown: [1] },
+    { fleetEnabled: false, shown: [] },
+  ])(
     "runs one prepared turn for three dormant questions (fleet governor enabled=%s)",
-    async (fleetEnabled) => {
+    async ({ fleetEnabled, shown }) => {
       const clock = new ManualClock(1_000_000);
       const harness = await createOfflineTestHarness({ clock });
       const watermarkRepository = new StreamWatermarkRepository({ db: harness.db, clock });
@@ -1940,7 +2110,12 @@ describe("AutonomyScheduler", () => {
         durationMs: 1,
       });
       const turnRunner = {
-        run: vi.fn().mockResolvedValue(createStructuralTurnResult({ emissionKind: "suppressed" })),
+        run: vi
+          .fn()
+          .mockResolvedValue({
+            ...createStructuralTurnResult({ emissionKind: "suppressed" }),
+            shownOpenQuestionIds: shown.map((index) => questions[index]!.id),
+          }),
       };
       const scheduler = createScheduler({
         db: harness.db,
@@ -1971,7 +2146,17 @@ describe("AutonomyScheduler", () => {
         expect(
           [payload, ...payload.additional_questions].map((question) => question.last_touched),
         ).toEqual(questions.map((question) => question.last_touched));
-        for (const question of questions) {
+        for (const [index, question] of questions.entries()) {
+          if (!shown.includes(index)) {
+            expect(harness.openQuestionsRepository.get(question.id)?.last_ruminated_at).toBeNull();
+            expect(
+              watermarkRepository.get(
+                `autonomy:open-question-dormant:${question.id}:${question.last_touched}`,
+                DEFAULT_SESSION_ID,
+              ),
+            ).toBeNull();
+            continue;
+          }
           expect(harness.openQuestionsRepository.get(question.id)).toMatchObject({
             last_touched: question.last_touched,
             last_ruminated_at: clock.now(),

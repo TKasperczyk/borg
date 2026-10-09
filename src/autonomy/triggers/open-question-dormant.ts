@@ -124,8 +124,10 @@ export function createOpenQuestionDormantTrigger(
 
       return candidates.length === 0 ? null : Math.min(...candidates);
     },
-    commitFired(event) {
+    commitFired(event, completion) {
+      const shownIds = new Set(completion.shownOpenQuestionIds);
       for (const question of [event.payload, ...(event.payload.additional_questions ?? [])]) {
+        if (!shownIds.has(question.open_question_id)) continue;
         const current = options.openQuestionsRepository.get(question.open_question_id);
         if (current?.status === "open") {
           options.openQuestionsRepository.markRuminated(
@@ -139,6 +141,7 @@ export function createOpenQuestionDormantTrigger(
           { lastTs: question.last_touched, lastEntryId: event.id },
         );
       }
+      return { watermark: "source_owned" };
     },
     buildTurn(event) {
       return {

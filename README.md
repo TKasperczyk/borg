@@ -259,6 +259,12 @@ stated timing and corrects existing entries through `supersede` or `update`,
 including locked entries. Contradiction and evidence of a completed act remain
 model judgments.
 
+Action-state extraction and goal-promotion extraction use the optional
+`anthropic.models.preTurnExtraction` slot (`BORG_MODEL_PRE_TURN_EXTRACTION`).
+When omitted, it follows the configured `anthropic.models.recallExpansion` value.
+The action-state service uses this slot for both pre-turn extraction and
+post-generation self-performed-action closes.
+
 ## Development
 
 ```bash

@@ -171,6 +171,7 @@ export type ReviewTransactionScope = "sqlite" | "cross_store_applying_state" | "
 export type ReviewApplyOutcome = {
   finalResolution?: ReviewApplyDecision;
   refs?: Record<string, unknown>;
+  supersededPeriodVersion?: { targetId: string; recordVersion: number };
 };
 
 export type ReviewHandlerContext = {
@@ -1134,6 +1135,41 @@ export class ReviewQueueRepository {
         item.refs,
         applyingStateKey,
       );
+      if (outcome?.supersededPeriodVersion !== undefined) {
+        const { targetId, recordVersion } = outcome.supersededPeriodVersion;
+        // Full narrative replacements carry a version fence. Unfenced patches and
+        // rollover proposals have independent intent and must remain open.
+        const siblings = this.db
+          .prepare(
+            `
+          SELECT * FROM review_queue
+          WHERE id != ? AND resolved_at IS NULL AND kind = 'identity_inconsistency'
+            AND json_extract(refs, '$.target_type') = 'autobiographical_period'
+            AND json_extract(refs, '$.target_id') = ?
+            AND json_extract(refs, '$.repair_op') = 'patch'
+            AND json_type(refs, '$.expected_record_version') = 'integer'
+            AND json_extract(refs, '$.expected_record_version') < ?
+            AND json_type(refs, '$.patch.narrative') = 'text'
+            AND json_type(refs, '$.next_period_open_payload') IS NULL
+        `,
+          )
+          .all(item.id, targetId, recordVersion) as Record<string, unknown>[];
+        for (const row of siblings) {
+          const sibling = mapReviewRow(row);
+          const reason = `Superseded by applied review proposal ${item.id}`;
+          this.markResolved(
+            sibling.id,
+            { decision: "dismiss", reason },
+            resolvedAt,
+            {
+              ...sibling.refs,
+              superseded_by_review_id: item.id,
+              superseded_reason: reason,
+            },
+            sibling.refs,
+          );
+        }
+      }
       this.db.exec("COMMIT");
 
       return {

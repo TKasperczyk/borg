@@ -25,12 +25,16 @@ export async function closeBestEffort(
   }
 }
 
-export async function closeBorgDependencies(deps: BorgDependencies): Promise<void> {
+function collectCloseError(errors: unknown[], label: string, error: unknown): void {
+  errors.push(error);
+  console.error(`Failed to close ${label}`, error);
+}
+
+export async function drainBorgDependencies(
+  deps: BorgDependencies,
+  admittedOperations: readonly Promise<unknown>[] = [],
+): Promise<void> {
   const errors: unknown[] = [];
-  const collectCloseError = (label: string, error: unknown): void => {
-    errors.push(error);
-    console.error(`Failed to close ${label}`, error);
-  };
 
   const schedulerStops = [
     {
@@ -57,7 +61,7 @@ export async function closeBorgDependencies(deps: BorgDependencies): Promise<voi
   ] as const;
 
   const schedulerStopResults = await Promise.allSettled(
-    schedulerStops.map((stop) => Promise.resolve().then(() => stop.close())),
+    schedulerStops.map(async (stop) => await stop.close()),
   );
 
   schedulerStopResults.forEach((result, index) => {
@@ -68,32 +72,49 @@ export async function closeBorgDependencies(deps: BorgDependencies): Promise<voi
     const schedulerStop = schedulerStops[index];
 
     if (schedulerStop !== undefined) {
-      collectCloseError(schedulerStop.label, result.reason);
+      collectCloseError(errors, schedulerStop.label, result.reason);
     }
   });
 
+  await Promise.allSettled(admittedOperations);
   try {
     await deps.streamIngestionCoordinator?.close();
   } catch (error) {
-    collectCloseError("stream ingestion coordinator", error);
+    collectCloseError(errors, "stream ingestion coordinator", error);
   } finally {
     try {
       await deps.reviewQueueRepository?.flushEnqueueHooks?.();
     } catch (error) {
-      collectCloseError("review queue enqueue hooks", error);
+      collectCloseError(errors, "review queue enqueue hooks", error);
     }
+  }
 
-    try {
-      deps.sqlite.close();
-    } catch (error) {
-      collectCloseError("SQLite database", error);
-    }
+  if (errors.length > 0) {
+    throw new AggregateError(errors, "One or more Borg dependencies failed to drain");
+  }
+}
 
+export async function closeBorgDependencies(
+  deps: BorgDependencies,
+  options: { drain?: false | (() => Promise<void>) } = {},
+): Promise<void> {
+  const errors: unknown[] = [];
+  if (options.drain !== false) {
     try {
-      await deps.lance.close();
+      await (options.drain?.() ?? drainBorgDependencies(deps));
     } catch (error) {
-      collectCloseError("LanceDB store", error);
+      collectCloseError(errors, "runtime", error);
     }
+  }
+  try {
+    deps.sqlite.close();
+  } catch (error) {
+    collectCloseError(errors, "SQLite database", error);
+  }
+  try {
+    await deps.lance.close();
+  } catch (error) {
+    collectCloseError(errors, "LanceDB store", error);
   }
 
   if (errors.length > 0) {

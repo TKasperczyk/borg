@@ -411,11 +411,18 @@ export function createIdentityInconsistencyReviewQueueHandler(): ReviewQueueHand
           label: "Identity patch for autobiographical period",
           targetId: refs.target_id,
         });
+        return result.status === "applied" && result.record.record_version !== undefined
+          ? {
+              supersededPeriodVersion: {
+                targetId: refs.target_id,
+                recordVersion: result.record.record_version,
+              },
+            }
+          : undefined;
       };
 
       if (refs.next_period_open_payload === undefined) {
-        applyPeriodPatch();
-        return;
+        return applyPeriodPatch();
       }
 
       if (ctx.autobiographicalRepository === undefined) {
@@ -427,9 +434,10 @@ export function createIdentityInconsistencyReviewQueueHandler(): ReviewQueueHand
         );
       }
 
-      ctx.autobiographicalRepository.runInTransaction(() => {
-        applyPeriodPatch();
+      return ctx.autobiographicalRepository.runInTransaction(() => {
+        const outcome = applyPeriodPatch();
         identityService.addPeriod(refs.next_period_open_payload!);
+        return outcome;
       });
     },
   };

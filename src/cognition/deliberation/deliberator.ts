@@ -4,6 +4,7 @@ import type { StreamWriter } from "../../stream/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { escapeXmlText } from "../../util/prompt-tags.js";
 import type { LLMCompleteOptions } from "../../llm/index.js";
+import { renderAutonomyTriggerPresentation } from "../autonomy-trigger.js";
 import {
   DEFAULT_DELIBERATION_PLAN_MAX_TOKENS,
   DEFAULT_DELIBERATION_RESPONSE_MAX_TOKENS,
@@ -184,7 +185,7 @@ type FinalizerCallVariableOptions = {
 };
 type FinalizerTriadResultInput = {
   finalized: FinalizerEmission;
-  responseForResult: FinalizerResult;
+  toolCalls: FinalizerResult["toolCallsMade"];
   usage: DeliberationUsage;
 };
 type RunFinalizerTriadInput = {
@@ -276,6 +277,8 @@ function buildFinalizerCallOptions(
     audienceEntityId: context.context.audienceEntityId,
     model: options.cognitionModel,
     baseSystemPrompt: context.baseSystemPrompt,
+    shownOpenQuestionIds:
+      context.effectiveContext.autonomyTriggerPresentation?.shownOpenQuestionIds,
     cacheableSystemPrompt: context.cacheableSystemPrompt,
     finalizerDynamicPromptCacheEnabled: options.finalizerDynamicPromptCacheEnabled ?? true,
     finalizerTransport: options.finalizerTransport ?? "unary",
@@ -785,6 +788,12 @@ export class Deliberator {
         ),
     });
     const responseForResult = finalizerRetry.result;
+    // Replacing an emission does not undo calls already dispatched. Keep each
+    // attempt's capture local, but carry every call into the turn's action record.
+    let toolCalls = [
+      ...response.toolCallsMade,
+      ...(responseForResult === response ? [] : responseForResult.toolCallsMade),
+    ];
     let usage =
       input.priorUsage === undefined
         ? undefined
@@ -814,7 +823,7 @@ export class Deliberator {
       });
     const result = input.buildResult({
       finalized,
-      responseForResult,
+      toolCalls,
       usage,
     });
 
@@ -835,13 +844,14 @@ export class Deliberator {
         input.callContext.structuralNoOutputFlags,
         { invalidToolDiagnosticAttempt: "regenerate" },
       );
+      toolCalls = [...toolCalls, ...regeneratedResponse.toolCallsMade];
 
       return {
         ...result,
         response: regeneratedFinalized.response,
         emitted: regeneratedFinalized.emitted,
         emission: regeneratedFinalized.emission,
-        tool_calls: regeneratedResponse.toolCallsMade,
+        tool_calls: toolCalls,
         usage: mergeDeliberationUsage(result.usage, regeneratedResponse.usage),
       };
     });
@@ -910,6 +920,10 @@ export class Deliberator {
     );
     effectiveContext = {
       ...effectiveContext,
+      autonomyTriggerPresentation:
+        effectiveContext.autonomyTrigger == null
+          ? undefined
+          : renderAutonomyTriggerPresentation(effectiveContext.autonomyTrigger),
       contradictionRoutingTier: decision.contradiction_tier,
       deliberationPath: decision.path,
     };
@@ -1045,7 +1059,7 @@ export class Deliberator {
         additionalPromptSections:
           finalizerGroundingPromptSections.length === 0 ? null : finalizerGroundingPromptSections,
         availableEmissionNames,
-        buildResult: ({ finalized, responseForResult, usage }) => ({
+        buildResult: ({ finalized, toolCalls, usage }) => ({
           path: "system_1",
           response: finalized.response,
           emitted: finalized.emitted,
@@ -1053,7 +1067,7 @@ export class Deliberator {
           emissionRecommendation: "emit",
           thoughtStreamEntryIds: [],
           thoughts: [],
-          tool_calls: responseForResult.toolCallsMade,
+          tool_calls: toolCalls,
           usage,
           decision_reason: decision.reason,
           retrievedEpisodes: [...context.retrievalResult],
@@ -1336,7 +1350,7 @@ export class Deliberator {
       additionalPromptSections,
       availableEmissionNames,
       priorUsage: planner.usage,
-      buildResult: ({ finalized, responseForResult, usage }) => {
+      buildResult: ({ finalized, toolCalls, usage }) => {
         return {
           path: "system_2",
           response: finalized.response,
@@ -1345,7 +1359,7 @@ export class Deliberator {
           emissionRecommendation: "emit",
           thoughtStreamEntryIds: persistedThoughtEntries.map((entry) => entry.id),
           thoughts,
-          tool_calls: responseForResult.toolCallsMade,
+          tool_calls: toolCalls,
           usage,
           decision_reason: decision.reason,
           retrievedEpisodes: dedupeRetrievedEpisodes([

@@ -223,13 +223,19 @@ describe("open question dormant trigger", () => {
     // A failed commit leaves the entire batch due, including its first member.
     expect(() =>
       watermarkRepository.runInTransaction(() => {
-        trigger.commitFired!(event);
+        trigger.commitFired!(event, {
+          shownOpenQuestionIds: questions.slice(0, 3).map((question) => question.id),
+        });
         throw new Error("commit interrupted");
       }),
     ).toThrow("commit interrupted");
     expect((await trigger.scan())[0]!.payload.open_question_id).toBe(questions[0]!.id);
     expect(harness.openQuestionsRepository.get(questions[0]!.id)?.last_ruminated_at).toBeNull();
-    watermarkRepository.runInTransaction(() => trigger.commitFired!(event));
+    watermarkRepository.runInTransaction(() =>
+      trigger.commitFired!(event, {
+        shownOpenQuestionIds: questions.slice(0, 3).map((question) => question.id),
+      }),
+    );
     for (const question of questions.slice(0, 3)) {
       expect(harness.openQuestionsRepository.get(question.id)).toMatchObject({
         last_ruminated_at: clock.now(),

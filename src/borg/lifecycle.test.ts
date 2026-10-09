@@ -8,6 +8,23 @@ describe("borg lifecycle", () => {
     vi.restoreAllMocks();
   });
 
+  it("forced store close never re-enters a stalled runtime drain", async () => {
+    const stop = vi.fn(async () => await new Promise<void>(() => {}));
+    const sqliteClose = vi.fn();
+    const lanceClose = vi.fn(async () => {});
+    const deps = {
+      autonomyScheduler: { stop },
+      maintenanceScheduler: { stop },
+      chatResponseCatchUpWorker: { stop },
+      sqlite: { close: sqliteClose },
+      lance: { close: lanceClose },
+    } as unknown as BorgDependencies;
+    await closeBorgDependencies(deps, { drain: false });
+    expect(stop).not.toHaveBeenCalled();
+    expect(sqliteClose).toHaveBeenCalledOnce();
+    expect(lanceClose).toHaveBeenCalledOnce();
+  });
+
   it("attempts LanceDB close when SQLite close throws", async () => {
     const sqliteError = new Error("sqlite close failed");
     const flushEnqueueHooks = vi.fn().mockResolvedValue(undefined);

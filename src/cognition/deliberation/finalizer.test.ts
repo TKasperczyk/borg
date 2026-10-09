@@ -1,3 +1,7 @@
+import {
+  createTurnExecutionMetrics,
+  turnExecutionMetricsStorage,
+} from "../turn-execution-metrics.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -59,6 +63,7 @@ async function runEmissionFinalizer(
   llm: LLMClient,
   tempDirs: string[],
   options: {
+    shownOpenQuestionIds?: readonly string[];
     cacheableSystemPrompt?: CacheableFinalizerSystemPrompt;
     additionalPromptSections?: Parameters<typeof runFinalizer>[0]["additionalPromptSections"];
     finalizerDynamicPromptCacheEnabled?: boolean;
@@ -84,6 +89,7 @@ async function runEmissionFinalizer(
     sessionId: DEFAULT_SESSION_ID,
     model: "fake",
     baseSystemPrompt: "Legacy base dynamic prompt.",
+    shownOpenQuestionIds: options.shownOpenQuestionIds,
     cacheableSystemPrompt: options.cacheableSystemPrompt ?? {
       staticPrefix: "Stable static prompt.",
       dynamicContent: "Base dynamic prompt.",
@@ -258,6 +264,21 @@ describe("runFinalizer emission tools", () => {
       }
     },
   );
+
+  it("unions whole question ids only across finalizer requests actually sent", async () => {
+    const metrics = createTurnExecutionMetrics();
+    expect(metrics.shownOpenQuestionIds).toBeUndefined();
+    await turnExecutionMetricsStorage.run(metrics, async () => {
+      await runEmissionFinalizer(createAnsweringLlm("first"), tempDirs, {
+        shownOpenQuestionIds: ["oq_a"],
+      });
+      await runEmissionFinalizer(createAnsweringLlm("retry"), tempDirs, {
+        finalizerAttempt: "regenerate",
+        shownOpenQuestionIds: ["oq_b", "oq_a"],
+      });
+    });
+    expect(metrics.shownOpenQuestionIds).toEqual(["oq_a", "oq_b"]);
+  });
 
   it("does not expose EmitContinueThought on active user turns", async () => {
     const llm = new FakeLLMClient({

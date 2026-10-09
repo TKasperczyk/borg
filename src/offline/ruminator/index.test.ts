@@ -1,3 +1,4 @@
+import { LLMError } from "../../util/errors.js";
 import { describe, expect, it, vi } from "vitest";
 
 import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../../tracing/tracer.js";
@@ -692,11 +693,77 @@ describe("RuminatorProcess", () => {
           target_id: question.id,
         },
       ]);
+      expect(plan.items).toEqual([]);
       expect((await process.apply(harness.createContext(), plan)).errors).toEqual(plan.errors);
+      expect(harness.openQuestionsRepository.get(question.id)).toMatchObject({
+        last_ruminated_at: null,
+        record_version: question.record_version,
+      });
+      expect(harness.openQuestionsRepository.countRuminations(question.id)).toBe(0);
+      expect(
+        (await process.plan(harness.createContext(), {})).scheduling.selected_question_ids,
+      ).toContain(question.id);
     } finally {
       await harness.cleanup();
     }
   });
+
+  it.each([false, true])(
+    "traces failed model visits without stamping (payloads=%s)",
+    async (includePayloads) => {
+      const questionText = "未解決の問い";
+      const tracer = new CaptureTracer();
+      Object.defineProperty(tracer, "includePayloads", { value: includePayloads });
+      const llm = new FakeLLMClient();
+      vi.spyOn(llm, "complete").mockRejectedValue(
+        new LLMError("refused", { code: "LLM_REFUSAL_EXHAUSTED" }),
+      );
+      const harness = await createOfflineTestHarness({
+        llmClient: llm,
+        tracer,
+        embeddingClient: new TestEmbeddingClient(new Map([[questionText, [1, 0, 0, 0]]])),
+      });
+      try {
+        await harness.episodicRepository.createEpisode(
+          createEpisodeFixture({ created_at: 2_000_000, significance: 0.95 }, [1, 0, 0, 0]),
+        );
+        const question = harness.openQuestionsRepository.add({
+          question: questionText,
+          urgency: 0.5,
+          source: "reflection",
+          created_at: 1_000_000,
+          last_touched: 1_000_000,
+          provenance: { kind: "manual" },
+        });
+        const process = new RuminatorProcess({
+          openQuestionsRepository: harness.openQuestionsRepository,
+          growthMarkersRepository: harness.growthMarkersRepository,
+          registry: harness.registry,
+        });
+        const context = harness.createContext();
+        const plan = await process.plan(context);
+        expect(plan.items).toEqual([]);
+        await process.apply(context, plan);
+        expect(harness.openQuestionsRepository.get(question.id)?.last_ruminated_at).toBeNull();
+        expect(plan.errors).toContainEqual(
+          expect.objectContaining({ target_id: question.id, code: "LLM_REFUSAL_EXHAUSTED" }),
+        );
+        const started = tracer.events.find(
+          (event) => event.event === "llm_call.started" && event.data.correlation_id !== undefined,
+        )!.data;
+        expect(started).toMatchObject({
+          run_id: context.runId,
+          correlation_id: `${context.runId}:ruminator:resolution:${question.id}`,
+          selected_question_ids: [question.id],
+          window_question_ids: [question.id],
+        });
+        if (includePayloads) expect(String(started.prompt).length).toBeLessThanOrEqual(2000);
+        else expect(started).not.toHaveProperty("prompt");
+      } finally {
+        await harness.cleanup();
+      }
+    },
+  );
 
   it("unwraps parameter scaffolding from a string tensions value", async () => {
     const clock = new FixedClock(3_000_000);
@@ -933,7 +1000,7 @@ describe("RuminatorProcess", () => {
         growth_marker: null,
       },
     },
-  ])("fails parsing but still stamps the LLM visit for $label", async ({ toolInput }) => {
+  ])("does not stamp a failed parse after schema repair for $label", async ({ toolInput }) => {
     const clock = new FixedClock(3_000_000);
     const questionText = "What remains unsettled in this synthetic rumination?";
     const response = {
@@ -994,13 +1061,7 @@ describe("RuminatorProcess", () => {
       const plan = await process.plan(harness.createContext(), {});
 
       expect(llm.requests).toHaveLength(2);
-      expect(plan.items).toEqual([
-        expect.objectContaining({
-          action: "mark_unresolved",
-          question_id: question.id,
-          rumination_note: null,
-        }),
-      ]);
+      expect(plan.items).toEqual([]);
       expect(plan.errors).toHaveLength(1);
 
       await process.apply(harness.createContext(), plan);
@@ -1010,7 +1071,7 @@ describe("RuminatorProcess", () => {
         status: "open",
         resolution_note: null,
         unresolved_rumination_ticks: 0,
-        last_ruminated_at: clock.now(),
+        last_ruminated_at: null,
       });
     } finally {
       await harness.cleanup();
@@ -1476,6 +1537,7 @@ describe("RuminatorProcess", () => {
     const futureText = "Which new uncertainty is not due yet?";
     const harness = await createOfflineTestHarnessBase({
       clock,
+      llmClient: new FakeLLMClient({ responses: [createDuplicateJudgmentResponse([]), createDuplicateJudgmentResponse([])] }),
       embeddingClient: new TestEmbeddingClient(
         new Map([
           [lowText, [1, 0, 0, 0]],
@@ -1571,9 +1633,13 @@ describe("RuminatorProcess", () => {
   });
 
   it("plans urgency bumps and abandonments without LLM calls when evidence is weak", async () => {
+    const llm = new FakeLLMClient();
     const harness = await createOfflineTestHarness({
       clock: new FixedClock(40 * 24 * 60 * 60 * 1_000),
+      llmClient: llm,
     });
+    // This case exercises evidence-only scheduling; duplicate judgments have separate coverage.
+    vi.spyOn(harness.openQuestionsRepository, "searchSimilar").mockResolvedValue([]);
     const process = new RuminatorProcess({
       openQuestionsRepository: harness.openQuestionsRepository,
       growthMarkersRepository: harness.growthMarkersRepository,
@@ -1597,9 +1663,11 @@ describe("RuminatorProcess", () => {
         provenance: { kind: "manual" },
         last_touched: 0,
       });
+      await harness.openQuestionsRepository.waitForPendingEmbeddings();
 
       const plan = await process.plan(harness.createContext(), {});
 
+      expect(llm.requests).toHaveLength(0);
       expect(plan.items).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
@@ -2828,6 +2896,8 @@ describe("RuminatorProcess", () => {
     const warn = vi.fn();
     const harness = await createOfflineTestHarness({
       llmClient: llm,
+      // A successful no-evidence check would otherwise bump urgency and stamp.
+      clock: new FixedClock(8 * 24 * 60 * 60 * 1_000),
       embeddingClient: new TestEmbeddingClient(
         new Map([
           [firstText, [1, 0, 0, 0]],
@@ -2863,7 +2933,13 @@ describe("RuminatorProcess", () => {
 
       const plan = await process.plan(harness.createContext(), {});
 
-      expect(plan.items.some((item) => item.action === "merge_duplicate")).toBe(false);
+      expect(plan.items).toEqual([]);
+      await process.apply(harness.createContext(), plan);
+      expect(
+        harness.openQuestionsRepository
+          .listAllOpen()
+          .every((question) => question.last_ruminated_at === null),
+      ).toBe(true);
       expect(llm.requests).toHaveLength(1);
       expect(warn).toHaveBeenCalledWith(
         "Ruminator duplicate judgment failed open without backstop merges",
@@ -3470,7 +3546,7 @@ describe("RuminatorProcess", () => {
 
       expect(harness.openQuestionsRepository.get(firstQuestion.id)).toMatchObject({
         unresolved_rumination_ticks: 0,
-        last_ruminated_at: harness.clock.now(),
+        last_ruminated_at: null,
       });
       expect(harness.openQuestionsRepository.get(secondQuestion.id)).toMatchObject({
         unresolved_rumination_ticks: 0,

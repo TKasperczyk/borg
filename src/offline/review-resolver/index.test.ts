@@ -2506,7 +2506,7 @@ describe("review resolver autonomous mode", () => {
     });
   });
 
-  it("lands one of two revisions composed against the same period text", async () => {
+  it("dismisses superseded revisions before spending another resolver judgment", async () => {
     const llm = new FakeLLMClient();
     const harness = await createOfflineTestHarness({
       llmClient: llm,
@@ -2542,17 +2542,20 @@ describe("review resolver autonomous mode", () => {
 
     const landed = harness.autobiographicalRepository.getPeriod(period.id);
     const items = revisions.map((item) => harness.reviewQueueRepository.get(item.id));
-    const stale = items.find((item) => item?.resolved_at === null);
+    const stale = items.find((item) => item?.resolution === "dismiss");
 
-    expect(llm.requests).toHaveLength(2);
+    expect(llm.requests).toHaveLength(1);
     for (const request of llm.requests) {
       expect(String(request.messages[0]?.content)).not.toContain("expected_record_version");
     }
     expect(landed?.record_version).toBe(period.record_version! + 1);
     expect(items.filter((item) => item?.resolution === "accept")).toHaveLength(1);
     expect(stale?.refs).toMatchObject({
-      __borg_review_resolver_diagnostic: { verdict: "apply_failed", attempts: 1 },
+      superseded_by_review_id: items.find((item) => item?.resolution === "accept")!.id,
     });
+    expect(stale?.refs).not.toHaveProperty("__borg_review_resolver_diagnostic");
+    await runResolver(harness);
+    expect(llm.requests).toHaveLength(1);
     expect(["First revision.", "Second revision."]).toContain(landed?.narrative);
     expect((stale?.refs.patch as { narrative: string }).narrative).not.toBe(landed?.narrative);
   });

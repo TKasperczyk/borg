@@ -914,18 +914,54 @@ function duplicateJudgmentPrompt(pairs: readonly RuminatorDuplicateCandidatePair
   });
 }
 
+function ruminatorCallTrace(
+  ctx: OfflineContext,
+  call: string,
+  selectedQuestionIds: readonly string[],
+  windowQuestionIds: readonly string[],
+  prompt: string,
+): import("../../llm/structured-tool-call.js").StructuredToolCallTraceOptions {
+  const correlationId = `${ctx.runId}:ruminator:${call}`;
+  const context = {
+    run_id: ctx.runId,
+    correlation_id: correlationId,
+    selected_question_ids: [...selectedQuestionIds],
+    window_question_ids: [...windowQuestionIds],
+  };
+  return {
+    tracer: ctx.tracer,
+    turnId: ctx.runId,
+    label: correlationId,
+    startedExtra: {
+      ...context,
+      ...(ctx.tracer?.includePayloads === true ? { prompt: prompt.slice(0, 2_000) } : {}),
+    },
+    responseExtra: context,
+    errorExtra: context,
+  };
+}
+
 async function judgeDuplicateCandidatePairs(
   ctx: OfflineContext,
   llmClient: LLMClient,
   pairs: readonly RuminatorDuplicateCandidatePair[],
+  selectedQuestionIds: readonly string[],
 ): Promise<RuminatorDuplicateJudgment[]> {
   if (pairs.length === 0) {
     return [];
   }
 
+  const prompt = duplicateJudgmentPrompt(pairs);
   return (
     await callStructuredTool({
       llmClient,
+      trace: ruminatorCallTrace(
+        ctx,
+        "duplicates",
+        selectedQuestionIds,
+        [...new Set(pairs.flatMap((pair) => [pair.left.id, pair.right.id]))],
+        prompt,
+      ),
       request: {
         model: ctx.config.anthropic.models.background,
         system:
@@ -933,7 +969,7 @@ async function judgeDuplicateCandidatePairs(
         messages: [
           {
             role: "user",
-            content: duplicateJudgmentPrompt(pairs),
+            content: prompt,
           },
         ],
         tools: [RUMINATOR_DUPLICATE_TOOL],
@@ -1077,6 +1113,7 @@ async function planResolution(
   dryRun: boolean,
   onTensionScaffoldingDrop: TensionScaffoldingDropObserver,
   onLlmVisit: () => void,
+  selectedQuestionIds: readonly string[],
 ): Promise<RuminatorPlan["items"][number] | null> {
   const retrieval = await searchResolutionEvidence(ctx, question, maxQuestionsPerRun, dryRun);
   const freshEvidence = retrieval.episodes.filter(
@@ -1160,6 +1197,14 @@ async function planResolution(
   });
   const recordedRuminationNotes = ctx.openQuestionsRepository.countRuminations(question.id);
   const connectedCandidates = connectedOpenQuestionCandidates(question, allOpenQuestions);
+  const prompt = buildResolutionPrompt(
+    question,
+    evidenceBlock,
+    recentRuminations,
+    recordedRuminationNotes,
+    connectedCandidates,
+    ctx.config.offline.ruminator.staleNoTractionTicks,
+  );
   let response: RuminationResponse;
 
   try {
@@ -1167,20 +1212,20 @@ async function planResolution(
     response = (
       await callStructuredTool({
         llmClient,
+        trace: ruminatorCallTrace(
+          ctx,
+          `resolution:${question.id}`,
+          selectedQuestionIds,
+          [question.id, ...connectedCandidates.map((candidate) => candidate.id)],
+          prompt,
+        ),
         request: {
           model: ctx.config.anthropic.models.background,
           system: RUMINATOR_SYSTEM_PROMPT,
           messages: [
             {
               role: "user",
-              content: buildResolutionPrompt(
-                question,
-                evidenceBlock,
-                recentRuminations,
-                recordedRuminationNotes,
-                connectedCandidates,
-                ctx.config.offline.ruminator.staleNoTractionTicks,
-              ),
+              content: prompt,
             },
           ],
           tools: [RUMINATOR_TOOL],
@@ -1542,6 +1587,7 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
       .map(({ question }) => question);
     const attemptedQuestionIds = new Set<OpenQuestion["id"]>();
     const modelCalledQuestionIds = new Set<OpenQuestion["id"]>();
+    const failedQuestionIds = new Set<OpenQuestion["id"]>();
     const tensionScaffoldingDrops: RuminatorPlan["tension_scaffolding_drops"] = [];
     let tokensUsed = 0;
     let budgetExhausted = false;
@@ -1607,6 +1653,7 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
               () => {
                 modelCalledQuestionIds.add(question.id);
               },
+              selectedQuestions.map((selected) => selected.id),
             );
 
             if (resolution !== null) {
@@ -1644,16 +1691,14 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
               evidence_stream_entry_ids: [],
             });
           } catch (error) {
-            if (error instanceof BudgetExceededError) {
-              throw error;
-            }
-
+            failedQuestionIds.add(question.id);
             errors.push(
               offlineProcessError(this.name, error, {
                 target_type: "open_question",
                 target_id: question.id,
               }),
             );
+            if (error instanceof BudgetExceededError) throw error;
           }
         }
 
@@ -1676,7 +1721,12 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
           };
 
           try {
-            const judgments = await judgeDuplicateCandidatePairs(ctx, llmClient, presentedPairs);
+            const judgments = await judgeDuplicateCandidatePairs(
+              ctx,
+              llmClient,
+              presentedPairs,
+              selectedQuestions.map((question) => question.id),
+            );
             const terminalQuestionIds = new Set(
               items.flatMap((item) =>
                 item.action === "resolve" || item.action === "abandon" ? [item.question_id] : [],
@@ -1694,6 +1744,10 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
             );
             items.push(...duplicateMerges);
           } catch (error) {
+            for (const pair of presentedPairs) {
+              failedQuestionIds.add(pair.left.id);
+              failedQuestionIds.add(pair.right.id);
+            }
             (this.options.logger ?? console).warn(
               "Ruminator duplicate judgment failed open without backstop merges",
               {
@@ -1744,32 +1798,6 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
       errors.push(offlineProcessError(this.name, error));
     }
 
-    const actionQuestionIds = new Set(
-      items.flatMap((item) => ("question_id" in item ? [item.question_id] : [])),
-    );
-
-    for (const questionId of attemptedQuestionIds) {
-      if (actionQuestionIds.has(questionId)) {
-        continue;
-      }
-
-      const question = allOpenQuestions.find((candidate) => candidate.id === questionId);
-
-      if (question !== undefined) {
-        items.push({
-          action: "mark_unresolved",
-          question_id: question.id,
-          previous: question,
-          next_unresolved_rumination_ticks: question.unresolved_rumination_ticks + 1,
-          rumination_note: null,
-          tensions: [],
-          connected_open_question_ids: [],
-          evidence_episode_ids: [],
-          evidence_stream_entry_ids: [],
-        });
-      }
-    }
-
     const budgetCutQuestionIds = budgetExhausted
       ? selectedQuestions
           .filter((question) => !attemptedQuestionIds.has(question.id))
@@ -1778,7 +1806,13 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
 
     return ruminatorPlanSchema.parse({
       process: this.name,
-      items,
+      // A failed model visit cannot move any participant's revisit clock, even
+      // when an earlier successful evidence check produced a pending stamp.
+      items: items.filter(
+        (item) =>
+          (item.action !== "mark_unresolved" && item.action !== "bump_urgency") ||
+          !failedQuestionIds.has(item.question_id),
+      ),
       errors,
       tokens_used: tokensUsed,
       budget_exhausted: budgetExhausted,

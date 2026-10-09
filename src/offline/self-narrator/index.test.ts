@@ -6,7 +6,6 @@ import {
   selfPrivateMemoryDisclosureLabel,
 } from "../../memory/common/disclosure-label.js";
 import { memoryDisclosurePayloadFields } from "../../memory/common/disclosure-serializers.js";
-import { IdentityCasMismatchError } from "../../util/errors.js";
 import { createEpisodeId, createMaintenanceRunId, createStreamEntryId } from "../../util/ids.js";
 import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
 import { estimatePromptTokens } from "../../util/token-estimate.js";
@@ -1327,7 +1326,7 @@ describe("SelfNarratorProcess", () => {
     }
   });
 
-  it("refuses an older revision over one accepted after it was composed", async () => {
+  it("dismisses an older revision when its sibling applies", async () => {
     const observation = {
       category: "understanding",
       what_changed: "Deployment review became a continuous practice.",
@@ -1406,16 +1405,51 @@ describe("SelfNarratorProcess", () => {
       expect(older?.refs).toMatchObject({ expected_record_version: period.record_version });
       expect(newer?.refs).toMatchObject({ expected_record_version: period.record_version });
 
+      const { expected_record_version: _fence, ...unfencedRefs } = older!.refs;
+      const unfenced = harness.reviewQueueRepository.enqueue({
+        kind: "identity_inconsistency",
+        refs: unfencedRefs,
+        reason: "independent unfenced patch",
+      });
+      const rollover = harness.reviewQueueRepository.enqueue({
+        kind: "identity_inconsistency",
+        refs: { ...older!.refs, next_period_open_payload: period },
+        reason: "rollover",
+      });
+      const future = harness.reviewQueueRepository.enqueue({
+        kind: "identity_inconsistency",
+        refs: { ...older!.refs, expected_record_version: period.record_version! + 5 },
+        reason: "newer version",
+      });
+      const unrelated = harness.reviewQueueRepository.enqueue({
+        kind: "identity_inconsistency",
+        refs: { ...older!.refs, target_id: "abp_aaaaaaaaaaaaaaaa" },
+        reason: "other target",
+      });
+      const partial = harness.reviewQueueRepository.enqueue({
+        kind: "identity_inconsistency",
+        refs: { ...older!.refs, patch: { label: "renamed" } },
+        reason: "non-narrative patch",
+      });
+      // A failed CAS must not dismiss any siblings.
+      await expect(harness.reviewQueueRepository.resolve(future.id, "accept")).rejects.toThrow();
+      expect(harness.reviewQueueRepository.get(older!.id)?.resolved_at).toBeNull();
       await harness.reviewQueueRepository.resolve(newer!.id, "accept");
-      await expect(harness.reviewQueueRepository.resolve(older!.id, "accept")).rejects.toThrow(
-        IdentityCasMismatchError,
-      );
+      expect(await harness.reviewQueueRepository.resolve(older!.id, "accept")).toMatchObject({
+        resolution: "dismiss",
+      });
 
       expect(harness.autobiographicalRepository.getPeriod(period.id)).toMatchObject({
         narrative: newerText,
         record_version: period.record_version! + 1,
       });
-      expect(harness.reviewQueueRepository.get(older!.id)?.resolved_at).toBeNull();
+      expect(harness.reviewQueueRepository.get(older!.id)).toMatchObject({
+        resolution: "dismiss",
+        refs: { superseded_by_review_id: newer!.id },
+      });
+      for (const untouched of [unfenced, rollover, future, unrelated, partial]) {
+        expect(harness.reviewQueueRepository.get(untouched.id)?.resolved_at).toBeNull();
+      }
     } finally {
       await harness.cleanup();
     }

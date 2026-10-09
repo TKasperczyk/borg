@@ -1,3 +1,4 @@
+import { addLlmUsage, attachLlmErrorUsage, reportLlmErrorUsage, type LLMUsage } from "./usage.js";
 import Anthropic from "@anthropic-ai/sdk";
 import { APIConnectionError as OpenAIConnectionError, APIError as OpenAIAPIError } from "openai";
 import type {
@@ -319,8 +320,8 @@ type LLMCallOptions = {
 export type LLMTransportRetryEvent = {
   // The attempt number about to run (2 = first retry).
   attempt: number;
-  kind: "stall" | "connection";
-  // Typed LLM error code that triggered the retry (stall class only).
+  kind: "stall" | "connection" | "refusal";
+  // Typed structural reason that triggered the retry (stall or refusal).
   code?: string;
   // Transport of the upcoming retry attempt. Streaming calls retry unary.
   retry_transport: "streaming" | "unary";
@@ -1097,17 +1098,31 @@ function rethrowRetryableLlmTransportErrorAtTopLevel(error: unknown): void {
   }
 }
 
+export class LLMRefusalError extends LLMError {
+  constructor() {
+    super("Anthropic refused the request after the logical call's refusal retry was exhausted", {
+      code: "LLM_REFUSAL_EXHAUSTED",
+    });
+  }
+}
+
+type AnthropicCallState = {
+  refusalRetries: number;
+  usage: LLMUsage;
+};
+
 type AnthropicTransportRetryOptions = {
+  callState: AnthropicCallState;
   connectionMaxRetries?: number;
   stallMaxRetries?: number;
   signal?: AbortSignal;
-  onRetry?: (event: { attempt: number; kind: "stall" | "connection"; code?: string }) => void;
+  onRetry?: (event: Omit<LLMTransportRetryEvent, "retry_transport">) => void;
 };
 
-async function runWithAnthropicTransportRetries<T>(
-  run: (attempt: number) => Promise<T>,
-  options: AnthropicTransportRetryOptions = {},
-): Promise<T> {
+async function runWithAnthropicTransportRetries(
+  run: (attempt: number) => Promise<Message>,
+  options: AnthropicTransportRetryOptions,
+): Promise<Message> {
   const connectionMaxRetries = options.connectionMaxRetries ?? ANTHROPIC_CONNECTION_MAX_RETRIES;
   const stallMaxRetries = options.stallMaxRetries ?? ANTHROPIC_STALL_MAX_RETRIES;
   let attempt = 0;
@@ -1118,7 +1133,18 @@ async function runWithAnthropicTransportRetries<T>(
     attempt += 1;
 
     try {
-      return await run(attempt);
+      const response = await run(attempt);
+      options.callState.usage = addLlmUsage(options.callState.usage, {
+        input_tokens: response.usage.input_tokens,
+        output_tokens: response.usage.output_tokens,
+        ...extractCacheUsage(response),
+      });
+      if (response.stop_reason !== "refusal") return response;
+      if (options.callState.refusalRetries >= 1) throw new LLMRefusalError();
+      options.signal?.throwIfAborted();
+      options.callState.refusalRetries += 1;
+      options.onRetry?.({ attempt: attempt + 1, kind: "refusal", code: "LLM_REFUSAL" });
+      continue;
     } catch (error) {
       // The SHALLOWEST typed transport verdict in the cause chain decides.
       // LLM_CONNECTION_FAILED is itself a retry verdict and must never
@@ -2168,7 +2194,6 @@ export class AnthropicLLMClient implements LLMClient {
   ): Promise<Message> | undefined {
     return translateForcedToolUse({
       options,
-      usageSink: this.usageSink,
       run: (run) => runWithLlmCallTimeout({ ...timeout, signal: options.signal, run }),
       hasToolUse: (response: Message) => response.content.some(isToolUseBlock),
       describe: (response) => ({
@@ -2226,6 +2251,7 @@ export class AnthropicLLMClient implements LLMClient {
   private async createRawMessage(
     options: LLMCallOptions,
     messages: MessageParam[],
+    callState: AnthropicCallState,
     retrying = false,
     callTimeoutMs = this.unaryCallTimeoutMs(),
     alignBufferedResponseHeaders = false,
@@ -2237,6 +2263,7 @@ export class AnthropicLLMClient implements LLMClient {
         this.createRawMessage(
           compatibleOptions,
           compatibleMessages,
+          callState,
           retrying,
           callTimeoutMs,
           alignBufferedResponseHeaders,
@@ -2270,6 +2297,7 @@ export class AnthropicLLMClient implements LLMClient {
                 timeout: callTimeoutMs,
               }),
             {
+              callState,
               stallMaxRetries: this.transportStallMaxRetries(),
               signal,
               onRetry: (event) =>
@@ -2278,6 +2306,7 @@ export class AnthropicLLMClient implements LLMClient {
           ),
       });
     } catch (error) {
+      if (error instanceof LLMRefusalError) throw error;
       rethrowRetryableLlmTransportErrorAtTopLevel(error);
 
       if (!retrying && this.auth?.kind === "oauth" && isAuthenticationFailure(error)) {
@@ -2301,6 +2330,7 @@ export class AnthropicLLMClient implements LLMClient {
         return this.createRawMessage(
           options,
           messages,
+          callState,
           true,
           callTimeoutMs,
           alignBufferedResponseHeaders,
@@ -2333,6 +2363,7 @@ export class AnthropicLLMClient implements LLMClient {
     options: LLMCallOptions,
     messages: MessageParam[],
     onTextDelta: LLMStreamTextHandler | undefined,
+    callState: AnthropicCallState,
     retrying = false,
     callTimeoutMs = this.streamingCallTimeoutMs(),
   ): Promise<Message> {
@@ -2344,6 +2375,7 @@ export class AnthropicLLMClient implements LLMClient {
           compatibleOptions,
           compatibleMessages,
           attemptTextDelta,
+          callState,
           retrying,
           callTimeoutMs,
         ),
@@ -2365,7 +2397,7 @@ export class AnthropicLLMClient implements LLMClient {
     const streamFactory = client.messages.stream?.bind(client.messages);
 
     if (streamFactory === undefined) {
-      return this.createRawMessage(options, messages, retrying, callTimeoutMs, true);
+      return this.createRawMessage(options, messages, callState, retrying, callTimeoutMs, true);
     }
 
     try {
@@ -2462,6 +2494,7 @@ export class AnthropicLLMClient implements LLMClient {
               return await stream.finalMessage();
             },
             {
+              callState,
               stallMaxRetries: this.transportStallMaxRetries(),
               signal,
               // Every retry of a streaming call runs unary (see the attempt > 1
@@ -2472,6 +2505,7 @@ export class AnthropicLLMClient implements LLMClient {
           ),
       });
     } catch (error) {
+      if (error instanceof LLMRefusalError) throw error;
       rethrowRetryableLlmTransportErrorAtTopLevel(error);
 
       if (!retrying && this.auth?.kind === "oauth" && isAuthenticationFailure(error)) {
@@ -2492,7 +2526,14 @@ export class AnthropicLLMClient implements LLMClient {
           );
         }
 
-        return this.streamRawMessage(options, messages, onTextDelta, true, callTimeoutMs);
+        return this.streamRawMessage(
+          options,
+          messages,
+          onTextDelta,
+          callState,
+          true,
+          callTimeoutMs,
+        );
       }
 
       if (isAuthenticationFailure(error) && this.auth?.kind === "oauth") {
@@ -2542,11 +2583,15 @@ export class AnthropicLLMClient implements LLMClient {
     });
   }
 
-  private async createMessage(options: LLMCompleteOptions): Promise<LLMCompleteResult> {
+  private async createMessage(
+    options: LLMCompleteOptions,
+    callState: AnthropicCallState,
+  ): Promise<LLMCompleteResult> {
     const callTimeoutMs = options.timeoutMs ?? this.unaryCallTimeoutMs();
     const response = await this.createRawMessage(
       options,
       toAnthropicMessages(options.messages),
+      callState,
       false,
       callTimeoutMs,
       true,
@@ -2578,15 +2623,20 @@ export class AnthropicLLMClient implements LLMClient {
       tool_calls: extractToolCalls(response),
       ...(options.output_config === undefined ? {} : { structured_output: structuredOutput }),
     } satisfies LLMCompleteResult;
-    await this.emitUsage(options, result);
     return result;
   }
 
-  private async streamMessage(options: LLMCompleteStreamOptions): Promise<LLMCompleteResult> {
+  private async streamMessage(
+    options: LLMCompleteStreamOptions,
+    callState: AnthropicCallState,
+  ): Promise<LLMCompleteResult> {
     const response = await this.streamRawMessage(
       options,
       toAnthropicMessages(options.messages),
       options.onTextDelta,
+      callState,
+      false,
+      this.streamingCallTimeoutMs(),
     );
     let structuredOutput: unknown;
 
@@ -2615,17 +2665,20 @@ export class AnthropicLLMClient implements LLMClient {
       tool_calls: extractToolCalls(response),
       ...(options.output_config === undefined ? {} : { structured_output: structuredOutput }),
     } satisfies LLMCompleteResult;
-    await this.emitUsage(options, result);
     return result;
   }
 
-  private async createConversation(options: LLMConverseOptions): Promise<LLMConverseResult> {
+  private async createConversation(
+    options: LLMConverseOptions,
+    callState: AnthropicCallState,
+  ): Promise<LLMConverseResult> {
     const callTimeoutMs = options.timeoutMs ?? this.unaryCallTimeoutMs();
     const response = await this.createRawMessage(
       options,
       toAnthropicContentBlockMessages(options.messages, {
         attachmentResolver: this.options.attachmentResolver,
       }),
+      callState,
       false,
       callTimeoutMs,
       true,
@@ -2656,17 +2709,20 @@ export class AnthropicLLMClient implements LLMClient {
       stop_reason: response.stop_reason,
       ...(options.output_config === undefined ? {} : { structured_output: structuredOutput }),
     } satisfies LLMConverseResult;
-    await this.emitUsage(options, result);
     return result;
   }
 
-  private async streamConversation(options: LLMConverseStreamOptions): Promise<LLMConverseResult> {
+  private async streamConversation(
+    options: LLMConverseStreamOptions,
+    callState: AnthropicCallState,
+  ): Promise<LLMConverseResult> {
     const response = await this.streamRawMessage(
       options,
       toAnthropicContentBlockMessages(options.messages, {
         attachmentResolver: this.options.attachmentResolver,
       }),
       options.onTextDelta,
+      callState,
       false,
       options.timeoutMs ?? this.streamingCallTimeoutMs(),
     );
@@ -2696,23 +2752,72 @@ export class AnthropicLLMClient implements LLMClient {
       stop_reason: response.stop_reason,
       ...(options.output_config === undefined ? {} : { structured_output: structuredOutput }),
     } satisfies LLMConverseResult;
-    await this.emitUsage(options, result);
     return result;
   }
 
+  // One state and deadline enclose auth recovery, forced-tool translation and transport
+  // retries. Raw responses are counted once here, including discarded refusals.
+  private async runLogicalCall<T extends LLMUsage>(
+    options: LLMCallOptions & { timeoutMs?: number },
+    kind: "unary" | "streaming",
+    run: (state: AnthropicCallState, signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
+    const state: AnthropicCallState = {
+      refusalRetries: 0,
+      usage: { input_tokens: 0, output_tokens: 0 },
+    };
+    let result: T;
+    try {
+      result = await runWithLlmCallTimeout({
+        kind,
+        timeoutMs:
+          options.timeoutMs ??
+          (kind === "unary" ? this.unaryCallTimeoutMs() : this.streamingCallTimeoutMs()),
+        signal: options.signal,
+        run: async (signal) => await run(state, signal),
+      });
+    } catch (error) {
+      attachLlmErrorUsage(error, state.usage);
+      await reportLlmErrorUsage(error, this.usageSink, {
+        model: options.model,
+        budget: options.budget,
+      });
+      throw error;
+    }
+    const accounted = { ...result, ...state.usage };
+    await this.emitUsage(options, accounted);
+    return accounted;
+  }
+
   complete(options: LLMCompleteOptions): Promise<LLMCompleteResult> {
-    return this.createMessage(options);
+    return this.runLogicalCall(
+      options,
+      "unary",
+      async (state, signal) => await this.createMessage({ ...options, signal }, state),
+    );
   }
 
   converse(options: LLMConverseOptions): Promise<LLMConverseResult> {
-    return this.createConversation(options);
+    return this.runLogicalCall(
+      options,
+      "unary",
+      async (state, signal) => await this.createConversation({ ...options, signal }, state),
+    );
   }
 
   streamComplete(options: LLMCompleteStreamOptions): Promise<LLMCompleteResult> {
-    return this.streamMessage(options);
+    return this.runLogicalCall(
+      options,
+      "streaming",
+      async (state, signal) => await this.streamMessage({ ...options, signal }, state),
+    );
   }
 
   streamConverse(options: LLMConverseStreamOptions): Promise<LLMConverseResult> {
-    return this.streamConversation(options);
+    return this.runLogicalCall(
+      options,
+      "streaming",
+      async (state, signal) => await this.streamConversation({ ...options, signal }, state),
+    );
   }
 }

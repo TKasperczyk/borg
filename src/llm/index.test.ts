@@ -1,3 +1,5 @@
+import { getLlmErrorUsage } from "./usage.js";
+import { traceLlmCallRetryHook } from "../tracing/llm-call-trace.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -745,13 +747,22 @@ describe("llm", () => {
       ["claude-sonnet-5", undefined],
       ["claude-opus-5", undefined],
       ["claude-opus-5-5", { effort: "high" }],
-    ])("sends the shared effort default only where the omitted default changed: %s", async (model, expected) => {
-      vi.spyOn(console, "warn").mockImplementation(() => undefined);
-      const create = vi.fn().mockResolvedValue(toolResponse);
-      const client = new AnthropicLLMClient({ client: { messages: { create } } });
-      await client.complete({ model, tools, tool_choice: { type: "any" }, messages: [], budget: "background" });
-      expect(create.mock.lastCall?.[0].output_config).toEqual(expected);
-    });
+    ])(
+      "sends the shared effort default only where the omitted default changed: %s",
+      async (model, expected) => {
+        vi.spyOn(console, "warn").mockImplementation(() => undefined);
+        const create = vi.fn().mockResolvedValue(toolResponse);
+        const client = new AnthropicLLMClient({ client: { messages: { create } } });
+        await client.complete({
+          model,
+          tools,
+          tool_choice: { type: "any" },
+          messages: [],
+          budget: "background",
+        });
+        expect(create.mock.lastCall?.[0].output_config).toEqual(expected);
+      },
+    );
 
     it("keeps an explicit effort on models that never receive the default", async () => {
       const create = vi.fn().mockResolvedValue(toolResponse);
@@ -1267,7 +1278,7 @@ describe("llm", () => {
     const create = vi.fn().mockResolvedValue(
       createMessageBody({
         content: [{ type: "text", text: "I cannot comply.", citations: null }],
-        stop_reason: "refusal",
+        stop_reason: "end_turn",
       }),
     );
     const client = new AnthropicLLMClient({
@@ -2242,6 +2253,130 @@ describe("llm", () => {
     expect(describeErrorWithCauses(caught)).toBe(
       "LLMError: Anthropic connection failed after 3 attempts; caused by Error: Connection error.; caused by TypeError: fetch failed; caused by Error: connect ECONNREFUSED 127.0.0.1:443",
     );
+  });
+
+  it.each(["complete", "converse", "streamComplete", "streamConverse"] as const)(
+    "retries one refusal with the unchanged request and summed usage: %s",
+    async (method) => {
+      const refused = createMessageBody({ stop_reason: "refusal", content: [] });
+      const success = createMessageBody();
+      const streaming = method === "streamComplete" || method === "streamConverse";
+      const create = streaming
+        ? vi.fn().mockResolvedValue(success)
+        : vi.fn().mockResolvedValueOnce(refused).mockResolvedValueOnce(success);
+      const stream = vi.fn(() => messageStream(refused));
+      const usageSink = vi.fn();
+      const emit = vi.fn();
+      const client = new AnthropicLLMClient({
+        client: { messages: { create, stream } },
+        usageSink,
+      });
+      const request = {
+        model: "claude-opus-5-5",
+        messages: [{ role: "user" as const, content: "問い" }],
+        budget: "test",
+        onTransportRetry: traceLlmCallRetryHook({
+          tracer: { enabled: true, includePayloads: false, emit },
+          turnId: "turn_test",
+          label: "refusal-test",
+        }),
+      };
+      const response =
+        method === "complete" || method === "streamComplete"
+          ? await client[method](request)
+          : await client[method]({
+              ...request,
+              messages: request.messages.map(({ role, content }) => ({
+                role,
+                content: [{ type: "text", text: content }],
+              })),
+            });
+      expect(response).toMatchObject({
+        stop_reason: "end_turn",
+        input_tokens: 24,
+        output_tokens: 14,
+      });
+      expect(create).toHaveBeenCalledTimes(streaming ? 1 : 2);
+      expect((streaming ? stream : create).mock.calls[0]?.[0]).toEqual(
+        create.mock.calls[streaming ? 0 : 1]?.[0],
+      );
+      expect(emit).toHaveBeenCalledExactlyOnceWith(
+        "llm_call.retried",
+        expect.objectContaining({ kind: "refusal", code: "LLM_REFUSAL", retry_transport: "unary" }),
+      );
+      expect(usageSink).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ input_tokens: 24, output_tokens: 14 }),
+      );
+    },
+  );
+
+  it("shares one refusal allowance across forced-tool reminder attempts", async () => {
+    const create = vi
+      .fn()
+      .mockResolvedValueOnce(createMessageBody({ stop_reason: "refusal", content: [] }))
+      .mockResolvedValueOnce(createMessageBody())
+      .mockResolvedValueOnce(createMessageBody({ stop_reason: "refusal", content: [] }));
+    const usageSink = vi.fn();
+    const retry = vi.fn();
+    const translated = vi.fn();
+    const client = new AnthropicLLMClient({ client: { messages: { create } }, usageSink });
+    const request = {
+      model: "claude-opus-5-5",
+      messages: [{ role: "user" as const, content: "問い" }],
+      budget: "test",
+      tools: [
+        {
+          name: "Emit",
+          description: "Emit",
+          inputSchema: { type: "object" as const, properties: {} },
+        },
+      ],
+      tool_choice: { type: "tool" as const, name: "Emit" },
+      onTransportRetry: retry,
+      onToolChoiceTranslated: translated,
+    };
+    let error: unknown;
+    try {
+      await client.complete(request);
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toMatchObject({ code: "LLM_REFUSAL_EXHAUSTED" });
+    expect(getLlmErrorUsage(error)).toMatchObject({ input_tokens: 36, output_tokens: 21 });
+    expect(create).toHaveBeenCalledTimes(3);
+    expect(create.mock.calls[0]?.[0]).toEqual(create.mock.calls[1]?.[0]);
+    expect(create.mock.calls[2]?.[0].messages).toHaveLength(3);
+    expect(retry).toHaveBeenCalledOnce();
+    expect(translated).toHaveBeenCalledWith(
+      expect.objectContaining({ first_stop_reason: "end_turn", first_text_chars: 5 }),
+    );
+    expect(usageSink).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ input_tokens: 36, output_tokens: 21 }),
+    );
+  });
+
+  it("keeps refused-response usage when its retry reaches the original deadline", async () => {
+    vi.useFakeTimers();
+    const create = vi
+      .fn()
+      .mockResolvedValueOnce(createMessageBody({ stop_reason: "refusal", content: [] }))
+      .mockImplementationOnce(async () => await new Promise(() => {}));
+    const usageSink = vi.fn();
+    const client = new AnthropicLLMClient({ client: { messages: { create } }, usageSink });
+    const call = client.complete({
+      model: "claude-opus-5-5",
+      messages: [],
+      budget: "test",
+      timeoutMs: 50,
+    });
+    const rejection = expect(call).rejects.toMatchObject({ code: "LLM_CALL_TIMED_OUT" });
+    await vi.advanceTimersByTimeAsync(51);
+    await rejection;
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(usageSink).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ input_tokens: 12, output_tokens: 7 }),
+    );
+    vi.useRealTimers();
   });
 
   it("retries a unary call once when it dies with a stall-class error", async () => {

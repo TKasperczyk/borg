@@ -6,6 +6,7 @@ import { DEFAULT_SESSION_ID } from "../util/ids.js";
 import {
   AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS,
   formatAutonomyTriggerContext,
+  renderAutonomyTriggerPresentation,
 } from "./autonomy-trigger.js";
 
 const BASE = {
@@ -16,6 +17,37 @@ const BASE = {
 } as const;
 
 describe("formatAutonomyTriggerContext epoch annotation", () => {
+  it("counts only whole question ids and texts in the retained payload", () => {
+    const context = {
+      ...BASE,
+      payload: {
+        open_question_id: "oq_primary",
+        question: '主題"\n'.repeat(4000),
+        last_touched: 1000,
+        additional_questions: [
+          { open_question_id: "oq_short", question: "短い問い", last_touched: 1000 },
+        ],
+      },
+    };
+    const whole = renderAutonomyTriggerPresentation(context, 100_000);
+    expect(whole.shownOpenQuestionIds).toEqual(["oq_primary", "oq_short"]);
+    const excerpted = renderAutonomyTriggerPresentation(context, 4_000);
+    expect(excerpted.shownOpenQuestionIds).not.toContain("oq_primary");
+    expect(excerpted.shownOpenQuestionIds).toContain("oq_short");
+    expect(excerpted.text.length).toBeLessThanOrEqual(4000);
+    const dropped = renderAutonomyTriggerPresentation(
+      {
+        ...context,
+        payload: {
+          ...context.payload,
+          disclosure: "x".repeat(40_000),
+        },
+      },
+      500,
+    );
+    expect(dropped.shownOpenQuestionIds).toEqual([]);
+  });
+
   it("adds a calendar sibling for payload timestamps without touching the raw field", () => {
     const rendered = formatAutonomyTriggerContext({
       ...BASE,

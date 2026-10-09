@@ -316,9 +316,12 @@ export async function callStructuredTool<T>(
           turnId: options.trace.turnId,
           sessionId: options.trace.sessionId,
           label: options.trace.label,
+          extra: options.trace.startedExtra,
         });
   const translationTrace =
-    options.trace === undefined ? undefined : traceLlmToolChoiceTranslationHook(options.trace);
+    options.trace === undefined
+      ? undefined
+      : traceLlmToolChoiceTranslationHook({ ...options.trace, extra: options.trace.startedExtra });
   const request = {
     ...options.request,
     ...(onTransportRetry === undefined ? {} : { onTransportRetry }),

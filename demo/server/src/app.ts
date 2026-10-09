@@ -3050,8 +3050,19 @@ type BorgRequestGateLease = {
 export class BorgRequestGate {
   private inflight = 0;
   private resetting = false;
+  private shuttingDown = false;
+  private drained: (() => void) | undefined;
+
+  beginShutdown(): Promise<void> {
+    this.shuttingDown = true;
+    if (this.inflight === 0 && !this.resetting) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      this.drained = resolve;
+    });
+  }
 
   acquire(): BorgRequestGateLease {
+    if (this.shuttingDown) throw new HTTPException(503, { message: "Borg is shutting down" });
     if (this.resetting) {
       throw new HTTPException(503, { message: "Borg reset in progress" });
     }
@@ -3067,11 +3078,13 @@ export class BorgRequestGate {
 
         released = true;
         this.inflight = Math.max(0, this.inflight - 1);
+        if (this.inflight === 0 && !this.resetting) this.drained?.();
       },
     };
   }
 
   beginReset(): BorgRequestGateLease {
+    if (this.shuttingDown) throw new HTTPException(503, { message: "Borg is shutting down" });
     if (this.resetting) {
       throw new HTTPException(409, { message: "Borg reset already in progress" });
     }
@@ -3091,6 +3104,7 @@ export class BorgRequestGate {
 
         released = true;
         this.resetting = false;
+        if (this.inflight === 0) this.drained?.();
       },
     };
   }
@@ -4434,5 +4448,5 @@ export function createDemoServerApp(args: DemoServerAppInput) {
     }
   });
 
-  return { app, injectWebSocket };
+  return { app, injectWebSocket, beginShutdown: () => input.requestGate.beginShutdown() };
 }

@@ -91,6 +91,19 @@ describe("demo autonomy observer", () => {
     expect(logger.error).not.toHaveBeenCalled();
   });
 
+  it("reports maintenance-held scans through the journal and trace even without due events", async () => {
+    const { observer, tracer, logger } = harness();
+    await observer.onTick?.(tick({ maintenanceHeldSources: ["open_question_dormant"] }));
+    expect(logger.warn).toHaveBeenCalledOnce();
+    expect(tracer.emit).toHaveBeenCalledWith(
+      "autonomy.tick",
+      expect.objectContaining({
+        maintenanceHeldSources: ["open_question_dormant"],
+        maintenanceSkipped: 0,
+      }),
+    );
+  });
+
   it("traces repeated budget-refusal-only ticks without journaling", async () => {
     const { observer, tracer, logger } = harness();
     for (const ts of [1000, 61_000]) {

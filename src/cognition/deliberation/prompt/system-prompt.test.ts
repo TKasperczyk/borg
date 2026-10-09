@@ -3966,7 +3966,7 @@ describe("buildBaseSystemPrompt", () => {
     expect(block).not.toContain("Next budget slot frees: 2023-11-14T22:14:01.000Z (in ~41s).");
   });
 
-  it("names every route to headway and denies that a journal entry identifies the outcome", () => {
+  it("names every route to headway including registered ok writes", () => {
     const batchedGoalIds = [
       "goal_aaaaaaaaaaaaaaaa",
       "goal_bbbbbbbbbbbbbbbb",
@@ -4076,12 +4076,11 @@ describe("buildBaseSystemPrompt", () => {
     for (const goalId of batchedGoalIds) {
       expect(block).toContain(goalId);
     }
-    // The inference the page previously left open: every headway route that
-    // dominates this window also writes a journal entry, so the correlation is
-    // perfect and self-confirming unless the page denies it outright.
     expect(block).toContain(
-      "which outcome a wake recorded is not recoverable from what it left in the journal",
+      "any other registered write tool returned ok (including no-op and requires_review results)",
     );
+    expect(block).toContain("an ok tool.journal.append also counts as headway");
+    expect(block).toContain("an outbound post still counts only when delivered");
   });
 
   it("names the lower operational ceiling while the contemplative reservation is unspent", () => {
@@ -5094,6 +5093,10 @@ describe("buildBaseSystemPrompt", () => {
     const first = buildCacheableBaseSystemPromptParts(makeContext(), PROMPT_OPTIONS);
     const second = buildCacheableBaseSystemPromptParts(
       makeContext({
+        turnOrigin: "autonomous",
+        autonomousFinalizerToolMenu: [
+          { name: "EmitContinueThought", menuSummary: "Continue privately." },
+        ],
         workingMemory: {
           ...makeContext().workingMemory,
           turn_counter: 9,
@@ -5109,6 +5112,9 @@ describe("buildBaseSystemPrompt", () => {
     );
 
     expect(first.staticPrefix).toBe(second.staticPrefix);
+    expect(second.dynamicContent).toContain("EmitContinueThought");
+    expect(first.dynamicContent).not.toContain("<borg_autonomous_reflection>");
+    expect(first.staticPrefix).not.toContain("- EmitContinueThought:");
     expect(first.staticPrefix).toContain(TRUSTED_GUIDANCE_PREAMBLE);
     expect(first.staticPrefix).toContain(PARTICIPATION_POSTURE_SECTION);
     expect(first.staticPrefix.indexOf(TRUSTED_GUIDANCE_PREAMBLE)).toBeLessThan(

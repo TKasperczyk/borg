@@ -52,6 +52,7 @@ describe("buildHostCapabilitiesSection", () => {
       "Proactive outbound messaging via wired source_type connector(s): demo",
     );
     expect(section).toContain("tool.outbound.post");
+    expect(section).not.toContain("EmitContinueThought");
     expect(section).toContain("Host-wired outbound capabilities available now:");
     expect(section).toContain("Targets without a wired connector are not transportable");
     expect(section).toContain(
@@ -95,7 +96,7 @@ describe("buildHostCapabilitiesSection", () => {
   it("keeps proactive outbound unavailable without wired connectors", () => {
     const section = buildHostCapabilitiesSection();
 
-    expect(section).toContain("EmitContinueThought");
+    expect(section).not.toContain("EmitContinueThought");
     expect(section).toContain("I can pursue an open question privately");
     expect(section).toContain("I can schedule a future self-wake");
     expect(section).toContain(

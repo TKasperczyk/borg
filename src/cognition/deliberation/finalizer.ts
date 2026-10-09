@@ -7,6 +7,7 @@ import type {
   LLMConverseOptions,
   LLMSystemBlock,
 } from "../../llm/index.js";
+import { turnExecutionMetricsStorage } from "../turn-execution-metrics.js";
 import {
   LLM_STREAMING_CALL_TIMEOUT_MS,
   willSendThinkingUnderAutoToolChoice,
@@ -406,6 +407,7 @@ export type RunFinalizerOptions = {
   audienceEntityId?: EntityId | null;
   model: string;
   baseSystemPrompt: string;
+  shownOpenQuestionIds?: readonly string[];
   initialMessages: readonly LLMContentBlockMessage[];
   userEntryId: string | undefined;
   maxTokens: number;
@@ -1189,6 +1191,12 @@ export async function runFinalizer(options: RunFinalizerOptions): Promise<Finali
       onRequestPrepared: (request, attempt) => {
         recordPreparedFinalizerRequest(captureState, request, attempt);
         options.onRequestPrepared?.(request, attempt);
+        const metrics = turnExecutionMetricsStorage.getStore();
+        if (metrics !== undefined && (options.shownOpenQuestionIds?.length ?? 0) > 0) {
+          metrics.shownOpenQuestionIds = [
+            ...new Set([...(metrics.shownOpenQuestionIds ?? []), ...options.shownOpenQuestionIds!]),
+          ];
+        }
       },
       toolResultObserver: captureState.toolTranscriptCollector ?? undefined,
     });

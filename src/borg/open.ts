@@ -491,6 +491,7 @@ export async function openBorgDependencies(
       },
     });
     const autonomyScheduler = buildAutonomyScheduler({
+      maintenancePassStartedAt: () => offline.maintenanceOrchestrator.getActivePassStartedAt(),
       entryIndex: repositories.entryIndex,
       config,
       commitmentRepository: repositories.commitmentRepository,

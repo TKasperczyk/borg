@@ -274,10 +274,41 @@ function excerptIdentityEvent(event: unknown, maxChars: number): unknown {
 function boundAutonomyTriggerContext(
   context: AutonomyTriggerContext,
   maxChars: number,
-): string {
-  const rendered = renderAutonomyTriggerContext(context);
+): RenderedAutonomyTriggerContext {
+  const originalQuestions = [
+    context.payload,
+    ...(Array.isArray(context.payload.additional_questions)
+      ? context.payload.additional_questions
+      : []),
+  ];
+  // Compare retained structured fields with their source values; never inspect serialized text.
+  const presentation = (
+    payload: Record<string, unknown>,
+    text: string,
+  ): RenderedAutonomyTriggerContext => ({
+    text,
+    shownOpenQuestionIds: [
+      payload,
+      ...(Array.isArray(payload.additional_questions) ? payload.additional_questions : []),
+    ].flatMap((row) => {
+      if (row === null || typeof row !== "object") return [];
+      const question = row as Record<string, unknown>;
+      return typeof question.open_question_id === "string" &&
+        typeof question.question === "string" &&
+        originalQuestions.some(
+          (original) =>
+            original !== null &&
+            typeof original === "object" &&
+            original.open_question_id === question.open_question_id &&
+            original.question === question.question,
+        )
+        ? [question.open_question_id]
+        : [];
+    }),
+  });
+  const rendered = presentation(context.payload, renderAutonomyTriggerContext(context));
   const nestedExcerptWasTruncated = carriesTruncatedIdentityEventChange(context.payload);
-  if (!nestedExcerptWasTruncated && rendered.length <= maxChars) {
+  if (!nestedExcerptWasTruncated && rendered.text.length <= maxChars) {
     return rendered;
   }
 
@@ -287,7 +318,7 @@ function boundAutonomyTriggerContext(
   let omittedRelatedEpisodes = 0;
   let keepQuestionText = true;
   const retainedPayload = { ...context.payload };
-  const render = (stringBudget: number): string => {
+  const render = (stringBudget: number): RenderedAutonomyTriggerContext => {
     const source = omitTrailingRelatedEpisodes(retainedPayload, omittedRelatedEpisodes);
     const payload = Object.fromEntries(
       Object.entries(source).map(([key, value]) => [
@@ -311,25 +342,28 @@ function boundAutonomyTriggerContext(
       .join(" ");
     // The planner applies a smaller head+tail crop to this block. Keep the
     // bounding and omission notice on the first line so that crop retains it.
-    return `${notice}\n${renderAutonomyTriggerContext({ ...context, payload })}`;
+    return presentation(
+      payload,
+      `${notice}\n${renderAutonomyTriggerContext({ ...context, payload })}`,
+    );
   };
 
   const uncut = render(Number.POSITIVE_INFINITY);
-  if (uncut.length <= maxChars) {
+  if (uncut.text.length <= maxChars) {
     return uncut;
   }
 
   // Reserve every selected event's metadata before spending any room on text.
   // If metadata alone exceeds the cap, exclude an explicitly counted suffix.
   let bounded = render(0);
-  if (bounded.length > maxChars) {
+  if (bounded.text.length > maxChars) {
     // The questions' related episodes leave whole, from the end, while that can still let the
     // question text fit beside the labels and structure that stay whole. Question text that
     // cannot is excerpted before any whole field is dropped.
     omittedRelatedEpisodes = relatedEpisodeCount(retainedPayload);
-    if (render(0).length <= maxChars) {
+    if (render(0).text.length <= maxChars) {
       omittedRelatedEpisodes = 0;
-      while (bounded.length > maxChars) {
+      while (bounded.text.length > maxChars) {
         omittedRelatedEpisodes += 1;
         bounded = render(0);
       }
@@ -339,15 +373,14 @@ function boundAutonomyTriggerContext(
       bounded = render(0);
     }
   }
-  // A dropped trailing field can be additional_questions, which the wake latches whether or not
-  // they were shown, so the related episodes leave before any field does. They leave together:
+  // Preserve whole questions where possible: related episodes leave before any question field. They leave together:
   // episodes that only fit at a zero text budget would leave every excerpt, the questions'
   // included, almost empty.
-  if (bounded.length > maxChars && relatedEpisodeCount(retainedPayload) > 0) {
+  if (bounded.text.length > maxChars && relatedEpisodeCount(retainedPayload) > 0) {
     omittedRelatedEpisodes = relatedEpisodeCount(retainedPayload);
     bounded = render(0);
   }
-  while (bounded.length > maxChars && eventCount > 0) {
+  while (bounded.text.length > maxChars && eventCount > 0) {
     eventCount -= 1;
     bounded = render(0);
   }
@@ -356,7 +389,7 @@ function boundAutonomyTriggerContext(
   const otherFields = Object.keys(retainedPayload).filter(
     (key) => key !== "recent_identity_events",
   );
-  while (bounded.length > maxChars && otherFields.length > 0) {
+  while (bounded.text.length > maxChars && otherFields.length > 0) {
     delete retainedPayload[otherFields.pop()!];
     omittedPayloadFields += 1;
     bounded = render(0);
@@ -364,12 +397,12 @@ function boundAutonomyTriggerContext(
   // An episode whose ids are excerpted cannot be cited, so episodes leave whole, from the end,
   // while that can still let the shared budget reach their longest id.
   const handleChars = relatedEpisodeHandleChars(retainedPayload);
-  if (handleChars > 0 && render(handleChars).length > maxChars) {
+  if (handleChars > 0 && render(handleChars).text.length > maxChars) {
     const omittedBefore = omittedRelatedEpisodes;
     omittedRelatedEpisodes = relatedEpisodeCount(retainedPayload);
-    if (render(handleChars).length <= maxChars) {
+    if (render(handleChars).text.length <= maxChars) {
       omittedRelatedEpisodes = omittedBefore;
-      while (render(handleChars).length > maxChars) {
+      while (render(handleChars).text.length > maxChars) {
         omittedRelatedEpisodes += 1;
       }
     } else {
@@ -384,7 +417,7 @@ function boundAutonomyTriggerContext(
   while (low <= high) {
     const candidateBudget = Math.floor((low + high) / 2);
     const candidate = render(candidateBudget);
-    if (candidate.length <= maxChars) {
+    if (candidate.text.length <= maxChars) {
       bounded = candidate;
       low = candidateBudget + 1;
     } else {
@@ -396,7 +429,7 @@ function boundAutonomyTriggerContext(
 
 // Each presented question keeps its own dormancy latch and disclosure label.
 const OPEN_QUESTION_DORMANCY_DOMAIN_NOTE =
-  "note on this dormant-question wake: up to three questions share this wake. Each last_touched is that question's dormancy anchor, never a count of how often it has already woken me. Completion latches every presented question at that stamp and updates its rumination count and time; a failure leaves the pair unlatched and can return. A latched question cannot wake me a second time until a later write moves last_touched. Rumination stamps include offline passes and completed dormant-question wakes; null means neither has been recorded.";
+  "note on this dormant-question wake: up to three questions share this wake. Each last_touched is that question's dormancy anchor, never a count of how often it has already woken me. Completion latches only questions whose id and text were shown whole on a finalizer page at that stamp and updates its rumination count and time; a failure leaves the pair unlatched and can return. A latched question cannot wake me a second time until a later write moves last_touched. Rumination stamps include offline passes and completed dormant-question wakes; null means neither has been recorded.";
 
 function carriesOpenQuestionDormancy(payload: Record<string, unknown>): boolean {
   return typeof payload.open_question_id === "string" && typeof payload.last_touched === "number";
@@ -434,5 +467,17 @@ export function formatAutonomyTriggerContext(
   context: AutonomyTriggerContext,
   maxChars = AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS,
 ): string {
+  return renderAutonomyTriggerPresentation(context, maxChars).text;
+}
+
+export type RenderedAutonomyTriggerContext = {
+  text: string;
+  shownOpenQuestionIds: string[];
+};
+
+export function renderAutonomyTriggerPresentation(
+  context: AutonomyTriggerContext,
+  maxChars = AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS,
+): RenderedAutonomyTriggerContext {
   return boundAutonomyTriggerContext(context, maxChars);
 }

@@ -102,6 +102,52 @@ describe("Borg", () => {
     expect(config.autonomy.executiveFocus).toEqual(DEFAULT_CONFIG.autonomy.executiveFocus);
   });
 
+  it("closes direct connector admission and drains accepted turn tails and enqueues before stores", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-drain-"));
+    tempDirs.push(tempDir);
+    const borg = await Borg.open({
+      config: createTestConfig({ dataDir: tempDir }),
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: new FakeLLMClient(),
+    });
+    const { deps } = borgInternals<{ deps: BorgDependencies }>(borg);
+    let finishTurn!: () => void;
+    let finishEnqueue!: () => void;
+    const turnTail = new Promise<never>((resolve) => {
+      finishTurn = () => resolve(undefined as never);
+    });
+    const enqueueTail = new Promise<never>((resolve) => {
+      finishEnqueue = () => resolve(undefined as never);
+    });
+    vi.spyOn(deps.turnOrchestrator, "run").mockReturnValue(turnTail);
+    vi.spyOn(deps.messageEnqueuer, "enqueueMessage").mockReturnValue(enqueueTail);
+    const sqliteClose = vi.spyOn(deps.sqlite, "close");
+    const turn = borg.turn({ audience: "self", userMessage: "accepted", stakes: "low" });
+    const enqueue = borg.enqueueMessage({} as never);
+    let drained = false;
+    const drain = (async () => {
+      await borg.beginShutdown();
+      drained = true;
+    })();
+    await expect(
+      borg.turn({ audience: "self", userMessage: "late", stakes: "low" }),
+    ).rejects.toMatchObject({ code: "BORG_SHUTTING_DOWN" });
+    await expect(borg.enqueueMessage({} as never)).rejects.toMatchObject({
+      code: "BORG_SHUTTING_DOWN",
+    });
+    expect(drained).toBe(false);
+    expect(sqliteClose).not.toHaveBeenCalled();
+    finishTurn();
+    await turn;
+    expect(drained).toBe(false);
+    finishEnqueue();
+    await enqueue;
+    await drain;
+    await borg.close({ drain: false });
+    expect(sqliteClose).toHaveBeenCalledOnce();
+  });
+
   it("uses maintenance process lists for default dream plans", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);

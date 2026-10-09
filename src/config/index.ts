@@ -345,6 +345,9 @@ const anthropicModelsConfigSchema = z
     background: z.string().min(1).default("claude-opus-5-5"),
     extraction: z.string().min(1).default("claude-opus-5-5"),
     recallExpansion: z.string().min(1).default("claude-haiku-4-5-20251001"),
+    // Action-state (including post-generation closes) and goal-promotion extraction.
+    // Resolve at the consumer so an omitted slot follows the configured recall model.
+    preTurnExtraction: z.string().min(1).optional(),
     // Corrective preferences need careful interpretation of participant restrictions.
     correctivePreference: z.string().min(1).default("claude-sonnet-5"),
     // Shared-state compilation must distinguish corrections and decisions from completed acts.
@@ -1202,6 +1205,11 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["anthropic", "models", "recallExpansion"],
     readOptionalEnvString(env, "BORG_MODEL_RECALL_EXPANSION"),
+  );
+  setConfigOverride(
+    overrides,
+    ["anthropic", "models", "preTurnExtraction"],
+    readOptionalEnvString(env, "BORG_MODEL_PRE_TURN_EXTRACTION"),
   );
   setConfigOverride(
     overrides,

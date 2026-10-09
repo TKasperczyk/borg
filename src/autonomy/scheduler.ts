@@ -81,6 +81,8 @@ type ScannedDueEvent = { source: AutonomyWakeSource; event: DueEvent };
 type ScannedDueEvents = {
   events: ScannedDueEvent[];
   sourceErrors: NonNullable<TickResult["sourceErrors"]>;
+  scannedSources: TickResult["scannedSources"];
+  maintenanceHeldSources: NonNullable<TickResult["maintenanceHeldSources"]>;
 };
 type GoalWakePresentation = {
   source_name: DueEvent["sourceName"];
@@ -117,6 +119,7 @@ const WAKE_PRUNE_SAFETY_BUFFER_MS = 7 * 24 * 60 * 60 * 1_000;
 // search under load, which made prep fail and the trigger retry-loop. Live/
 // reactive tool calls keep the 5s default; only prep gets this longer bound.
 const DEFAULT_AUTONOMY_PREP_TOOL_TIMEOUT_MS = 90_000;
+const MAX_MAINTENANCE_HOLD_MS = 90 * 60_000;
 const ZERO_TURN_EXECUTION_COUNTS: AutonomyWakeExecutionCounts = {
   finalizer_rounds: 0,
   stall_retries: 0,
@@ -141,6 +144,7 @@ export type AutonomySchedulerStopOptions = {
 };
 
 export type AutonomySchedulerOptions = {
+  maintenancePassStartedAt?: () => number | null;
   beforeTick?: () => void;
   describeAnsweredWindow?: (
     sessionId: SessionId,
@@ -630,6 +634,7 @@ export class AutonomyScheduler {
   private readonly triggerErrorBackoff = new Map<AutonomyWakeSource["name"], RetryBackoffState>();
   private intervalHandle: IntervalHandle | null = null;
   private activeTick: Promise<TickResult> | null = null;
+  private stopping = false;
   private observer: AutonomySchedulerObserver | null = null;
   private intervalStartedTs: number | null = null;
   private lastTickTs: number | null = null;
@@ -857,6 +862,7 @@ export class AutonomyScheduler {
       return;
     }
 
+    this.stopping = false;
     this.intervalStartedTs = this.clock.now();
     this.lastTickTs = null;
     this.droppedIntervalFires = 0;
@@ -873,6 +879,7 @@ export class AutonomyScheduler {
   }
 
   async stop(options: AutonomySchedulerStopOptions = {}): Promise<void> {
+    this.stopping = true;
     if (this.intervalHandle !== null) {
       this.clearIntervalFn(this.intervalHandle);
       this.intervalHandle = null;
@@ -1136,12 +1143,11 @@ export class AutonomyScheduler {
   }
 
   private async tickOnce(): Promise<TickResult> {
-    this.options.beforeTick?.();
     const nowMs = this.clock.now();
     this.lastTickTs = nowMs;
     const scannedSources = this.options.sources.map((source) => source.name);
 
-    if (!this.options.enabled) {
+    if (!this.options.enabled || this.stopping) {
       return {
         status: "disabled",
         ts: nowMs,
@@ -1160,6 +1166,7 @@ export class AutonomyScheduler {
       };
     }
 
+    this.options.beforeTick?.();
     try {
       const scanResult = await this.scanDueEvents();
       const scannedDueEvents = this.orderDueEventsForAdmission(
@@ -1169,7 +1176,7 @@ export class AutonomyScheduler {
       const dueEventKeys = new Set(scannedDueEvents.map(({ event }) => backoffKey(event)));
 
       for (const key of this.retryBackoff.keys()) {
-        if (!dueEventKeys.has(key)) {
+        if (scanResult.maintenanceHeldSources.length === 0 && !dueEventKeys.has(key)) {
           this.retryBackoff.delete(key);
         }
       }
@@ -1196,6 +1203,7 @@ export class AutonomyScheduler {
 
       try {
         for (const scannedEvent of dueEvents) {
+          if (this.stopping) break;
           if (consumedEventKeys.has(backoffKey(scannedEvent.event))) {
             continue;
           }
@@ -1215,6 +1223,16 @@ export class AutonomyScheduler {
 
           const dueEvent = wakeBatch.primary.event;
           const sourceCategory = wakeBatch.primary.source.sourceCategory;
+
+          if (sourceCategory === "operational" && this.maintenanceHoldActive()) {
+            eventResults.push(
+              ...this.eventResultsForBatch(wakeBatch, {
+                status: "maintenance_skipped",
+                outcomeSummary: "Deferred while an offline maintenance pass was active.",
+              }),
+            );
+            continue;
+          }
 
           const fleetAdmission = this.fleetAdmissionDecisionForBatch(
             wakeBatch,
@@ -1475,6 +1493,16 @@ export class AutonomyScheduler {
                   });
             wakeHeadwayBases = [
               ...turnEmissionHeadwayBases(turnResult),
+              ...new Set(
+                turnResult.toolCalls
+                  .filter(
+                    (call) =>
+                      call.ok &&
+                      call.name !== OUTBOUND_POST_TOOL_NAME &&
+                      this.options.toolDispatcher.getDefinition(call.name)?.writeScope === "write",
+                  )
+                  .map((call) => `ok write: ${call.name}`),
+              ),
               ...perGoalOutcomes.flatMap(({ outcome }) => outcome.bases),
             ];
             wakeHeadway = wakeHeadwayBases.length > 0;
@@ -1561,7 +1589,10 @@ export class AutonomyScheduler {
               }
 
               for (const { source, event } of wakeBatch.events) {
-                source.commitFired?.(event);
+                const completion = source.commitFired?.(event, {
+                  shownOpenQuestionIds: turnResult.shownOpenQuestionIds ?? [],
+                });
+                if (completion?.watermark === "source_owned") continue;
                 this.options.watermarkRepository.set(event.watermarkProcessName, this.sessionId, {
                   lastTs: event.sortTs,
                   lastEntryId: event.id,
@@ -1622,7 +1653,12 @@ export class AutonomyScheduler {
         return {
           status: "ok",
           ts: nowMs,
-          scannedSources,
+          scannedSources: scanResult.scannedSources,
+          ...(scanResult.maintenanceHeldSources.length === 0
+            ? {}
+            : {
+                maintenanceHeldSources: scanResult.maintenanceHeldSources,
+              }),
           dueEvents: dueEvents.length,
           firedEvents,
           budgetSkipped,
@@ -2059,11 +2095,23 @@ export class AutonomyScheduler {
     });
   }
 
+  private maintenanceHoldActive(): boolean {
+    const startedAt = this.options.maintenancePassStartedAt?.();
+    return startedAt != null && this.clock.now() < startedAt + MAX_MAINTENANCE_HOLD_MS;
+  }
+
   private async scanDueEvents(): Promise<ScannedDueEvents> {
     const dueEvents: Array<{ source: AutonomyWakeSource; event: DueEvent }> = [];
     const sourceErrors: NonNullable<TickResult["sourceErrors"]> = [];
+    const scannedSources: TickResult["scannedSources"] = [];
+    const maintenanceHeldSources: NonNullable<TickResult["maintenanceHeldSources"]> = [];
 
     for (const source of this.options.sources) {
+      if (this.stopping) break;
+      if (source.sourceCategory === "operational" && this.maintenanceHoldActive()) {
+        maintenanceHeldSources.push(source.name);
+        continue;
+      }
       if (
         this.sourceRetryIsActive(source.name, this.clock.now()) ||
         this.triggerErrorRetryIsActive(source.name, this.clock.now())
@@ -2072,6 +2120,7 @@ export class AutonomyScheduler {
       }
 
       let events: DueEvent[];
+      scannedSources.push(source.name);
 
       try {
         events = await source.scan();
@@ -2105,6 +2154,8 @@ export class AutonomyScheduler {
           left.event.sortTs - right.event.sortTs || left.event.id.localeCompare(right.event.id),
       ),
       sourceErrors,
+      scannedSources,
+      maintenanceHeldSources,
     };
   }
 

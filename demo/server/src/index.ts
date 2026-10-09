@@ -1,3 +1,4 @@
+import { createDemoShutdownHandler } from "./shutdown.js";
 import { pathToFileURL } from "node:url";
 
 import { serve } from "@hono/node-server";
@@ -83,7 +84,10 @@ const hostTracer = compositeTracer([createTurnTracer({ env: process.env }), live
 const memorySamplerConfig = readMemorySamplerConfig();
 const connectorPlugin = await loadExternalConnectorPlugin();
 
+let shutdownRequested = false;
+
 async function openDemoBorg(): Promise<Borg> {
+  if (shutdownRequested) throw new Error("Borg is shutting down");
   const borg = await Borg.open({
     config: demoConfig,
     tracer: live.tracer,
@@ -93,6 +97,10 @@ async function openDemoBorg(): Promise<Borg> {
       ...(connectorPlugin?.outboundConnectors ?? []),
     ],
   });
+  if (shutdownRequested) {
+    await borg.close();
+    throw new Error("Borg is shutting down");
+  }
   ensureDemoDefaultSession(borg, { demoCreatorEntityName });
   // Attach before start, including when reset opens a replacement Borg.
   wireAutonomySchedulerObserver(borg.autonomy.scheduler, hostTracer);
@@ -140,7 +148,7 @@ const memorySampler = new MemorySampler({
   tracer: hostTracer,
 });
 
-const { app, injectWebSocket } = createDemoServerApp({
+const { app, injectWebSocket, beginShutdown } = createDemoServerApp({
   memorySampler,
   borgHandle,
   live,
@@ -159,55 +167,44 @@ memorySampler.start();
 
 console.log(`Borg demo server listening on http://localhost:${port}`);
 
-let shuttingDown = false;
-const shutdown = async (signal: NodeJS.Signals) => {
-  if (shuttingDown) {
-    return;
-  }
-
-  shuttingDown = true;
-  console.log(`Received ${signal}; shutting down`);
-  await memorySampler.stop();
-
-  live.broadcaster.closeAll();
-  const serverWithConnectionCloser = server as typeof server & {
-    closeAllConnections?: () => void;
-  };
-  await new Promise<void>((resolve) => {
-    const forceCloseTimer = setTimeout(() => {
-      serverWithConnectionCloser.closeAllConnections?.();
-      resolve();
-    }, 5_000);
-
-    server.close(() => {
-      clearTimeout(forceCloseTimer);
-      resolve();
-    });
-  });
-  if (connectorPlugin) {
-    await connectorPlugin.stop().catch((error: unknown) => {
-      console.error("external connector plugin stop failed", error);
-    });
-  }
-  if (borgHandle.state !== "dead" && borgHandle.state !== "closing") {
-    await borgHandle.current.autonomy.scheduler.stop().catch(() => undefined);
-    await borgHandle.current.maintenance.scheduler.stop().catch(() => undefined);
-    await borgHandle.current.close();
-  }
-};
-
-function exitAfterShutdown(signal: NodeJS.Signals): void {
-  void shutdown(signal)
-    .then(() => process.exit(0))
-    .catch((error: unknown) => {
-      console.error("Borg demo server shutdown failed", error);
-      process.exit(1);
-    });
-}
-
-process.once("SIGINT", (signal) => {
-  exitAfterShutdown(signal);
+const shutdown = createDemoShutdownHandler({
+  beginDrain: async () => {
+    shutdownRequested = true;
+    // Every admission path closes before the first await, including plugin-held Borg handles.
+    const httpDrain = beginShutdown();
+    const borgDrain = borgHandle.current.beginShutdown();
+    const results = await Promise.allSettled(
+      [
+        () => httpDrain,
+        () => borgDrain,
+        () => live.broadcaster.closeAll(),
+        () => memorySampler.stop(),
+        () => connectorPlugin?.stop(),
+        () => new Promise<void>((resolve) => server.close(() => resolve())),
+      ].map(async (stop) => await stop()),
+    );
+    const errors = results.flatMap((result) =>
+      result.status === "rejected" ? [result.reason] : [],
+    );
+    if (errors.length > 0) throw new AggregateError(errors, "Borg drain failed");
+  },
+  closeStores: async () => {
+    if (borgHandle.state !== "dead") {
+      borgHandle.state = "closing";
+      // All draining used the first deadline. Never enter it again after timeout.
+      await borgHandle.current.close({ drain: false });
+      borgHandle.state = "dead";
+    }
+  },
+  forceCloseConnections: () => {
+    (server as typeof server & { closeAllConnections?: () => void }).closeAllConnections?.();
+  },
+  exit: (code) => process.exit(code),
 });
-process.once("SIGTERM", (signal) => {
-  exitAfterShutdown(signal);
+
+process.on("SIGINT", (signal) => {
+  void shutdown(signal);
+});
+process.on("SIGTERM", (signal) => {
+  void shutdown(signal);
 });

@@ -147,8 +147,14 @@ export type AutonomyWakeSource<Payload extends Record<string, unknown> = Record<
     // scan to reconcile. Best-effort: the watermark remains the idempotency
     // source of truth, so a throwing onFired never causes a re-fire.
     onFired?(event: DueEvent<Payload>): void | Promise<void>;
-    /** Synchronous SQLite bookkeeping, committed atomically with source watermarks. */
-    commitFired?(event: DueEvent<Payload>): void;
+    /**
+     * Synchronous SQLite bookkeeping, committed atomically with source watermarks.
+     * Returning source_owned makes the hook responsible for all latches, including the primary.
+     */
+    commitFired?(
+      event: DueEvent<Payload>,
+      completion: { shownOpenQuestionIds: readonly string[] },
+    ): void | { watermark: "source_owned" };
   };
 
 export type AutonomyTrigger<Payload extends Record<string, unknown> = Record<string, unknown>> =
@@ -434,6 +440,7 @@ export type AutonomyTickEventResult = {
     | "budget_skipped"
     | "fleet_cooldown_skipped"
     | "error_circuit_skipped"
+    | "maintenance_skipped"
     | "busy_skipped"
     | "bookkeeping_error"
     | "error";
@@ -448,6 +455,8 @@ export type TickResult = {
   status: "disabled" | "ok";
   ts: number;
   scannedSources: AutonomyWakeSourceName[];
+  /** Operational scans deferred before they could perform embedding work. */
+  maintenanceHeldSources?: AutonomyWakeSourceName[];
   dueEvents: number;
   firedEvents: number;
   budgetSkipped: number;

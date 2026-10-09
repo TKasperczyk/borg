@@ -232,6 +232,7 @@ export type DeliberationContext = {
   operatorSessionSnapshot?: OperatorSessionSnapshot | null;
   turnId?: string;
   turnOrigin?: TurnOrigin;
+  autonomyTriggerPresentation?: import("../autonomy-trigger.js").RenderedAutonomyTriggerContext;
   audience?: string;
   isSelfAudience?: boolean;
   audienceEntityId?: EntityId | null;
@@ -368,6 +369,7 @@ export type DeliberationResult = {
   emissionRecommendation?: EmissionRecommendation;
   thoughtStreamEntryIds?: readonly StreamEntryId[];
   thoughts: string[];
+  /** Nonterminal call outcomes in execution order across all finalizer attempts. */
   tool_calls: ToolLoopCallRecord[];
   usage: DeliberationUsage;
   decision_reason: string;

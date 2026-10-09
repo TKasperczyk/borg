@@ -725,6 +725,22 @@ describe("demo server", () => {
     }
   });
 
+  it("closes HTTP turn and reset admission while waiting for accepted requests", async () => {
+    const gate = new BorgRequestGate();
+    const lease = gate.acquire();
+    let drained = false;
+    const pending = (async () => {
+      await gate.beginShutdown();
+      drained = true;
+    })();
+    expect(() => gate.acquire()).toThrow("Borg is shutting down");
+    expect(() => gate.beginReset()).toThrow("Borg is shutting down");
+    expect(drained).toBe(false);
+    lease.release();
+    await pending;
+    expect(drained).toBe(true);
+  });
+
   it("closeAll attempts every live client even if one close throws", () => {
     const broadcaster = new LiveBroadcaster({ error: () => {} });
     let secondClosed = false;

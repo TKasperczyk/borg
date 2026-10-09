@@ -1255,6 +1255,30 @@ describe("config", () => {
     expect(config.anthropic.models.recallExpansion).toBe("custom-recall");
   });
 
+  it("keeps pre-turn extraction optional and loads its file and environment overrides", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const omitted = loadConfig({
+      dataDir: tempDir,
+      env: { BORG_MODEL_RECALL_EXPANSION: "custom-recall" },
+    });
+    expect(omitted.anthropic.models.preTurnExtraction).toBeUndefined();
+    expect(omitted.anthropic.models.recallExpansion).toBe("custom-recall");
+    writeJsonFileAtomic(join(tempDir, "config.json"), {
+      anthropic: { models: { preTurnExtraction: "file-pre-turn" } },
+    });
+    expect(loadConfig({ dataDir: tempDir, env: {} }).anthropic.models.preTurnExtraction).toBe(
+      "file-pre-turn",
+    );
+    expect(
+      loadConfig({ dataDir: tempDir, env: { BORG_MODEL_PRE_TURN_EXTRACTION: "env-pre-turn" } })
+        .anthropic.models.preTurnExtraction,
+    ).toBe("env-pre-turn");
+    expect(() =>
+      configSchema.parse({ anthropic: { models: { preTurnExtraction: "" } } }),
+    ).toThrow();
+  });
+
   it("defaults shared-state compilation to Sonnet independently of recall expansion overrides", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
