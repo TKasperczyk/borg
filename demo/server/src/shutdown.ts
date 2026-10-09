@@ -1,5 +1,9 @@
 import { settleBeforeDeadline } from "borg";
 
+// A signal sent to the process group also reaches pnpm and the tsx CLI, which
+// relay it here again (tsx after ~30 ms); that copy is not a second request.
+const RELAYED_SIGNAL_WINDOW_MS = 1_000;
+
 export function createDemoShutdownHandler(options: {
   beginDrain: () => Promise<void>;
   closeStores: () => Promise<void>;
@@ -7,14 +11,15 @@ export function createDemoShutdownHandler(options: {
   exit: (code: number) => void;
   logger?: Pick<Console, "log" | "error">;
 }) {
-  let shuttingDown = false;
+  let first: { signal: NodeJS.Signals; at: number } | undefined;
   const logger = options.logger ?? console;
   return async (signal: NodeJS.Signals): Promise<void> => {
-    if (shuttingDown) {
+    if (first) {
+      if (signal === first.signal && Date.now() - first.at < RELAYED_SIGNAL_WINDOW_MS) return;
       options.exit(1);
       return;
     }
-    shuttingDown = true;
+    first = { signal, at: Date.now() };
     logger.log(`Received ${signal}; draining Borg`);
     let exitCode = 0;
     for (const phase of [

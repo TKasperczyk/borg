@@ -58,7 +58,10 @@ describe("demo shutdown", () => {
     expect(exit).toHaveBeenCalledWith(1);
   });
 
-  it.each(["SIGTERM", "SIGINT"] as const)("exits immediately on a repeated %s", async (signal) => {
+  it.each([
+    ["SIGTERM", 1_000],
+    ["SIGINT", 0],
+  ] as const)("exits immediately on a repeated %s %i ms after the first", async (signal, afterMs) => {
     vi.useFakeTimers();
     const exit = vi.fn();
     const shutdown = createDemoShutdownHandler({
@@ -69,10 +72,39 @@ describe("demo shutdown", () => {
       logger: { log: vi.fn(), error: vi.fn() },
     });
     const pending = shutdown("SIGTERM");
+    await vi.advanceTimersByTimeAsync(afterMs);
     await shutdown(signal);
     expect(exit).toHaveBeenCalledWith(1);
     await vi.advanceTimersByTimeAsync(75_000);
     await pending;
+  });
+
+  it("keeps draining through a copy of the first signal relayed within a second", async () => {
+    vi.useFakeTimers();
+    let release!: () => void;
+    const drain = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const closeStores = vi.fn(async () => {});
+    const exit = vi.fn();
+    const shutdown = createDemoShutdownHandler({
+      beginDrain: () => drain,
+      closeStores,
+      exit,
+      forceCloseConnections: vi.fn(),
+      logger: { log: vi.fn(), error: vi.fn() },
+    });
+    const pending = shutdown("SIGTERM");
+    await vi.advanceTimersByTimeAsync(30);
+    await shutdown("SIGTERM");
+    await vi.advanceTimersByTimeAsync(969);
+    await shutdown("SIGTERM");
+    expect(exit).not.toHaveBeenCalled();
+    release();
+    await pending;
+    expect(closeStores).toHaveBeenCalledOnce();
+    expect(exit).toHaveBeenCalledOnce();
+    expect(exit).toHaveBeenCalledWith(0);
   });
 
   it("closes stores and exits even if draining and connection close fail", async () => {
