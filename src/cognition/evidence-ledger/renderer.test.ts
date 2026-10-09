@@ -648,12 +648,70 @@ describe("compactEvidenceLedger", () => {
     );
     const rendered = renderEvidenceLedger(compacted.ledger) ?? "";
 
-    expect(canonical?.citations).toEqual(["ep_route", "semn_route", "strm_route"]);
+    expect(canonical?.citations).toEqual(["ep_route", "strm_route"]);
     expect(section(compacted.ledger, "episodes").entries).toEqual([]);
-    expect(section(compacted.ledger, "semantic_graph").entries).toEqual([]);
+    expect(
+      section(compacted.ledger, "semantic_graph").entries.map((entry) => [
+        entry.id,
+        entry.citations,
+      ]),
+    ).toEqual([["semantic_node:semn_route", ["ep_route", "semn_route"]]]);
     expect(section(compacted.ledger, "prior_session_memory").entries).toEqual([]);
-    expect(compacted.traceSummary.dedupedEntryCount).toBe(3);
-    expect(rendered).toContain("[citation: ep_route, semn_route, strm_route]");
+    expect(compacted.traceSummary.dedupedEntryCount).toBe(2);
+    expect(rendered).toContain("[citation: ep_route, strm_route]");
+  });
+
+  it("folds a row only into a canonical it shares a handle with, not one a chain of handles reaches", () => {
+    const ledger = makeLedger();
+
+    section(ledger, "retrieved_raw_stream_evidence").entries.push(
+      syntheticEntry({
+        id: "retrieved_stream:raw_1",
+        text: "Raw message strm_1 from another session.",
+        trust_rank: 68,
+        state_metadata: { stream_ids: ["strm_1"] },
+      }),
+    );
+    section(ledger, "episodes").entries.push(
+      ...[
+        ["ep_1", "strm_1"],
+        ["ep_2", "strm_2"],
+      ].map(([episodeId, streamId]) =>
+        syntheticEntry({
+          id: `episode:${episodeId}`,
+          source_type: "episode",
+          text: `Episode compiled from ${streamId}.`,
+          trust_rank: 52,
+          state_metadata: { episode_id: episodeId, source_stream_ids: [streamId] },
+        }),
+      ),
+    );
+    section(ledger, "semantic_graph").entries.push(
+      syntheticEntry({
+        id: "semantic_node:semn_hub",
+        source_type: "semantic_node",
+        text: "Node drawn from both episodes.",
+        trust_rank: 42,
+        state_metadata: { node_id: "semn_hub", source_episode_ids: ["ep_1", "ep_2"] },
+      }),
+    );
+
+    const compacted = compactEvidenceLedger(ledger, {
+      targetTokens: 20_000,
+      hardCapTokens: 40_000,
+    });
+
+    expect(
+      section(compacted.ledger, "retrieved_raw_stream_evidence").entries.map((entry) => [
+        entry.id,
+        entry.citations,
+      ]),
+    ).toEqual([["retrieved_stream:raw_1", ["ep_1", "strm_1"]]]);
+    expect(
+      section(compacted.ledger, "episodes").entries.map((entry) => [entry.text, entry.citations]),
+    ).toEqual([["Episode compiled from strm_2.", ["ep_1", "ep_2", "semn_hub", "strm_2"]]]);
+    expect(section(compacted.ledger, "semantic_graph").entries).toEqual([]);
+    expect(compacted.traceSummary.dedupedEntryCount).toBe(2);
   });
 
   it("keeps a row whose provenance canonical the section cap cuts", () => {
@@ -713,7 +771,7 @@ describe("compactEvidenceLedger", () => {
     expect(compacted.traceSummary.omittedEntryCountsBySection.current_session_transcript).toBe(2);
   });
 
-  it("does not fold the rest of a cut canonical's group into a kept row its handles chain to", () => {
+  it("does not fold the rest of a cut canonical's group into a kept row it shares a handle with", () => {
     const ledger = makeLedger();
 
     section(ledger, "current_session_transcript").entries.push(
@@ -726,10 +784,7 @@ describe("compactEvidenceLedger", () => {
         }),
       ),
     );
-    const episodeSources: Array<[string, string[]]> = [
-      ["ep_q", ["strm_a", "strm_q"]],
-      ["ep_r", ["strm_q", "strm_r"]],
-    ];
+    const episodeSources: Array<[string, string[]]> = [["ep_q", ["strm_a", "strm_r"]]];
 
     section(ledger, "episodes").entries.push(
       ...episodeSources.map(([episodeId, sourceStreamIds]) =>
@@ -773,12 +828,11 @@ describe("compactEvidenceLedger", () => {
     ).toEqual([["retrieved_stream:raw_r", undefined]]);
     expect(section(compacted.ledger, "episodes").entries.map((entry) => entry.id)).toEqual([
       "episode:ep_q",
-      "episode:ep_r",
     ]);
     expect(compacted.traceSummary.dedupedEntryCount).toBe(0);
   });
 
-  it("folds rows of a cut canonical's group that render the same episode, and nothing else", () => {
+  it("regroups a cut canonical's rows only with rows that render the same episode", () => {
     const ledger = makeLedger();
 
     section(ledger, "current_session_transcript").entries.push(
@@ -843,16 +897,11 @@ describe("compactEvidenceLedger", () => {
       section(compacted.ledger, "episodes").entries.map((entry) => [entry.id, entry.citations]),
     ).toEqual([
       ["episode:ep_q", ["ep_q", "strm_a"]],
-      ["episode:ep_r", ["ep_r", "strm_r"]],
+      ["episode:ep_r", ["ep_q", "ep_r", "semn_hub", "strm_r"]],
     ]);
     expect(section(compacted.ledger, "retrieved_memory_evidence").entries).toEqual([]);
-    expect(
-      section(compacted.ledger, "semantic_graph").entries.map((entry) => [
-        entry.id,
-        entry.citations,
-      ]),
-    ).toEqual([["semantic_node:semn_hub", undefined]]);
-    expect(compacted.traceSummary.dedupedEntryCount).toBe(2);
+    expect(section(compacted.ledger, "semantic_graph").entries).toEqual([]);
+    expect(compacted.traceSummary.dedupedEntryCount).toBe(3);
   });
 
   it("folds two rows of one section that render the same episode but not rows sharing only evidence", () => {

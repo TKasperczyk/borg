@@ -273,6 +273,11 @@ function retrievedOpenQuestionId(ref: LedgerEntryRef): string | null {
     : null;
 }
 
+type FoldGroup = {
+  group: LedgerEntryRef[];
+  openQuestionMerge: RetrievedOpenQuestionMerge | null;
+};
+
 function retrievedOpenQuestionMerge(
   group: readonly LedgerEntryRef[],
 ): RetrievedOpenQuestionMerge | null {
@@ -343,16 +348,70 @@ export function provenanceDedupeEntryKey(
   return `${sectionId}\u0000${entryId}`;
 }
 
-function sameObjectGroups(group: readonly LedgerEntryRef[]): LedgerEntryRef[][] {
-  const groupsByObject = new Map<string, LedgerEntryRef[]>();
+function pushIndexed(index: Map<string, LedgerEntryRef[]>, key: string, ref: LedgerEntryRef): void {
+  const refs = index.get(key);
 
-  for (const ref of group) {
+  if (refs === undefined) {
+    index.set(key, [ref]);
+  } else {
+    refs.push(ref);
+  }
+}
+
+// Shared handles chain a group together, so two of its rows can share no evidence at all. A row
+// folds only into a canonical that renders its object or shares one of its handles from another
+// section; folded along the chain instead, its text would leave the page under a row it has nothing
+// in common with. In canonical order, each row not yet placed becomes a canonical and folds every
+// unplaced row that qualifies.
+function directFoldGroups(group: readonly LedgerEntryRef[]): LedgerEntryRef[][] {
+  const ordered = [...group].sort(
+    (left, right) =>
+      Number(isProvenanceDedupeProtected(right)) - Number(isProvenanceDedupeProtected(left)) ||
+      compareCanonicalRefs(left, right),
+  );
+  const refsByHandle = new Map<string, LedgerEntryRef[]>();
+  const refsByObject = new Map<string, LedgerEntryRef[]>();
+
+  for (const ref of ordered) {
+    for (const handle of ref.handles) {
+      pushIndexed(refsByHandle, handle, ref);
+    }
+
     if (ref.object !== null) {
-      groupsByObject.set(ref.object, [...(groupsByObject.get(ref.object) ?? []), ref]);
+      pushIndexed(refsByObject, ref.object, ref);
     }
   }
 
-  return [...groupsByObject.values()].filter((objectGroup) => objectGroup.length > 1);
+  const placed = new Set<LedgerEntryRef>();
+  const foldGroups: LedgerEntryRef[][] = [];
+
+  for (const canonical of ordered) {
+    if (placed.has(canonical)) {
+      continue;
+    }
+
+    placed.add(canonical);
+    const folded = new Set<LedgerEntryRef>();
+    const candidates = [
+      ...(canonical.object === null ? [] : (refsByObject.get(canonical.object) ?? [])),
+      ...[...canonical.handles].flatMap((handle) =>
+        (refsByHandle.get(handle) ?? []).filter((ref) => ref.sectionId !== canonical.sectionId),
+      ),
+    ];
+
+    for (const ref of candidates) {
+      if (!placed.has(ref) && !isProvenanceDedupeProtected(ref)) {
+        folded.add(ref);
+        placed.add(ref);
+      }
+    }
+
+    if (folded.size > 0) {
+      foldGroups.push(group.filter((ref) => ref === canonical || folded.has(ref)));
+    }
+  }
+
+  return foldGroups;
 }
 
 // A row keyed in `groupingByEntryKey` groups as its value says; every other row groups by all its
@@ -465,19 +524,22 @@ export function dedupeEvidenceLedgerByProvenance(
   const foldedEntryKeysByCanonicalKey = new Map<string, string[]>();
   let dedupedEntryCount = 0;
 
-  const foldGroups = [...groups.values()].flatMap((group) => {
+  const foldGroups = [...groups.values()].flatMap((group): FoldGroup[] => {
     if (group.length <= 1) {
       return [];
     }
 
-    return new Set(group.map((ref) => ref.sectionId)).size > 1 ||
-      retrievedOpenQuestionMerge(group) !== null
-      ? [group]
-      : sameObjectGroups(group);
+    const openQuestionMerge = retrievedOpenQuestionMerge(group);
+
+    return openQuestionMerge !== null
+      ? [{ group, openQuestionMerge }]
+      : directFoldGroups(group).map((foldGroup) => ({
+          group: foldGroup,
+          openQuestionMerge: null,
+        }));
   });
 
-  for (const group of foldGroups) {
-    const openQuestionMerge = retrievedOpenQuestionMerge(group);
+  for (const { group, openQuestionMerge } of foldGroups) {
     const canonical =
       openQuestionMerge?.canonical ??
       (() => {

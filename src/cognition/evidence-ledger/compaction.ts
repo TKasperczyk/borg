@@ -955,9 +955,8 @@ export function compactEvidenceLedger(
   // canonical and the rows it folded group in the next pass only with rows rendering the same
   // object, and a group cut again at that grouping only with those rows in its own section: split
   // from them, a cut row's own duplicate would stand in that section in place of a kept row.
-  // Letting the rest regroup by shared handles would fold it into whichever kept row its transitive
-  // chain of handles reaches. A cut at the last grouping takes one memory out of its own section,
-  // counted there once, and moves nothing; every earlier cut moves rows down, so the passes end.
+  // A cut at the last grouping takes one memory out of its own section, counted there once, and
+  // moves nothing; every earlier cut moves rows down, so the passes end.
   const groupingByEntryKey = new Map<string, ProvenanceDedupeGrouping>();
   let pass = dedupeAndCapFullLedger(ledger, options, groupingByEntryKey);
 
