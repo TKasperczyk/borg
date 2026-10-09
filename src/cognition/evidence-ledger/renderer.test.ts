@@ -655,7 +655,7 @@ describe("compactEvidenceLedger", () => {
         entry.id,
         entry.citations,
       ]),
-    ).toEqual([["semantic_node:semn_route", ["ep_route", "semn_route"]]]);
+    ).toEqual([["semantic_node:semn_route", undefined]]);
     expect(section(compacted.ledger, "prior_session_memory").entries).toEqual([]);
     expect(compacted.traceSummary.dedupedEntryCount).toBe(2);
     expect(rendered).toContain("[citation: ep_route, strm_route]");
@@ -902,6 +902,69 @@ describe("compactEvidenceLedger", () => {
     expect(section(compacted.ledger, "retrieved_memory_evidence").entries).toEqual([]);
     expect(section(compacted.ledger, "semantic_graph").entries).toEqual([]);
     expect(compacted.traceSummary.dedupedEntryCount).toBe(3);
+  });
+
+  it("keeps a node's rows in one group when the cap cuts an episode its node row shares", () => {
+    const ledger = makeLedger();
+
+    section(ledger, "episodes").entries.push(
+      ...[
+        ["ep_k", "strm_k"],
+        ["ep_e", "strm_e"],
+      ].map(([episodeId, streamId]) =>
+        syntheticEntry({
+          id: `episode:${episodeId}`,
+          source_type: "episode",
+          text: `Episode compiled from ${streamId}.`,
+          trust_rank: 52,
+          state_metadata: { episode_id: episodeId, source_stream_ids: [streamId] },
+        }),
+      ),
+    );
+    section(ledger, "retrieved_memory_evidence").entries.push(
+      syntheticEntry({
+        id: "retrieved_evidence:evidence_node_semn_n_recall",
+        source_type: "semantic_node",
+        text: "Recalled node semn_n.",
+        trust_rank: 50,
+        state_metadata: { node_id: "semn_n" },
+      }),
+    );
+    section(ledger, "semantic_graph").entries.push(
+      syntheticEntry({
+        id: "semantic_node:semn_n",
+        source_type: "semantic_node",
+        text: "Node semn_n drawn from ep_e.",
+        trust_rank: 42,
+        state_metadata: { node_id: "semn_n", source_episode_ids: ["ep_e"] },
+      }),
+    );
+
+    const compacted = compactEvidenceLedger(ledger, {
+      targetTokens: 20_000,
+      hardCapTokens: 40_000,
+      sectionOptions: {
+        episodes: {
+          maxEntries: 1,
+          maxTokens: 20_000,
+        },
+      },
+    });
+
+    expect(section(compacted.ledger, "episodes").entries.map((entry) => entry.id)).toEqual([
+      "episode:ep_k",
+      "evidence_ledger_omitted:episodes",
+    ]);
+    expect(section(compacted.ledger, "semantic_graph").entries.map((entry) => entry.id)).toEqual(
+      [],
+    );
+    expect(
+      section(compacted.ledger, "retrieved_memory_evidence").entries.map((entry) => [
+        entry.id,
+        entry.citations,
+      ]),
+    ).toEqual([["retrieved_evidence:evidence_node_semn_n_recall", ["ep_e", "semn_n"]]]);
+    expect(compacted.traceSummary.dedupedEntryCount).toBe(1);
   });
 
   it("folds two rows of one section that render the same episode but not rows sharing only evidence", () => {

@@ -361,8 +361,10 @@ function pushIndexed(index: Map<string, LedgerEntryRef[]>, key: string, ref: Led
 // Shared handles chain a group together, so two of its rows can share no evidence at all. A row
 // folds only into a canonical that renders its object or shares one of its handles from another
 // section; folded along the chain instead, its text would leave the page under a row it has nothing
-// in common with. In canonical order, each row not yet placed becomes a canonical and folds every
-// unplaced row that qualifies.
+// in common with. The rows that render one object fold together, where the first of them in
+// canonical order would: split between two canonicals, a cut of one would put its rows back on the
+// page beside the others. In canonical order, each row not yet placed becomes a canonical and folds
+// every unplaced row that qualifies.
 function directFoldGroups(group: readonly LedgerEntryRef[]): LedgerEntryRef[][] {
   const ordered = [...group].sort(
     (left, right) =>
@@ -382,6 +384,8 @@ function directFoldGroups(group: readonly LedgerEntryRef[]): LedgerEntryRef[][] 
     }
   }
 
+  const objectRows = (ref: LedgerEntryRef): LedgerEntryRef[] =>
+    ref.object === null ? [ref] : (refsByObject.get(ref.object) ?? [ref]);
   const placed = new Set<LedgerEntryRef>();
   const foldGroups: LedgerEntryRef[][] = [];
 
@@ -393,9 +397,16 @@ function directFoldGroups(group: readonly LedgerEntryRef[]): LedgerEntryRef[][] 
     placed.add(canonical);
     const folded = new Set<LedgerEntryRef>();
     const candidates = [
-      ...(canonical.object === null ? [] : (refsByObject.get(canonical.object) ?? [])),
+      ...objectRows(canonical),
       ...[...canonical.handles].flatMap((handle) =>
-        (refsByHandle.get(handle) ?? []).filter((ref) => ref.sectionId !== canonical.sectionId),
+        (refsByHandle.get(handle) ?? [])
+          .filter(
+            (ref) =>
+              ref.sectionId !== canonical.sectionId &&
+              objectRows(ref)[0] === ref &&
+              !isProvenanceDedupeProtected(ref),
+          )
+          .flatMap(objectRows),
       ),
     ];
 
