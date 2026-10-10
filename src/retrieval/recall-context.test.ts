@@ -4,16 +4,56 @@ import type { EntityId } from "../util/ids.js";
 
 import {
   combineMemoryDisclosureLabels,
+  MEMORY_DISCLOSURE_GUIDANCE_FOR_MODEL,
   memoryDisclosureLabelFromEpisodeAccess,
   memoryDisclosureLabelFromMetadata,
   memoryDisclosureLabelMetadata,
   memoryDisclosureLabelSchema,
   publicMemoryDisclosureLabel,
   relationshipPrivateMemoryDisclosureLabel,
+  renderMemoryDisclosureGuidanceForModel,
   selfPrivateMemoryDisclosureLabel,
   type MemoryDisclosureLabel,
   unknownMemoryDisclosureLabel,
 } from "./recall-context.js";
+
+describe("memory disclosure guidance", () => {
+  const tenantPublicSentence =
+    "A tenant-authorized public fact is shareable with any tenant member; its private source is not.";
+
+  it("keeps the shared core guidance free of tenant-public instructions", () => {
+    expect(MEMORY_DISCLOSURE_GUIDANCE_FOR_MODEL).not.toContain(tenantPublicSentence);
+    expect(renderMemoryDisclosureGuidanceForModel()).toBe(MEMORY_DISCLOSURE_GUIDANCE_FOR_MODEL);
+  });
+
+  it.each([
+    { name: "no rows", labels: [] },
+    { name: "ordinary public rows", labels: [{ class: "public" }] },
+    { name: "public rows with another scope", labels: [{ class: "public", scope: "global" }] },
+    { name: "private tenant rows", labels: [{ class: "self_private", scope: "tenant" }] },
+  ])("omits tenant-public guidance for $name", ({ labels }) => {
+    const guidance = renderMemoryDisclosureGuidanceForModel(labels);
+    expect(guidance).not.toContain(tenantPublicSentence);
+    expect(guidance).toBe(MEMORY_DISCLOSURE_GUIDANCE_FOR_MODEL);
+  });
+
+  it("renders the unchanged tenant-public sentence once when a rendered label has both keys", () => {
+    const guidance = renderMemoryDisclosureGuidanceForModel([
+      { class: "self_private" },
+      { class: "public", scope: "tenant" },
+      { class: "public", scope: "tenant" },
+    ]);
+    expect(guidance.split("\n").filter((line) => line === tenantPublicSentence)).toEqual([
+      tenantPublicSentence,
+    ]);
+    expect(guidance).toContain(
+      `${tenantPublicSentence}\nOperator or creator context may permit fuller discussion;`,
+    );
+    expect(guidance.replace(`${tenantPublicSentence}\n`, "")).toBe(
+      MEMORY_DISCLOSURE_GUIDANCE_FOR_MODEL,
+    );
+  });
+});
 
 describe("memory disclosure labels", () => {
   const alice = "ent_aaaaaaaaaaaaaaaa" as EntityId;

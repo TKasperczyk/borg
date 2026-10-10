@@ -28,7 +28,12 @@ import {
   type SessionId,
 } from "../util/ids.js";
 import { ResponseWaiterRegistry } from "./response-waiter-registry.js";
-import type { SessionRecord } from "../sessions/index.js";
+import {
+  SessionsRepository,
+  sessionMigrations,
+  type SessionEnsureInput,
+  type SessionRecord,
+} from "../sessions/index.js";
 import { TeamAgentTurnRunner, type TeamAgentTurnRunnerOptions } from "./team-agent-turn-runner.js";
 
 const cleanups: Array<() => void> = [];
@@ -716,7 +721,7 @@ describe("TeamAgentTurnRunner", () => {
     expect(projected.borgReplied.participantEntityIds).toEqual([ids.selfId, ids.audienceId]);
   });
 
-  it("warns and records nothing when the session has no audience or an unensurable record", async () => {
+  it("warns and records nothing when the session or audience is missing", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const noAudience = harness(
       async () => Response.json({ action: "reply", content: "hi" }),
@@ -731,18 +736,6 @@ describe("TeamAgentTurnRunner", () => {
       reason: "audience_missing",
     });
 
-    const emptyLabel = harness(
-      async () => Response.json({ action: "reply", content: "hi" }),
-      {},
-      { sessionRecord: { label: "" } },
-    );
-    await emptyLabel.runner.run(emptyLabel.input);
-    expect(emptyLabel.projectRepliedTurn).not.toHaveBeenCalled();
-    expect(warn).toHaveBeenLastCalledWith("memory-sidecar: inbox reply activity not recorded", {
-      tenant: "tenant",
-      reason: "session_record_incomplete",
-    });
-
     const missing = harness(
       async () => Response.json({ action: "reply", content: "hi" }),
       {},
@@ -755,6 +748,40 @@ describe("TeamAgentTurnRunner", () => {
       reason: "session_missing",
     });
   });
+
+  it.each(["label", "audience_label", "source_external_id", "source_url", "last_turn_id"] as const)(
+    "surfaces ensure validation for empty %s while preserving the committed reply",
+    async (field) => {
+      const dataDir = mkdtempSync(join(tmpdir(), "borg-inbox-session-validation-"));
+      const db = openDatabase(join(dataDir, "borg.db"), { migrations: sessionMigrations });
+      cleanups.push(() => {
+        db.close();
+        rmSync(dataDir, { recursive: true, force: true });
+      });
+      const sessions = new SessionsRepository({ db, clock: new FixedClock(1_000) });
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const h = harness(
+        async () => Response.json({ action: "reply", content: "hi" }),
+        {},
+        { sessionRecord: { [field]: "" } },
+      );
+      h.projectRepliedTurn.mockImplementation((input) => {
+        sessions.ensure((input as { session: SessionEnsureInput }).session);
+        return {} as never;
+      });
+
+      await expect(h.runner.run(h.input)).resolves.toBeUndefined();
+
+      expect(h.appendBacklogTerminal).toHaveBeenCalledTimes(1);
+      expect(h.projectRepliedTurn).toHaveBeenCalledTimes(1);
+      expect(sessions.get(h.ids.sessionId)).toBeNull();
+      expect(warn).toHaveBeenLastCalledWith("memory-sidecar: inbox reply activity not recorded", {
+        tenant: "tenant",
+        reason: "projection_failed",
+        error_name: "ZodError",
+      });
+    },
+  );
 
   it("records no activity for a silent response", async () => {
     const { runner, input, appendBacklogTerminal, projectRepliedTurn } = harness(async () =>

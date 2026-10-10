@@ -1,4 +1,4 @@
-import { findInErrorCauseChain } from "../util/errors.js";
+import { findInErrorCauseChain, LLMToolArgumentsError } from "../util/errors.js";
 import type { LLMCompleteResult, TokenUsageSink } from "./index.js";
 
 export type LLMUsage = Pick<
@@ -37,7 +37,15 @@ function errorUsageRecord(error: unknown) {
     (candidate): candidate is object =>
       candidate !== null && typeof candidate === "object" && consumedUsage.has(candidate),
   );
-  return carrier === undefined ? undefined : consumedUsage.get(carrier);
+  if (carrier !== undefined) return consumedUsage.get(carrier);
+  const unparseable = findInErrorCauseChain(
+    error,
+    (candidate): candidate is LLMToolArgumentsError =>
+      candidate instanceof LLMToolArgumentsError && candidate.usage !== undefined,
+  );
+  if (unparseable?.usage === undefined) return undefined;
+  attachLlmErrorUsage(unparseable, unparseable.usage);
+  return consumedUsage.get(unparseable);
 }
 
 export function getLlmErrorUsage(error: unknown): LLMUsage | undefined {

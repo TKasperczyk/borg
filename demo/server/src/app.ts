@@ -1193,7 +1193,8 @@ function abortedAnchorFailureReason(entry: StreamEntry): string | null {
 }
 
 function sourceEntryIds(entry: StreamEntry): string[] {
-  const sourceEntryIds = entry.response_to?.source_entry_ids;
+  if (entry.response_to?.kind !== "stream_backlog") return [];
+  const sourceEntryIds = entry.response_to.source_entry_ids;
   if (!Array.isArray(sourceEntryIds)) {
     return [];
   }
@@ -3052,13 +3053,15 @@ export class BorgRequestGate {
   private resetting = false;
   private shuttingDown = false;
   private drained: (() => void) | undefined;
+  private drainPromise: Promise<void> | undefined;
 
   beginShutdown(): Promise<void> {
     this.shuttingDown = true;
-    if (this.inflight === 0 && !this.resetting) return Promise.resolve();
-    return new Promise<void>((resolve) => {
+    this.drainPromise ??= new Promise<void>((resolve) => {
       this.drained = resolve;
+      if (this.inflight === 0 && !this.resetting) resolve();
     });
+    return this.drainPromise;
   }
 
   acquire(): BorgRequestGateLease {
@@ -3168,30 +3171,29 @@ export function createDemoServerApp(args: DemoServerAppInput) {
     return jsonError(500, "Internal Server Error");
   });
 
-  app.use(
-    "/api/*",
-    cors({
-      origin: (origin) => (allowedOrigins.includes(origin) ? origin : (allowedOrigins[0] ?? "")),
-    }),
-  );
-
   app.use("/api/*", async (c, next) => {
     const pathname = new URL(c.req.url).pathname;
-    if (
-      pathname === "/api/live" ||
-      pathname === "/api/admin/reset" ||
-      pathname === "/api/admin/memory"
-    ) {
-      return next();
-    }
-
-    const lease = input.requestGate.acquire();
+    // This endpoint serves cached sampler data only, including during reset/drain.
+    // It neither touches Borg nor starts embeddings or background writes.
+    if (pathname === "/api/admin/memory") return next();
+    // Acquire before body parsing (including reset) or any middleware await.
+    const lease =
+      pathname === "/api/admin/reset"
+        ? input.requestGate.beginReset()
+        : input.requestGate.acquire();
     try {
       await next();
     } finally {
       lease.release();
     }
   });
+
+  app.use(
+    "/api/*",
+    cors({
+      origin: (origin) => (allowedOrigins.includes(origin) ? origin : (allowedOrigins[0] ?? "")),
+    }),
+  );
 
   app.get("/api/admin/memory", (c) => {
     c.header("Cache-Control", "no-store");
@@ -4427,7 +4429,6 @@ export function createDemoServerApp(args: DemoServerAppInput) {
       throw new HTTPException(501, { message: "Reset not wired up in this server" });
     }
 
-    const resetLease = input.requestGate.beginReset();
     try {
       clearAppCaches();
       await input.resetBorg();
@@ -4443,8 +4444,6 @@ export function createDemoServerApp(args: DemoServerAppInput) {
         throw new HTTPException(500, { message: error.message });
       }
       mapBorgErrorToHttp(error);
-    } finally {
-      resetLease.release();
     }
   });
 

@@ -39,6 +39,7 @@ type OpenQuestionWriter =
 export type ReviewOpenQuestionExtractorLike = Pick<ReviewOpenQuestionExtractor, "extract">;
 
 export type ReviewOpenQuestionHookOptions = {
+  minSimilarity?: number;
   extractor?: ReviewOpenQuestionExtractorLike | null;
   openQuestionsRepository?: OpenQuestionsRepository;
 };
@@ -285,6 +286,7 @@ export async function enqueueOpenQuestionForReview(
         ? await writer.findSimilarOpenQuestion({ question: createInput.question })
         : await findOpenQuestionDuplicateBackstop({
             repository: duplicateRepository,
+            minSimilarity: options.minSimilarity,
             question: createInput.question,
             onSearchFailure: (error) => {
               console.warn("Review open-question duplicate backstop failed open", {
@@ -317,7 +319,7 @@ export async function appendInternalFailureEvent(
   error: unknown,
   details?: Record<string, unknown>,
 ): Promise<void> {
-  try {
+  await streamWriter.failureReports.report(async () => {
     await streamWriter.append({
       kind: "internal_event",
       content: {
@@ -326,9 +328,7 @@ export async function appendInternalFailureEvent(
         error: formatHookError(error),
       },
     });
-  } catch {
-    // Best-effort logging only.
-  }
+  });
 }
 
 export async function appendOpenQuestionHookFailureEvent(

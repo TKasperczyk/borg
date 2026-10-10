@@ -7,7 +7,8 @@ import {
   type StreamEntryIndexRecord,
   type StreamEntryIndexRepository,
   type StreamReader,
-  type StreamResponseTo,
+  type StreamBacklogResponseTo,
+  type TaskEventResponseTo,
   type StreamWriter,
 } from "../../stream/index.js";
 import { CognitionError } from "../../util/errors.js";
@@ -42,7 +43,7 @@ export type AppendBacklogTerminalInput = {
 
 export type AppendBacklogTerminalResult = {
   terminalEntry: StreamEntry;
-  responseTo: StreamResponseTo;
+  responseTo: StreamBacklogResponseTo;
   sourceEntries: readonly StreamEntry[];
 };
 
@@ -67,7 +68,7 @@ export type FindTerminalCoveringEntryResult =
   | {
       status: "found";
       terminalEntry: StreamEntry;
-      responseTo: StreamResponseTo;
+      responseTo: StreamBacklogResponseTo;
     };
 
 export type BacklogTerminalServiceOptions = {
@@ -226,7 +227,7 @@ export function buildStreamBacklogResponseTo(input: {
   sourceEntries: readonly StreamEntry[];
   records: readonly StreamEntryIndexRecord[];
   sourceEntryIds: readonly StreamEntryId[];
-}): StreamResponseTo {
+}): StreamBacklogResponseTo {
   const throughEntry = input.sourceEntries[input.sourceEntries.length - 1];
   const throughRecord = input.records[input.records.length - 1];
   if (throughEntry === undefined || throughRecord === undefined) {
@@ -321,6 +322,40 @@ export function buildStreamBacklogResponseTo(input: {
 
 export class BacklogTerminalService {
   constructor(private readonly options: BacklogTerminalServiceOptions) {}
+
+  async appendTaskEventTerminal(input: {
+    sessionId: SessionId;
+    responseTo: TaskEventResponseTo;
+    content: string;
+    audience?: string;
+  }): Promise<StreamEntry> {
+    const writer = this.options.createStreamWriter(input.sessionId);
+    try {
+      return await writer.append({
+        kind: "agent_msg",
+        content: input.content,
+        response_to: input.responseTo,
+        ...(input.audience === undefined ? {} : { audience: input.audience }),
+      });
+    } finally {
+      writer.close();
+    }
+  }
+
+  async ingestTaskEventTerminal(terminalEntry: StreamEntry): Promise<void> {
+    if (terminalEntry.response_to?.kind !== "task_event") {
+      throw new CognitionError("Task terminal requires a task_event response stamp", {
+        code: "TASK_EVENT_TERMINAL_STAMP_INVALID",
+      });
+    }
+    const result = await this.options.streamIngestionCoordinator?.ingest(terminalEntry.session_id, {
+      answeredWindow: {
+        responseTo: terminalEntry.response_to,
+        terminalCursor: cursorForEntry(terminalEntry),
+      },
+    });
+    if (result?.error !== undefined) throw result.error;
+  }
 
   hydrateBacklogBatch(input: {
     sessionId: SessionId;
@@ -480,7 +515,7 @@ export class BacklogTerminalService {
       sessionId: input.sessionId,
       byteOffset: terminalRecord.byte_offset,
     });
-    if (terminalEntry?.response_to === undefined) {
+    if (terminalEntry?.response_to?.kind !== "stream_backlog") {
       return { status: "pending" };
     }
     return { status: "found", terminalEntry, responseTo: terminalEntry.response_to };

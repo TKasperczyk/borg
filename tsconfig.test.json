@@ -1,8 +1,21 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "rootDir": "."
+    "rootDir": ".",
+    "paths": { "borg": ["./src/index.ts"] }
   },
-  "include": ["src/**/*", "tests/**/*"],
+  "include": [
+    "src/**/*",
+    "tests/**/*",
+    "scripts/async-ingest-scenario.ts",
+    "scripts/repair-entity-graph*.ts",
+    "scripts/migrate-embeddings*.ts",
+    "scripts/embedding-migration/**/*.ts",
+    "scripts/measure-similarity-distributions.ts",
+    "scripts/similarity-distributions/**/*.ts",
+    "scripts/legacy-residue-report*.ts",
+    "scripts/legacy-residue/**/*.ts",
+    "scripts/replay-overseer.ts"
+  ],
   "exclude": ["node_modules", "dist"]
 }

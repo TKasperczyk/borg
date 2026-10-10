@@ -89,7 +89,7 @@ describe("ActivityRepository", () => {
     db.close();
   });
 
-  it("derives observed group membership and lists only visible other-session activity", () => {
+  it("lists cross-audience activity independently of observed membership, with an optional owner pass", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-activity-visible-"));
     tempDirs.push(tempDir);
     const db = openDatabase(join(tempDir, "activity.db"), {
@@ -213,6 +213,15 @@ describe("ActivityRepository", () => {
       sourceStreamEntryIds: [createStreamEntryId()],
     });
     repository.record({
+      kind: "borg_replied",
+      occurredAt: 6_500,
+      sessionId: bobSessionId,
+      speakerEntityId: self,
+      actorEntityId: self,
+      audienceEntityId: bob,
+      sourceStreamEntryIds: [createStreamEntryId()],
+    });
+    repository.record({
       kind: "user_contact",
       occurredAt: 8_000,
       sessionId: hiddenGroupSessionId,
@@ -225,13 +234,23 @@ describe("ActivityRepository", () => {
 
     expect(repository.listObservedGroupAudienceEntityIdsForSpeaker(alice)).toEqual([group]);
     expect(
-      repository.listRecentVisibleOtherSessionEvents({
+      repository.listRecentOtherActiveSessionEvents({
         currentSessionId,
-        audienceEntityIds: [alice, group],
         sinceMs: 1_500,
         limit: 12,
       }),
     ).toEqual([
+      expect.objectContaining({
+        kind: "user_contact",
+        sessionId: bobSessionId,
+        audienceEntityId: bob,
+        participantLabel: "Bob",
+      }),
+      expect.objectContaining({
+        kind: "user_contact",
+        sessionId: hiddenGroupSessionId,
+        audienceEntityId: unobservedGroup,
+      }),
       expect.objectContaining({
         kind: "user_contact",
         occurredAt: 4_500,
@@ -242,30 +261,31 @@ describe("ActivityRepository", () => {
         participantLabel: "Alice",
       }),
       expect.objectContaining({
+        kind: "user_contact",
+        occurredAt: 2_000,
+        sessionId: groupSessionId,
+        participantLabel: "Alice",
+      }),
+      expect.objectContaining({ kind: "borg_replied", sessionId: bobSessionId }),
+      expect.objectContaining({
         kind: "borg_replied",
         occurredAt: 4_000,
         sessionId: groupSessionId,
         audienceEntityId: group,
         conversationKind: "thread",
         conversationName: "AI Ninjas",
-        participantLabel: "AI Ninjas",
-      }),
-      expect.objectContaining({
-        kind: "user_contact",
-        occurredAt: 2_000,
-        sessionId: groupSessionId,
-        participantLabel: "Alice",
+        participantLabel: "Borg",
       }),
     ]);
     expect(
-      repository.listRecentVisibleOtherSessionEvents({
+      repository.listRecentOtherActiveSessionEvents({
         currentSessionId,
-        audienceEntityIds: [alice, group],
         sinceMs: 1_500,
         limit: 12,
         kinds: ["borg_replied"],
       }),
     ).toEqual([
+      expect.objectContaining({ kind: "borg_replied", sessionId: bobSessionId }),
       expect.objectContaining({
         kind: "borg_replied",
         occurredAt: 4_000,
@@ -274,14 +294,28 @@ describe("ActivityRepository", () => {
       }),
     ]);
     expect(
-      repository.listRecentVisibleOtherSessionEvents({
+      repository.listRecentOtherActiveSessionEvents({
         currentSessionId,
-        audienceEntityIds: [alice, group],
         sinceMs: 1_500,
         limit: 12,
         kinds: [],
       }),
     ).toEqual([]);
+    expect(
+      repository.listRecentOtherActiveSessionEvents({
+        currentSessionId,
+        sinceMs: 5_500,
+        limit: 1,
+      }),
+    ).toEqual([expect.objectContaining({ kind: "user_contact", sessionId: bobSessionId })]);
+    expect(
+      repository.listRecentOtherActiveSessionEvents({
+        currentSessionId,
+        sinceMs: 5_500,
+        limit: 1,
+        kinds: ["borg_replied"],
+      }),
+    ).toEqual([expect.objectContaining({ kind: "borg_replied", sessionId: bobSessionId })]);
 
     db.close();
   });

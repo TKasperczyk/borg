@@ -54,13 +54,64 @@ export const commitmentReconciliationDetectionKeySchema = z
   })
   .strict();
 
+// What the model emits. superseded_commitment_ids is deliberately absent: for
+// supersede_to_survivor it is fully determined as commitment_ids minus the
+// survivor, so asking the model to restate it only creates a partition invariant
+// it can fail. The harness derives it (deriveCommitmentReconciliationJudgment);
+// the stored judgment below keeps the field for consumers and persisted refs.
+const commitmentReconciliationJudgmentModelShape = {
+  commitment_ids: z.array(commitmentIdSchema).min(2),
+  resolution: commitmentReconciliationResolutionSchema,
+  survivor_commitment_id: commitmentIdSchema.nullable().default(null),
+  reason: z.string().trim().min(1).max(1_000),
+};
+
+export const commitmentReconciliationModelJudgmentSchema = z
+  .object(commitmentReconciliationJudgmentModelShape)
+  .strict()
+  .superRefine((value, ctx) => {
+    const commitmentIds = new Set(value.commitment_ids);
+
+    if (commitmentIds.size !== value.commitment_ids.length) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["commitment_ids"],
+        message: "commitment_ids must not contain duplicates",
+      });
+    }
+
+    if (value.resolution === "supersede_to_survivor") {
+      if (
+        value.survivor_commitment_id === null ||
+        !commitmentIds.has(value.survivor_commitment_id)
+      ) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["survivor_commitment_id"],
+          message: "supersede_to_survivor requires survivor_commitment_id from commitment_ids",
+        });
+      }
+
+      return;
+    }
+
+    if (value.survivor_commitment_id !== null) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["survivor_commitment_id"],
+        message: `${value.resolution} requires survivor_commitment_id to be null`,
+      });
+    }
+  });
+
+export type CommitmentReconciliationModelJudgment = z.infer<
+  typeof commitmentReconciliationModelJudgmentSchema
+>;
+
 export const commitmentReconciliationJudgmentSchema = z
   .object({
-    commitment_ids: z.array(commitmentIdSchema).min(2),
-    resolution: commitmentReconciliationResolutionSchema,
-    survivor_commitment_id: commitmentIdSchema.nullable().default(null),
+    ...commitmentReconciliationJudgmentModelShape,
     superseded_commitment_ids: z.array(commitmentIdSchema).default([]),
-    reason: z.string().trim().min(1).max(1_000),
   })
   .strict()
   .superRefine((value, ctx) => {
@@ -188,6 +239,22 @@ export const commitmentReconciliationReviewRefsSchema = z
 export type CommitmentReconciliationJudgment = z.infer<
   typeof commitmentReconciliationJudgmentSchema
 >;
+
+/**
+ * Complete a model judgment into the stored shape. The superseded set is the
+ * complement of the survivor within commitment_ids for supersede_to_survivor
+ * and empty otherwise, so the partition invariant holds by construction.
+ */
+export function deriveCommitmentReconciliationJudgment(
+  judgment: CommitmentReconciliationModelJudgment,
+): CommitmentReconciliationJudgment {
+  const superseded_commitment_ids =
+    judgment.resolution === "supersede_to_survivor" && judgment.survivor_commitment_id !== null
+      ? judgment.commitment_ids.filter((id) => id !== judgment.survivor_commitment_id)
+      : [];
+
+  return { ...judgment, superseded_commitment_ids };
+}
 export type CommitmentReconciliationReviewRefs = z.infer<
   typeof commitmentReconciliationReviewRefsSchema
 >;

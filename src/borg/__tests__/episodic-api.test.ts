@@ -1,3 +1,4 @@
+import { seedTestEmbeddingProfile } from "../../test-support/embedding-profile.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -104,6 +105,7 @@ describe("Borg", () => {
     db.close();
     await store.close();
 
+    seedTestEmbeddingProfile(tempDir);
     const borg = await Borg.open({
       dataDir: tempDir,
       clock,
@@ -213,6 +215,7 @@ describe("Borg", () => {
     db.close();
     await store.close();
 
+    seedTestEmbeddingProfile(tempDir);
     const borg = await Borg.open({
       dataDir: tempDir,
       clock,
@@ -309,6 +312,7 @@ describe("Borg", () => {
     db.close();
     await store.close();
 
+    seedTestEmbeddingProfile(tempDir);
     const borg = await Borg.open({
       dataDir: tempDir,
       clock,

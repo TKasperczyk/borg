@@ -28,6 +28,18 @@ function resolveTemporalCueTimeRange(
     return null;
   }
 
+  // A label without bounds is not a time filter and must not disable recency or
+  // manufacture an all-history lane. These are protocol numbers, not language.
+  if (
+    (temporalCue.sinceTs === undefined && temporalCue.untilTs === undefined) ||
+    (temporalCue.sinceTs !== undefined && !Number.isFinite(temporalCue.sinceTs)) ||
+    (temporalCue.untilTs !== undefined && !Number.isFinite(temporalCue.untilTs)) ||
+    (temporalCue.sinceTs !== undefined &&
+      temporalCue.untilTs !== undefined &&
+      temporalCue.sinceTs > temporalCue.untilTs)
+  )
+    return null;
+
   return {
     start: temporalCue.sinceTs ?? Number.NEGATIVE_INFINITY,
     end: temporalCue.untilTs ?? Number.POSITIVE_INFINITY,

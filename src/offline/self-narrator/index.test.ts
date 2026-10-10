@@ -258,6 +258,83 @@ describe("SelfNarratorProcess", () => {
     }
   });
 
+  it.each(["row", "count", "oversized_newest"] as const)(
+    "combines row/count/full bounds without forcing oversized evidence (%s)",
+    async (bound) => {
+      const episodes = Array.from({ length: 5 }, (_, index) =>
+        createEpisodeFixture({
+          start_time: 1000 + index * 1000,
+          end_time: 1500 + index * 1000,
+          narrative: `${index}: ${"経験".repeat(bound === "oversized_newest" && index === 4 ? 10_000 : 100)}`,
+        }),
+      );
+      const llm = new FakeLLMClient({
+        responses: [createSelfNarratorResponse({ observation: null })],
+      });
+      const harness = await createOfflineTestHarness({ llmClient: llm });
+      const process = new SelfNarratorProcess({
+        autobiographicalRepository: harness.autobiographicalRepository,
+        growthMarkersRepository: harness.growthMarkersRepository,
+        registry: harness.registry,
+      });
+      try {
+        vi.spyOn(harness.episodicRepository, "listEffectivelyVisible").mockResolvedValue(episodes);
+        const newestTwoTokens = episodes
+          .slice(-2)
+          .reduce(
+            (sum, episode) =>
+              sum +
+              estimatePromptTokens(
+                JSON.stringify(
+                  episodeEvidencePromptRow(episode, { start_time: episode.start_time }),
+                ),
+              ),
+            0,
+          );
+        const config = harness.config.offline.selfNarrator;
+        config.maxEpisodesPerRun = bound === "count" ? 1 : 3;
+        config.maxInputTokensPerRun = bound === "oversized_newest" ? 1000 : newestTwoTokens;
+        const plan = await process.plan(harness.createContext());
+        if (bound === "row") {
+          expect(llm.requests).toHaveLength(1);
+          const request = llm.requests[0]!;
+          const prompt = String(request.messages[0]!.content);
+          expect(prompt).toContain("due to maxInputTokensPerRun");
+          expect(prompt).toContain("3 earlier episodes");
+          expect(prompt).toContain("1970-01-01T00:00:01.000Z to 1970-01-01T00:00:03.500Z");
+          expect(prompt.split("\nEpisodes:\n")[1]).toBe(
+            episodes
+              .slice(-2)
+              .map((episode) =>
+                JSON.stringify(
+                  episodeEvidencePromptRow(episode, { start_time: episode.start_time }),
+                ),
+              )
+              .join("\n"),
+          );
+          expect(
+            estimatePromptTokens(String(request.system)) +
+              estimatePromptTokens(JSON.stringify(request.tools)) +
+              estimatePromptTokens(prompt),
+          ).toBeLessThanOrEqual(config.maxPromptTokens);
+        } else {
+          expect(llm.requests).toEqual([]);
+          expect(plan.errors).toEqual([
+            expect.objectContaining({
+              code: "SELF_NARRATOR_PROMPT_BUDGET_TOO_SMALL",
+              message: expect.stringContaining(
+                bound === "count" ? "maxEpisodesPerRun" : "maxInputTokensPerRun",
+              ),
+            }),
+          ]);
+          expect(plan.items).toEqual([]);
+        }
+      } finally {
+        await harness.cleanup();
+      }
+    },
+  );
+
   it.each(["episodes", "online_reflector"] as const)(
     "keeps prior growth context without uncitable ids in %s provenance",
     async (kind) => {
@@ -1450,6 +1527,56 @@ describe("SelfNarratorProcess", () => {
       for (const untouched of [unfenced, rollover, future, unrelated, partial]) {
         expect(harness.reviewQueueRepository.get(untouched.id)?.resolved_at).toBeNull();
       }
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("bounds the prompt to the newest episodes and says how many were omitted", async () => {
+    const llm = new FakeLLMClient({
+      responses: [createSelfNarratorResponse({ observation: null })],
+    });
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      clock: { now: () => Date.UTC(2026, 3, 10) },
+      configOverrides: { offline: { selfNarrator: { maxEpisodesPerRun: 3 } } },
+    });
+    const process = new SelfNarratorProcess({
+      autobiographicalRepository: harness.autobiographicalRepository,
+      growthMarkersRepository: harness.growthMarkersRepository,
+      registry: harness.registry,
+    });
+
+    try {
+      for (const day of [1, 2, 3, 4, 5]) {
+        const at = Date.UTC(2026, 3, day);
+        await harness.episodicRepository.createEpisode(
+          createEpisodeFixture({
+            id: `ep_day${day}day${day}day${day}day${day}`.slice(0, 19) as never,
+            title: `Day ${day}`,
+            narrative: `Something happened on day ${day}.`,
+            start_time: at,
+            end_time: at,
+            created_at: at,
+            updated_at: at,
+          }),
+        );
+      }
+
+      await process.plan(harness.createContext(), {});
+
+      const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+      // Newest three are present, oldest two are not.
+      expect(prompt).toContain('"title":"Day 5"');
+      expect(prompt).toContain('"title":"Day 4"');
+      expect(prompt).toContain('"title":"Day 3"');
+      expect(prompt).not.toContain('"title":"Day 2"');
+      expect(prompt).not.toContain('"title":"Day 1"');
+      // Kept episodes stay in chronological order.
+      expect(prompt.indexOf('"title":"Day 3"')).toBeLessThan(prompt.indexOf('"title":"Day 5"'));
+      expect(prompt).toContain(
+        "2 earlier episodes of this period are not shown due to maxEpisodesPerRun.",
+      );
     } finally {
       await harness.cleanup();
     }

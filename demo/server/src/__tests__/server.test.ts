@@ -34,6 +34,8 @@ import {
   createFakeStreamingResponse,
 } from "../../../../src/llm/test-support/fake-client.js";
 import type { AttachmentService } from "../../../../src/attachments/index.js";
+import type { BorgDependencies } from "../../../../src/borg/types.js";
+import { EMBEDDING_ACCESS_FILE } from "../../../../src/embeddings/bank-profile.js";
 import { IMAGE_PERCEPTION_TOOL_NAME } from "../../../../src/attachments/perception.js";
 import type { Episode, EpisodicRepository } from "../../../../src/memory/episodic/index.js";
 import type { CreatorDirectiveRepository } from "../../../../src/memory/creator-directives/index.js";
@@ -56,6 +58,7 @@ import {
 import { LiveBroadcaster, createLiveBridge, type LiveFrame } from "../live.js";
 import { createResetBorgController, type BorgHandle } from "../reset.js";
 import { MemorySampler } from "../memory.js";
+import { createDemoRuntimeShutdownHandler } from "../shutdown.js";
 
 const PNG_1X1 = Uint8Array.from([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
@@ -740,6 +743,178 @@ describe("demo server", () => {
     await pending;
     expect(drained).toBe(true);
   });
+
+  it("holds stores and the lease for a background vector tail created by late HTTP body parsing", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-http-drain-"));
+    tempDirs.push(tempDir);
+    const { borg, live } = await openHarness({ tempDir });
+    const { deps } = borg as unknown as { deps: BorgDependencies };
+    const question = borg.self.openQuestions.add({
+      question: "What will the late request change?",
+      urgency: 0.4,
+      provenance: { kind: "manual" },
+      source: "user",
+    });
+    await deps.openQuestionsRepository.waitForPendingEmbeddings();
+    const table = (deps.openQuestionsRepository as unknown as { table: LanceDbTable }).table;
+    const finishVector = createDeferred<void>();
+    const vectorStarted = createDeferred<void>();
+    const upsert = table.upsert.bind(table);
+    const vectorWrite = vi.spyOn(table, "upsert").mockImplementation(async (...args) => {
+      vectorStarted.resolve();
+      await finishVector.promise;
+      return await upsert(...args);
+    });
+    const sqliteClose = vi.spyOn(deps.sqlite, "close");
+    const lanceClose = vi.spyOn(deps.lance, "close");
+    const runtimeDrain = vi.spyOn(borg, "beginShutdown");
+    const requestGate = new BorgRequestGate();
+    const borgHandle: BorgHandle = { current: borg };
+    const { app, beginShutdown } = createDemoServerApp({ borgHandle, live, requestGate });
+    const parsed = createDeferred<void>();
+    const body = createDeferred<void>();
+    const request = Promise.resolve(
+      app.fetch(
+        new Request(`http://localhost/api/identity/open-questions/${question.id}`, {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          duplex: "half",
+          body: new ReadableStream({
+            async start(controller) {
+              parsed.resolve();
+              await body.promise;
+              controller.enqueue(new TextEncoder().encode(JSON.stringify({ action: "bump" })));
+              controller.close();
+            },
+          }),
+        } as RequestInit),
+      ),
+    );
+    await parsed.promise;
+    const stopConnector = vi.fn(async () => {});
+    const exit = vi.fn();
+    const shutdown = createDemoRuntimeShutdownHandler({
+      borgHandle,
+      onShutdownRequested: vi.fn(),
+      beginHttpDrain: beginShutdown,
+      stopHost: [],
+      stopConnector,
+      forceCloseConnections: vi.fn(),
+      exit,
+      logger: { log: vi.fn(), error: vi.fn() },
+    });
+    const closing = shutdown("SIGTERM");
+    try {
+      expect(() => requestGate.acquire()).toThrow("Borg is shutting down");
+      await expect(borg.enqueueMessage({} as never)).rejects.toMatchObject({
+        code: "BORG_SHUTTING_DOWN",
+      });
+      expect((await requestJson(app, "/api/admin/reset", "POST", {})).status).toBe(503);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(runtimeDrain).not.toHaveBeenCalled();
+      expect(stopConnector).not.toHaveBeenCalled();
+      body.resolve();
+      expect((await request).status).toBe(200);
+      await vectorStarted.promise;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(stopConnector).toHaveBeenCalledOnce();
+      expect(runtimeDrain).toHaveBeenCalledOnce();
+      expect(sqliteClose).not.toHaveBeenCalled();
+      expect(lanceClose).not.toHaveBeenCalled();
+      expect(existsSync(join(tempDir, EMBEDDING_ACCESS_FILE))).toBe(true);
+      finishVector.resolve();
+      await closing;
+      expect(sqliteClose).toHaveBeenCalledOnce();
+      expect(lanceClose).toHaveBeenCalledOnce();
+      expect(existsSync(join(tempDir, EMBEDDING_ACCESS_FILE))).toBe(false);
+      expect(exit).toHaveBeenCalledWith(0);
+    } finally {
+      body.resolve();
+      finishVector.resolve();
+      await request;
+      await closing;
+      vectorWrite.mockRestore();
+      runtimeDrain.mockRestore();
+      sqliteClose.mockRestore();
+      lanceClose.mockRestore();
+    }
+  });
+
+  it.each(["HTTP", "connector"])(
+    "retains the lease on an %s-only timeout even after Borg's internal drain completed",
+    async (blockedStage) => {
+      const tempDir = mkdtempSync(join(tmpdir(), "borg-host-timeout-"));
+      tempDirs.push(tempDir);
+      const { borg, live } = await openHarness({ tempDir });
+      const { deps } = borg as unknown as { deps: BorgDependencies };
+      const borgHandle: BorgHandle = { current: borg };
+      const { app, beginShutdown } = createDemoServerApp({ borgHandle, live });
+      await borg.beginShutdown();
+      const sqliteClose = vi.spyOn(deps.sqlite, "close");
+      const runtimeDrain = vi.spyOn(borg, "beginShutdown");
+      const finish = createDeferred<void>();
+      const acquired = createDeferred<void>();
+      const request =
+        blockedStage === "HTTP"
+          ? Promise.resolve(
+              app.fetch(
+                new Request("http://localhost/api/operator-attention", {
+                  method: "POST",
+                  headers: { "content-type": "application/json" },
+                  duplex: "half",
+                  body: new ReadableStream({
+                    async start(controller) {
+                      acquired.resolve();
+                      await finish.promise;
+                      controller.enqueue(new TextEncoder().encode("{}"));
+                      controller.close();
+                    },
+                  }),
+                } as RequestInit),
+              ),
+            )
+          : undefined;
+      if (request) await acquired.promise;
+      const stopConnector = vi.fn(async () => {
+        if (blockedStage === "connector") await finish.promise;
+      });
+      const exit = vi.fn();
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const shutdown = createDemoRuntimeShutdownHandler({
+        borgHandle,
+        onShutdownRequested: vi.fn(),
+        beginHttpDrain: beginShutdown,
+        stopHost: [],
+        stopConnector,
+        forceCloseConnections: vi.fn(),
+        exit,
+        logger: { log: vi.fn(), error: vi.fn() },
+      });
+      const closing = shutdown("SIGTERM");
+      try {
+        await vi.advanceTimersByTimeAsync(75_000);
+        await closing;
+        expect(sqliteClose).toHaveBeenCalledOnce();
+        expect(existsSync(join(tempDir, EMBEDDING_ACCESS_FILE))).toBe(true);
+        expect(exit).toHaveBeenCalledWith(1);
+        const drainCallsAtClose = runtimeDrain.mock.calls.length;
+        finish.resolve();
+        await request;
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(runtimeDrain).toHaveBeenCalledTimes(drainCallsAtClose);
+        if (blockedStage === "HTTP") expect(stopConnector).not.toHaveBeenCalled();
+      } finally {
+        finish.resolve();
+        await request;
+        await closing;
+        vi.useRealTimers();
+        sqliteClose.mockRestore();
+        runtimeDrain.mockRestore();
+        // This test owns the retained lease; production keeps it until exit.
+        await deps.releaseEmbeddingBankAccess?.();
+      }
+    },
+  );
 
   it("closeAll attempts every live client even if one close throws", () => {
     const broadcaster = new LiveBroadcaster({ error: () => {} });

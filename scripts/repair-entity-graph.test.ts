@@ -1011,15 +1011,13 @@ describe("offline entity graph repair", () => {
       .run(f.named.id, f.room.id, row.id);
     for (const id of [f.named.id, f.self.id])
       expect(activity.listObservedGroupAudienceEntityIdsForSpeaker(id)).toEqual([f.participant.id]);
-    for (const id of [f.room.id, f.participant.id])
-      expect(
-        activity.listRecentVisibleOtherSessionEvents({
-          currentSessionId: createSessionId(),
-          audienceEntityIds: [id],
-          sinceMs: 0,
-          limit: 10,
-        }),
-      ).toEqual([expect.objectContaining({ audienceEntityId: f.participant.id })]);
+    expect(
+      activity.listRecentOtherActiveSessionEvents({
+        currentSessionId: createSessionId(),
+        sinceMs: 0,
+        limit: 10,
+      }),
+    ).toEqual([expect.objectContaining({ audienceEntityId: f.participant.id })]);
     expect(activity.get(row.id)).toMatchObject({
       speaker_entity_id: f.self.id,
       audience_entity_id: f.participant.id,

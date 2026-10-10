@@ -1,5 +1,16 @@
 import { EntityRepository } from "../memory/commitments/repository.js";
+import { FailureReportTracker } from "../util/failure-reports.js";
+import { logSimilarityProfile } from "../config/similarity.js";
+import {
+  requireEmbeddingClientProfile,
+  acquireEmbeddingBankAccess,
+  assertBankNotFenced,
+  assertEmbeddingProfilesMatch,
+  guardBankEmbeddingProfile,
+} from "../embeddings/bank-profile.js";
 // Borg.open composition root: orders storage, repositories, tools, offline work, turns, and autonomy.
+import { AgentDeliveryRepository } from "../cognition/ingestion/agent-deliveries.js";
+import { TaskEventService } from "../cognition/ingestion/task-events.js";
 
 import { SystemClock } from "../util/clock.js";
 import {
@@ -65,20 +76,41 @@ export async function openBorgDependencies(
   const clock = options.clock ?? new SystemClock();
   let sqlite: SqliteDatabase | undefined;
   let lance: LanceDbStore | undefined;
+  let releaseEmbeddingBankAccess: (() => Promise<void>) | undefined;
+  const pendingStartupTasks: Promise<unknown>[] = [];
+  const failureReports = new FailureReportTracker("Borg stream diagnostic");
   let catchUpWorker: ChatResponseCatchUpWorker | undefined;
 
   try {
     const resolvedConfig = resolveBorgConfig(options);
+    assertBankNotFenced(resolvedConfig.dataDir);
+    const embeddingClient = options.embeddingClient ?? createEmbeddingClient(resolvedConfig);
+    const effectiveEmbeddingProfile = requireEmbeddingClientProfile(embeddingClient);
+    if (options.embeddingProfile !== undefined)
+      assertEmbeddingProfilesMatch(effectiveEmbeddingProfile, options.embeddingProfile);
+    if (options.embeddingDimensions !== undefined)
+      assertEmbeddingProfilesMatch(effectiveEmbeddingProfile, {
+        ...effectiveEmbeddingProfile,
+        dimensions: options.embeddingDimensions,
+      });
+    releaseEmbeddingBankAccess = await acquireEmbeddingBankAccess(resolvedConfig.dataDir);
+    await guardBankEmbeddingProfile(resolvedConfig.dataDir, effectiveEmbeddingProfile);
     const outboundConnectorRegistry = new MessageConnectorRegistry(
       options.outboundConnectors ?? [],
     );
     const config = {
       ...resolvedConfig,
+      embedding: {
+        ...resolvedConfig.embedding,
+        model: effectiveEmbeddingProfile.model,
+        dims: effectiveEmbeddingProfile.dimensions,
+      },
       host_capabilities: withDerivedOutboundCapabilities({
         hostCapabilities: resolvedConfig.host_capabilities,
         outboundSourceTypes: outboundConnectorRegistry.sourceTypes(),
       }),
     };
+    logSimilarityProfile(config, "borg open");
     const tracer = compositeTracer([
       createTurnTracer({
         tracerPath: options.tracerPath,
@@ -92,7 +124,7 @@ export async function openBorgDependencies(
     lance = storage.lance;
     const tables: BorgLanceTables = await openBorgLanceTables({
       lance,
-      embeddingDimensions: options.embeddingDimensions ?? config.embedding.dims,
+      embeddingDimensions: effectiveEmbeddingProfile.dimensions,
     });
     const attachmentRepository = new AttachmentRepository(sqlite);
     const entryIndex = new StreamEntryIndexRepository({
@@ -119,7 +151,6 @@ export async function openBorgDependencies(
       lifecycle: imageAttachmentLifecycleService,
       tracer,
     });
-    const embeddingClient = options.embeddingClient ?? createEmbeddingClient(config);
     const llmFactory = createLlmFactory(
       config,
       options.llmClient,
@@ -136,6 +167,8 @@ export async function openBorgDependencies(
       }
     };
     const repositories = await buildBorgRepositories({
+      failureReports,
+      pendingStartupTasks,
       config,
       sqlite,
       episodesTable: tables.episodesTable,
@@ -301,6 +334,17 @@ export async function openBorgDependencies(
         ? {}
         : { onTerminalCommitted: options.inbox.onTerminalCommitted }),
     });
+    const taskEventService = new TaskEventService({
+      dataDir: config.dataDir,
+      entryIndex: repositories.entryIndex,
+      repairSessionStreamEntryIndex,
+      createStreamWriter: repositories.createStreamWriter,
+    });
+    const agentDeliveries = new AgentDeliveryRepository({
+      db: sqlite,
+      clock,
+      onAvailable: options.inbox?.onDeliveryAvailable,
+    });
     const messageEnqueuer = new MessageEnqueuer({
       sessionsRepository: repositories.sessionsRepository,
       entityRepository: repositories.entityRepository,
@@ -455,7 +499,25 @@ export async function openBorgDependencies(
             }),
           })
         : configuredRunner;
+    const taskEventRunner = options.inbox?.taskEventRunner?.({
+      terminal: backlogTerminalService,
+      taskEvents: taskEventService,
+      deliveries: agentDeliveries,
+      entityRepository: repositories.entityRepository,
+      sessions: repositories.sessionsRepository,
+      activity: createActivityFacade({
+        sqlite,
+        activityRepository: repositories.activityRepository,
+        sessionsRepository: repositories.sessionsRepository,
+      }),
+      tracer,
+    });
     catchUpWorker = new ChatResponseCatchUpWorker({
+      ...(taskEventRunner === undefined
+        ? {}
+        : {
+            taskEvents: { service: taskEventService, runner: taskEventRunner },
+          }),
       coordinator: chatResponseWatermarkCoordinator,
       prefixBuilder: chatResponseBacklogPrefixBuilder,
       entryIndex: repositories.entryIndex,
@@ -587,6 +649,8 @@ export async function openBorgDependencies(
       streamIngestionCoordinator,
       chatResponseWatermarkCoordinator,
       backlogTerminalService,
+      taskEventService,
+      agentDeliveries,
       chatResponseCatchUpWorker: catchUpWorker,
       messageEnqueuer,
       auditLog: offline.auditLog,
@@ -595,11 +659,22 @@ export async function openBorgDependencies(
       createStreamWriter: repositories.createStreamWriter,
       llmFactory,
       embeddingClient,
+      releaseEmbeddingBankAccess,
+      pendingStartupTasks,
+      failureReports,
       tracer,
       clock,
     };
   } catch (error) {
-    await closeBestEffort(sqlite, lance);
+    const pendingResults = await Promise.allSettled(pendingStartupTasks);
+    const reportResults = await Promise.allSettled([failureReports.flush()]);
+    const storesClosed = await closeBestEffort(sqlite, lance);
+    if (
+      storesClosed &&
+      [...pendingResults, ...reportResults].every((result) => result.status === "fulfilled")
+    ) {
+      await releaseEmbeddingBankAccess?.();
+    }
     throw error;
   }
 }

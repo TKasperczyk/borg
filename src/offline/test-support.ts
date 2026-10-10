@@ -6,6 +6,7 @@ import { autonomyMigrations } from "../autonomy/index.js";
 import { promptSurfaceHistoryMigrations } from "../cognition/prompts/prompt-surface-history-migrations.js";
 import { CorrectionService } from "../correction/index.js";
 import { DEFAULT_CONFIG, type Config } from "../config/index.js";
+import { similarityConfigSchema } from "../config/similarity.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
 import { executiveMigrations, ExecutiveStepsRepository } from "../executive/index.js";
 import { type LLMClient } from "../llm/index.js";
@@ -130,7 +131,12 @@ import {
   type OfflineContext,
 } from "./index.js";
 
+import { seedTestEmbeddingProfile } from "../test-support/embedding-profile.js";
+
 export class TestEmbeddingClient implements EmbeddingClient {
+  get profile() {
+    return { model: "fake-embed", dimensions: this.dims };
+  }
   constructor(
     private readonly vectorsByText: ReadonlyMap<string, readonly number[]> = new Map(),
     private readonly dims = 4,
@@ -194,6 +200,7 @@ export function createTestConfig(
     ...DEFAULT_CONFIG,
     ...overrides,
     dataDir: overrides.dataDir ?? "/tmp/borg-test",
+    similarity: similarityConfigSchema.parse(overrides.similarity),
     perception: {
       ...DEFAULT_CONFIG.perception,
       ...overrides.perception,
@@ -230,10 +237,6 @@ export function createTestConfig(
         ...DEFAULT_CONFIG.anthropic.models,
         ...overrides.anthropic?.models,
       },
-    },
-    procedural: {
-      ...DEFAULT_CONFIG.procedural,
-      ...overrides.procedural,
     },
     retrieval: {
       ...DEFAULT_CONFIG.retrieval,
@@ -576,6 +579,10 @@ export async function createOfflineTestHarness(
     },
     { embeddingDimensions },
   );
+  seedTestEmbeddingProfile(tempDir, {
+    model: embeddingClient.profile?.model ?? "fake-embed",
+    dimensions: embeddingDimensions,
+  });
   const lance = new LanceDbStore({
     uri: join(tempDir, "lancedb"),
   });

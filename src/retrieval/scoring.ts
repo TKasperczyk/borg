@@ -97,6 +97,7 @@ export type EpisodeScoringOptions = {
 export type EpisodeScoreDefaults = {
   scoreWeights: ScoreWeights;
   decayOptions?: Omit<DecayOptions, "nowMs">;
+  auxiliaryScoreScale?: number;
 };
 
 export type EpisodeScore = {
@@ -210,6 +211,18 @@ function computeEpisodeScoreFormula(
     weights.heat * normalizeHeat(signals.heat) -
     weights.suppressionPenalty * signals.suppressionPenalty
   );
+}
+
+/** Calibrate numeric retrieval signals, never the wording of a query or model output. */
+export function calibrateEpisodeRecallScore(
+  rawScore: number,
+  weightedSimilarity: number,
+  auxiliaryScoreScale: number,
+): number {
+  // Preserve the original arithmetic exactly for uncalibrated embedding profiles.
+  return auxiliaryScoreScale === 1
+    ? rawScore
+    : weightedSimilarity + (rawScore - weightedSimilarity) * auxiliaryScoreScale;
 }
 
 function normalizeTerm(value: string): string {
@@ -396,7 +409,17 @@ export function scoreCandidate(
     entityRelevance,
     suppressionPenalty,
   };
-  const fused = computeEpisodeScoreFormula(signals, weights);
+  const originalScore = computeEpisodeScoreFormula(signals, weights);
+  const penalty = weights.suppressionPenalty * signals.suppressionPenalty;
+  const auxiliaryScoreScale = defaults.auxiliaryScoreScale ?? 1;
+  const fused =
+    auxiliaryScoreScale === 1
+      ? originalScore
+      : calibrateEpisodeRecallScore(
+          originalScore + penalty,
+          weights.similarity * signals.similarity,
+          auxiliaryScoreScale,
+        ) - penalty;
 
   return {
     decayedSalience: signals.decayedSalience,

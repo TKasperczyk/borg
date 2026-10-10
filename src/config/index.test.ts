@@ -4,11 +4,19 @@ import { tmpdir } from "node:os";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import solDemoConfigKeys from "./fixtures/sol-demo-config-keys.json";
+
 import { DEFAULT_PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_TOKEN_BUDGET } from "../cognition/deliberation/constants.js";
 import { OFFLINE_PROCESS_NAMES } from "../contracts/offline-process.js";
 import { writeJsonFileAtomic } from "../util/atomic-write.js";
 import { ConfigError } from "../util/errors.js";
-import { DEFAULT_CONFIG, configSchema, loadConfig, redactConfig } from "./index.js";
+import {
+  DEFAULT_CONFIG,
+  configSchema,
+  loadConfig,
+  redactConfig,
+  similarityThresholds,
+} from "./index.js";
 
 describe("config", () => {
   const tempDirs: string[] = [];
@@ -17,6 +25,26 @@ describe("config", () => {
     while (tempDirs.length > 0) {
       rmSync(tempDirs.pop() as string, { recursive: true, force: true });
     }
+  });
+
+  it("accepts the documented Sol demo config keys without sidecar embedding environment variables", () => {
+    // Hand-authored from the accepted merge plan; never read the live bank/config.
+    const config = configSchema.parse(solDemoConfigKeys);
+    expect(config.anthropic.models.preTurnExtraction).toBe("claude-sonnet-5");
+    expect(config.frameAnomaly).toEqual(solDemoConfigKeys.frameAnomaly);
+    expect(config.internalIdentifierGuard).toEqual(solDemoConfigKeys.internalIdentifierGuard);
+    expect(config.embedding.model).toBe(solDemoConfigKeys.embedding.model);
+    expect(config.embedding.dims).toBe(4096);
+    expect(config.offline.selfNarrator).toMatchObject({
+      maxEpisodesPerRun: 150,
+      maxInputTokensPerRun: 60_000,
+      maxPromptTokens: 250_000,
+    });
+    expect(config.offline.reflector).toMatchObject({
+      maxEpisodesPerCluster: 120,
+      maxClusterInputTokens: 40_000,
+    });
+    expect(similarityThresholds(config)).toEqual(similarityThresholds(DEFAULT_CONFIG));
   });
 
   it("loads defaults without requiring API keys", () => {
@@ -193,7 +221,6 @@ describe("config", () => {
       enabled: true,
       currentSessionTranscriptTokenBudget: 2_500,
       actionThreadRenderLimit: 12,
-      actionThreadSimilarityThreshold: 0.85,
       actionThreadSourceRecordLimit: 256,
       actionThreadSalienceClassReservedSlots: 1,
       actionThreadAudienceReservedSlots: 1,
@@ -1054,11 +1081,12 @@ describe("config", () => {
         BORG_OFFLINE_SEMANTIC_EXTRACTOR_MAX_INPUT_TOKENS_PER_RUN: "90000",
         BORG_OFFLINE_SEMANTIC_EXTRACTOR_BUDGET: "12000",
         BORG_OFFLINE_LIVED_EXPERIENCE_DAY_SUMMARIZER_BUDGET: "123000",
+        BORG_OFFLINE_OVERSEER_MAX_OUTPUT_TOKENS: "6000",
         BORG_EXECUTIVE_GOAL_FOCUS_THRESHOLD: "0.6",
         BORG_STREAM_INGESTION_PRE_TURN_CATCHUP_MAX_ENTRIES: "8",
         BORG_GENERATION_EVIDENCE_LEDGER_CURRENT_SESSION_TRANSCRIPT_TOKEN_BUDGET: "16000",
         BORG_GENERATION_EVIDENCE_LEDGER_ACTION_THREAD_RENDER_LIMIT: "8",
-        BORG_GENERATION_EVIDENCE_LEDGER_ACTION_THREAD_SIMILARITY_THRESHOLD: "0.9",
+        BORG_SIMILARITY_OVERRIDES: JSON.stringify({ actionThread: 0.9 }),
         BORG_GENERATION_EVIDENCE_LEDGER_ACTION_THREAD_SOURCE_RECORD_LIMIT: "128",
         BORG_GENERATION_EVIDENCE_LEDGER_ACTION_THREAD_SALIENCE_CLASS_RESERVED_SLOTS: "2",
         BORG_GENERATION_EVIDENCE_LEDGER_ACTION_THREAD_AUDIENCE_RESERVED_SLOTS: "3",
@@ -1130,7 +1158,7 @@ describe("config", () => {
     expect(config.generation.evidenceLedger.enabled).toBe(true);
     expect(config.generation.evidenceLedger.currentSessionTranscriptTokenBudget).toBe(16_000);
     expect(config.generation.evidenceLedger.actionThreadRenderLimit).toBe(8);
-    expect(config.generation.evidenceLedger.actionThreadSimilarityThreshold).toBe(0.9);
+    expect(similarityThresholds(config).actionThread).toBe(0.9);
     expect(config.generation.evidenceLedger.actionThreadSourceRecordLimit).toBe(128);
     expect(config.generation.evidenceLedger.actionThreadSalienceClassReservedSlots).toBe(2);
     expect(config.generation.evidenceLedger.actionThreadAudienceReservedSlots).toBe(3);
@@ -1178,6 +1206,7 @@ describe("config", () => {
     expect(config.offline.semanticExtractor.maxInputTokensPerRun).toBe(90_000);
     expect(config.offline.semanticExtractor.budget).toBe(12_000);
     expect(config.offline.livedExperienceDaySummarizer.budget).toBe(123_000);
+    expect(config.offline.overseer.maxOutputTokens).toBe(6_000);
   });
 
   it("accepts post-generation guard simple modes", () => {

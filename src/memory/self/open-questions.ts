@@ -1,3 +1,4 @@
+import { FailureReportTracker } from "../../util/failure-reports.js";
 import { createHash } from "node:crypto";
 
 import { z } from "zod";
@@ -601,7 +602,8 @@ function parseOpenQuestionMergeTombstoneDedupeKey(
 
 export class OpenQuestionsRepository {
   private readonly clock: Clock;
-  private readonly pendingEmbeddingTasks = new Set<Promise<void>>();
+  private readonly pendingEmbeddingTasks = new Set<Promise<unknown>>();
+  private readonly failureReports = new FailureReportTracker("open-question embedding failure");
 
   constructor(private readonly options: OpenQuestionsRepositoryOptions) {
     this.clock = options.clock ?? new SystemClock();
@@ -630,17 +632,11 @@ export class OpenQuestionsRepository {
     });
   }
 
-  private reportEmbeddingFailure(
+  private async reportEmbeddingFailure(
     error: unknown,
     details: OpenQuestionEmbeddingFailureDetails,
-  ): void {
-    try {
-      void Promise.resolve(this.options.onEmbeddingFailure?.(error, details)).catch(() => {
-        // Best-effort failure reporting only.
-      });
-    } catch {
-      // Best-effort failure reporting only.
-    }
+  ): Promise<void> {
+    await this.failureReports.report(() => this.options.onEmbeddingFailure?.(error, details));
   }
 
   private async readStoredEmbedding(id: OpenQuestionId): Promise<Float32Array | null> {
@@ -689,7 +685,7 @@ export class OpenQuestionsRepository {
         on: "id",
       });
     } catch (error) {
-      this.reportEmbeddingFailure(error, {
+      await this.reportEmbeddingFailure(error, {
         operation,
         questionId: question.id,
         question: question.question,
@@ -710,7 +706,10 @@ export class OpenQuestionsRepository {
   }
 
   async waitForPendingEmbeddings(): Promise<void> {
-    await Promise.allSettled([...this.pendingEmbeddingTasks]);
+    while (this.pendingEmbeddingTasks.size > 0) {
+      await Promise.allSettled([...this.pendingEmbeddingTasks]);
+    }
+    await this.failureReports.flush();
   }
 
   async getEmbeddedQuestionIds(ids: readonly OpenQuestionId[]): Promise<Set<OpenQuestionId>> {
@@ -859,7 +858,7 @@ export class OpenQuestionsRepository {
   // Insert-time dedup is exact-normalized-text only -- semantic merging is the
   // ruminator's job. Vector matching here would risk collapsing distinct
   // questions that share wording but differ on a numeric/entity specific
-  // (e.g. two ceiling-amount questions). Scans all visible open questions, not
+  // (e.g. two ceiling-amount questions). Scans all open questions, not
   // a top-N urgency window, so exact matches can't slip through outside the cap.
   async findSimilarOpenQuestion(
     input: OpenQuestionSimilarLookupOptions,
@@ -887,6 +886,18 @@ export class OpenQuestionsRepository {
   async backfillMissingEmbeddings(
     options: { limit?: number } = {},
   ): Promise<OpenQuestionEmbeddingBackfillReport> {
+    const task = this.runEmbeddingBackfill(options);
+    this.pendingEmbeddingTasks.add(task);
+    try {
+      return await task;
+    } finally {
+      this.pendingEmbeddingTasks.delete(task);
+    }
+  }
+
+  private async runEmbeddingBackfill(options: {
+    limit?: number;
+  }): Promise<OpenQuestionEmbeddingBackfillReport> {
     const table = this.table;
     const embeddingClient = this.embeddingClient;
     const report: OpenQuestionEmbeddingBackfillReport = {
@@ -933,7 +944,7 @@ export class OpenQuestionsRepository {
         report.embedded += 1;
       } catch (error) {
         report.failed += 1;
-        this.reportEmbeddingFailure(error, {
+        await this.reportEmbeddingFailure(error, {
           operation: "backfill",
           questionId: question.id,
           question: question.question,

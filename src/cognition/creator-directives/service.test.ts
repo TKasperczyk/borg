@@ -18,7 +18,7 @@ import {
 } from "../../util/ids.js";
 import { CREATOR_DIRECTIVE_TOOL_NAME } from "./extractor.js";
 import { CreatorDirectiveTurnService } from "./service.js";
-import { buildCreatorDirectiveBriefingForTurn } from "../lifecycle/turn-phase/retrieval-phase.js";
+import { buildCreatorDirectiveBriefing } from "../lifecycle/turn-phase/retrieval-phase.js";
 
 function creatorDirectiveResponse(
   candidateOrCandidates: Record<string, unknown> | readonly Record<string, unknown>[],
@@ -397,7 +397,7 @@ describe("CreatorDirectiveTurnService", () => {
         participantEntityIds: [harness.aliceId],
         sessionRole: "participant",
       });
-      const briefing = buildCreatorDirectiveBriefingForTurn({
+      const briefing = buildCreatorDirectiveBriefing({
         applicable: aliceApplicable,
         entityRepository: { get: harness.get },
       });

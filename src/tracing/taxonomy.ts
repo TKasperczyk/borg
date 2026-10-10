@@ -106,6 +106,7 @@ export const TRACE_EVENT_TAXONOMY = {
     "closure_response_guard.completed",
     "closure_pressure_audit.degraded",
     "internal_identifier_guard.completed",
+    "sidecar.guard_reply.completed",
     "post_generation.rejected",
   ],
   extraction: [

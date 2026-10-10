@@ -17,6 +17,7 @@ import { ManualClock } from "./util/clock.js";
 import { createMaintenanceRunId } from "./util/ids.js";
 
 class ConstantEmbeddingClient implements EmbeddingClient {
+  readonly profile = { model: "fake-embed", dimensions: 4 };
   async embed(): Promise<Float32Array> {
     return Float32Array.from([1, 0, 0, 0]);
   }

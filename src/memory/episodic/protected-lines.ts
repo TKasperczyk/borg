@@ -1,3 +1,23 @@
+import { z } from "zod";
+import { EmbeddingBankError } from "../../embeddings/bank-profile.js";
+
+export const consolidationEmbeddingInputSchema = z.object({
+  synthesized_narrative: z.string(),
+  protected_source_lines: z.array(z.string()),
+});
+export type ConsolidationEmbeddingInput = z.infer<typeof consolidationEmbeddingInputSchema>;
+
+/** Candidate counts refer to distinct rendered embedding inputs, not append boundaries. */
+export class EpisodeEmbeddingTextError extends EmbeddingBankError {
+  constructor(
+    message: string,
+    readonly candidateCount = 0,
+    readonly longestPrefix?: ConsolidationEmbeddingInput,
+  ) {
+    super(message, { code: "EMBEDDING_TEXT_UNRECOVERABLE" });
+  }
+}
+
 const OUTCOME_EPISODE_TOKEN_PATTERN = /OUTCOME fp=\S+/u;
 const PROTECTED_EPISODE_TOKEN_PATTERNS = [
   OUTCOME_EPISODE_TOKEN_PATTERN,
@@ -147,4 +167,78 @@ export function buildConsolidationEpisodeEmbeddingText(input: {
   ];
 
   return `${input.title.trim()}\n${narrativeParts.join("\n")}\n${input.tags.join(" ")}\n${input.participants.join(" ")}`;
+}
+
+/** Reconstruct the production embedding input from a persisted episode body. */
+export function buildEpisodeEmbeddingText(input: {
+  title: string;
+  narrative: string;
+  tags: readonly string[];
+  participants?: readonly string[];
+  episode_kind?: string | null;
+  consolidation_embedding_input?: ConsolidationEmbeddingInput | null;
+  legacyProtectedSourceTexts?: readonly string[];
+}): string {
+  if (input.episode_kind === "consolidation_version") {
+    const recorded = input.consolidation_embedding_input;
+    const render = (narrative: string, sources: readonly string[]) =>
+      buildConsolidationEpisodeEmbeddingText({
+        title: input.title,
+        synthesizedNarrative: narrative,
+        protectedSourceTexts: sources,
+        tags: input.tags,
+        participants: input.participants ?? [],
+      });
+    if (recorded != null) {
+      if (
+        preserveProtectedEpisodeTokenLines(
+          recorded.synthesized_narrative,
+          recorded.protected_source_lines,
+        ) !== input.narrative.trim()
+      )
+        throw new EpisodeEmbeddingTextError(
+          "Consolidation embedding input no longer matches its narrative",
+        );
+      return render(recorded.synthesized_narrative, recorded.protected_source_lines);
+    }
+    const sources = input.legacyProtectedSourceTexts;
+    if (sources === undefined) {
+      if (collectProtectedEpisodeTokenLines([input.narrative]).length === 0)
+        return render(input.narrative, []);
+      throw new EpisodeEmbeddingTextError(
+        "Legacy consolidation requires its raw source narratives to recover embedding input",
+      );
+    }
+    // Invert only the mechanical append operation. Every possible original
+    // prefix must reproduce the persisted narrative. Accept only if all such
+    // prefixes produce the exact same production embedding input.
+    const persisted = input.narrative.trim();
+    let prefix = persisted;
+    const candidates = new Set<string>();
+    const protectedLines = collectProtectedEpisodeTokenLines(sources);
+    for (let appended = 0; appended <= protectedLines.length; appended += 1) {
+      if (preserveProtectedEpisodeTokenLines(prefix, sources) === persisted) {
+        candidates.add(render(prefix, sources));
+      }
+      const boundary = prefix.lastIndexOf("\n");
+      if (prefix.length === 0) break;
+      prefix = boundary < 0 ? "" : prefix.slice(0, boundary).trimEnd();
+    }
+    if (candidates.size === 0)
+      throw new EpisodeEmbeddingTextError(
+        "Legacy consolidation sources do not reproduce its narrative",
+      );
+    if (candidates.size > 1)
+      throw new EpisodeEmbeddingTextError(
+        "Legacy consolidation embedding input is ambiguous",
+        candidates.size,
+        // Only expose a fallback that exactly preserves the stored narrative.
+        // Runtime callers remain strict; migration must explicitly opt in.
+        preserveProtectedEpisodeTokenLines(input.narrative, protectedLines) === input.narrative
+          ? { synthesized_narrative: input.narrative, protected_source_lines: protectedLines }
+          : undefined,
+      );
+    return candidates.values().next().value!;
+  }
+  return `${input.title}\n${input.narrative}\n${input.tags.join(" ")}`;
 }

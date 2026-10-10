@@ -120,6 +120,23 @@ is reversible wherever a reverser is registered.
 Scheduled offline enablement is controlled by `maintenance.lightProcesses` and
 `maintenance.heavyProcesses`; remove a process from both lists to disable it.
 
+Self-narration admits at most 150 newest episodes and 60,000 estimated episode-row tokens
+per run, within a separate 250,000 estimated token limit for the complete prompt (system,
+tools, prior narrative and all growth markers included). One packing pass keeps a contiguous
+newest suffix and renders it chronologically. It reports omitted count/time coverage and
+the limiting bound; if minimum support cannot fit, the model call is explicitly skipped.
+Offline reflection bounds each cluster to 120 episodes / 40,000 estimated row tokens,
+with its minimum-support exception. These are input bounds; output ceilings remain distinct:
+live reflection 16,000, semantic-revision judge 4,000, overseer 8,000 (configurable),
+self-narrator 8,000, and ruminator 4,000. Estimates use chars/4, not provider tokenization.
+
+Each open bank holds an exclusive access lease through startup, admitted work, background
+embedding work and orderly shutdown. A forced close or failed cleanup retains the lease
+until process exit. Existing vector banks require an explicit model/dimensions profile;
+there is no automatic legacy adoption. See [embedding migration](docs/embedding-migration.md)
+for offline source labeling and fences. The sidecar entry point requires `EMBEDDING_MODEL`
+and `EMBEDDING_DIMS`; ordinary Borg/demo config still supplies defaults.
+
 ## Quickstart
 
 ```bash
@@ -237,6 +254,10 @@ borg social profile|upsert|adjust-trust
 </details>
 
 ## Requirements
+
+For per-tenant embedding model changes, use the [embedding migration runbook](docs/embedding-migration.md), including backup, live-tenant drain, resumable re-embedding, verification, and rollback.
+
+See [similarity calibration](docs/similarity-calibration.md) for model-specific thresholds, overrides, and the measurement workflow.
 
 - **Node >= 22.**
 - **An OpenAI-compatible embeddings endpoint.** Defaults to LM Studio on

@@ -1,13 +1,14 @@
+import { buildEpisodeEmbeddingText } from "../../src/memory/episodic/protected-lines.js";
+import { embeddingDimensionsFromSchema } from "../../src/embeddings/bank-profile.js";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 
 import { connect } from "@lancedb/lancedb";
 
 import { EpisodicRepository, type Episode } from "../../src/memory/episodic/index.js";
 import { LanceDbTable } from "../../src/storage/lancedb/index.js";
-import { SqliteDatabase, SqliteRawDatabase } from "../../src/storage/sqlite/index.js";
+import { openReadOnlyDatabase } from "../../src/storage/sqlite/index.js";
 
 import type { EpisodeDocument } from "./types.js";
 
@@ -19,50 +20,11 @@ export type LoadedEpisodeBank = {
   activeCorpusSha256: string;
 };
 
-function openReadOnlyDatabase(path: string): SqliteDatabase {
-  let raw: SqliteRawDatabase | undefined;
-
-  try {
-    raw = new SqliteRawDatabase(
-      new DatabaseSync(path, {
-        enableDoubleQuotedStringLiterals: true,
-        readOnly: true,
-      }),
-    );
-    const db = new SqliteDatabase(raw);
-    db.pragma("busy_timeout = 5000");
-    db.pragma("foreign_keys = ON");
-    db.pragma("query_only = ON");
-    return db;
-  } catch (error) {
-    try {
-      raw?.close();
-    } catch {
-      // Preserve the original open failure.
-    }
-    throw error;
-  }
-}
-
-function embeddingDimensionsFromSchema(
-  schema: Awaited<ReturnType<LanceDbTable["schema"]>>,
-): number {
-  const embeddingField = schema.fields.find((field) => field.name === "embedding");
-  const embeddingType = embeddingField?.type as { listSize?: unknown } | undefined;
-  const dimensions = embeddingType?.listSize;
-
-  if (typeof dimensions !== "number" || !Number.isInteger(dimensions) || dimensions <= 0) {
-    throw new Error("Existing episodes LanceDB schema has no valid fixed-size embedding vector");
-  }
-
-  return dimensions;
-}
-
 export function episodeEmbeddingText(
   episode: Pick<Episode, "title" | "narrative" | "tags">,
 ): string {
   // Keep byte-for-byte parity with EpisodicExtractor's embedding call.
-  return `${episode.title}\n${episode.narrative}\n${episode.tags.join(" ")}`;
+  return buildEpisodeEmbeddingText(episode);
 }
 
 function toEpisodeDocument(episode: Episode): EpisodeDocument {

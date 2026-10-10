@@ -83,13 +83,19 @@ export type ActivityEventRecordInput = {
   now?: number;
 };
 
-export type ActivityVisibleSessionEvent = {
-  kind: "user_contact" | "borg_replied";
+export type ActivityProjectionSourceEvent = {
+  kind: ActivityEventKind;
   occurredAt: number;
   sessionId: SessionId;
-  audienceEntityId: EntityId;
+  audienceEntityId: EntityId | null;
   conversationKind: ConversationKind;
   conversationName: string;
   participantLabel: string;
   sourceStreamEntryIds: readonly StreamEntryId[];
+};
+
+export type ActivityRelevanceInput = {
+  focus: string;
+  candidates: readonly { key: string; text: string; occurredAt: number }[];
+  nowMs: number;
 };

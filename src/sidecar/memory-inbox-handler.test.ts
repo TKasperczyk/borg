@@ -302,15 +302,14 @@ describe("memory inbox routes", () => {
       sourceEntryIds: [followUp.id],
       terminal: { kind: "agent_msg", content: "Reviewer odpowiada za przegląd zmian." },
     });
-    const visibleReplies = () =>
-      borg.activity.listRecentVisibleOtherSessionEvents({
+    const recentReplies = () =>
+      borg.activity.listRecentOtherActiveSessionEvents({
         currentSessionId: createSessionId(),
-        audienceEntityIds: [room],
         sinceMs: 0,
         limit: 10,
         kinds: ["borg_replied"],
       });
-    expect(visibleReplies()).toEqual([]);
+    expect(recentReplies()).toEqual([]);
 
     const dry = borg.inbox.reconcileReplyActivity({ dryRun: true });
     expect(dry).toMatchObject({
@@ -324,7 +323,7 @@ describe("memory inbox routes", () => {
       complete: true,
       failed_terminal_ids: [],
     });
-    expect(visibleReplies()).toEqual([]);
+    expect(recentReplies()).toEqual([]);
 
     const first = borg.inbox.reconcileReplyActivity({ dryRun: false, limit: 1 });
     expect(first).toMatchObject({
@@ -334,7 +333,7 @@ describe("memory inbox routes", () => {
       truncated: true,
       complete: false,
     });
-    expect(visibleReplies()).toEqual([
+    expect(recentReplies()).toEqual([
       expect.objectContaining({
         kind: "borg_replied",
         occurredAt: appended.terminalEntry.timestamp,
@@ -353,14 +352,14 @@ describe("memory inbox routes", () => {
       complete: true,
     });
     expect(
-      visibleReplies()
+      recentReplies()
         .map((event) => event.sourceStreamEntryIds[0])
         .sort(),
     ).toEqual([appended.terminalEntry.id, appendedLater.terminalEntry.id].sort());
 
     const again = borg.inbox.reconcileReplyActivity({ dryRun: false });
     expect(again).toMatchObject({ terminals_scanned: 2, already_recorded: 2, inserted: 0 });
-    expect(visibleReplies()).toHaveLength(2);
+    expect(recentReplies()).toHaveLength(2);
     expect(borg.sessions.get(sessionId)?.message_count).toBe(2);
     expect(
       borg.inbox.reconcileReplyActivity({

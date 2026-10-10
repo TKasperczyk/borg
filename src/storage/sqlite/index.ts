@@ -1,6 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync, backup } from "node:sqlite";
 import type { StatementSync } from "node:sqlite";
 
 import { StorageError } from "../../util/errors.js";
@@ -83,6 +83,10 @@ export class SqliteRawDatabase {
   private savepointCounter = 0;
 
   constructor(private readonly database: DatabaseSync) {}
+
+  async backup(path: string): Promise<void> {
+    await backup(this.database, path);
+  }
 
   get inTransaction(): boolean {
     return this.database.isTransaction;
@@ -244,7 +248,10 @@ export class SqliteDatabase {
 
 const MIGRATION_BAND_SIZE = 1_000_000;
 
-// Band migration arrays restart at id=1; shared SQLite DBs need stable global ids.
+/**
+ * Band migration arrays restart at id=1; shared SQLite DBs need unique global ids.
+ * Names are the stable identity: the runner reconciles applied ids by name when bands or source ids move.
+ */
 export function composeMigrations(...groups: readonly (readonly Migration[])[]): Migration[] {
   const seenIds = new Map<number, string>();
 
@@ -292,6 +299,7 @@ function ensureMigrationTable(db: SqliteDatabase): void {
 
 function validateMigrations(migrations: readonly Migration[]): void {
   const seenIds = new Set<number>();
+  const seenNames = new Set<string>();
 
   for (const migration of migrations) {
     if (!Number.isInteger(migration.id) || migration.id <= 0) {
@@ -302,8 +310,57 @@ function validateMigrations(migrations: readonly Migration[]): void {
       throw new StorageError(`Duplicate migration id ${migration.id}`);
     }
 
+    if (seenNames.has(migration.name)) {
+      throw new StorageError(`Duplicate migration name ${migration.name}`);
+    }
+
     seenIds.add(migration.id);
+    seenNames.add(migration.name);
   }
+}
+
+function reconcileMigrationIds(db: SqliteDatabase, migrations: readonly Migration[]): void {
+  const reconcile = db.raw.transaction(() => {
+    const migrationsByName = new Map(migrations.map((migration) => [migration.name, migration]));
+    const appliedMigrations = db.listAppliedMigrations();
+    const occupiedIds = new Set(appliedMigrations.map((migration) => migration.id));
+    const updateId = db.prepare("UPDATE _migrations SET id = ? WHERE id = ?");
+    const moves: Array<{ temporaryId: number; id: number }> = [];
+    let temporaryId = -1;
+
+    // Vacate every mismatched id before assigning targets, including chains and swaps.
+    for (const applied of appliedMigrations) {
+      const migration = migrationsByName.get(applied.name);
+      if (migration === undefined || migration.id === applied.id) {
+        continue;
+      }
+
+      // Unknown rows can also occupy negative ids and must remain untouched.
+      while (occupiedIds.has(temporaryId)) {
+        temporaryId -= 1;
+      }
+      updateId.run(temporaryId, applied.id);
+      moves.push({ temporaryId, id: migration.id });
+      temporaryId -= 1;
+    }
+
+    const nameAtId = db.prepare("SELECT name FROM _migrations WHERE id = ?");
+    for (const migration of migrations) {
+      const applied = nameAtId.get(migration.id) as Pick<AppliedMigration, "name"> | undefined;
+      if (applied !== undefined && applied.name !== migration.name) {
+        throw new StorageError(
+          `Migration id ${migration.id} for ${migration.name} is occupied by ` +
+            `applied migration ${applied.name}, which is not in the composed migrations`,
+        );
+      }
+    }
+
+    for (const move of moves) {
+      updateId.run(move.id, move.temporaryId);
+    }
+  });
+
+  reconcile.immediate();
 }
 
 export function runMigrations(
@@ -313,6 +370,7 @@ export function runMigrations(
 ): void {
   validateMigrations(migrations);
   ensureMigrationTable(db);
+  reconcileMigrationIds(db, migrations);
 
   const appliedIds = new Set(db.listAppliedMigrations().map((migration) => migration.id));
   const insertMigration = db.prepare(
@@ -370,5 +428,30 @@ export function openDatabase(path: string, options: OpenDatabaseOptions = {}): S
     throw new StorageError(`Failed to open SQLite database at ${path}`, {
       cause: error,
     });
+  }
+}
+
+export function openReadOnlyDatabase(path: string): SqliteDatabase {
+  let raw: SqliteRawDatabase | undefined;
+
+  try {
+    raw = new SqliteRawDatabase(
+      new DatabaseSync(path, {
+        enableDoubleQuotedStringLiterals: true,
+        readOnly: true,
+      }),
+    );
+    const db = new SqliteDatabase(raw);
+    db.pragma("busy_timeout = 5000");
+    db.pragma("foreign_keys = ON");
+    db.pragma("query_only = ON");
+    return db;
+  } catch (error) {
+    try {
+      raw?.close();
+    } catch {
+      // Preserve the original open failure.
+    }
+    throw error;
   }
 }

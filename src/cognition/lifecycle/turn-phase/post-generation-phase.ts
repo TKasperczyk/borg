@@ -254,7 +254,7 @@ function advanceChatResponseWatermark(input: {
   sessionId: SessionId;
   responseTo?: StreamResponseTo;
 }): void {
-  if (input.responseTo === undefined) {
+  if (input.responseTo?.kind !== "stream_backlog") {
     return;
   }
 

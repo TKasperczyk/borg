@@ -213,6 +213,7 @@ function stripTurnLockMode(input: TurnOrchestratorInput): TurnPhaseCoordinatorIn
 }
 
 export class TurnOrchestrator {
+  readonly postGenerationGuardRunner: TurnPostGenerationGuardRunner;
   private readonly clock: Clock;
   private readonly sessionLock: SessionLock;
   private readonly tracer: TurnTracer;
@@ -317,6 +318,7 @@ export class TurnOrchestrator {
       options.config.anthropic.models.recallExpansion;
     const turnActionStateService = new TurnActionStateService({
       model: preTurnExtractionModel,
+      similarityConfig: options.config,
       actionRepository: options.actionRepository,
       embeddingClient: options.embeddingClient,
       clock: this.clock,
@@ -324,6 +326,7 @@ export class TurnOrchestrator {
     });
     const turnGoalPromotionService = new TurnGoalPromotionService({
       model: preTurnExtractionModel,
+      similarityConfig: options.config,
       identityService: options.identityService,
       goalsRepository: options.goalsRepository,
       executiveStepsRepository: options.executiveStepsRepository,
@@ -347,6 +350,7 @@ export class TurnOrchestrator {
       clock: this.clock,
       tracer: this.tracer,
     });
+    this.postGenerationGuardRunner = postGenerationGuardRunner;
     const plannerContextCapture =
       options.config.deliberation.plannerContextCaptureSampleRate === 0
         ? undefined
@@ -372,6 +376,7 @@ export class TurnOrchestrator {
               options.attachmentService.fetchImageForLlm(attachmentId),
           });
     const turnActionCoordinator = new TurnActionCoordinator({
+      similarityConfig: options.config,
       commitmentGuardRunner,
       postGenerationGuardRunner,
       embeddingClient: options.embeddingClient,
@@ -577,17 +582,15 @@ export class TurnOrchestrator {
     try {
       try {
         try {
-          const result = await turnExecutionMetricsStorage.run(
-            executionMetrics,
-            () =>
-              this.turnPhaseCoordinator.run({
-                input: phaseInput,
-                globalTurnCounter,
-                sessionId,
-                turnId,
-                streamWriter,
-                lifecycleTracker,
-              }),
+          const result = await turnExecutionMetricsStorage.run(executionMetrics, () =>
+            this.turnPhaseCoordinator.run({
+              input: phaseInput,
+              globalTurnCounter,
+              sessionId,
+              turnId,
+              streamWriter,
+              lifecycleTracker,
+            }),
           );
           lifecycleTracker.commitTurnState();
           terminalOutcome =

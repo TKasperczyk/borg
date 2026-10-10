@@ -1,3 +1,4 @@
+import { similarityThresholds } from "../../config/similarity.js";
 import { z } from "zod";
 
 import {
@@ -50,7 +51,6 @@ import type {
 } from "../types.js";
 import { detectDivergentSkillSplits, type SkillSplitCandidate } from "./split-detector.js";
 
-const CLUSTER_SIMILARITY_THRESHOLD = 0.85;
 const SYNTHESIZER_TOOL_NAME = "EmitProceduralSkillCandidate";
 const SKILL_SPLIT_TOOL_NAME = "EmitSkillSplit";
 
@@ -215,6 +215,7 @@ async function collectEvidenceClusters(
   ctx: OfflineContext,
   evidenceRows: readonly ProceduralEvidenceRecord[],
 ): Promise<EvidenceCluster[]> {
+  const clusterThreshold = similarityThresholds(ctx.config).proceduralEvidenceCluster;
   const embeddings = await ctx.embeddingClient.embedBatch(
     evidenceRows.map((evidence) => evidenceEmbeddingText(evidence)),
   );
@@ -241,7 +242,7 @@ async function collectEvidenceClusters(
 
       if (
         candidateEmbedding !== undefined &&
-        cosineSimilarity(seedEmbedding, candidateEmbedding) >= CLUSTER_SIMILARITY_THRESHOLD
+        cosineSimilarity(seedEmbedding, candidateEmbedding) >= clusterThreshold
       ) {
         const candidate = evidenceRows[candidateIndex];
 
@@ -834,7 +835,7 @@ export class ProceduralSynthesizerProcess implements OfflineProcess<ProceduralSy
                 ? undefined
                 : (await ctx.skillRepository.searchByContext(candidate.applies_when, 3)).find(
                     (item) =>
-                      item.similarity >= ctx.config.offline.proceduralSynthesizer.dedupThreshold,
+                      item.similarity >= similarityThresholds(ctx.config).skillSynthesisDuplicate,
                   );
 
             items.push({

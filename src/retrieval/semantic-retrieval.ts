@@ -1,3 +1,4 @@
+import { similarityThresholds, type SimilarityConfigSource } from "../config/similarity.js";
 /* Semantic-band retrieval for label/vector lookup and graph walks. */
 import type { EmbeddingClient } from "../embeddings/index.js";
 import {
@@ -73,7 +74,6 @@ export const DEFAULT_SEMANTIC_STATUS_MULTIPLIERS = {
 export type SemanticStatusMultipliers = Record<SemanticNodeStatus, number>;
 
 // Tunes the minimum semantic node similarity for candidate admission.
-const DEFAULT_SEMANTIC_NODE_MIN_SIMILARITY = 0.01;
 
 export type RetrievedSemanticUnderReview = {
   review_id: number;
@@ -117,6 +117,7 @@ export type RetrievedSemantic = SemanticContext & {
 };
 
 export type SemanticRetrievalOptions = {
+  similarityConfig?: SimilarityConfigSource;
   audienceEntityId?: EntityId | null;
   // Disclosure/admin-only all-audiences source search. Ignored for cognition source recall.
   crossAudience?: boolean;
@@ -416,32 +417,6 @@ function resolveSemanticNodeSourcesForDisclosure(
   };
 }
 
-function withSemanticSourcesForDisclosure<T extends SemanticNode>(
-  node: T,
-  admittedSourceEpisodeIds: ReadonlySet<string> | null,
-): T & Pick<RetrievedSemanticNode, "partial_source_visibility" | "source_visibility_fraction"> {
-  const sourceVisibility = resolveSemanticNodeSourcesForDisclosure(node, admittedSourceEpisodeIds);
-
-  if (
-    admittedSourceEpisodeIds === null ||
-    sourceVisibility.availableSourceEpisodeIds.length === node.source_episode_ids.length
-  ) {
-    return node;
-  }
-
-  return {
-    ...node,
-    source_episode_ids: sourceVisibility.availableSourceEpisodeIds,
-    ...(sourceVisibility.partial
-      ? {
-          partial_source_visibility: true,
-          source_visibility_fraction:
-            sourceVisibility.availableSourceEpisodeIds.length / node.source_episode_ids.length,
-        }
-      : {}),
-  };
-}
-
 function resolveSemanticEdgeSourcesForDisclosure(
   edge: SemanticEdge,
   admittedSourceEpisodeIds: ReadonlySet<string> | null,
@@ -522,20 +497,6 @@ function withSemanticWalkStepEdgesForDisclosure(
   };
 }
 
-export async function isSemanticNodeAvailableForDisclosure(
-  node: SemanticNode,
-  visibility: SemanticVisibilityOptions,
-  dependencies: Pick<SemanticRetrievalDependencies, "episodicRepository">,
-): Promise<boolean> {
-  const admittedSourceEpisodeIds = await resolveSemanticSourceEpisodeIdsForDisclosure(
-    dependencies.episodicRepository,
-    node.source_episode_ids,
-    visibility,
-  );
-
-  return hasSemanticNodeSourcesForDisclosure(node, admittedSourceEpisodeIds);
-}
-
 function isSemanticWalkStepAvailableForDisclosure(
   step: SemanticWalkStep,
   admittedSourceEpisodeIds: ReadonlySet<string> | null,
@@ -546,28 +507,6 @@ function isSemanticWalkStepAvailableForDisclosure(
       hasSemanticEdgeSourcesForDisclosure(edge, admittedSourceEpisodeIds),
     )
   );
-}
-
-export async function filterSemanticWalkStepsForDisclosure(
-  steps: readonly SemanticWalkStep[],
-  visibility: SemanticVisibilityOptions,
-  dependencies: Pick<SemanticRetrievalDependencies, "episodicRepository">,
-): Promise<Array<SemanticWalkStep & { edgePath: RetrievedSemanticEdge[] }>> {
-  const admittedSourceEpisodeIds = await resolveSemanticSourceEpisodeIdsForDisclosure(
-    dependencies.episodicRepository,
-    steps.flatMap((step) => [
-      ...step.node.source_episode_ids,
-      ...step.edgePath.flatMap((edge) => edge.evidence_episode_ids),
-    ]),
-    visibility,
-  );
-
-  return steps
-    .filter((step) => isSemanticWalkStepAvailableForDisclosure(step, admittedSourceEpisodeIds))
-    .map((step) => ({
-      ...withSemanticWalkStepEdgesForDisclosure(step, admittedSourceEpisodeIds),
-      node: withSemanticSourcesForDisclosure(step.node, admittedSourceEpisodeIds),
-    }));
 }
 
 function normalizeUnderReviewMultiplier(value: number | undefined): number {
@@ -822,7 +761,9 @@ async function resolveSemanticContextWithDisclosureSourceMode(
   const queryVector = options.queryVector ?? (await embeddingClient.embed(query));
   const byVector = await semanticNodeRepository.searchByVector(queryVector, {
     limit: overfetchLimit(DEFAULT_VECTOR_MATCH_LIMIT, overfetchMultiplier),
-    minSimilarity: DEFAULT_SEMANTIC_NODE_MIN_SIMILARITY,
+    minSimilarity: similarityThresholds(
+      options.similarityConfig ?? { embedding: embeddingClient.profile },
+    ).semanticRecall,
     includeArchived: false,
   });
 
@@ -1147,14 +1088,6 @@ export async function resolveSemanticContextForDisclosure(
   dependencies: SemanticRetrievalDependencies,
 ): Promise<ResolvedSemanticRetrieval> {
   return resolveSemanticContextWithDisclosureSourceMode(query, options, dependencies, "disclosure");
-}
-
-export async function resolveSemanticContext(
-  query: string,
-  options: SemanticRetrievalOptions,
-  dependencies: SemanticRetrievalDependencies,
-): Promise<ResolvedSemanticRetrieval> {
-  return resolveSemanticContextForCognition(query, options, dependencies);
 }
 
 export function toRetrievedSemantic(resolved: ResolvedSemanticRetrieval): RetrievedSemantic {

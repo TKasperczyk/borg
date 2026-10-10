@@ -9,6 +9,7 @@ import { CallbackTracer, type CallbackTraceEntry } from "../../src/tracing/trace
 import { FixedClock } from "../../src/util/clock.js";
 import type { EntityId } from "../../src/util/ids.js";
 import { parseIsoInstant } from "../../src/util/iso-instant.js";
+import { unknownMemoryDisclosureLabel } from "../../src/memory/common/disclosure-label.js";
 
 import { JsonlValueCache, VectorCache } from "../embedding-ab/cache.js";
 import {
@@ -417,6 +418,7 @@ async function runCaseConfiguration(input: {
               },
               ownerRecentActivity: input.item.owner_recent_activity.map((activity) => ({
                 excerpt: activity.excerpt,
+                disclosureLabel: activity.disclosure_label ?? unknownMemoryDisclosureLabel(),
                 occurredAt: activity.occurred_at,
                 venue: { ...activity.venue },
                 ...(activity.counterparty_name === undefined

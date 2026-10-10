@@ -19,7 +19,7 @@ import {
   edgeFromRow,
   nodeFromRow,
 } from "../src/memory/semantic/repository.js";
-import { buildNodeEmbeddingText } from "../src/memory/semantic/extractor.js";
+import { buildNodeEmbeddingText } from "../src/memory/semantic/embedding-text.js";
 import { semanticObservationMetadataSchema } from "../src/memory/semantic/types.js";
 import { AuditLog, type MaintenanceAuditRecordInput } from "../src/offline/audit-log.js";
 import { LanceDbTable } from "../src/storage/lancedb/index.js";

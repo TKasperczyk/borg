@@ -1,3 +1,4 @@
+import { seedTestEmbeddingProfile } from "../../test-support/embedding-profile.js";
 import { readFileSync } from "node:fs";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -211,6 +212,7 @@ describe("Borg", () => {
     tempDirs.push(tempDir);
 
     const clock = new ManualClock(1_000);
+    seedTestEmbeddingProfile(tempDir);
     const store = new LanceDbStore({
       uri: join(tempDir, "lancedb"),
     });
@@ -573,6 +575,7 @@ describe("Borg", () => {
     tempDirs.push(tempDir);
 
     const clock = new ManualClock(1_000);
+    seedTestEmbeddingProfile(tempDir);
     const store = new LanceDbStore({
       uri: join(tempDir, "lancedb"),
     });
@@ -715,6 +718,7 @@ describe("Borg", () => {
     tempDirs.push(tempDir);
 
     const clock = new ManualClock(1_000);
+    seedTestEmbeddingProfile(tempDir);
     const store = new LanceDbStore({
       uri: join(tempDir, "lancedb"),
     });
@@ -911,6 +915,7 @@ describe("Borg", () => {
     tempDirs.push(tempDir);
 
     const clock = new ManualClock(1_000);
+    seedTestEmbeddingProfile(tempDir);
     const store = new LanceDbStore({
       uri: join(tempDir, "lancedb"),
     });

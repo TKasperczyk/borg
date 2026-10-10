@@ -1,3 +1,4 @@
+import { FailureReportTracker } from "../../util/failure-reports.js";
 import type { EmbeddingClient } from "../../embeddings/index.js";
 import { z } from "zod";
 import {
@@ -265,7 +266,8 @@ function vectorRowFromObservedEvent(
 
 export class ObservedEventRepository {
   private readonly clock: Clock;
-  private readonly pendingEmbeddingTasks = new Set<Promise<void>>();
+  private readonly pendingEmbeddingTasks = new Set<Promise<unknown>>();
+  private readonly failureReports = new FailureReportTracker("observed-event embedding failure");
 
   constructor(private readonly options: ObservedEventRepositoryOptions) {
     this.clock = options.clock ?? new SystemClock();
@@ -294,17 +296,11 @@ export class ObservedEventRepository {
     });
   }
 
-  private reportEmbeddingFailure(
+  private async reportEmbeddingFailure(
     error: unknown,
     details: ObservedEventEmbeddingFailureDetails,
-  ): void {
-    try {
-      void Promise.resolve(this.options.onEmbeddingFailure?.(error, details)).catch(() => {
-        // Best-effort failure reporting only.
-      });
-    } catch {
-      // Best-effort failure reporting only.
-    }
+  ): Promise<void> {
+    await this.failureReports.report(() => this.options.onEmbeddingFailure?.(error, details));
   }
 
   private async readStoredEmbedding(id: ObservedEventId): Promise<Float32Array | null> {
@@ -353,7 +349,7 @@ export class ObservedEventRepository {
         on: "id",
       });
     } catch (error) {
-      this.reportEmbeddingFailure(error, {
+      await this.reportEmbeddingFailure(error, {
         operation,
         eventId: event.id,
         interactionText: event.interaction_text,
@@ -374,7 +370,10 @@ export class ObservedEventRepository {
   }
 
   async waitForPendingEmbeddings(): Promise<void> {
-    await Promise.allSettled([...this.pendingEmbeddingTasks]);
+    while (this.pendingEmbeddingTasks.size > 0) {
+      await Promise.allSettled([...this.pendingEmbeddingTasks]);
+    }
+    await this.failureReports.flush();
   }
 
   async getEmbeddedEventIds(ids: readonly ObservedEventId[]): Promise<Set<ObservedEventId>> {
@@ -401,6 +400,18 @@ export class ObservedEventRepository {
   async backfillMissingEmbeddings(
     options: { limit?: number } = {},
   ): Promise<ObservedEventEmbeddingBackfillReport> {
+    const task = this.runEmbeddingBackfill(options);
+    this.pendingEmbeddingTasks.add(task);
+    try {
+      return await task;
+    } finally {
+      this.pendingEmbeddingTasks.delete(task);
+    }
+  }
+
+  private async runEmbeddingBackfill(options: {
+    limit?: number;
+  }): Promise<ObservedEventEmbeddingBackfillReport> {
     const table = this.table;
     const embeddingClient = this.embeddingClient;
     const report: ObservedEventEmbeddingBackfillReport = {
@@ -451,7 +462,7 @@ export class ObservedEventRepository {
         report.embedded += 1;
       } catch (error) {
         report.failed += 1;
-        this.reportEmbeddingFailure(error, {
+        await this.reportEmbeddingFailure(error, {
           operation: "backfill",
           eventId: event.id,
           interactionText: event.interaction_text,

@@ -1,3 +1,4 @@
+import { similarityThresholds, type SimilarityConfigSource } from "../config/similarity.js";
 import type { AttentionWeights, TemporalCue } from "../contracts/cognitive-contracts.js";
 import {
   commitmentMemoryDisclosureLabel,
@@ -153,6 +154,7 @@ export type {
 } from "./semantic-retrieval.js";
 
 export type RetrievalPipelineOptions = {
+  similarityConfig?: SimilarityConfigSource;
   embeddingClient: EmbeddingClient;
   llmClient?: LLMClient;
   recallExpansionModel?: string;
@@ -272,12 +274,6 @@ export type DisclosureRetrievalOptions = RetrievalSharedOptions &
 
 export type CognitionRecallSearchOptions = CognitionRetrievalOptions;
 
-/**
- * @deprecated Use DisclosureRetrievalOptions for disclosure reads or CognitionRetrievalOptions
- * for cognition recall.
- */
-export type RetrievalSearchOptions = DisclosureRetrievalOptions;
-
 type RetrievalExecutionOptions = CognitionRetrievalOptions | DisclosureRetrievalOptions;
 
 type RetrievalExecutionMode = "cognition" | "disclosure";
@@ -391,9 +387,6 @@ type WarmRecallCandidate = {
   stateHandle: RecallStateHandle;
 };
 
-// Tunes the minimum similarity for commitment evidence admission.
-const DEFAULT_COMMITMENT_EVIDENCE_SIMILARITY_THRESHOLD = 0.3;
-
 // Tunes concurrent fanout across independent retrieval intent searches.
 const RETRIEVAL_FANOUT_CONCURRENCY = 5;
 
@@ -455,6 +448,7 @@ export class RetrievalPipeline {
   private readonly decayOptions?: Omit<DecayOptions, "nowMs">;
   private readonly tracer: TurnTracer;
   private readonly lexicalFusionEnabled: boolean;
+  private readonly auxiliaryScoreScale: number;
 
   constructor(private readonly options: RetrievalPipelineOptions) {
     this.clock = options.clock ?? new SystemClock();
@@ -463,6 +457,9 @@ export class RetrievalPipeline {
     this.mmrLambda = options.mmrLambda ?? DEFAULT_MMR_LAMBDA;
     this.decayOptions = options.decayOptions;
     this.lexicalFusionEnabled = options.lexicalFusionEnabled ?? false;
+    this.auxiliaryScoreScale = similarityThresholds(
+      options.similarityConfig ?? { embedding: options.embeddingClient?.profile },
+    ).recallAuxiliaryScoreScale;
   }
 
   retrieveOpenQuestionsForQuery(
@@ -481,6 +478,7 @@ export class RetrievalPipeline {
       query,
       {
         ...options,
+        similarityConfig: this.options.similarityConfig,
         onDegraded:
           this.tracer.enabled && options.traceTurnId !== undefined
             ? (reason, error) => {
@@ -508,6 +506,20 @@ export class RetrievalPipeline {
     options: CognitionRetrievalOptions,
   ): Promise<RetrievedContext> {
     return this.searchWithContextInternal(query, options, "cognition");
+  }
+
+  // External cognition consumes only episodes; keep Sol's full-context entry above unchanged.
+  async recallEpisodeHitsForCognition(
+    query: string,
+    options: CognitionRetrievalOptions,
+  ): Promise<RetrievedEpisode[]> {
+    const result = await this.searchWithContextInternal(
+      query,
+      options,
+      "cognition",
+      "episodes-only",
+    );
+    return result.episodes;
   }
 
   // Episodes-only contract: callers get RetrievedEpisode[] and nothing else,
@@ -745,7 +757,13 @@ export class RetrievalPipeline {
       // period; a "newer is better" prior would only fight that ordering.
       ...(options.recencyPrior === undefined || timeSignalPresent
         ? {}
-        : { recencyPrior: options.recencyPrior, nowMs }),
+        : {
+            recencyPrior: {
+              ...options.recencyPrior,
+              weight: options.recencyPrior.weight * this.auxiliaryScoreScale,
+            },
+            nowMs,
+          }),
     });
     const semanticProjection = projectSemantic(evidencePool, toRetrievedSemantic(semantic));
     const openQuestionProjection = projectOpenQuestions(
@@ -1444,6 +1462,8 @@ export class RetrievalPipeline {
         term,
         source: "perception-entities" as const,
       })),
+      // Explicit audience handles also rescue cold memories outside the vector,
+      // recent and hot pools. Planner identity hints are separate from this API.
       ...(options.audienceTerms ?? []).map((term) => ({
         term,
         source: "audience-aliases" as const,
@@ -1463,7 +1483,10 @@ export class RetrievalPipeline {
 
     // A caller-supplied cue (Sol's perception) wins; the planner's cue fills in when the caller
     // had none, which is the sidecar's case.
-    const callerCue = options.temporalCue ?? null;
+    const callerCue =
+      resolveTimeSignals({ temporalCue: options.temporalCue }).scoringRange === null
+        ? null
+        : (options.temporalCue ?? null);
     const plannerCueWins =
       options.timeRange === undefined && callerCue === null && expansion.temporalCue !== null;
     const effectiveCue = callerCue ?? expansion.temporalCue;
@@ -1529,6 +1552,14 @@ export class RetrievalPipeline {
             this.options.recallExpansionSemanticVariantCount ??
             DEFAULT_RECALL_EXPANSION_SEMANTIC_VARIANT_COUNT,
           ...(options.recallQueryPlannerContext ?? {}),
+          identity: {
+            ...options.recallQueryPlannerContext?.identity,
+            entityTerms: dedupeStrings([
+              ...(options.recallQueryPlannerContext?.identity?.entityTerms ?? []),
+              ...(options.entityTerms ?? []),
+              ...(options.audienceTerms ?? []),
+            ]),
+          },
           nowMs: this.clock.now(),
           ...(this.options.recallPlannerTimeZone === undefined
             ? {}
@@ -1909,7 +1940,7 @@ export class RetrievalPipeline {
     );
     const exactBoost = entry.intent.kind === "known_term" ? KNOWN_TERM_INTENT_SCORE_BOOST : 0;
     const recencyBoost = entry.intent.kind === "recent" ? RECENT_INTENT_SCORE_BOOST : 0;
-    const rawScore = score.score + exactBoost + recencyBoost;
+    const rawScore = score.score + (exactBoost + recencyBoost) * this.auxiliaryScoreScale;
 
     return {
       ...score,
@@ -1944,6 +1975,7 @@ export class RetrievalPipeline {
             {
               ...options,
               queryVector: intentVector,
+              similarityConfig: this.options.similarityConfig,
               exactTerms: intent.kind === "known_term" ? intent.terms : [],
               underReviewMultiplier:
                 options.underReviewMultiplier ?? this.options.semanticUnderReviewMultiplier,
@@ -2146,7 +2178,9 @@ export class RetrievalPipeline {
     }
     const threshold =
       this.options.commitmentEvidenceSimilarityThreshold ??
-      DEFAULT_COMMITMENT_EVIDENCE_SIMILARITY_THRESHOLD;
+      similarityThresholds(
+        this.options.similarityConfig ?? { embedding: this.options.embeddingClient?.profile },
+      ).commitmentEvidence;
     const evidence: EvidenceItem[] = [];
 
     for (const [intentIndex, intent] of relevantIntents.entries()) {
@@ -2260,6 +2294,7 @@ export class RetrievalPipeline {
   private scoringDefaults(): EpisodeScoreDefaults {
     const defaults: EpisodeScoreDefaults = {
       scoreWeights: this.scoreWeights,
+      auxiliaryScoreScale: this.auxiliaryScoreScale,
     };
 
     if (this.decayOptions !== undefined) {

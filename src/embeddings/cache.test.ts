@@ -127,6 +127,30 @@ describe("createCachingEmbeddingClient", () => {
     expect(embed).toHaveBeenCalledTimes(1);
   });
 
+  it.each(["resolve", "reject"] as const)(
+    "lets a query bypass a stalled batch, including after its late %s",
+    async (settlement) => {
+      const batch = createDeferred<Float32Array[]>();
+      const fresh = Float32Array.from([42]);
+      const inner = {
+        embed: vi.fn(async () => fresh),
+        embedBatch: vi.fn(() => batch.promise),
+      } satisfies EmbeddingClient;
+      const client = createCachingEmbeddingClient(inner, { model: "model-a", dims: 1 });
+      const abandoned = client.embedBatch(["focus", "activity"]);
+      const settled = abandoned.catch(() => undefined);
+
+      // Resolve neither batch nor its cache entries before this query finishes.
+      await expect(client.embed("focus")).resolves.toEqual(fresh);
+      expect(inner.embed).toHaveBeenCalledTimes(1);
+      if (settlement === "resolve") batch.resolve([vectorFor("old"), vectorFor("activity")]);
+      else batch.reject(new Error("late batch failure"));
+      await settled;
+      await expect(client.embed("focus")).resolves.toEqual(fresh);
+      expect(inner.embed).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it("evicts rejected promises so retry can call the provider again", async () => {
     const embed = vi
       .fn()

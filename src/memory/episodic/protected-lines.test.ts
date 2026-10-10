@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildConsolidationEpisodeEmbeddingText,
+  buildEpisodeEmbeddingText,
   collectProtectedEpisodeTokenLines,
+  EpisodeEmbeddingTextError,
   preserveProtectedEpisodeTokenLines,
 } from "./protected-lines.js";
 
@@ -13,6 +15,109 @@ describe("protected episode token lines", () => {
     "ticket=AININJAS-1187 action=transition transition=Ready_for_dev verdict=approved";
   const overlappingNewGrammarLine = "ticket=AININJAS-1188 action=created summary=Prepare release";
   const bareTeamsCardLine = "action=teams_card";
+
+  it("reconstructs the production consolidation recipe from its persisted narrative", () => {
+    const prose = "The team completed the scheduled triage.";
+    const source = `${outcomeLine}\n${oldGrammarLine}\n${ticketActionLine}`;
+    const title = " Daily rollup ";
+    const tags = ["triage"];
+    const participants = ["team-agent-ai"];
+    expect(
+      buildEpisodeEmbeddingText({
+        title,
+        tags,
+        participants,
+        episode_kind: "consolidation_version",
+        narrative: preserveProtectedEpisodeTokenLines(prose, [source]),
+        legacyProtectedSourceTexts: [source],
+      }),
+    ).toBe(
+      buildConsolidationEpisodeEmbeddingText({
+        title,
+        tags,
+        participants,
+        synthesizedNarrative: prose,
+        protectedSourceTexts: [source],
+      }),
+    );
+  });
+
+  it("rejects ambiguous legacy inline protocol prose instead of adding it to the embedding", () => {
+    const source = "I corrected the report. OUTCOME fp=legacy-correction decision=filter-by-author";
+    const prose = "The report was corrected.";
+    const persisted = preserveProtectedEpisodeTokenLines(prose, [source]);
+    expect(persisted).toBe(preserveProtectedEpisodeTokenLines(`${prose}\n${source}`, [source]));
+    expect(() =>
+      buildEpisodeEmbeddingText({
+        title: "Correction",
+        narrative: persisted,
+        tags: [],
+        episode_kind: "consolidation_version",
+        legacyProtectedSourceTexts: [source],
+      }),
+    ).toThrow("Legacy consolidation embedding input is ambiguous");
+  });
+
+  it("counts every distinct legacy candidate and exposes only a narrative-preserving longest prefix", () => {
+    const sources = ["First prose OUTCOME fp=first", "Second prose decision=send"];
+    const narrative = preserveProtectedEpisodeTokenLines("Synthesis", sources);
+    for (const stored of [narrative, ` ${narrative} `]) {
+      let caught: unknown;
+      try {
+        buildEpisodeEmbeddingText({
+          title: "Title",
+          narrative: stored,
+          tags: [],
+          episode_kind: "consolidation_version",
+          legacyProtectedSourceTexts: sources,
+        });
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(EpisodeEmbeddingTextError);
+      expect(caught).toMatchObject({ candidateCount: 3, code: "EMBEDDING_TEXT_UNRECOVERABLE" });
+      const error = caught as EpisodeEmbeddingTextError;
+      if (stored === narrative) {
+        expect(error.longestPrefix).toEqual({
+          synthesized_narrative: narrative,
+          protected_source_lines: sources,
+        });
+        expect(
+          preserveProtectedEpisodeTokenLines(
+            error.longestPrefix!.synthesized_narrative,
+            error.longestPrefix!.protected_source_lines,
+          ),
+        ).toBe(narrative);
+      } else expect(error.longestPrefix).toBeUndefined();
+    }
+  });
+
+  it("uses recorded source order and refuses stale synthesized input", () => {
+    const source = ["OUTCOME fp=second", "OUTCOME fp=first"];
+    const prose = "A correction.\nOUTCOME fp=first";
+    const input = {
+      title: "Correction",
+      narrative: preserveProtectedEpisodeTokenLines(prose, source),
+      tags: [],
+      episode_kind: "consolidation_version",
+      consolidation_embedding_input: {
+        synthesized_narrative: prose,
+        protected_source_lines: source,
+      },
+    };
+    expect(buildEpisodeEmbeddingText(input)).toBe(
+      buildConsolidationEpisodeEmbeddingText({
+        title: input.title,
+        synthesizedNarrative: prose,
+        protectedSourceTexts: source,
+        tags: [],
+        participants: [],
+      }),
+    );
+    expect(() => buildEpisodeEmbeddingText({ ...input, narrative: "Changed" })).toThrow(
+      "no longer matches",
+    );
+  });
 
   it("collects complete old- and new-grammar lines once in source order", () => {
     const first = [

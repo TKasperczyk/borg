@@ -31,7 +31,7 @@ function usageError(usage: Usage, message?: string): never {
   }
   console.error(
     [
-      `Usage: pnpm ${usage.command} -- ${usage.synopsis}`,
+      `Usage: npm run ${usage.command} -- ${usage.synopsis}`,
       ...(usage.details === undefined ? [] : ["", ...usage.details]),
     ].join("\n"),
   );

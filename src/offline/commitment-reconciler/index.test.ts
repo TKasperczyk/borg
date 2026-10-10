@@ -17,7 +17,6 @@ function reconciliationResponse(
     commitment_ids: string[];
     resolution: "supersede_to_survivor" | "keep_independent" | "conflict";
     survivor_commitment_id?: string | null;
-    superseded_commitment_ids?: string[];
     reason: string;
   }>,
   usage: { inputTokens: number; outputTokens: number } = { inputTokens: 20, outputTokens: 10 },
@@ -34,7 +33,6 @@ function reconciliationResponse(
         input: {
           judgments: judgments.map((judgment) => ({
             survivor_commitment_id: null,
-            superseded_commitment_ids: [],
             ...judgment,
           })),
         },
@@ -109,7 +107,6 @@ describe("CommitmentReconcilerProcess", () => {
               commitment_ids: [first!.id, second!.id],
               resolution: "supersede_to_survivor",
               survivor_commitment_id: second!.id,
-              superseded_commitment_ids: [first!.id],
               reason: "Both records express the same handle-format commitment.",
             },
           ]);

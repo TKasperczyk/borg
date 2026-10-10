@@ -1,5 +1,5 @@
 /**
- * Usage: pnpm finalizer:cache-report -- <captures/finalizer-contexts.jsonl>
+ * Usage: npm run finalizer:cache-report -- <captures/finalizer-contexts.jsonl>
  *
  * Streams a frozen JSONL snapshot. By default compares consecutive autonomous
  * surfaces; --same-session compares all origins within each session instead.
@@ -9,7 +9,7 @@ import { runAbCliEntrypoint } from "./ab-cli.ts";
 import { openPlannerCaptureSnapshot } from "./planner-ab-replay.ts";
 
 export const FINALIZER_CACHE_REPORT_USAGE =
-  "Usage: pnpm finalizer:cache-report -- <captures/finalizer-contexts.jsonl> [--same-session]";
+  "Usage: npm run finalizer:cache-report -- <captures/finalizer-contexts.jsonl> [--same-session]";
 
 type AutonomousSurface = {
   captureId: string;

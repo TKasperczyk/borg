@@ -1,7 +1,9 @@
+import type { EmbeddingProfile } from "./bank-profile.js";
 import OpenAI from "openai";
 
 import { sleep } from "../util/clock.js";
 import { ConfigError, EmbeddingError } from "../util/errors.js";
+import { toWellFormedUtf16 } from "../util/utf16-boundary.js";
 
 type OpenAIEmbeddingsClient = {
   embeddings: {
@@ -19,6 +21,8 @@ type OpenAIEmbeddingsClient = {
 };
 
 export type EmbeddingClient = {
+  /** Required when injecting into Borg.open; wrappers must preserve this identity. */
+  readonly profile?: EmbeddingProfile;
   embed(text: string): Promise<Float32Array>;
   embedBatch(texts: readonly string[]): Promise<Float32Array[]>;
 };
@@ -93,7 +97,9 @@ function isModelNotLoadedError(error: unknown): boolean {
   // model in passing does not get retried forever.
   return (
     message.includes("model") &&
-    (message.includes("unloaded") || message.includes("crashed") || message.includes("does not exist"))
+    (message.includes("unloaded") ||
+      message.includes("crashed") ||
+      message.includes("does not exist"))
   );
 }
 
@@ -193,6 +199,10 @@ export class OpenAICompatibleEmbeddingClient implements EmbeddingClient {
     this.maxBatchSize = requestedBatchSize;
   }
 
+  get profile(): EmbeddingProfile {
+    return { model: this.model, dimensions: this.dims };
+  }
+
   async embed(text: string): Promise<Float32Array> {
     const [embedding] = await this.embedBatch([text]);
 
@@ -223,7 +233,6 @@ export class OpenAICompatibleEmbeddingClient implements EmbeddingClient {
   }
 
   private async embedChunk(texts: readonly string[]): Promise<Float32Array[]> {
-
     try {
       const response = await this.createWithModelReloadRetry(texts);
 
@@ -236,16 +245,22 @@ export class OpenAICompatibleEmbeddingClient implements EmbeddingClient {
       return response.data
         .slice()
         .sort((left, right) => left.index - right.index)
-        .map((item) => validateDimensions(item.embedding, this.dims, this.model));
+        .map((item, index) => {
+          if (item.index !== index) {
+            throw new EmbeddingError(
+              "Embedding response indices do not uniquely cover the input batch",
+            );
+          }
+          return validateDimensions(item.embedding, this.dims, this.model);
+        });
     } catch (error) {
       if (error instanceof EmbeddingError || error instanceof ConfigError) {
         throw error;
       }
 
-      throw new EmbeddingError(
-        `Failed to generate embeddings (${describeEmbeddingCause(error)})`,
-        { cause: error },
-      );
+      throw new EmbeddingError(`Failed to generate embeddings (${describeEmbeddingCause(error)})`, {
+        cause: error,
+      });
     }
   }
 
@@ -257,9 +272,13 @@ export class OpenAICompatibleEmbeddingClient implements EmbeddingClient {
   private async createWithModelReloadRetry(
     texts: readonly string[],
   ): ReturnType<OpenAIEmbeddingsClient["embeddings"]["create"]> {
-    const singleInput = texts[0];
+    // The gateway rejects a body with a lone surrogate for the WHOLE batch, and
+    // reports it as "No model field." (prod, 2026-09-09). Callers are expected to
+    // cut text on code-point boundaries; this is the last line of defence.
+    const wellFormed = texts.map(toWellFormedUtf16);
+    const singleInput = wellFormed[0];
     const params = {
-      input: texts.length === 1 && singleInput !== undefined ? singleInput : [...texts],
+      input: wellFormed.length === 1 && singleInput !== undefined ? singleInput : wellFormed,
       model: this.model,
       // Explicit -- the OpenAI SDK defaults to "base64", which we then have
       // to decode ourselves. Many OpenAI-compatible providers (LM Studio,
@@ -315,10 +334,17 @@ function nextPseudoRandom(seed: number): number {
 }
 
 export class FakeEmbeddingClient implements EmbeddingClient {
-  constructor(private readonly dims = 32) {
+  constructor(
+    private readonly dims = 32,
+    private readonly model = "fake-embed",
+  ) {
     if (!Number.isInteger(dims) || dims <= 0) {
       throw new ConfigError("FakeEmbeddingClient dims must be a positive integer");
     }
+  }
+
+  get profile(): EmbeddingProfile {
+    return { model: this.model, dimensions: this.dims };
   }
 
   async embed(text: string): Promise<Float32Array> {

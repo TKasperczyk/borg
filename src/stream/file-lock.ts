@@ -7,13 +7,17 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
-import { dirname } from "node:path";
+import { dirname, resolve } from "node:path";
+import type { DatabaseSync } from "node:sqlite";
 
+import { writeFileAtomic } from "../util/atomic-write.js";
 import { sleep } from "../util/clock.js";
 import { StreamError } from "../util/errors.js";
 import { isNodeError } from "../util/guards.js";
 import { serializeJsonValue } from "../util/json-value.js";
+import { tryAcquireFileLockGuard } from "./file-lock-guard.js";
 
 type FileLockOptions = {
   timeoutMs?: number;
@@ -21,10 +25,19 @@ type FileLockOptions = {
   malformedGraceMs?: number;
 };
 
+export type FileLockLease = { release(): Promise<void> };
+
+export const FILE_LOCK_HEARTBEAT_INTERVAL_MS = 10_000;
+// Twelve missed refreshes, observed by this contender, tolerate scheduling/I/O
+// delays and remote clock skew. Silence never overrides a live holder's guard.
+export const FILE_LOCK_STALE_MS = 120_000;
+
 type FileLockMetadata = {
   pid: number;
   host: string;
   timestamp: number;
+  heartbeat: number;
+  owner: string;
 };
 
 const LOCAL_HOSTNAME = hostname();
@@ -58,6 +71,49 @@ function sameLockFileIdentity(left: LockFileIdentity, right: LockFileIdentity): 
   );
 }
 
+type LockObservation = {
+  identity: LockFileIdentity;
+  contents: string;
+  unchangedSince: number;
+  lastObservedAt: number;
+};
+
+// Observations survive acquisition timeouts, but never survive process restart.
+// Writer clocks (including timestamps and mtimes) are not age evidence.
+const lockObservations = new Map<string, LockObservation>();
+
+function forgetLockObservation(lockPath: string): void {
+  lockObservations.delete(resolve(lockPath));
+}
+
+function observedUnchangedFor(
+  lockPath: string,
+  identity: LockFileIdentity,
+  contents: string,
+): number {
+  const key = resolve(lockPath);
+  const now = Date.now();
+  // Advisory readers can overlap an atomic heartbeat replacement. Only start
+  // counting from a snapshot whose identity stayed stable across the read.
+  const afterRead = lockFileIdentity(lockPath);
+  if (afterRead === null || !sameLockFileIdentity(identity, afterRead)) {
+    lockObservations.delete(key);
+    return 0;
+  }
+  const previous = lockObservations.get(key);
+  if (
+    previous === undefined ||
+    !sameLockFileIdentity(previous.identity, identity) ||
+    previous.contents !== contents ||
+    now < previous.lastObservedAt
+  ) {
+    lockObservations.set(key, { identity, contents, unchangedSince: now, lastObservedAt: now });
+    return 0;
+  }
+  previous.lastObservedAt = now;
+  return now - previous.unchangedSince;
+}
+
 function isFileLockMetadata(value: unknown): value is FileLockMetadata {
   return (
     value !== null &&
@@ -67,7 +123,11 @@ function isFileLockMetadata(value: unknown): value is FileLockMetadata {
     Number.isInteger((value as FileLockMetadata).pid) &&
     typeof (value as FileLockMetadata).host === "string" &&
     typeof (value as FileLockMetadata).timestamp === "number" &&
-    Number.isFinite((value as FileLockMetadata).timestamp)
+    Number.isFinite((value as FileLockMetadata).timestamp) &&
+    typeof (value as FileLockMetadata).heartbeat === "number" &&
+    Number.isFinite((value as FileLockMetadata).heartbeat) &&
+    typeof (value as FileLockMetadata).owner === "string" &&
+    (value as FileLockMetadata).owner.length > 0
   );
 }
 
@@ -88,11 +148,74 @@ function isProcessAlive(pid: number): boolean {
   }
 }
 
+// Wall-clock start of a live process, from /proc/<pid>/stat field 22 (start
+// time in USER_HZ ticks since boot) plus the boot time in /proc/stat. USER_HZ is
+// a fixed Linux ABI constant (100), independent of the kernel HZ. Linux-only:
+// elsewhere this returns null and the different-PID branch below keeps the
+// old retain-if-alive behaviour.
+const PROC_USER_HZ = 100;
+
+function readBootTimeMs(): number | null {
+  try {
+    const match = /^btime (\d+)$/m.exec(readFileSync("/proc/stat", "utf8"));
+    return match === null ? null : Number(match[1]) * 1000;
+  } catch {
+    return null;
+  }
+}
+
+const BOOT_TIME_MS = readBootTimeMs();
+
+function processStartWallMs(pid: number): number | null {
+  if (BOOT_TIME_MS === null) return null;
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const commEnd = stat.lastIndexOf(")");
+    if (commEnd === -1) return null;
+    const fields = stat
+      .slice(commEnd + 2)
+      .trim()
+      .split(/\s+/);
+    const ticks = Number(fields[19]);
+    return Number.isFinite(ticks) ? BOOT_TIME_MS + (ticks * 1000) / PROC_USER_HZ : null;
+  } catch {
+    return null;
+  }
+}
+
+// btime has whole-second resolution; the margin only covers that, in the
+// retain direction.
+const PID_REUSE_START_MARGIN_MS = 1_000;
+// Owner ids this process issued and still holds. A lock bearing our PID whose
+// owner we never issued is definitionally a dead predecessor's.
+const issuedOwners = new Set<string>();
+
+// A live local PID cannot own a lock stamped before that process existed.
+// Container restarts keep the pod hostname and hand out the same PIDs
+// deterministically, so after a crash the dead owner's PID is alive again -
+// usually as this very process - and must not be mistaken for the holder.
+// metadata.timestamp is refreshed with every heartbeat, so it is the owner's
+// LAST heartbeat: a live holder's stamp always postdates its own start, while a
+// dead owner's stamp precedes its death and therefore the start of whichever
+// process now wears its PID.
+function isPidReusedSinceLock(metadata: FileLockMetadata): boolean {
+  if (metadata.pid === process.pid) {
+    return !issuedOwners.has(metadata.owner);
+  }
+  const holderStartMs = processStartWallMs(metadata.pid);
+  if (holderStartMs === null) {
+    return false;
+  }
+  return holderStartMs > metadata.timestamp + PID_REUSE_START_MARGIN_MS;
+}
+
 function removeLockFileIfOwned(
   lockPath: string,
   expectedIdentity: LockFileIdentity,
   expectedContents: string,
 ): boolean {
+  // The caller holds the stable SQLite guard throughout this compare/unlink.
+  // Identity/content checks alone would have a cross-process TOCTOU race.
   try {
     const currentIdentity = lockFileIdentity(lockPath);
     if (
@@ -100,13 +223,16 @@ function removeLockFileIfOwned(
       !sameLockFileIdentity(currentIdentity, expectedIdentity) ||
       readFileSync(lockPath, "utf8") !== expectedContents
     ) {
+      if (currentIdentity === null) forgetLockObservation(lockPath);
       return currentIdentity === null;
     }
 
     unlinkSync(lockPath);
+    forgetLockObservation(lockPath);
     return true;
   } catch (error) {
     if (isNodeError(error) && error.code === "ENOENT") {
+      forgetLockObservation(lockPath);
       return true;
     }
 
@@ -117,6 +243,7 @@ function removeLockFileIfOwned(
 function reapStaleLock(lockPath: string, malformedGraceMs: number): boolean {
   const identity = lockFileIdentity(lockPath);
   if (identity === null) {
+    forgetLockObservation(lockPath);
     return true;
   }
   let metadataText: string;
@@ -124,6 +251,7 @@ function reapStaleLock(lockPath: string, malformedGraceMs: number): boolean {
   try {
     metadataText = readFileSync(lockPath, "utf8");
   } catch (error) {
+    forgetLockObservation(lockPath);
     if (isNodeError(error) && error.code === "ENOENT") {
       return true;
     }
@@ -136,30 +264,39 @@ function reapStaleLock(lockPath: string, malformedGraceMs: number): boolean {
   try {
     metadata = JSON.parse(metadataText) as unknown;
   } catch {
-    return Date.now() - identity.mtimeMs < malformedGraceMs
+    return observedUnchangedFor(lockPath, identity, metadataText) < malformedGraceMs
       ? false
       : removeLockFileIfOwned(lockPath, identity, metadataText);
   }
 
   if (!isFileLockMetadata(metadata)) {
-    return Date.now() - identity.mtimeMs < malformedGraceMs
+    return observedUnchangedFor(lockPath, identity, metadataText) < malformedGraceMs
       ? false
       : removeLockFileIfOwned(lockPath, identity, metadataText);
   }
 
   if (metadata.host !== LOCAL_HOSTNAME) {
-    return false;
+    // First sighting starts a full window. Any observed identity/content
+    // change restarts it.
+    return observedUnchangedFor(lockPath, identity, metadataText) >= FILE_LOCK_STALE_MS
+      ? removeLockFileIfOwned(lockPath, identity, metadataText)
+      : false;
   }
 
-  if (isProcessAlive(metadata.pid)) {
+  // SIGSTOP/event-loop stalls are not death. A local live PID may still resume
+  // work with open storage handles, regardless of the timestamp's age - unless
+  // the PID was reassigned after the lock was created (in-place container
+  // restart), in which case the owner is dead and the lock is reaped at once.
+  forgetLockObservation(lockPath);
+  if (isProcessAlive(metadata.pid) && !isPidReusedSinceLock(metadata)) {
     return false;
   }
 
   return removeLockFileIfOwned(lockPath, identity, metadataText);
 }
 
-// Advisory check: returns true when the given lock path exists and is held by
-// a live process on this host. Used by callers (e.g., MaintenanceScheduler)
+// Advisory check: local PID liveness or observed foreign activity/held guard.
+// Used by callers (e.g., MaintenanceScheduler)
 // that want to skip work when a session is busy without racing to acquire the
 // lock. Stale locks (crashed owner) return false so maintenance isn't blocked
 // indefinitely after a crash.
@@ -169,11 +306,16 @@ export function isFileLockLive(
 ): boolean {
   const malformedGraceMs = options.malformedGraceMs ?? DEFAULT_MALFORMED_LOCK_GRACE_MS;
   const identity = lockFileIdentity(lockPath);
+  if (identity === null) {
+    forgetLockObservation(lockPath);
+    return false;
+  }
   let metadataText: string;
 
   try {
     metadataText = readFileSync(lockPath, "utf8");
   } catch (error) {
+    forgetLockObservation(lockPath);
     if (isNodeError(error) && error.code === "ENOENT") {
       return false;
     }
@@ -186,20 +328,155 @@ export function isFileLockLive(
   try {
     metadata = JSON.parse(metadataText) as unknown;
   } catch {
-    return identity !== null && Date.now() - identity.mtimeMs < malformedGraceMs;
+    return observedUnchangedFor(lockPath, identity, metadataText) < malformedGraceMs;
   }
 
   if (!isFileLockMetadata(metadata)) {
-    return identity !== null && Date.now() - identity.mtimeMs < malformedGraceMs;
+    return observedUnchangedFor(lockPath, identity, metadataText) < malformedGraceMs;
   }
 
   if (metadata.host !== LOCAL_HOSTNAME) {
-    // Remote holder: cannot verify liveness, treat as live to err on the
-    // cautious side for cross-host setups.
-    return true;
+    if (observedUnchangedFor(lockPath, identity, metadataText) < FILE_LOCK_STALE_MS) {
+      return true;
+    }
+    // A stopped remote holder can miss heartbeats while retaining its guard.
+    try {
+      const guard = tryAcquireFileLockGuard(lockPath);
+      if (guard === null) return true;
+      guard.close();
+      return false;
+    } catch {
+      return true; // Unverifiable guard: keep maintenance out.
+    }
   }
 
-  return isProcessAlive(metadata.pid);
+  forgetLockObservation(lockPath);
+  return isProcessAlive(metadata.pid) && !isPidReusedSinceLock(metadata);
+}
+
+/** Acquire a renewable lease, retaining its guard until idempotent release. */
+export async function acquireFileLockLease(
+  lockPath: string,
+  options: FileLockOptions = {},
+): Promise<FileLockLease> {
+  const timeoutMs = options.timeoutMs ?? 2_000;
+  const retryDelayMs = options.retryDelayMs ?? 20;
+  const malformedGraceMs = options.malformedGraceMs ?? DEFAULT_MALFORMED_LOCK_GRACE_MS;
+  const deadline = Date.now() + timeoutMs;
+
+  let guard: DatabaseSync | null = null;
+  const owner = randomUUID();
+
+  while (true) {
+    try {
+      guard = tryAcquireFileLockGuard(lockPath);
+      if (guard !== null) {
+        // Hold the guard over reaping AND wx creation. A second reaper cannot
+        // pass a stale comparison and later unlink the winner's replacement.
+        if (reapStaleLock(lockPath, malformedGraceMs)) {
+          const lockFd = openSync(lockPath, "wx", 0o600);
+          try {
+            const now = Date.now();
+            writeFileSync(
+              lockFd,
+              serializeJsonValue({
+                pid: process.pid,
+                host: LOCAL_HOSTNAME,
+                timestamp: now,
+                heartbeat: now,
+                owner,
+              }),
+            );
+            fsyncSync(lockFd);
+          } catch (error) {
+            // No callback has started, and the guard still excludes acquirers.
+            unlinkSync(lockPath);
+            throw error;
+          } finally {
+            closeSync(lockFd);
+          }
+          issuedOwners.add(owner);
+          break;
+        }
+        guard.close();
+        guard = null;
+      }
+    } catch (error) {
+      guard?.close();
+      guard = null;
+      if (!isNodeError(error) || error.code !== "EEXIST") {
+        throw new StreamError(`Failed to acquire stream lock at ${lockPath}`, {
+          cause: error,
+        });
+      }
+    }
+
+    if (Date.now() >= deadline) {
+      throw new StreamError(`Timed out waiting for stream lock at ${lockPath}`);
+    }
+    await sleep(retryDelayMs);
+  }
+
+  // A per-acquisition token survives atomic heartbeat inode replacements,
+  // including a write that renamed successfully but failed directory fsync.
+  function readOwnedLock(): { identity: LockFileIdentity; contents: string } | null {
+    const identity = lockFileIdentity(lockPath);
+    if (identity === null) return null;
+    const contents = readFileSync(lockPath, "utf8");
+    const metadata: unknown = JSON.parse(contents);
+    return isFileLockMetadata(metadata) && metadata.owner === owner ? { identity, contents } : null;
+  }
+
+  const heartbeat = setInterval(() => {
+    try {
+      if (readOwnedLock() === null) {
+        clearInterval(heartbeat);
+        console.warn(`Failed to refresh stream lock at ${lockPath}: lock ownership changed`);
+        return;
+      }
+      const now = Date.now();
+      writeFileAtomic(
+        lockPath,
+        serializeJsonValue({
+          pid: process.pid,
+          host: LOCAL_HOSTNAME,
+          timestamp: now,
+          heartbeat: now,
+          owner,
+        }),
+        { mode: 0o600 },
+      );
+    } catch (error) {
+      // The retained guard still protects the work if refreshes fail or stall.
+      console.warn(`Failed to refresh stream lock at ${lockPath}`, error);
+    }
+  }, FILE_LOCK_HEARTBEAT_INTERVAL_MS);
+  heartbeat.unref();
+
+  let released = false;
+  return {
+    release: async () => {
+      if (released) return;
+      released = true;
+      clearInterval(heartbeat);
+      // Forget the owner BEFORE unlinking: if the unlink fails, the surviving
+      // file carries our PID with an owner we no longer recognise, so the next
+      // reapStaleLock treats it as reuse and removes the debris.
+      issuedOwners.delete(owner);
+      try {
+        const owned = readOwnedLock();
+        if (owned === null || !removeLockFileIfOwned(lockPath, owned.identity, owned.contents)) {
+          console.warn(
+            `Failed to release stream lock in ${dirname(lockPath)}: lock ownership changed`,
+          );
+        }
+      } catch (error) {
+        console.warn(`Failed to release stream lock at ${lockPath}`, error);
+      } finally {
+        guard.close();
+      }
+    },
+  };
 }
 
 export async function withFileLock<T>(
@@ -207,62 +484,10 @@ export async function withFileLock<T>(
   callback: () => T | Promise<T>,
   options: FileLockOptions = {},
 ): Promise<T> {
-  const timeoutMs = options.timeoutMs ?? 2_000;
-  const retryDelayMs = options.retryDelayMs ?? 20;
-  const malformedGraceMs = options.malformedGraceMs ?? DEFAULT_MALFORMED_LOCK_GRACE_MS;
-  const deadline = Date.now() + timeoutMs;
-
-  let lockFd: number | undefined;
-  let ownedIdentity: LockFileIdentity | undefined;
-  let ownedContents: string | undefined;
-
-  while (lockFd === undefined) {
-    try {
-      lockFd = openSync(lockPath, "wx", 0o600);
-      ownedContents = serializeJsonValue({
-        pid: process.pid,
-        host: LOCAL_HOSTNAME,
-        timestamp: Date.now(),
-      });
-      writeFileSync(lockFd, ownedContents);
-      fsyncSync(lockFd);
-      ownedIdentity = lockFileIdentity(lockPath) ?? undefined;
-    } catch (error) {
-      if (!isNodeError(error) || error.code !== "EEXIST") {
-        if (lockFd !== undefined) {
-          closeSync(lockFd);
-          lockFd = undefined;
-        }
-        throw new StreamError(`Failed to acquire stream lock at ${lockPath}`, {
-          cause: error,
-        });
-      }
-
-      if (reapStaleLock(lockPath, malformedGraceMs)) {
-        continue;
-      }
-
-      if (Date.now() >= deadline) {
-        throw new StreamError(`Timed out waiting for stream lock at ${lockPath}`);
-      }
-
-      await sleep(retryDelayMs);
-    }
-  }
-
+  const lease = await acquireFileLockLease(lockPath, options);
   try {
     return await callback();
   } finally {
-    closeSync(lockFd);
-
-    const released =
-      ownedIdentity !== undefined &&
-      ownedContents !== undefined &&
-      lockFileIdentity(lockPath) !== null
-        ? removeLockFileIfOwned(lockPath, ownedIdentity, ownedContents)
-        : false;
-    if (!released) {
-      console.warn(`Failed to release stream lock in ${dirname(lockPath)}: lock ownership changed`);
-    }
+    await lease.release();
   }
 }

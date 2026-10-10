@@ -16,7 +16,7 @@ import {
   type StreamEntryKind,
   type StreamSourceMessageKey,
   type StreamTurnStatus,
-  streamEntrySchema,
+  streamEntryReadSchema,
 } from "./types.js";
 import {
   collectInactiveStreamEntryRefs,
@@ -157,6 +157,21 @@ export const streamEntryIndexMigrations: Migration[] = [
           AND kind IN (${ANSWERED_WINDOW_TERMINAL_KINDS_SQL});
       `);
     },
+  },
+  {
+    id: 6,
+    name: "stream_entry_response_lane",
+    up: `CREATE INDEX idx_stream_entry_response_lane
+      ON stream_entry_index(session_id, response_to_kind, byte_offset)
+      WHERE response_to_kind IS NOT NULL;`,
+  },
+  {
+    id: 7,
+    name: "stream_entry_internal_source_message_key",
+    up: `CREATE INDEX idx_stream_entry_internal_source_message_key
+      ON stream_entry_index(source_message_key_source_type,
+        source_message_key_source_external_id, source_message_key_external_message_id)
+      WHERE kind = 'internal_event';`,
   },
 ];
 
@@ -324,13 +339,13 @@ const EMPTY_STAMP_COLUMNS: StreamEntryIndexStampColumns = {
 
 function stampColumnsFromEntry(entry: StreamEntry): StreamEntryIndexStampColumns {
   const sourceMessageKey = entry.source_message_key;
-  const responseTo = entry.response_to;
+  const responseTo = entry.response_to?.kind === "stream_backlog" ? entry.response_to : undefined;
 
   return {
     source_message_key_source_type: sourceMessageKey?.source_type ?? null,
     source_message_key_source_external_id: sourceMessageKey?.source_external_id ?? null,
     source_message_key_external_message_id: sourceMessageKey?.external_message_id ?? null,
-    response_to_kind: responseTo?.kind ?? null,
+    response_to_kind: entry.response_to?.kind ?? entry.opaque_response_to?.kind ?? null,
     response_to_from_cursor_ts: responseTo?.from_cursor_exclusive?.ts ?? null,
     response_to_from_cursor_entry_id: responseTo?.from_cursor_exclusive?.entryId ?? null,
     response_to_through_cursor_ts: responseTo?.through_cursor_inclusive.ts ?? null,
@@ -352,7 +367,7 @@ function parseIndexedStreamLine(
 
   try {
     const raw = JSON.parse(line) as unknown;
-    const parsed = streamEntrySchema.safeParse(raw);
+    const parsed = streamEntryReadSchema.safeParse(raw);
 
     if (!parsed.success) {
       logger.error(`Skipping invalid stream line in ${streamPath}`);
@@ -896,7 +911,10 @@ export class StreamEntryIndexRepository {
     return row === undefined ? null : this.recordFromRow(row);
   }
 
-  lookupBySourceMessageKey(key: StreamSourceMessageKey): StreamEntryIndexRecord | null {
+  lookupBySourceMessageKey(
+    key: StreamSourceMessageKey,
+    kind: "user_msg" | "internal_event" = "user_msg",
+  ): StreamEntryIndexRecord | null {
     const row = this.db
       .prepare(
         `SELECT entry_id, session_id, byte_offset, timestamp
@@ -910,9 +928,9 @@ export class StreamEntryIndexRepository {
          WHERE source_message_key_source_type = ?
            AND source_message_key_source_external_id = ?
            AND source_message_key_external_message_id = ?
-           AND kind = 'user_msg'`,
+           AND kind = ?`,
       )
-      .get(key.source_type, key.source_external_id, key.external_message_id) as
+      .get(key.source_type, key.source_external_id, key.external_message_id, kind) as
       | StreamEntryIndexRow
       | undefined;
 
@@ -923,7 +941,7 @@ export class StreamEntryIndexRepository {
     const record = this.recordFromRow(row);
 
     if (
-      record.kind !== "user_msg" ||
+      record.kind !== kind ||
       record.source_message_key_source_type !== key.source_type ||
       record.source_message_key_source_external_id !== key.source_external_id ||
       record.source_message_key_external_message_id !== key.external_message_id
@@ -932,6 +950,14 @@ export class StreamEntryIndexRepository {
     }
 
     return record;
+  }
+
+  listSessionIdsWithTaskEvents(): SessionId[] {
+    return (
+      this.db
+        .prepare("SELECT DISTINCT session_id FROM stream_entry_index WHERE kind = 'internal_event'")
+        .all() as { session_id: SessionId }[]
+    ).map((row) => row.session_id);
   }
 
   listSessionIdsWithPendingResponseBacklog(): SessionId[] {
@@ -1057,6 +1083,20 @@ export class StreamEntryIndexRepository {
   lookupSessionStreamBacklogResponseStamps(
     input: LookupSessionStreamBacklogResponseStampsInput,
   ): StreamEntryIndexRecord[] {
+    return this.lookupSessionResponseStamps(input, "stream_backlog");
+  }
+
+  lookupSessionTaskEventResponseStamps(sessionId: SessionId): StreamEntryIndexRecord[] {
+    return this.lookupSessionResponseStamps(
+      { sessionId, terminalKinds: ["agent_msg"] },
+      "task_event",
+    );
+  }
+
+  private lookupSessionResponseStamps(
+    input: LookupSessionStreamBacklogResponseStampsInput,
+    responseKind: "stream_backlog" | "task_event",
+  ): StreamEntryIndexRecord[] {
     const terminalKinds = [...new Set(input.terminalKinds)];
 
     if (terminalKinds.length === 0) {
@@ -1074,11 +1114,11 @@ export class StreamEntryIndexRepository {
               , response_to_source_entry_ids, response_to_count
          FROM stream_entry_index
          WHERE session_id = ?
-           AND response_to_kind = 'stream_backlog'
+           AND response_to_kind = ?
            AND kind IN (${terminalKinds.map(() => "?").join(", ")})
          ORDER BY byte_offset ASC`,
       )
-      .all(input.sessionId, ...terminalKinds) as StreamEntryIndexRow[];
+      .all(input.sessionId, responseKind, ...terminalKinds) as StreamEntryIndexRow[];
 
     return rows.map((row) => this.recordFromRow(row));
   }

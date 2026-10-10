@@ -1,3 +1,9 @@
+import { similarityThresholds } from "../../config/similarity.js";
+import {
+  collectProtectedEpisodeTokenLines,
+  consolidationEmbeddingInputSchema,
+} from "../../memory/episodic/protected-lines.js";
+
 import { z } from "zod";
 
 import {
@@ -88,6 +94,7 @@ const serializableEpisodeSchema = z.object({
   episode_kind: episodeKindSchema.optional(),
   consolidation_family_id: consolidationFamilyIdSchema.nullable().optional(),
   consolidation_coverage_hash: z.string().min(1).nullable().optional(),
+  consolidation_embedding_input: consolidationEmbeddingInputSchema.nullable().optional(),
   embedding: z.array(z.number().finite()),
   created_at: z.number().finite(),
   updated_at: z.number().finite(),
@@ -138,7 +145,11 @@ const TIER_ORDER: Record<EpisodeTier, number> = {
 };
 
 type MergeSelfEntity = Pick<EntityRecord, "id" | "canonical_name">;
-type ConsolidatorConfig = OfflineContext["config"]["offline"]["consolidator"];
+type ConsolidatorConfig = OfflineContext["config"]["offline"]["consolidator"] & {
+  similarityThreshold: number;
+  maxClusterDiameter: number;
+  highSimilarityTemporalBypassThreshold: number;
+};
 
 type RawEpisodeWithStats = {
   episode: Episode;
@@ -580,7 +591,13 @@ async function collectConsolidationCandidates(
   ctx: OfflineContext,
   statsById: ReadonlyMap<EpisodeId, EpisodeStats>,
 ): Promise<ConsolidationCandidate[]> {
-  const config = ctx.config.offline.consolidator;
+  const thresholds = similarityThresholds(ctx.config);
+  const config: ConsolidatorConfig = {
+    ...ctx.config.offline.consolidator,
+    similarityThreshold: thresholds.consolidationSimilarity,
+    maxClusterDiameter: thresholds.consolidationDiameter,
+    highSimilarityTemporalBypassThreshold: thresholds.consolidationTemporalBypass,
+  };
   const activeFamilies = await loadActiveFamilyAnchors(ctx);
   const visibleRawRows = (await ctx.episodicRepository.listEffectivelyVisible())
     .filter((episode) => (episode.episode_kind ?? "raw") === "raw")
@@ -769,6 +786,12 @@ async function buildMergedEpisode(
       episode_kind: "consolidation_version",
       consolidation_family_id: candidate.familyId,
       consolidation_coverage_hash: candidate.coverageHash,
+      consolidation_embedding_input: {
+        synthesized_narrative: merged.narrative,
+        protected_source_lines: collectProtectedEpisodeTokenLines(
+          rawEpisodes.map((episode) => episode.narrative),
+        ),
+      },
       embedding,
       created_at: nowMs,
       updated_at: nowMs,

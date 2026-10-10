@@ -36,7 +36,7 @@ import {
   runStorageOptimization,
 } from "../offline/index.js";
 import type { MaintenancePlan, OfflineProcessName, OrchestratorResult } from "../offline/index.js";
-import type { DisclosureRetrievalOptions } from "../retrieval/index.js";
+import type { DisclosureRetrievalOptions, RetrievalSharedOptions } from "../retrieval/pipeline.js";
 import {
   mapWithDisclosureConcurrency,
   memoryDisclosureLabelForEpisodeIds,
@@ -45,7 +45,7 @@ import {
   type MemoryDisclosureLabel,
 } from "../retrieval/index.js";
 import { hydrateStreamEntriesById, StreamReader } from "../stream/index.js";
-import { AttachmentError, StorageError } from "../util/errors.js";
+import { AttachmentError, CognitionError, StorageError } from "../util/errors.js";
 import {
   DEFAULT_SESSION_ID,
   createSemanticNodeId,
@@ -75,6 +75,8 @@ import type { CommitmentRecord } from "../memory/commitments/index.js";
 import type { GoalRecord, GoalTreeNode } from "../memory/self/index.js";
 import type { IdentityUpdateResult } from "../memory/identity/index.js";
 import { reconcileInboxReplyActivity } from "../cognition/ingestion/index.js";
+import { rankActivityByRelevance } from "../memory/activity/projection.js";
+import { TenantFactRememberer } from "../memory/episodic/remember.js";
 
 function errorCode(error: unknown): unknown {
   return error !== null && typeof error === "object" && "code" in error
@@ -222,7 +224,8 @@ async function countPendingSemanticExtractionEpisodes(
 type CreatorDirectivesFacadeDeps = Pick<BorgDependencies, "creatorDirectiveRepository">;
 
 export function createActivityFacade(
-  deps: Pick<BorgDependencies, "sqlite" | "activityRepository" | "sessionsRepository">,
+  deps: Pick<BorgDependencies, "sqlite" | "activityRepository" | "sessionsRepository"> &
+    Partial<Pick<BorgDependencies, "embeddingClient" | "config">>,
 ): BorgFacades["activity"] {
   type ObservedTurnInput = Parameters<BorgFacades["activity"]["projectObservedTurn"]>[0];
   type RepliedTurnInput = Parameters<BorgFacades["activity"]["projectRepliedTurn"]>[0];
@@ -305,8 +308,16 @@ export function createActivityFacade(
     },
     listObservedGroupAudienceEntityIdsForSpeaker: (...args) =>
       deps.activityRepository.listObservedGroupAudienceEntityIdsForSpeaker(...args),
-    listRecentVisibleOtherSessionEvents: (...args) =>
-      deps.activityRepository.listRecentVisibleOtherSessionEvents(...args),
+    listRecentOtherActiveSessionEvents: (...args) =>
+      deps.activityRepository.listRecentOtherActiveSessionEvents(...args),
+    rankByRelevance: async (input) => {
+      if (deps.embeddingClient === undefined) {
+        throw new StorageError("Activity ranking requires an embedding client", {
+          code: "ACTIVITY_RANKING_UNAVAILABLE",
+        });
+      }
+      return rankActivityByRelevance(input, deps.embeddingClient, deps.config);
+    },
   };
 }
 
@@ -453,6 +464,22 @@ async function semanticWalkStepsWithDisclosure(
 }
 
 export function createBorgFacades(deps: BorgDependencies): BorgFacades {
+  // Built lazily: partial dependency sets (tests, facades that never remember)
+  // must not require config or storage at construction time.
+  let tenantFactRememberer: TenantFactRememberer | undefined;
+  const getTenantFactRememberer = (): TenantFactRememberer =>
+    (tenantFactRememberer ??= new TenantFactRememberer({
+      dataDir: deps.config.dataDir,
+      entryIndex: deps.entryIndex,
+      episodicRepository: deps.episodicRepository,
+      entityRepository: deps.entityRepository,
+      createStreamWriter: deps.createStreamWriter,
+      embeddingClient: deps.embeddingClient,
+      llmFactory: deps.llmFactory,
+      model: deps.config.anthropic.models.extraction,
+      timeZone: deps.config.retrieval.recallPlannerTimeZone,
+      clock: deps.clock,
+    }));
   const resolveEpisodeAudienceEntityId = (
     options:
       | {
@@ -479,7 +506,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
   };
 
   const resolveEpisodeAudienceTerms = (
-    options: BorgEpisodeSearchOptions | undefined,
+    options: Pick<BorgEpisodeSearchOptions, "audience" | "audienceTerms"> | undefined,
     audienceEntityId: EntityId | null | undefined,
   ): readonly string[] | undefined => {
     if (options?.audienceTerms !== undefined) {
@@ -503,11 +530,15 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
     ];
   };
 
-  const resolveEpisodeSearchOptions = (
-    options: BorgEpisodeSearchOptions | undefined,
-  ): DisclosureRetrievalOptions => {
+  const resolveEpisodeRankingOptions = (
+    options: (RetrievalSharedOptions & { audience?: string | null }) | undefined,
+    audienceEntityId: EntityId | null | undefined,
+  ): RetrievalSharedOptions => {
     options = options === undefined ? undefined : deps.entityRepository.resolveReferences(options);
-    const audienceEntityId = resolveEpisodeAudienceEntityId(options);
+    audienceEntityId =
+      audienceEntityId == null
+        ? audienceEntityId
+        : (deps.entityRepository.get(audienceEntityId)?.id ?? audienceEntityId);
     const audienceProfile =
       options?.audienceProfile !== undefined
         ? options.audienceProfile
@@ -522,7 +553,6 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
 
     return {
       ...options,
-      audienceEntityId,
       audienceProfile,
       audienceTerms,
       strictTimeRange: options?.strictTimeRange ?? options?.timeRange !== undefined,
@@ -558,6 +588,18 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
               heat: configuredAttentionWeights.heat,
               suppression_penalty: configuredAttentionWeights.suppression_penalty,
             }),
+    };
+  };
+
+  const resolveEpisodeSearchOptions = (
+    options: BorgEpisodeSearchOptions | undefined,
+  ): DisclosureRetrievalOptions => {
+    options = options === undefined ? undefined : deps.entityRepository.resolveReferences(options);
+    const audienceEntityId = resolveEpisodeAudienceEntityId(options);
+    return {
+      ...options,
+      ...resolveEpisodeRankingOptions(options, audienceEntityId),
+      audienceEntityId,
     };
   };
 
@@ -690,6 +732,17 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
         }),
     },
     episodic: {
+      rememberForTenant: (input) => getTenantFactRememberer().remember(input),
+      recallForCognition: (query, options) => {
+        options = deps.entityRepository.resolveReferences(options);
+        const rankingAudienceEntityId =
+          options.rankingAudienceEntityId ?? options.recallContext.currentAudienceEntityId;
+        return deps.retrievalPipeline.recallEpisodeHitsForCognition(query, {
+          ...options,
+          ...resolveEpisodeRankingOptions(options, rankingAudienceEntityId),
+          rankingAudienceEntityId,
+        });
+      },
       get: (id, options = {}) =>
         deps.retrievalPipeline.getEpisode(id, {
           audienceEntityId: resolveEpisodeAudienceEntityId(options),
@@ -742,6 +795,8 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
       listAll: () => deps.episodicRepository.listAll(),
       listRecentForSession: (...args) =>
         deps.episodicRepository.listRecentForSessionForDisclosure(...args),
+      listRecentForSessionForCognition: (...args) =>
+        deps.episodicRepository.listRecentForSessionForCognition(...args),
       getStats: (...args) => deps.episodicRepository.getStats(...args),
     },
     self: {
@@ -1030,6 +1085,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
           entityRepository: deps.entityRepository,
         });
         const extractor = new SemanticExtractor({
+          similarityConfig: deps.config,
           nodeRepository: deps.semanticNodeRepository,
           edgeRepository: deps.semanticEdgeRepository,
           embeddingClient: deps.embeddingClient,
@@ -1287,6 +1343,30 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
       countPendingSemanticExtractionEpisodes: () => countPendingSemanticExtractionEpisodes(deps),
     },
     inbox: {
+      enqueueTaskEvent: async ({ sessionId, event }) => {
+        if (!deps.chatResponseCatchUpWorker.isTaskEventEnabled()) {
+          throw new CognitionError("Task-event lane is disabled", {
+            code: "TASK_EVENT_LANE_DISABLED",
+          });
+        }
+        const session = deps.sessionsRepository.get(sessionId);
+        if (session?.source_type !== "teams_inbox") return null;
+        const result = await deps.taskEventService.enqueue({
+          sessionId,
+          event,
+          audience: session.audience_entity_id ?? session.audience_label,
+        });
+        // Also wake duplicates: a previous request may have committed just before a restart.
+        deps.chatResponseCatchUpWorker.onPendingTaskSession(sessionId, deps.clock.now());
+        return result;
+      },
+      listUnansweredTaskEvents: (sessionId) => deps.taskEventService.listUnanswered(sessionId),
+      findTaskEventTerminal: (sessionId, event) =>
+        deps.taskEventService.findTerminal(sessionId, event),
+      deliveries: {
+        claim: (input) => deps.agentDeliveries.claim(input),
+        ack: (input) => deps.agentDeliveries.ack(input),
+      },
       catchUp: deps.chatResponseCatchUpWorker,
       appendBacklogTerminal: (input) => deps.backlogTerminalService.appendBacklogTerminal(input),
       sealPendingBacklog: (input) => deps.backlogTerminalService.sealPendingBacklog(input),

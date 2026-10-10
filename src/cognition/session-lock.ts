@@ -1,7 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 
-import { isFileLockLive, withFileLock } from "../stream/file-lock.js";
+import { acquireFileLockLease, isFileLockLive } from "../stream/file-lock.js";
 import { DEFAULT_SESSION_ID, type SessionId } from "../util/ids.js";
 import { SessionBusyError, StreamError } from "../util/errors.js";
 
@@ -67,8 +67,9 @@ export class SessionLock {
     return this.acquireWithTimeout(sessionId, 0);
   }
 
-  // Advisory check: returns true if the session lock is held by a live process
-  // on this host. Stale locks (owner crashed) return false so maintenance and
+  // Advisory check: local PID liveness or a foreign heartbeat/held guard.
+  // The primitive renews throughout a turn, however long it takes.
+  // Stale locks (owner crashed) return false so maintenance and
   // other opt-in consumers aren't blocked indefinitely after a crash. Callers
   // should treat this as a hint, not a correctness boundary -- acquiring the
   // lock is still the only way to safely perform writes.
@@ -84,72 +85,14 @@ export class SessionLock {
     sessionId: SessionId,
     timeoutMs: number,
   ): Promise<SessionLockLease | null> {
-    const lockPath = this.lockPathFor(sessionId);
-    let releaseLock = () => {};
-
-    const releaseSignal = new Promise<void>((resolve) => {
-      releaseLock = resolve;
-    });
-
-    let entered = false;
-    let settleAcquire: ((error?: unknown) => void) | undefined;
-    const acquired = new Promise<void>((resolve, reject) => {
-      settleAcquire = (error?: unknown) => {
-        if (error === undefined) {
-          resolve();
-          return;
-        }
-
-        reject(error);
-      };
-    });
-
-    const holdLock = withFileLock(
-      lockPath,
-      async () => {
-        entered = true;
-        settleAcquire?.();
-        await releaseSignal;
-      },
-      {
+    try {
+      return await acquireFileLockLease(this.lockPathFor(sessionId), {
         timeoutMs,
         retryDelayMs: this.retryDelayMs,
-      },
-    ).catch((error) => {
-      settleAcquire?.(error);
-      throw error;
-    });
-
-    void holdLock.catch(() => undefined);
-
-    try {
-      await acquired;
-    } catch (error) {
-      if (isLockTimeoutError(error)) {
-        return null;
-      }
-
-      throw error;
-    }
-
-    if (!entered) {
-      throw new StreamError(`Failed to acquire session lock for ${sessionId}`, {
-        code: "SESSION_LOCK_ACQUIRE_FAILED",
       });
+    } catch (error) {
+      if (isLockTimeoutError(error)) return null;
+      throw error;
     }
-
-    let released = false;
-
-    return {
-      release: async () => {
-        if (released) {
-          return;
-        }
-
-        released = true;
-        releaseLock();
-        await holdLock;
-      },
-    };
   }
 }

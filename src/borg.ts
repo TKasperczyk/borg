@@ -1,3 +1,5 @@
+import type { IdentifierOnlyGuardInput } from "./cognition/generation/turn-post-generation-guard.js";
+import { similarityThresholds, type SimilarityThresholds } from "./config/similarity.js";
 // Borg public facade: exposes stable APIs while setup details live in focused modules.
 
 import type {
@@ -37,7 +39,9 @@ export type { BorgEnqueueMessageInput, BorgEnqueueMessageResult } from "./cognit
 export class Borg {
   private admissionClosed = false;
   private drainPromise: Promise<void> | null = null;
+  private drainCompleted = false;
   private readonly admittedOperations = new Set<Promise<unknown>>();
+  readonly similarityThresholds: SimilarityThresholds;
   readonly stream: BorgFacades["stream"];
   readonly episodic: BorgFacades["episodic"];
   readonly self: BorgFacades["self"];
@@ -67,6 +71,7 @@ export class Borg {
   readonly sessions: BorgFacades["sessions"];
 
   private constructor(private readonly deps: BorgDependencies) {
+    this.similarityThresholds = similarityThresholds(deps.config);
     const facades = createBorgFacades(deps) as unknown as BorgFacades;
 
     this.stream = facades.stream;
@@ -106,6 +111,18 @@ export class Borg {
     return this.runAdmittedOperation(async () => await this.deps.turnOrchestrator.run(input));
   }
 
+  /** Check an external cognition reply using the shared structural guard, without LLM work. */
+  guardReply(input: IdentifierOnlyGuardInput) {
+    return this.runAdmittedOperation(
+      async () =>
+        await this.deps.turnOrchestrator.postGenerationGuardRunner.run({
+          ...input,
+          executionMode: "identifiers-only",
+          closureLoop: null,
+        }),
+    );
+  }
+
   /**
    * Durably enqueue an inbound chat message without running a cognition turn.
    */
@@ -128,10 +145,18 @@ export class Borg {
     }
   }
 
-  /** Close turn/enqueue admission synchronously, then drain accepted work and its tails. */
-  beginShutdown(): Promise<void> {
+  /** Hosts call this before awaiting their own request/connector leases. */
+  closeAdmission(): void {
     this.admissionClosed = true;
-    this.drainPromise ??= drainBorgDependencies(this.deps, [...this.admittedOperations]);
+  }
+
+  /** Close admission, then drain accepted work and its tails after host leases have settled. */
+  beginShutdown(): Promise<void> {
+    this.closeAdmission();
+    this.drainPromise ??= (async () => {
+      await drainBorgDependencies(this.deps, [...this.admittedOperations]);
+      this.drainCompleted = true;
+    })();
     return this.drainPromise;
   }
 
@@ -182,11 +207,15 @@ export class Borg {
     return new Borg(await openBorgDependencies(options));
   }
 
-  /** Close resources; drain:false is for store closure after beginShutdown's deadline expires. */
-  async close(options: { drain?: boolean } = {}): Promise<void> {
+  /**
+   * Close resources; drain:false skips an unfinished runtime drain after its deadline.
+   * Hosts must retainBankLease on any host drain failure/timeout, even if Borg drained.
+   */
+  async close(options: { drain?: boolean; retainBankLease?: boolean } = {}): Promise<void> {
     this.admissionClosed = true;
     await closeBorgDependencies(this.deps, {
-      drain: options.drain === false ? false : () => this.beginShutdown(),
+      drain: options.drain === false && !this.drainCompleted ? false : () => this.beginShutdown(),
+      retainBankLease: options.retainBankLease,
     });
   }
 }

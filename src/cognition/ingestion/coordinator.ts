@@ -4,10 +4,13 @@ import {
   type StreamCursor,
   type StreamEntry,
   type StreamResponseTo,
+  type StreamBacklogResponseTo,
+  type TaskEventResponseTo,
   type StreamWatermarkRepository,
   type StreamEntryIndexRepository,
 } from "../../stream/index.js";
 import { BorgError, CognitionError } from "../../util/errors.js";
+import { FailureReportTracker } from "../../util/failure-reports.js";
 import { type Clock, SystemClock } from "../../util/clock.js";
 import type { SessionId, StreamEntryId } from "../../util/ids.js";
 import type { ChatResponseWatermarkCoordinator } from "./chat-response-watermark.js";
@@ -89,6 +92,8 @@ export type IngestionResult = {
   extractionResult?: ExtractFromStreamResult;
   error?: unknown;
 };
+
+type AnsweredBacklogWindow = AnsweredStreamWindow & { responseTo: StreamBacklogResponseTo };
 
 export type IngestOptions = {
   /**
@@ -201,6 +206,16 @@ function sameCursor(left: StreamCursor | null, right: StreamCursor | null): bool
 }
 
 function sameResponseTo(left: StreamResponseTo, right: StreamResponseTo): boolean {
+  if (left.kind === "task_event" || right.kind === "task_event") {
+    return (
+      left.kind === "task_event" &&
+      right.kind === "task_event" &&
+      left.event_entry_id === right.event_entry_id &&
+      left.event_id === right.event_id &&
+      left.task_id === right.task_id &&
+      left.task_version === right.task_version
+    );
+  }
   return (
     left.kind === right.kind &&
     sameCursor(left.from_cursor_exclusive, right.from_cursor_exclusive) &&
@@ -277,6 +292,7 @@ export class StreamIngestionCoordinator {
   private readonly trackedSessions = new Set<SessionId>();
   private readonly shutdownPendingDrain = new Set<SessionId>();
   private closePromise: Promise<void> | null = null;
+  private readonly failureReports = new FailureReportTracker("stream ingestion failure");
 
   constructor(private readonly options: StreamIngestionCoordinatorOptions) {
     this.clock = options.clock ?? new SystemClock();
@@ -895,7 +911,7 @@ export class StreamIngestionCoordinator {
 
   private async readAnsweredWindowEntries(
     sessionId: SessionId,
-    answeredWindow: AnsweredStreamWindow,
+    answeredWindow: AnsweredBacklogWindow,
     maxEntries?: number,
   ): Promise<AnsweredWindowReadResult> {
     const resumeOptions = this.resolveResumeOptions(sessionId);
@@ -987,7 +1003,7 @@ export class StreamIngestionCoordinator {
 
   private async ingestAnsweredWindow(
     sessionId: SessionId,
-    answeredWindow: AnsweredStreamWindow,
+    answeredWindow: AnsweredBacklogWindow,
     maxEntries?: number,
   ): Promise<IngestionResult> {
     const windowEntries = await this.readAnsweredWindowEntries(
@@ -1065,11 +1081,7 @@ export class StreamIngestionCoordinator {
         extractionResult,
       };
     } catch (error) {
-      try {
-        await this.options.onError?.(error, sessionId);
-      } catch {
-        // Best-effort.
-      }
+      await this.failureReports.report(() => this.options.onError?.(error, sessionId));
 
       return {
         ran: false,
@@ -1079,14 +1091,56 @@ export class StreamIngestionCoordinator {
     }
   }
 
+  private async ingestTaskEventWindow(
+    sessionId: SessionId,
+    responseTo: TaskEventResponseTo,
+    terminalCursor: StreamCursor,
+  ): Promise<IngestionResult> {
+    // A task result may straddle the user ingestion cursor. Its receipt must never
+    // advance that cursor past an unanswered user message or skip an older event.
+    const receipt = `episodic-task-event:${terminalCursor.entryId}`;
+    if (this.options.watermarkRepository.get(receipt, sessionId) !== null) {
+      return { ran: false, processedEntries: 0 };
+    }
+    const entryIds = [responseTo.event_entry_id, terminalCursor.entryId];
+    const entries = await this.readEntriesById(sessionId, entryIds);
+    const terminal = entries.find((entry) => entry.id === terminalCursor.entryId);
+    const event = entries.find((entry) => entry.id === responseTo.event_entry_id);
+    if (
+      event?.kind !== "internal_event" ||
+      terminal?.kind !== "agent_msg" ||
+      terminal.timestamp !== terminalCursor.ts ||
+      terminal.response_to === undefined ||
+      !sameResponseTo(terminal.response_to, responseTo)
+    ) {
+      throw new CognitionError("Task ingestion window mismatches the stream", {
+        code: "TASK_EVENT_INGESTION_WINDOW_INVALID",
+      });
+    }
+    const extractionResult = await this.options.extractor.extractFromStream({
+      session: sessionId,
+      entryIds,
+    });
+    await this.options.entryProcessor?.process({ sessionId, entries: [event, terminal] });
+    this.options.watermarkRepository.set(receipt, sessionId, {
+      lastTs: terminalCursor.ts,
+      lastEntryId: terminalCursor.entryId,
+    });
+    return { ran: true, processedEntries: 2, extractionResult };
+  }
+
   private async ingestInternal(
     sessionId: SessionId,
     ingestOptions: IngestOptions,
   ): Promise<IngestionResult> {
     if (ingestOptions.answeredWindow !== undefined) {
+      const { responseTo, terminalCursor } = ingestOptions.answeredWindow;
+      if (responseTo.kind === "task_event") {
+        return this.ingestTaskEventWindow(sessionId, responseTo, terminalCursor);
+      }
       return this.ingestAnsweredWindow(
         sessionId,
-        ingestOptions.answeredWindow,
+        { responseTo, terminalCursor },
         ingestOptions.maxEntries,
       );
     }
@@ -1144,11 +1198,7 @@ export class StreamIngestionCoordinator {
         extractionResult,
       };
     } catch (error) {
-      try {
-        await this.options.onError?.(error, sessionId);
-      } catch {
-        // Best-effort.
-      }
+      await this.failureReports.report(() => this.options.onError?.(error, sessionId));
 
       return {
         ran: false,
@@ -1174,6 +1224,7 @@ export class StreamIngestionCoordinator {
     }
 
     this.closePromise = (async () => {
+      const errors: unknown[] = [];
       while (true) {
         const sessionIds = new Set<SessionId>([
           ...this.trackedSessions,
@@ -1184,11 +1235,11 @@ export class StreamIngestionCoordinator {
         ]);
 
         if (sessionIds.size === 0) {
-          return;
+          break;
         }
 
-        await Promise.all(
-          [...sessionIds].map((sessionId) => {
+        const results = await Promise.allSettled(
+          [...sessionIds].map(async (sessionId) => {
             const active = this.inFlight.get(sessionId);
             const settlingPass =
               active === undefined ? this.flushSettlingPass(sessionId) : undefined;
@@ -1201,6 +1252,9 @@ export class StreamIngestionCoordinator {
             );
           }),
         );
+        for (const result of results) {
+          if (result.status === "rejected") errors.push(result.reason);
+        }
 
         const hasOutstanding = [...sessionIds].some(
           (sessionId) =>
@@ -1211,9 +1265,15 @@ export class StreamIngestionCoordinator {
         );
 
         if (!hasOutstanding) {
-          return;
+          break;
         }
       }
+      try {
+        await this.failureReports.flush();
+      } catch (error) {
+        errors.push(error);
+      }
+      if (errors.length > 0) throw new AggregateError(errors, "Stream ingestion failed to drain");
     })();
 
     return this.closePromise;

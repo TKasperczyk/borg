@@ -20,6 +20,7 @@ import type {
 import type { LivedExperienceDaySummary } from "./lived-experience-day-summary.js";
 import type { ActivityDailyDensityRow, ActivityEventKindCounts } from "./repository.js";
 import type { CrossSessionSelfActivityRow } from "./projection.js";
+import { utf16SafePrefix } from "../../util/utf16-boundary.js";
 
 export const DEFAULT_RECENT_LIVED_EXPERIENCE_RECENCY_WINDOW_MS = 3 * 24 * 60 * 60_000;
 export const DEFAULT_RECENT_LIVED_EXPERIENCE_CAP = 64;
@@ -100,7 +101,7 @@ function promptSafeLabel(value: string): string {
     return "a participant";
   }
 
-  return normalized.slice(0, 120).trimEnd();
+  return utf16SafePrefix(normalized, 120).trimEnd();
 }
 
 function activityKindBreakdown(counts: ActivityEventKindCounts): string {

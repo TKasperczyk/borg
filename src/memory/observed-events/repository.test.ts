@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { EmbeddingClient } from "../../embeddings/index.js";
 import { LanceDbStore } from "../../storage/lancedb/index.js";
@@ -95,6 +95,48 @@ function recordInput(
 }
 
 describe("ObservedEventRepository", () => {
+  it.each(["synchronous", "asynchronous"])(
+    "retains a %s embedding reporter failure without failing the observation",
+    async (mode) => {
+      const dataDir = mkdtempSync(join(tmpdir(), "borg-observation-report-"));
+      tempDirs.push(dataDir);
+      const store = new LanceDbStore({ uri: join(dataDir, "lancedb") });
+      const table = await store.openTable({
+        name: "observed_events",
+        schema: createObservedEventsTableSchema(4),
+      });
+      const db = openDatabase(":memory:", { migrations: observedEventMigrations });
+      const embeddingClient = new MapEmbeddingClient(new Map());
+      vi.spyOn(embeddingClient, "embed").mockRejectedValue(new Error("embedding failed"));
+      const failure = new Error("observation reporter unavailable");
+      const log = vi.spyOn(console, "error").mockImplementation(() => {});
+      const repository = new ObservedEventRepository({
+        db,
+        table,
+        embeddingClient,
+        clock: new FixedClock(2_000),
+        onEmbeddingFailure: () => {
+          if (mode === "synchronous") throw failure;
+          return Promise.reject(failure);
+        },
+      });
+      try {
+        expect(() => repository.record(recordInput(createSessionId()))).not.toThrow();
+        await expect(repository.waitForPendingEmbeddings()).rejects.toMatchObject({
+          errors: [failure],
+        });
+        expect(log).toHaveBeenCalled();
+        await expect(repository.waitForPendingEmbeddings()).rejects.toMatchObject({
+          errors: [failure],
+        });
+      } finally {
+        log.mockRestore();
+        db.close();
+        await store.close();
+      }
+    },
+  );
+
   it("treats a repeated fire dedup key as a replay no-op", () => {
     const { db, repository } = openHarness("borg-observed-events-fire-dedup-");
     const sessionId = createSessionId();
@@ -528,8 +570,9 @@ describe("ObservedEventRepository", () => {
     const { db, repository } = openHarness("borg-observed-events-legacy-dimensions-");
     const created = repository.record(recordInput(createSessionId()));
 
-    db.prepare("UPDATE observed_events SET stance = ?, taint = ?, belief_effect = ? WHERE id = ?")
-      .run("legacy_frame", "legacy_taint", "legacy_effect", created.id);
+    db.prepare(
+      "UPDATE observed_events SET stance = ?, taint = ?, belief_effect = ? WHERE id = ?",
+    ).run("legacy_frame", "legacy_taint", "legacy_effect", created.id);
 
     expect(repository.get(created.id)).toMatchObject({
       stance: "legacy_frame",

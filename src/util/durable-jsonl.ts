@@ -10,6 +10,7 @@ import {
   mkdirSync,
   openSync,
   readSync,
+  readFileSync,
   renameSync,
   writeFileSync,
 } from "node:fs";
@@ -189,4 +190,35 @@ export async function appendDurableJsonl(
       }
     }
   });
+}
+
+export function parseJsonLines(path: string): unknown[] {
+  if (!existsSync(path)) {
+    return [];
+  }
+
+  const records: unknown[] = [];
+  const contents = readFileSync(path, "utf8");
+  const lines = contents.split("\n");
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (line === undefined || line.trim().length === 0) {
+      continue;
+    }
+
+    try {
+      records.push(JSON.parse(line) as unknown);
+    } catch (error) {
+      if (index === lines.length - 1 && !contents.endsWith("\n")) {
+        // appendDurableJsonl repairs an interrupted final record before the next append.
+        continue;
+      }
+      throw new Error(
+        `Invalid JSONL cache record at ${path}:${index + 1}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  return records;
 }

@@ -47,13 +47,48 @@ export const streamSourceMessageKeySchema = z.object({
 // is the authoritative record of which entries a reply answered; index adjacency is not a
 // substitute for it, because a session can interleave inbound and outbound entries and the
 // entry immediately preceding a reply need not be the one it answered.
-export const streamResponseToSchema = z.object({
+export const streamBacklogResponseToSchema = z.object({
   kind: z.literal("stream_backlog"),
   from_cursor_exclusive: streamCursorSchema.nullable(),
   through_cursor_inclusive: streamCursorSchema,
   source_entry_ids: z.array(streamEntryIdSchema),
   count: z.number().int().nonnegative(),
 });
+
+export const taskEventSchema = z
+  .object({
+    schema_version: z.literal(1),
+    event_id: z.string().min(1),
+    task_id: z.string().min(1),
+    task_version: z.number().int(),
+    kind: z.enum(["task_completed", "task_failed"]),
+    occurred_at: z.iso.datetime({ offset: true }),
+    outcome: z
+      .object({
+        status: z.enum(["succeeded", "failed", "timed_out", "cancelled"]),
+        summary: z.string().max(8000),
+        artifacts: z.array(z.object({ label: z.string(), url: z.url() }).strict()).optional(),
+        error: z.string().optional(),
+      })
+      .strict(),
+    origin: z.object({ source_entry_ids: z.array(z.string().min(1)) }).strict(),
+  })
+  .strict();
+
+export const taskEventResponseToSchema = z
+  .object({
+    kind: z.literal("task_event"),
+    event_id: z.string().min(1),
+    event_entry_id: streamEntryIdSchema,
+    task_id: z.string().min(1),
+    task_version: z.number().int(),
+  })
+  .strict();
+
+export const streamResponseToSchema = z.discriminatedUnion("kind", [
+  streamBacklogResponseToSchema,
+  taskEventResponseToSchema,
+]);
 
 export const streamEntryEntityIdSchema = z
   .string()
@@ -105,11 +140,35 @@ export type NarrativeStreamEntryKind = (typeof NARRATIVE_STREAM_ENTRY_KINDS)[num
 export type StreamTurnStatus = z.infer<typeof streamTurnStatusSchema>;
 export type StreamEntry = Omit<z.infer<typeof streamEntrySchema>, "turn_status"> & {
   turn_status?: StreamTurnStatus;
+  /** Read-only preservation of a future stamp; never interpreted as an answered window. */
+  opaque_response_to?: Record<string, JsonValue> & { kind: string };
 };
+
+const opaqueResponseToSchema = z
+  .object({ kind: z.string().min(1) })
+  .catchall(jsonValueSchema)
+  .refine((stamp) => stamp.kind !== "stream_backlog" && stamp.kind !== "task_event");
+
+// Reading is forward tolerant; streamEntrySchema/InputSchema remain strict about
+// stamps on writes. Malformed *known* stamps still fail validation.
+export const streamEntryReadSchema = streamEntrySchema
+  .extend({
+    response_to: z.union([streamResponseToSchema, opaqueResponseToSchema]).optional(),
+  })
+  .transform(({ response_to, ...entry }): StreamEntry => {
+    if (response_to === undefined) return entry;
+    const known = streamResponseToSchema.safeParse(response_to);
+    return known.success
+      ? { ...entry, response_to: known.data }
+      : { ...entry, opaque_response_to: opaqueResponseToSchema.parse(response_to) };
+  });
 export type StreamEntryInput = z.input<typeof streamEntryInputSchema>;
 export type StreamCursor = z.infer<typeof streamCursorSchema>;
 export type StreamSourceMessageKey = z.infer<typeof streamSourceMessageKeySchema>;
 export type StreamResponseTo = z.infer<typeof streamResponseToSchema>;
+export type StreamBacklogResponseTo = z.infer<typeof streamBacklogResponseToSchema>;
+export type TaskEventResponseTo = z.infer<typeof taskEventResponseToSchema>;
+export type TaskEvent = z.infer<typeof taskEventSchema>;
 
 export type StreamIterateOptions = {
   sinceTs?: number;

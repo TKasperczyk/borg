@@ -21,7 +21,7 @@ import {
   type TraitId,
   type ValueId,
 } from "../../util/ids.js";
-import { provenanceSchema, type Provenance } from "../common/provenance.js";
+import { provenanceSchema } from "../common/provenance.js";
 import { episodeIdSchema } from "../episodic/types.js";
 import { semanticNodeIdSchema } from "../semantic/types.js";
 import { goalBlockRecordSchema } from "./goal-blocks.js";
@@ -374,8 +374,6 @@ export type TraitRecord = z.infer<typeof traitSchema>;
 export type TraitPatch = z.infer<typeof traitPatchSchema>;
 export type AutobiographicalPeriod = z.infer<typeof autobiographicalPeriodSchema>;
 export type AutobiographicalPeriodPatch = z.infer<typeof autobiographicalPeriodPatchSchema>;
-export type SelfProvenance = Provenance;
-export type IdentityState = z.infer<typeof identityStateSchema>;
 
 export type GoalTreeNode = GoalRecord & {
   children: GoalTreeNode[];
@@ -411,6 +409,4 @@ export type OpenQuestionGoalLookupOptions = {
 
 export type OpenQuestionSimilarLookupOptions = {
   question: string;
-  /** Retained for API compatibility; duplicate lookup is intentionally global. */
-  audienceEntityId?: EntityId | null;
 };

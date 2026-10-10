@@ -1,3 +1,8 @@
+import { EmbeddingBankError } from "../embeddings/bank-profile.js";
+import { createCachingEmbeddingClient } from "../embeddings/cache.js";
+import { rankActivityByRelevance } from "../memory/activity/projection.js";
+import { recentLivedExperienceDisclosureLabel } from "../memory/activity/index.js";
+import { similarityThresholds } from "../config/similarity.js";
 import { createServer, request as httpRequest, type Server } from "node:http";
 import { AddressInfo } from "node:net";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -15,6 +20,17 @@ import {
   type MemoryPool,
 } from "./memory-handler.js";
 import { MemoryTraceRegistry } from "./memory-trace.js";
+import { ServedMemoryContextRegistry } from "./served-memory-context.js";
+import { ManualClock } from "../util/clock.js";
+import {
+  commitmentMemoryDisclosureLabel,
+  memoryDisclosurePayloadFields,
+} from "../memory/common/disclosure-serializers.js";
+import {
+  MEMORY_DISCLOSURE_GUIDANCE_FOR_MODEL,
+  memoryDisclosureLabelFromEpisodeAccess,
+  type MemoryDisclosureLabel,
+} from "../retrieval/recall-context.js";
 import type { Borg } from "../borg.js";
 import {
   AutobiographicalRecallService,
@@ -23,10 +39,12 @@ import {
 } from "../cognition/autobiographical-recall.js";
 import type { TemporalCue } from "../contracts/cognitive-contracts.js";
 import type { RecallPlanOutcome } from "../retrieval/pipeline.js";
+import { expandRecall, type RecallQueryPlannerContext } from "../retrieval/recall-expansion.js";
 import { BorgPool } from "../borg/pool.js";
 import type { BorgDependencies } from "../borg/types.js";
 import { FakeEmbeddingClient } from "../embeddings/index.js";
 import { FakeLLMClient } from "../llm/test-support/fake-client.js";
+import { createSemanticNodeFixture } from "../offline/test-support.js";
 import {
   commitmentSchema,
   type CommitmentRecord,
@@ -41,17 +59,20 @@ import {
 } from "../memory/creator-directives/index.js";
 import type {
   ActivityEventRecordInput,
-  ActivityVisibleSessionEvent,
+  ActivityProjectionSourceEvent,
 } from "../memory/activity/index.js";
 import { episodeParticipantEntityIdTerm, type Episode } from "../memory/episodic/index.js";
 import { QUARANTINED_USER_ENTRY_EVENT, StreamReader, type StreamEntry } from "../stream/index.js";
-import { EmbeddingError } from "../util/errors.js";
+import { CognitionError, EmbeddingError, StorageError } from "../util/errors.js";
 import { FixedClock } from "../util/clock.js";
 import {
   createCommitmentId,
   createCreatorDirectiveId,
   createEntityId,
+  createSessionId,
+  createStreamEntryId,
   createEpisodeId,
+  createSemanticNodeId,
   createMaintenanceRunId,
   createObservedEventId,
   parseSessionId,
@@ -62,6 +83,10 @@ import {
 } from "../util/ids.js";
 
 const TOKEN = "secret-token";
+const TRANSPORT_IDENTITY = {
+  sender: { external_id: "sender", display_name: "Sender", operator: false },
+  conversation: { type: "personal", name: "Personal chat", external_id: "conversation" },
+};
 // Default discovery for stub pools: the tenant these tests exercise. Only the
 // fan-out tests override it.
 const STUB_TENANTS = ["acme"];
@@ -113,6 +138,8 @@ type Recorder = {
   episodeOverrides: Partial<Episode>;
   ingestSessions: string[];
   extractOptions: unknown[];
+  tenantRememberInputs: Array<Parameters<Borg["episodic"]["rememberForTenant"]>[0]>;
+  tenantRememberError?: Error;
   commitments: CommitmentRecord[];
   commitmentAdds: unknown[];
   sessionEnsures: unknown[];
@@ -125,9 +152,13 @@ type Recorder = {
   activityReplyProjectionInputs: Array<Parameters<Borg["activity"]["projectRepliedTurn"]>[0]>;
   activityProjectionError?: Error;
   observedGroupAudienceIds: EntityId[];
-  visibleActivityEvents: ActivityVisibleSessionEvent[];
-  lastVisibleActivityInput?: unknown;
-  visibleActivityInputs: unknown[];
+  activityEvents: ActivityProjectionSourceEvent[];
+  lastActivityInput?: unknown;
+  activityInputs: unknown[];
+  activityRankingInputs: Array<Parameters<Borg["activity"]["rankByRelevance"]>[0]>;
+  activityRankingKeys?: string[];
+  activityRankingError?: Error;
+  activityRankingDelayMs?: number;
   livedExperienceDaySummaries: Array<{
     utc_day: string;
     day_start_ms: number;
@@ -151,6 +182,7 @@ type Recorder = {
   retrievalRecords: Array<{ episodeId: Episode["id"]; score: number }>;
   recallEpisodes?: Episode[];
   recallCitationChains: Map<Episode["id"], StreamEntry[]>;
+  recallDisclosureLabels?: Map<Episode["id"], MemoryDisclosureLabel>;
   venueEpisodes: Episode[];
   lastVenueOptions?: unknown;
   recallError?: Error;
@@ -271,7 +303,48 @@ function testDirective(overrides: Partial<CreatorDirective> = {}): CreatorDirect
 }
 
 function stubBorg(rec: Recorder): Borg {
-  return {
+  const recall = async (
+    query: string,
+    opts: {
+      limit?: number;
+      traceTurnId?: string;
+      audienceEntityId?: EntityId | null;
+      visibleAudienceEntityIds?: readonly EntityId[];
+      recordRetrieval?: boolean;
+      onRecallPlan?: (plan: RecallPlanOutcome) => void;
+    },
+  ) => {
+    rec.lastRecallQuery = query;
+    rec.lastRecallLimit = opts.limit;
+    rec.lastRecallTraceTurnId = opts.traceTurnId;
+    rec.lastRecallOptions = { ...opts };
+    rec.recallOptionsCalls.push({ ...opts });
+    opts.onRecallPlan?.({
+      temporalCue: rec.plannerTemporalCue ?? null,
+      temporalCueSource: rec.plannerTemporalCue === undefined ? null : "planner",
+    });
+    if (rec.recallError !== undefined) {
+      throw rec.recallError;
+    }
+    if (rec.recallPromise !== undefined) {
+      return rec.recallPromise;
+    }
+    if (rec.recallDelayMs !== undefined) {
+      await new Promise((resolve) => setTimeout(resolve, rec.recallDelayMs));
+    }
+    return (rec.recallEpisodes ?? [testEpisode("ep_1" as Episode["id"], rec.episodeOverrides)]).map(
+      (episode, index) => ({
+        episode,
+        score: 0.91,
+        rawScore: 1.16 - index * 0.01,
+        citationChain: rec.recallCitationChains.get(episode.id) ?? [],
+        disclosureLabel:
+          rec.recallDisclosureLabels?.get(episode.id) ??
+          memoryDisclosureLabelFromEpisodeAccess(episode),
+      }),
+    );
+  };
+  const borg = {
     stream: {
       append: async (
         input: { kind?: string; content: unknown },
@@ -521,16 +594,23 @@ function stubBorg(rec: Recorder): Borg {
         };
       },
       listObservedGroupAudienceEntityIdsForSpeaker: () => [...rec.observedGroupAudienceIds],
-      listRecentVisibleOtherSessionEvents: (input: unknown) => {
-        rec.lastVisibleActivityInput = input;
-        rec.visibleActivityInputs.push(input);
+      listRecentOtherActiveSessionEvents: (input: unknown) => {
+        rec.lastActivityInput = input;
+        rec.activityInputs.push(input);
         const { kinds, limit } = input as {
-          kinds?: readonly ActivityVisibleSessionEvent["kind"][];
+          kinds?: readonly ActivityProjectionSourceEvent["kind"][];
           limit: number;
         };
-        return rec.visibleActivityEvents
+        return rec.activityEvents
           .filter((event) => kinds === undefined || kinds.includes(event.kind))
           .slice(0, limit);
+      },
+      rankByRelevance: async (input: Parameters<Borg["activity"]["rankByRelevance"]>[0]) => {
+        rec.activityRankingInputs.push(input);
+        if (rec.activityRankingDelayMs !== undefined)
+          await new Promise((resolve) => setTimeout(resolve, rec.activityRankingDelayMs));
+        if (rec.activityRankingError !== undefined) throw rec.activityRankingError;
+        return rec.activityRankingKeys ?? input.candidates.map((candidate) => candidate.key);
       },
     },
     self: {
@@ -619,6 +699,25 @@ function stubBorg(rec: Recorder): Borg {
       },
     },
     episodic: {
+      rememberForTenant: async (input: Parameters<Borg["episodic"]["rememberForTenant"]>[0]) => {
+        rec.tenantRememberInputs.push(input);
+        if (rec.tenantRememberError !== undefined) throw rec.tenantRememberError;
+        return {
+          episodeId: "ep_aaaaaaaaaaaaaaaa",
+          authorizationEntryId: "strm_aaaaaaaaaaaaaaaa",
+          duplicate: false,
+          authorization: {
+            scope: "tenant",
+            speaker_entity_id: input.speakerEntityId,
+            speaker_name: rec.entities.find((entity) => entity.id === input.speakerEntityId)
+              ?.canonical_name,
+            source_episode_ids: input.sourceEpisodeIds,
+            source_message_ids: input.sourceMessageIds,
+            authorization_message_ids: input.authorizationMessageIds,
+            fact: input.content,
+          },
+        };
+      },
       // Real facade returns numeric counts.
       extract: async (options: unknown) => {
         rec.extractOptions.push(options);
@@ -628,44 +727,8 @@ function stubBorg(rec: Recorder): Borg {
         rec.ingestSessions.push(options?.session ?? "");
         return { ran: true, processedEntries: 2 };
       },
-      search: async (
-        query: string,
-        opts: {
-          limit?: number;
-          traceTurnId?: string;
-          audienceEntityId?: EntityId | null;
-          visibleAudienceEntityIds?: readonly EntityId[];
-          recordRetrieval?: boolean;
-          onRecallPlan?: (plan: RecallPlanOutcome) => void;
-        },
-      ) => {
-        rec.lastRecallQuery = query;
-        rec.lastRecallLimit = opts.limit;
-        rec.lastRecallTraceTurnId = opts.traceTurnId;
-        rec.lastRecallOptions = { ...opts };
-        rec.recallOptionsCalls.push({ ...opts });
-        opts.onRecallPlan?.({
-          temporalCue: rec.plannerTemporalCue ?? null,
-          temporalCueSource: rec.plannerTemporalCue === undefined ? null : "planner",
-        });
-        if (rec.recallError !== undefined) {
-          throw rec.recallError;
-        }
-        if (rec.recallPromise !== undefined) {
-          return rec.recallPromise;
-        }
-        if (rec.recallDelayMs !== undefined) {
-          await new Promise((resolve) => setTimeout(resolve, rec.recallDelayMs));
-        }
-        return (
-          rec.recallEpisodes ?? [testEpisode("ep_1" as Episode["id"], rec.episodeOverrides)]
-        ).map((episode, index) => ({
-          episode,
-          score: 0.91,
-          rawScore: 1.16 - index * 0.01,
-          citationChain: rec.recallCitationChains.get(episode.id) ?? [],
-        }));
-      },
+      search: recall,
+      recallForCognition: recall,
       searchWithTimeRangeFallback: async (
         query: string,
         opts: {
@@ -709,7 +772,7 @@ function stubBorg(rec: Recorder): Borg {
       recordRetrieval: (episodeId: Episode["id"], score: number) => {
         rec.retrievalRecords.push({ episodeId, score });
       },
-      listRecentForSession: async (options: unknown) => {
+      listRecentForSessionForCognition: async (options: unknown) => {
         rec.lastVenueOptions = options;
         return rec.venueEpisodes.map((episode) => ({
           episode,
@@ -732,6 +795,7 @@ function stubBorg(rec: Recorder): Borg {
           similarity: 0,
         }));
       },
+      getStats: () => null,
       list: async (options?: { limit?: number; cursor?: string }) => {
         rec.lastListOptions = options;
         return {
@@ -747,6 +811,7 @@ function stubBorg(rec: Recorder): Borg {
       },
     },
   } as unknown as Borg;
+  return borg;
 }
 
 function recordingPool(): { pool: MemoryPool; rec: Recorder } {
@@ -779,6 +844,7 @@ function recordingPool(): { pool: MemoryPool; rec: Recorder } {
     episodeOverrides: {},
     ingestSessions: [],
     extractOptions: [],
+    tenantRememberInputs: [],
     commitments: [],
     commitmentAdds: [],
     sessionEnsures: [],
@@ -788,8 +854,9 @@ function recordingPool(): { pool: MemoryPool; rec: Recorder } {
     activityObservationProjectionInputs: [],
     activityReplyProjectionInputs: [],
     observedGroupAudienceIds: [],
-    visibleActivityEvents: [],
-    visibleActivityInputs: [],
+    activityEvents: [],
+    activityInputs: [],
+    activityRankingInputs: [],
     livedExperienceDaySummaries: [],
     livedExperienceListInputs: [],
     autobiographicalRecallInputs: [],
@@ -904,6 +971,338 @@ async function requestRaw(
 }
 
 describe("memory sidecar handler", () => {
+  it("projects private-to membership by entity identity even when sender display names match", async () => {
+    const { pool, rec } = recordingPool();
+    const fixture = stubBorg(rec);
+    const owner = fixture.entities.resolveExternal({
+      source: "team-agent.sender",
+      externalId: "alex-owner",
+      canonicalName: "Alex",
+      kind: "person",
+    });
+    const other = fixture.entities.resolveExternal({
+      source: "team-agent.sender",
+      externalId: "alex-other",
+      canonicalName: "Alex",
+      kind: "person",
+    });
+    const group = fixture.entities.resolveExternal({
+      source: "team-agent.conversation",
+      externalId: "team",
+      canonicalName: "The team",
+      kind: "group",
+    });
+    const episode = testEpisode(createEpisodeId(), {
+      audience_entity_id: group,
+      origin_audience_entity_ids: [group],
+      shared: false,
+    });
+    rec.activityEvents = [owner, group, null].map((audienceEntityId, index) => ({
+      kind: index === 2 ? "turn_completed" : "user_contact",
+      occurredAt: Date.now() - 60_000,
+      sessionId: createSessionId(),
+      audienceEntityId,
+      conversationKind: "dm",
+      conversationName: "Alex",
+      participantLabel: "Alex",
+      sourceStreamEntryIds: [createStreamEntryId()],
+    }));
+    rec.recallEpisodes = [episode];
+    rec.recallDisclosureLabels = new Map([
+      [
+        episode.id,
+        {
+          disclosureClass: "relationship_private",
+          originAudienceEntityIds: [group],
+          privateToEntityIds: [owner],
+          publicToEntityIds: [],
+        },
+      ],
+    ]);
+    const base = await start(pool);
+    for (const [externalId, conversationType, senderIncluded, audienceIncluded] of [
+      ["alex-owner", "personal", true, true],
+      ["alex-other", "personal", false, false],
+      ["alex-owner", "groupChat", true, false],
+      ["alex-other", "groupChat", false, false],
+    ] as const) {
+      const response = await post(
+        base,
+        "/memory/context",
+        {
+          tenant: "acme",
+          session: `${externalId}-${conversationType}`,
+          sender: { external_id: externalId, display_name: "Alex", operator: false },
+          conversation: { type: conversationType, name: "The team", external_id: "team" },
+          sections: ["episodes", "recent_activity"],
+          focus: "recall",
+          context_turns: [],
+        },
+        TOKEN,
+      );
+      expect(response.status).toBe(200);
+      const payload = (await response.json()) as {
+        episodes: Array<{ disclosure: unknown }>;
+        recent_activity: Array<{ disclosure: unknown; text: string; excerpt?: string }>;
+      };
+      const disclosure = payload.episodes[0]?.disclosure;
+      expect(disclosure).toEqual({
+        class: "relationship_private",
+        origin_audience_names: ["The team"],
+        private_to_names: ["Alex"],
+        private_to_current_sender: senderIncluded,
+        private_to_current_audience: audienceIncluded,
+      });
+      for (const id of [owner, other, group]) expect(JSON.stringify(disclosure)).not.toContain(id);
+      expect(payload.recent_activity.map((event) => event.disclosure)).toEqual([
+        {
+          class: "self_private",
+          origin_audience_names: ["Alex"],
+          private_to_names: ["Alex"],
+          private_to_current_sender: senderIncluded,
+          private_to_current_audience: audienceIncluded,
+        },
+        {
+          class: "self_private",
+          origin_audience_names: ["The team"],
+          private_to_names: ["The team"],
+          private_to_current_sender: false,
+          private_to_current_audience: conversationType === "groupChat",
+        },
+        {
+          class: "self_private",
+          origin_audience_names: [],
+          private_to_names: [],
+          private_to_current_sender: false,
+          private_to_current_audience: false,
+        },
+      ]);
+      expect(payload.recent_activity[2]?.text).toContain("completed a turn");
+      expect(payload.recent_activity[2]).not.toHaveProperty("excerpt");
+      for (const id of [owner, other, group]) {
+        expect(JSON.stringify(payload.recent_activity)).not.toContain(id);
+      }
+    }
+
+    rec.recallDisclosureLabels.set(episode.id, {
+      disclosureClass: "relationship_private",
+      originAudienceEntityIds: [owner],
+      privateToEntityIds: [group],
+      publicToEntityIds: [],
+    });
+    const groupResponse = await post(
+      base,
+      "/memory/context",
+      {
+        tenant: "acme",
+        session: "team",
+        sender: { external_id: "alex-other", display_name: "Alex", operator: false },
+        conversation: { type: "groupChat", name: "The team", external_id: "team" },
+        sections: ["episodes"],
+        focus: "recall",
+        context_turns: [],
+      },
+      TOKEN,
+    );
+    expect(groupResponse.status).toBe(200);
+    expect(await groupResponse.json()).toMatchObject({
+      episodes: [
+        {
+          disclosure: {
+            class: "relationship_private",
+            origin_audience_names: ["Alex"],
+            private_to_names: ["The team"],
+            private_to_current_sender: false,
+            private_to_current_audience: true,
+          },
+        },
+      ],
+    });
+  });
+
+  it("guards the exact served context without an LLM, including missing/expired snapshots and operator echoes", async () => {
+    const root = mkdtempSync(join(tmpdir(), "borg-memory-guard-"));
+    const llmClient = new FakeLLMClient();
+    const complete = vi.spyOn(llmClient, "complete");
+    const clock = new ManualClock(100);
+    const traceRegistry = new MemoryTraceRegistry();
+    const pool = new BorgPool({
+      root,
+      openOptions: {
+        embeddingDimensions: 4,
+        embeddingClient: new FakeEmbeddingClient(4),
+        llmClient,
+        liveExtraction: false,
+        liveCommitmentExtraction: false,
+        tracer: traceRegistry.tracerFor("acme"),
+      },
+    });
+    try {
+      const episode = testEpisode(createEpisodeId());
+      const commitment = testCommitment();
+      await pool.withTenant("acme", (borg) => {
+        vi.spyOn(borg.episodic, "recallForCognition").mockResolvedValue([
+          {
+            episode,
+            score: 0.9,
+            rawScore: 0.9,
+            scoreBreakdown: {
+              similarity: 0.9,
+              decayedSalience: 0,
+              heat: 0,
+              goalRelevance: 0,
+              valueAlignment: 0,
+              timeRelevance: 0,
+              moodBoost: 0,
+              socialRelevance: 0,
+              entityRelevance: 0,
+              suppressionPenalty: 0,
+            },
+            citationChain: [],
+            disclosureLabel: {
+              disclosureClass: "operator_private",
+              originAudienceEntityIds: [],
+              privateToEntityIds: [],
+              publicToEntityIds: [],
+            },
+          },
+        ]);
+        vi.spyOn(borg.commitments, "list").mockReturnValue([
+          {
+            ...commitment,
+            ...memoryDisclosurePayloadFields(commitmentMemoryDisclosureLabel(commitment)),
+          },
+        ]);
+      });
+      const base = await start(pool, TOKEN, {
+        servedContexts: new ServedMemoryContextRegistry({ clock, ttlMs: 10 }),
+        traceRegistry,
+      });
+      const identity = { tenant: "acme", session: "guard-session", ...TRANSPORT_IDENTITY };
+      const context = await post(
+        base,
+        "/memory/context",
+        {
+          ...identity,
+          context_turns: [],
+          sections: ["episodes", "commitments"],
+          focus: "recall",
+        },
+        TOKEN,
+      );
+      const served = (await context.json()) as {
+        context_id: string;
+        disclosure_guidance: string;
+        episodes: unknown[];
+      };
+      expect(context.status).toBe(200);
+      expect(served.disclosure_guidance).toBe(MEMORY_DISCLOSURE_GUIDANCE_FOR_MODEL);
+      expect(served.episodes).toEqual([
+        expect.objectContaining({
+          disclosure: {
+            class: "operator_private",
+            origin_audience_names: [],
+            private_to_names: [],
+            private_to_current_sender: false,
+            private_to_current_audience: false,
+          },
+        }),
+      ]);
+      // Neither fresh retrieval nor the current commitment list may replace the served snapshot.
+      await pool.withTenant("acme", (borg) => {
+        vi.mocked(borg.commitments.list).mockReturnValue([]);
+        vi.mocked(borg.episodic.recallForCognition).mockResolvedValue([]);
+      });
+      const secondContext = await post(
+        base,
+        "/memory/context",
+        {
+          ...identity,
+          context_turns: [],
+          sections: ["episodes"],
+          focus: "another turn",
+        },
+        TOKEN,
+      );
+      const second = (await secondContext.json()) as { context_id: string };
+      expect(second.context_id).not.toBe(served.context_id);
+      complete.mockClear();
+      for (const [response, verdict, extra] of [
+        ["A normal reply.", "pass", {}],
+        [`Here is ${episode.id}.`, "blocked", {}],
+        [`Here is ${commitment.id}.`, "blocked", {}],
+        [`Here is ${episode.id}.`, "pass", { current_turn_user_texts: [`Explain ${episode.id}`] }],
+        [
+          `Here is ${episode.id}.`,
+          "pass",
+          { sender: { ...TRANSPORT_IDENTITY.sender, operator: true } },
+        ],
+      ] as const) {
+        const guarded = await post(
+          base,
+          "/memory/guard-reply",
+          {
+            ...identity,
+            context_id: served.context_id,
+            response,
+            ...extra,
+          },
+          TOKEN,
+        );
+        expect(guarded.status).toBe(200);
+        expect(await guarded.json()).toEqual({
+          ok: true,
+          verdict,
+          reasons: verdict === "blocked" ? ["internal_identifier_leak"] : [],
+        });
+      }
+      clock.advance(10);
+      for (const context_id of [served.context_id, "missing"]) {
+        const missing = await post(
+          base,
+          "/memory/guard-reply",
+          {
+            ...identity,
+            context_id,
+            response: "A normal reply.",
+          },
+          TOKEN,
+        );
+        expect(await missing.json()).toEqual({
+          ok: true,
+          verdict: "pass",
+          reasons: ["context_snapshot_miss"],
+        });
+      }
+      const leakedSession = `sess_${createHash("sha256").update(identity.session).digest("hex").slice(0, 16)}`;
+      const missingBlocked = await post(
+        base,
+        "/memory/guard-reply",
+        {
+          ...identity,
+          context_id: "missing",
+          response: `Session ${leakedSession}`,
+        },
+        TOKEN,
+      );
+      expect(await missingBlocked.json()).toEqual({
+        ok: true,
+        verdict: "blocked",
+        reasons: ["context_snapshot_miss", "internal_identifier_leak"],
+      });
+      expect(complete).not.toHaveBeenCalled();
+      expect(traceRegistry.query("acme").events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ event: "sidecar.guard_reply.completed" }),
+          expect.objectContaining({ event: "internal_identifier_guard.completed" }),
+        ]),
+      );
+    } finally {
+      await pool.closeAll();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("parses the bounded sidecar recall semantic variant count", () => {
     expect(memoryRecallSemanticVariantCountFromEnv({})).toBe(1);
     expect(
@@ -1908,6 +2307,59 @@ describe("memory sidecar handler", () => {
     });
   });
 
+  it.each(["/memory/recall", "/memory/context"])(
+    "uses each tenant's fused abstention override in %s",
+    async (path) => {
+      const recorded = recordingPool();
+      recorded.rec.episodeOverrides = { shared: true };
+      const pool: MemoryPool = {
+        ...recorded.pool,
+        async withTenant(tenant, fn, opts) {
+          return recorded.pool.withTenant(
+            tenant,
+            async (borg) => {
+              Object.defineProperty(borg, "similarityThresholds", {
+                value: similarityThresholds({
+                  similarity: { overrides: { recallAbstain: tenant === "acme" ? 1.17 : 1.16 } },
+                }),
+              });
+              return fn(borg);
+            },
+            opts,
+          );
+        },
+      };
+      const base = await start(pool);
+      const body = {
+        limit: 3,
+        ...(path === "/memory/context"
+          ? {
+              focus: "who leads",
+              context_turns: [],
+              session: "chat",
+              sections: ["episodes"],
+              sender: { external_id: "alice", display_name: "Alice", operator: false },
+              conversation: { type: "personal", name: "Alice", external_id: "personal-a" },
+            }
+          : { query: "who leads" }),
+      };
+      const abstained = await post(base, path, { ...body, tenant: "acme" }, TOKEN);
+      const retained = await post(base, path, { ...body, tenant: "other" }, TOKEN);
+      expect(abstained.status).toBe(200);
+      expect(await abstained.json()).toMatchObject({ abstained: true, episodes: [] });
+      expect(retained.status).toBe(200);
+      expect(await retained.json()).toMatchObject({
+        episodes: [expect.objectContaining({ raw_score: 1.16 })],
+      });
+
+      const disabledBase = await start(pool, TOKEN, { recallAbstainThreshold: 0 });
+      const disabled = await post(disabledBase, path, { ...body, tenant: "acme" }, TOKEN);
+      expect(await disabled.json()).toMatchObject({
+        episodes: [expect.objectContaining({ raw_score: 1.16 })],
+      });
+    },
+  );
+
   it("lists episodes from the query tenant without a body, clamping limit and passing cursor", async () => {
     const { pool, rec } = recordingPool();
     rec.episodeOverrides = { location: "AI Ninjas" };
@@ -2025,6 +2477,23 @@ describe("memory sidecar handler", () => {
 
     expect((await get(base, "/memory/episodes?tenant=acme&cursor=%20%20", TOKEN)).status).toBe(200);
     expect(rec.lastListOptions).toEqual({ limit: 20 });
+  });
+
+  it("preserves the next cursor when a list page contains only archived episodes", async () => {
+    const base = await start({
+      listTenantIds: async () => ["acme"],
+      async withTenant(_tenant, fn) {
+        return fn({
+          episodic: {
+            list: async () => ({ items: [testEpisode()], nextCursor: "next-page" }),
+            getStats: () => ({ archived: true }),
+          },
+        } as unknown as Borg);
+      },
+    });
+    const response = await get(base, "/memory/episodes?tenant=acme", TOKEN);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true, episodes: [], nextCursor: "next-page" });
   });
 
   it("maps malformed list cursors to 400 client errors", async () => {
@@ -2211,6 +2680,217 @@ describe("memory sidecar handler", () => {
       (await get(invalidBase, "/memory/episodes/not-an-episode?tenant=acme", TOKEN)).status,
     ).toBe(400);
     expect(invalidCalls).toEqual([]);
+  });
+
+  it("forgets through correction, records manual provenance, and removes the episode from list and context recall", async () => {
+    const root = mkdtempSync(join(tmpdir(), "borg-memory-forget-"));
+    const embeddingClient = new FakeEmbeddingClient(4);
+    const llmClient = new FakeLLMClient();
+    const pool = new BorgPool({
+      root,
+      openOptions: {
+        embeddingDimensions: 4,
+        embeddingClient,
+        llmClient,
+        liveExtraction: false,
+        liveCommitmentExtraction: false,
+      },
+    });
+    try {
+      const focus = "Noisy memory";
+      const episode = testEpisode(createEpisodeId(), {
+        title: focus,
+        narrative: "This fact was recorded incorrectly.",
+        embedding: await embeddingClient.embed(focus),
+        start_time: Date.now(),
+        end_time: Date.now(),
+        shared: true,
+      });
+      const node = createSemanticNodeFixture({ source_episode_ids: [episode.id] });
+      const source = await pool.withTenant(
+        "acme",
+        async (borg) => {
+          const deps = (borg as unknown as { deps: BorgDependencies }).deps;
+          const entry = await borg.stream.append({ kind: "user_msg", content: episode.narrative });
+          episode.source_stream_ids = [entry.id];
+          await deps.episodicRepository.createEpisode(episode);
+          await deps.semanticNodeRepository.insert(node);
+          return entry;
+        },
+        { exclusive: true },
+      );
+      const base = await start(pool);
+      const whyResponse = await get(base, `/memory/episodes/${episode.id}/why?tenant=acme`, TOKEN);
+      expect(whyResponse.status).toBe(200);
+      const why = (await whyResponse.json()) as Record<string, unknown>;
+      expect(why).toMatchObject({
+        ok: true,
+        target_type: "episode",
+        record: { id: episode.id },
+        source_stream_ids: [source.id],
+        citation_chain: [expect.objectContaining({ id: source.id })],
+      });
+      expect(why.record).not.toHaveProperty("embedding");
+
+      for (const archived of [false, true]) {
+        if (archived) {
+          const forget = await post(
+            base,
+            "/memory/forget",
+            { tenant: "acme", id: episode.id },
+            TOKEN,
+          );
+          expect(forget.status).toBe(200);
+          expect(await forget.json()).toEqual({
+            ok: true,
+            id: episode.id,
+            target_type: "episode",
+            archived: true,
+          });
+        }
+        const listed = await get(base, "/memory/episodes?tenant=acme", TOKEN);
+        expect(listed.status).toBe(200);
+        expect(await listed.json()).toMatchObject({
+          episodes: archived ? [] : [expect.objectContaining({ id: episode.id })],
+        });
+        llmClient.pushResponse({
+          text: "",
+          input_tokens: 0,
+          output_tokens: 0,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_forget_context",
+              name: "EmitRecallQueryPlan",
+              input: {
+                resolved_query: focus,
+                semantic_variants: [{ strategy: "combined", query: focus }],
+                named_terms: [],
+                typed_queries: [],
+              },
+            },
+          ],
+        });
+        const context = await post(
+          base,
+          "/memory/context",
+          {
+            tenant: "acme",
+            session: "forget-context",
+            ...TRANSPORT_IDENTITY,
+            focus,
+            context_turns: [],
+            sections: ["episodes"],
+          },
+          TOKEN,
+        );
+        expect(context.status).toBe(200);
+        expect(await context.json()).toMatchObject({
+          degraded: false,
+          episodes: archived ? [] : [expect.objectContaining({ id: episode.id })],
+        });
+      }
+      await pool.withTenant("acme", async (borg) => {
+        expect(borg.episodic.getStats(episode.id)?.archived).toBe(true);
+        expect(await borg.episodic.inspect(episode.id)).not.toBeNull();
+        expect(borg.correction.listIdentityEvents({ recordId: episode.id })).toEqual([
+          expect.objectContaining({
+            record_type: "episode",
+            record_id: episode.id,
+            action: "forget",
+            reason: "forgotten manually",
+            provenance: { kind: "manual" },
+          }),
+        ]);
+      });
+      const forgetNode = await post(base, "/memory/forget", { tenant: "acme", id: node.id }, TOKEN);
+      expect(forgetNode.status).toBe(200);
+      expect(await forgetNode.json()).toEqual({
+        ok: true,
+        id: node.id,
+        target_type: "semantic_node",
+        archived: true,
+      });
+      await pool.withTenant("acme", async (borg) => {
+        expect((await borg.semantic.nodes.get(node.id))?.archived).toBe(true);
+        expect(borg.correction.listIdentityEvents({ recordId: node.id })).toEqual([
+          expect.objectContaining({
+            record_type: "semantic_node",
+            action: "forget",
+            provenance: { kind: "manual" },
+          }),
+        ]);
+      });
+    } finally {
+      await pool.closeAll();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("maps missing correction targets to 404 and serializes forget through the tenant writer scope", async () => {
+    const forget = vi.fn(async () => {
+      throw new StorageError("private storage detail", { code: "EPISODE_NOT_FOUND" });
+    });
+    const why = vi.fn(async () => {
+      throw new StorageError("private storage detail", { code: "EPISODE_NOT_FOUND" });
+    });
+    const scopes: unknown[] = [];
+    const base = await start({
+      listTenantIds: async () => ["acme"],
+      async withTenant(tenant, fn, options) {
+        scopes.push({ tenant, options });
+        return fn({ correction: { forget, why } } as unknown as Borg);
+      },
+    });
+    const episodeId = createEpisodeId();
+    const nodeId = createSemanticNodeId();
+    for (const id of [episodeId, nodeId]) {
+      if (id === nodeId)
+        forget.mockRejectedValueOnce(
+          new StorageError("private storage detail", { code: "SEMANTIC_NODE_NOT_FOUND" }),
+        );
+      const response = await post(base, "/memory/forget", { tenant: "acme", id }, TOKEN);
+      expect(response.status).toBe(404);
+      expect(await response.json()).toEqual({ error: "memory not found" });
+      expect(forget).toHaveBeenLastCalledWith(id);
+    }
+    const response = await get(base, `/memory/episodes/${episodeId}/why?tenant=acme`, TOKEN);
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: "episode not found" });
+    expect(why).toHaveBeenCalledWith(episodeId);
+    expect(scopes).toEqual([
+      { tenant: "acme", options: { exclusive: true } },
+      { tenant: "acme", options: { exclusive: true } },
+      { tenant: "acme", options: undefined },
+    ]);
+  });
+
+  it("validates forget bodies and why ids before opening a tenant, after token authentication", async () => {
+    const { pool, rec } = recordingPool();
+    const base = await start(pool);
+    for (const body of [
+      {},
+      { tenant: "acme" },
+      { tenant: "../other", id: createEpisodeId() },
+      { tenant: "acme", id: 123 },
+      { tenant: "acme", id: "invalid" },
+      { tenant: "acme", id: createCommitmentId() },
+      { tenant: "acme", id: createEpisodeId(), extra: true },
+    ]) {
+      const response = await post(base, "/memory/forget", body, TOKEN);
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({ error: expect.any(String) });
+    }
+    expect((await post(base, "/memory/forget", {}, TOKEN, "{bad json")).status).toBe(400);
+    expect((await post(base, "/memory/forget", {}, TOKEN, "[]")).status).toBe(400);
+    expect(
+      (await post(base, "/memory/forget", { tenant: "acme", id: createEpisodeId() })).status,
+    ).toBe(401);
+    expect((await get(base, "/memory/episodes/invalid/why?tenant=acme", TOKEN)).status).toBe(400);
+    expect((await get(base, `/memory/episodes/${createEpisodeId()}/why?tenant=acme`)).status).toBe(
+      401,
+    );
+    expect(rec.tenants).toEqual([]);
   });
 
   it("lists applicable active commitments with critical-first ordering and a bounded response", async () => {
@@ -2836,13 +3516,328 @@ describe("memory sidecar handler", () => {
     expect(rec.tenants).toEqual([]);
   });
 
+  it("serves a real consent-backed fact with tenant-public guidance only while the fact is included", async () => {
+    const root = mkdtempSync(join(tmpdir(), "borg-tenant-fact-http-"));
+    const fact = "Marcin będzie na urlopie od 14 do 18 września 2026.";
+    const plan = {
+      text: "",
+      input_tokens: 1,
+      output_tokens: 1,
+      stop_reason: "tool_use" as const,
+      tool_calls: [
+        {
+          id: "plan",
+          name: "EmitRecallQueryPlan",
+          input: {
+            resolved_query: "Urlop Marcina",
+            semantic_variants: [{ strategy: "combined", query: fact }],
+            named_terms: ["Marcin", "urlop"],
+            typed_queries: [],
+            temporal_cue: null,
+          },
+        },
+      ],
+    };
+    const llmClient = new FakeLLMClient({
+      responses: [
+        {
+          text: "",
+          input_tokens: 1,
+          output_tokens: 1,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "consent",
+              name: "ExtractAuthorizedTenantFact",
+              input: {
+                authorized: true,
+                fact,
+                title: "Urlop Marcina",
+                tags: ["Marcin", "urlop"],
+                confidence: 1,
+              },
+            },
+          ],
+        },
+        plan,
+        plan,
+        plan,
+        plan,
+      ],
+    });
+    const pool = new BorgPool({
+      root,
+      openOptions: {
+        embeddingDimensions: 4,
+        embeddingClient: new FakeEmbeddingClient(4),
+        llmClient,
+        liveExtraction: false,
+        liveCommitmentExtraction: false,
+      },
+    });
+    try {
+      const base = await start(pool);
+      const session = createSessionId();
+      const source = await pool.withTenant(
+        "acme",
+        async (borg) => {
+          const speaker = borg.entities.resolveExternal({
+            source: "team-agent.sender",
+            externalId: "marcin",
+            canonicalName: "Marcin",
+            kind: "person",
+            provenance: "transport_sender",
+          });
+          return await borg.stream.append(
+            {
+              kind: "user_msg",
+              sender_entity_id: speaker,
+              audience: speaker,
+              content: "Mam urlop od 14 do 18 września 2026. Cały zespół może o tym wiedzieć.",
+            },
+            { session },
+          );
+        },
+        { exclusive: true },
+      );
+      const body = {
+        tenant: "acme",
+        session,
+        scope: "tenant",
+        request_id: "public-vacation",
+        sender: { external_id: "marcin", display_name: "Marcin", operator: false },
+        conversation: { type: "personal", name: "Marcin", external_id: "marcin-private" },
+        content: fact,
+        source_message_ids: [source.id],
+        authorization_message_ids: [source.id],
+      };
+      const remembered = await post(base, "/memory/remember", body, TOKEN);
+      expect(remembered.status).toBe(200);
+      const receipt = (await remembered.json()) as {
+        episode_id: string;
+        authorization_entry_id: string;
+      };
+      const repeated = await post(base, "/memory/remember", body, TOKEN);
+      expect(await repeated.json()).toMatchObject({
+        episode_id: receipt.episode_id,
+        duplicate: true,
+      });
+      for (const [type, focus] of [
+        ["groupChat", "Czy Marcin będzie w następnym tygodniu w pracy?"],
+        ["personal", "Czy Marcin będzie w przyszłym tygodniu w pracy, czy idzie na urlop?"],
+      ]) {
+        const contextBody = {
+          tenant: "acme",
+          session: `tomasz-${type}`,
+          sender: { external_id: "tomasz", display_name: "Kasperczyk, Tomasz", operator: false },
+          conversation: {
+            type,
+            name: type === "groupChat" ? "AI Ninjas" : "Tomasz",
+            external_id: `tomasz-${type}`,
+          },
+          focus,
+          context_turns: [],
+          sections: ["episodes"],
+          limit: 8,
+        };
+        const response = await post(base, "/memory/context", contextBody, TOKEN);
+        expect(response.status).toBe(200);
+        const payload = (await response.json()) as {
+          episodes: Array<Record<string, unknown>>;
+          disclosure_guidance: string;
+        };
+        expect(payload.disclosure_guidance).toContain(
+          "A tenant-authorized public fact is shareable with any tenant member; its private source is not.",
+        );
+        expect(payload.episodes).toEqual([
+          expect.objectContaining({
+            id: receipt.episode_id,
+            disclosure: expect.objectContaining({ class: "public" }),
+            narrative: expect.stringContaining(fact),
+            sharing_authorization: {
+              scope: "tenant",
+              speaker_name: "Marcin",
+              fact,
+              disclosure: { class: "public", scope: "tenant" },
+              guidance: expect.stringContaining("Marcin's explicit authorization"),
+            },
+            source_messages: [],
+          }),
+        ]);
+        const excluded = await post(
+          base,
+          "/memory/context",
+          { ...contextBody, exclude: { episode_ids: [receipt.episode_id] } },
+          TOKEN,
+        );
+        expect(excluded.status).toBe(200);
+        expect(await excluded.json()).toMatchObject({
+          episodes: [],
+          disclosure_guidance: MEMORY_DISCLOSURE_GUIDANCE_FOR_MODEL,
+        });
+      }
+      expect(
+        llmClient.requests.filter((request) => request.budget === "remember-tenant-fact"),
+      ).toHaveLength(1);
+    } finally {
+      await pool.closeAll();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not infer tenant-public guidance from ordinary public memory prose", async () => {
+    const { pool, rec } = recordingPool();
+    const tenantPublicSentence =
+      "A tenant-authorized public fact is shareable with any tenant member; its private source is not.";
+    const episodeId = createEpisodeId();
+    rec.recallEpisodes = [
+      testEpisode(episodeId, {
+        narrative: tenantPublicSentence,
+        audience_entity_id: null,
+        origin_audience_entity_ids: [],
+        shared: true,
+      }),
+    ];
+    const base = await start(pool);
+    const response = await post(
+      base,
+      "/memory/context",
+      {
+        tenant: "acme",
+        session: "ordinary-public-guidance",
+        ...TRANSPORT_IDENTITY,
+        focus: "disclosure guidance",
+        context_turns: [],
+        sections: ["episodes"],
+      },
+      TOKEN,
+    );
+    expect(response.status).toBe(200);
+    const payload = (await response.json()) as {
+      episodes: Array<Record<string, unknown>>;
+      disclosure_guidance: string;
+    };
+    expect(payload.episodes).toEqual([
+      expect.objectContaining({
+        id: episodeId,
+        narrative: tenantPublicSentence,
+        disclosure: expect.objectContaining({ class: "public" }),
+      }),
+    ]);
+    expect(payload.episodes[0]).not.toHaveProperty("sharing_authorizations");
+    expect(payload.disclosure_guidance).toBe(MEMORY_DISCLOSURE_GUIDANCE_FOR_MODEL);
+    expect(payload.disclosure_guidance).not.toContain(tenantPublicSentence);
+  });
+
+  it.each([1, 2])(
+    "renders %i source authorizations on a private consolidation without making its narrative public",
+    async (count) => {
+      const { pool, rec } = recordingPool();
+      const mergedId = createEpisodeId();
+      const speakerId = createEntityId();
+      const receipts: StreamEntry[] = Array.from({ length: count }, (_, index) => ({
+        id: createStreamEntryId(),
+        kind: "internal_event",
+        content: `Authorized fact ${index}`,
+        timestamp: 1000,
+        session_id: createSessionId(),
+        turn_status: "active",
+        compressed: false,
+        sender_entity_id: null,
+        reply_target_entity_id: null,
+        source_message_key: {
+          source_type: "borg.memory.tenant_fact",
+          source_external_id: "test",
+          external_message_id: String(index),
+        },
+        metadata: {
+          tenant_fact_authorization: {
+            scope: "tenant",
+            request_hash: "a".repeat(64),
+            episode_id: createEpisodeId(),
+            speaker_entity_id: speakerId,
+            speaker_name: "Marcin",
+            source_episode_ids: [],
+            source_message_ids: [createStreamEntryId()],
+            authorization_message_ids: [createStreamEntryId()],
+            fact: `Authorized fact ${index}`,
+            title: "Fact",
+            tags: [],
+            confidence: 1,
+            authorized_at: 1000,
+          },
+        },
+      }));
+      rec.recallEpisodes = [
+        testEpisode(mergedId, {
+          narrative: "Private reasons mixed with an authorized fact",
+          shared: false,
+          origin_audience_entity_ids: [speakerId],
+          audience_entity_id: speakerId,
+          source_stream_ids: receipts.map((receipt) => receipt.id),
+        }),
+      ];
+      // Duplicate citations must not duplicate permission; an unrelated internal
+      // event with similar content must never mint a permission.
+      rec.recallCitationChains.set(mergedId, [
+        ...receipts,
+        receipts[0]!,
+        {
+          ...receipts[0]!,
+          id: createStreamEntryId(),
+          metadata: {},
+        },
+      ]);
+      const base = await start(pool);
+      const response = await post(
+        base,
+        "/memory/context",
+        {
+          tenant: "acme",
+          session: "consolidated-permission",
+          ...TRANSPORT_IDENTITY,
+          focus: "leave dates",
+          context_turns: [],
+          sections: ["episodes"],
+        },
+        TOKEN,
+      );
+      expect(response.status).toBe(200);
+      const payload = (await response.json()) as {
+        episodes: Array<Record<string, unknown>>;
+        disclosure_guidance: string;
+      };
+      expect(payload.disclosure_guidance).toContain(
+        "A tenant-authorized public fact is shareable with any tenant member; its private source is not.",
+      );
+      const episode = payload.episodes[0]!;
+      expect(episode.disclosure).toMatchObject({ class: "relationship_private" });
+      expect(episode.sharing_authorizations).toEqual(
+        receipts.map((_, index) => ({
+          scope: "tenant",
+          speaker_name: "Marcin",
+          fact: `Authorized fact ${index}`,
+          disclosure: { class: "public", scope: "tenant" },
+          guidance: expect.stringContaining(
+            "does not authorize revealing the original private conversation",
+          ),
+        })),
+      );
+      if (count === 1)
+        expect(episode.sharing_authorization).toEqual(
+          (episode.sharing_authorizations as unknown[])[0],
+        );
+      else expect(episode).not.toHaveProperty("sharing_authorization");
+    },
+  );
+
   it("remembers (append + extract), routing by tenant", async () => {
     const { pool, rec } = recordingPool();
     const base = await start(pool);
     const res = await post(
       base,
       "/memory/remember",
-      { tenant: "acme", content: "fact", author: "Bob" },
+      { tenant: "acme", content: "fact", author: "Author" },
       TOKEN,
     );
     expect(res.status).toBe(200);
@@ -2851,15 +3846,276 @@ describe("memory sidecar handler", () => {
       extracted: { inserted: 1, updated: 0, skipped: 0 },
     });
     expect(rec.tenants).toEqual(["acme"]);
-    expect(rec.extractOptions).toEqual([
-      {
-        sinceTs: 1000,
-        bypassSalienceGate: true,
-      },
+    expect(rec.exclusives).toEqual([true]);
+    expect(rec.appendCalls).toEqual([
+      { session: undefined, input: { kind: "user_msg", content: "[Author] fact" } },
     ]);
+    expect(rec.sessionEnsures).toEqual([]);
+    expect(rec.extractOptions).toEqual([{ sinceTs: 1000, bypassSalienceGate: true }]);
   });
 
-  it("appends a raw turn and schedules background ingestion", async () => {
+  it.each([null, undefined, 123])(
+    "preserves unscoped legacy parsing with author=%s and ignored fields",
+    async (author) => {
+      const { pool, rec } = recordingPool();
+      const base = await start(pool);
+      const response = await post(
+        base,
+        "/memory/remember",
+        {
+          tenant: "acme",
+          content: " role outcome ",
+          author,
+          session: "previously-ignored-session",
+          role: "reviewer",
+        },
+        TOKEN,
+      );
+      expect(response.status).toBe(200);
+      expect(rec.appendCalls).toEqual([
+        { session: undefined, input: { kind: "user_msg", content: "role outcome" } },
+      ]);
+      expect(rec.tenantRememberInputs).toEqual([]);
+    },
+  );
+
+  it.each([null, "public", "", false])(
+    "rejects malformed consent scope=%s without falling back to legacy writes",
+    async (scope) => {
+      const { pool, rec } = recordingPool();
+      const base = await start(pool);
+      const response = await post(
+        base,
+        "/memory/remember",
+        {
+          tenant: "acme",
+          content: "fact",
+          scope,
+        },
+        TOKEN,
+      );
+      expect(response.status).toBe(400);
+      expect(rec.appendCalls).toEqual([]);
+      expect(rec.tenantRememberInputs).toEqual([]);
+    },
+  );
+
+  it("routes tenant consent through the durable operation using transport identity and explicit provenance", async () => {
+    const { pool, rec } = recordingPool();
+    const base = await start(pool);
+    const source = createStreamEntryId();
+    const episode = createEpisodeId();
+    const body = {
+      tenant: "acme",
+      session: "marcin-private",
+      scope: "tenant",
+      request_id: "consent-1",
+      sender: { external_id: "marcin", display_name: "Marcin", operator: false },
+      conversation: { type: "personal", name: "Marcin", external_id: "marcin-private" },
+      content: "Marcin będzie na urlopie od 14 do 18 września 2026.",
+      source_episode_ids: [episode],
+      source_message_ids: [source],
+      authorization_message_ids: [source],
+    };
+    const response = await post(base, "/memory/remember", body, TOKEN);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      ok: true,
+      episode_id: "ep_aaaaaaaaaaaaaaaa",
+      authorization_entry_id: "strm_aaaaaaaaaaaaaaaa",
+      duplicate: false,
+      disclosure: { class: "public", scope: "tenant" },
+      authorization: { scope: "tenant", speaker_name: "Marcin", source_message_ids: [source] },
+      guidance: expect.stringContaining("Marcin's explicit authorization"),
+    });
+    expect(rec.tenantRememberInputs).toEqual([
+      expect.objectContaining({
+        requestId: "consent-1",
+        speakerEntityId: rec.externalSenderIds.get("marcin"),
+        content: body.content,
+        sourceEpisodeIds: [episode],
+        sourceMessageIds: [source],
+        authorizationMessageIds: [source],
+      }),
+    ]);
+    expect(rec.exclusives).toEqual([true]);
+    expect(rec.extractOptions).toEqual([]);
+    expect(rec.appendCalls).toEqual([]);
+
+    for (const [code, status] of [
+      ["MEMORY_REMEMBER_NOT_AUTHORIZED", 422],
+      ["MEMORY_REMEMBER_CONFLICT", 409],
+      ["MEMORY_REMEMBER_SOURCE_INVALID", 400],
+    ] as const) {
+      rec.tenantRememberError = new CognitionError("private source detail", { code });
+      const rejected = await post(base, "/memory/remember", body, TOKEN);
+      expect(rejected.status).toBe(status);
+      expect(await rejected.json()).toMatchObject({ code });
+    }
+  });
+
+  it.each([
+    { scope: "tenant", authorization_message_ids: [] },
+    { scope: "room" },
+    { scope: "tenant", sender: { external_id: "speaker" } },
+    { scope: "tenant", source_message_ids: ["not-a-stream-id"] },
+  ])(
+    "never downgrades malformed scoped remember requests to the legacy writer: %j",
+    async (fields) => {
+      const { pool, rec } = recordingPool();
+      const base = await start(pool);
+      const response = await post(
+        base,
+        "/memory/remember",
+        { tenant: "acme", content: "fact", ...fields },
+        TOKEN,
+      );
+      expect(response.status).toBe(400);
+      expect(rec.tenants).toEqual([]);
+      expect(rec.extractOptions).toEqual([]);
+      expect(rec.tenantRememberInputs).toEqual([]);
+    },
+  );
+
+  describe.each([
+    {
+      mode: "completed append",
+      path: "/memory/append-turn",
+      fields: { user: "hello", assistant: "hi" },
+    },
+    { mode: "observation", path: "/memory/append-turn", fields: { user: "hello" } },
+    { mode: "reply-only append", path: "/memory/append-turn", fields: { assistant: "hi" } },
+    { mode: "context", path: "/memory/context", fields: { sections: ["audience"] } },
+  ])("$mode transport identity", ({ path, fields }) => {
+    it.each([
+      { invalid: "missing session", overrides: { session: undefined }, field: "session" },
+      { invalid: "empty session", overrides: { session: "" }, field: "session" },
+      { invalid: "blank session", overrides: { session: "   " }, field: "session" },
+      { invalid: "non-string session", overrides: { session: 42 }, field: "session" },
+      { invalid: "missing sender", overrides: { sender: undefined }, field: "sender" },
+      { invalid: "null sender", overrides: { sender: null }, field: "sender" },
+      { invalid: "array sender", overrides: { sender: [] }, field: "sender" },
+      { invalid: "string sender", overrides: { sender: "sender" }, field: "sender" },
+      {
+        invalid: "missing sender external id",
+        overrides: { sender: { ...TRANSPORT_IDENTITY.sender, external_id: undefined } },
+        field: "sender.external_id",
+      },
+      {
+        invalid: "blank sender external id",
+        overrides: { sender: { ...TRANSPORT_IDENTITY.sender, external_id: " " } },
+        field: "sender.external_id",
+      },
+      {
+        invalid: "missing sender display name",
+        overrides: { sender: { ...TRANSPORT_IDENTITY.sender, display_name: undefined } },
+        field: "sender.display_name",
+      },
+      {
+        invalid: "empty sender display name",
+        overrides: { sender: { ...TRANSPORT_IDENTITY.sender, display_name: "" } },
+        field: "sender.display_name",
+      },
+      {
+        invalid: "missing operator",
+        overrides: { sender: { external_id: "sender", display_name: "Sender" } },
+        field: "sender.operator",
+      },
+      {
+        invalid: "string operator",
+        overrides: { sender: { ...TRANSPORT_IDENTITY.sender, operator: "false" } },
+        field: "sender.operator",
+      },
+      {
+        invalid: "numeric operator",
+        overrides: { sender: { ...TRANSPORT_IDENTITY.sender, operator: 0 } },
+        field: "sender.operator",
+      },
+      {
+        invalid: "null operator",
+        overrides: { sender: { ...TRANSPORT_IDENTITY.sender, operator: null } },
+        field: "sender.operator",
+      },
+      {
+        invalid: "missing conversation",
+        overrides: { conversation: undefined },
+        field: "conversation",
+      },
+      { invalid: "null conversation", overrides: { conversation: null }, field: "conversation" },
+      { invalid: "array conversation", overrides: { conversation: [] }, field: "conversation" },
+      {
+        invalid: "string conversation",
+        overrides: { conversation: "personal" },
+        field: "conversation",
+      },
+      {
+        invalid: "missing conversation type",
+        overrides: { conversation: { ...TRANSPORT_IDENTITY.conversation, type: undefined } },
+        field: "conversation.type",
+      },
+      {
+        invalid: "unknown conversation type",
+        overrides: { conversation: { ...TRANSPORT_IDENTITY.conversation, type: "directMessage" } },
+        field: "conversation.type",
+      },
+      {
+        invalid: "missing conversation name",
+        overrides: { conversation: { ...TRANSPORT_IDENTITY.conversation, name: undefined } },
+        field: "conversation.name",
+      },
+      {
+        invalid: "non-string conversation name",
+        overrides: { conversation: { ...TRANSPORT_IDENTITY.conversation, name: 42 } },
+        field: "conversation.name",
+      },
+      ...["personal", "groupChat", "channel"].map((type) => ({
+        invalid: `missing ${type} conversation external id`,
+        overrides: { conversation: { type, name: "Conversation" } },
+        field: "conversation.external_id",
+      })),
+      {
+        invalid: "blank conversation external id",
+        overrides: { conversation: { ...TRANSPORT_IDENTITY.conversation, external_id: " " } },
+        field: "conversation.external_id",
+      },
+      {
+        invalid: "bare request",
+        overrides: { sender: undefined, conversation: undefined },
+        field: "sender",
+      },
+      {
+        invalid: "non-boolean operator with incomplete conversation",
+        overrides: {
+          sender: { ...TRANSPORT_IDENTITY.sender, operator: "false" },
+          conversation: { type: "groupChat", name: "Room" },
+        },
+        field: "sender.operator",
+      },
+    ])("rejects $invalid before opening a tenant", async ({ overrides, field }) => {
+      const { pool, rec } = recordingPool();
+      const base = await start(pool);
+      const response = await post(
+        base,
+        path,
+        {
+          tenant: "acme",
+          session: "identity-validation",
+          ...TRANSPORT_IDENTITY,
+          ...fields,
+          ...overrides,
+        },
+        TOKEN,
+      );
+
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({ error: expect.stringContaining(`${field}:`) });
+      expect(rec.tenants).toEqual([]);
+      expect(rec.appendCalls).toEqual([]);
+      expect(rec.appendManyCalls).toEqual([]);
+    });
+  });
+
+  it("appends an attributed turn and schedules background ingestion", async () => {
     const { pool, rec } = recordingPool();
     const base = await start(pool);
     const rawSession = "tenant::user::conversation";
@@ -2868,6 +4124,8 @@ describe("memory sidecar handler", () => {
       base,
       "/memory/append-turn",
       {
+        sender: TRANSPORT_IDENTITY.sender,
+        conversation: TRANSPORT_IDENTITY.conversation,
         tenant: "acme",
         session: rawSession,
         user: "hello",
@@ -2888,13 +4146,21 @@ describe("memory sidecar handler", () => {
     expect(rec.appendMany).toEqual({
       session: expectedSession,
       inputs: [
-        { kind: "user_msg", content: "hello" },
-        { kind: "agent_msg", content: "hi there" },
+        {
+          kind: "user_msg",
+          content: "hello",
+          sender_entity_id: rec.externalSenderIds.get("sender"),
+          audience: rec.externalSenderIds.get("sender"),
+          conversation: { type: "personal", name: "Personal chat" },
+        },
+        {
+          kind: "agent_msg",
+          content: "hi there",
+          audience: rec.externalSenderIds.get("sender"),
+          conversation: { type: "personal", name: "Personal chat" },
+        },
       ],
     });
-    expect(JSON.stringify(rec.appendMany?.inputs)).toBe(
-      '[{"kind":"user_msg","content":"hello"},{"kind":"agent_msg","content":"hi there"}]',
-    );
     expect(rec.tenants).toEqual(["acme", "acme"]);
     expect(rec.exclusives).toEqual([true, undefined]);
     expect(rec.ingestSessions).toEqual([expectedSession]);
@@ -2906,7 +4172,12 @@ describe("memory sidecar handler", () => {
     const response = await post(
       base,
       "/memory/append-turn",
-      { tenant: "acme", session: "empty-turn" },
+      {
+        sender: TRANSPORT_IDENTITY.sender,
+        conversation: TRANSPORT_IDENTITY.conversation,
+        tenant: "acme",
+        session: "empty-turn",
+      },
       TOKEN,
     );
 
@@ -2935,11 +4206,12 @@ describe("memory sidecar handler", () => {
       base,
       "/memory/append-turn",
       {
+        sender: TRANSPORT_IDENTITY.sender,
         tenant: "acme",
         session: "room",
         user: "hello",
         assistant: "hi",
-        conversation: testCase.conversation,
+        conversation: { ...testCase.conversation, external_id: "conversation" },
       },
       TOKEN,
     );
@@ -2947,12 +4219,23 @@ describe("memory sidecar handler", () => {
     expect(response.status).toBe(200);
     await response.json();
     expect(rec.appendMany?.inputs).toEqual([
-      { kind: "user_msg", content: "hello", conversation: testCase.persisted },
-      { kind: "agent_msg", content: "hi", conversation: testCase.persisted },
+      expect.objectContaining({
+        kind: "user_msg",
+        content: "hello",
+        sender_entity_id: rec.externalSenderIds.get("sender"),
+        audience: expect.any(String),
+        conversation: testCase.persisted,
+      }),
+      expect.objectContaining({
+        kind: "agent_msg",
+        content: "hi",
+        audience: expect.any(String),
+        conversation: testCase.persisted,
+      }),
     ]);
   });
 
-  it("resolves optional sender identities and stamps only their user stream entries", async () => {
+  it("resolves structured sender identities and stamps only their user stream entries", async () => {
     const { pool, rec } = recordingPool();
     const base = await start(pool);
 
@@ -2964,11 +4247,12 @@ describe("memory sidecar handler", () => {
         base,
         "/memory/append-turn",
         {
+          conversation: TRANSPORT_IDENTITY.conversation,
           tenant: "acme",
           session: "shared-room",
           user: `message from ${sender.display_name}`,
           assistant: "acknowledged",
-          sender,
+          sender: { ...sender, operator: false },
         },
         TOKEN,
       );
@@ -3001,12 +4285,34 @@ describe("memory sidecar handler", () => {
     ]);
     expect(rec.appendManyCalls).toHaveLength(2);
     expect(rec.appendManyCalls[0]?.inputs).toEqual([
-      { kind: "user_msg", content: "message from Alice Nowak", sender_entity_id: aliceId },
-      { kind: "agent_msg", content: "acknowledged" },
+      {
+        kind: "user_msg",
+        content: "message from Alice Nowak",
+        sender_entity_id: aliceId,
+        audience: aliceId,
+        conversation: { type: "personal", name: "Personal chat" },
+      },
+      {
+        kind: "agent_msg",
+        content: "acknowledged",
+        audience: aliceId,
+        conversation: { type: "personal", name: "Personal chat" },
+      },
     ]);
     expect(rec.appendManyCalls[1]?.inputs).toEqual([
-      { kind: "user_msg", content: "message from Bob Chen", sender_entity_id: bobId },
-      { kind: "agent_msg", content: "acknowledged" },
+      {
+        kind: "user_msg",
+        content: "message from Bob Chen",
+        sender_entity_id: bobId,
+        audience: bobId,
+        conversation: { type: "personal", name: "Personal chat" },
+      },
+      {
+        kind: "agent_msg",
+        content: "acknowledged",
+        audience: bobId,
+        conversation: { type: "personal", name: "Personal chat" },
+      },
     ]);
   });
 
@@ -3026,7 +4332,7 @@ describe("memory sidecar handler", () => {
           display_name: "Alice",
           operator: true,
         },
-        conversation: { type: "personal", name: "Alice" },
+        conversation: { external_id: "conversation", type: "personal", name: "Alice" },
       },
       TOKEN,
     );
@@ -3099,7 +4405,7 @@ describe("memory sidecar handler", () => {
         session: "tenant::group::observed",
         user: "Alice told Bob about the launch.",
         observed_at: observedAt,
-        sender: { external_id: "alice", display_name: "Alice" },
+        sender: { operator: false, external_id: "alice", display_name: "Alice" },
         conversation: {
           type: "groupChat",
           name: "AI Ninjas",
@@ -3160,6 +4466,7 @@ describe("memory sidecar handler", () => {
       base,
       "/memory/append-turn",
       {
+        sender: TRANSPORT_IDENTITY.sender,
         tenant: "acme",
         session: "tenant::group::reply-only",
         assistant: "A proactive update from the agent.",
@@ -3212,7 +4519,7 @@ describe("memory sidecar handler", () => {
           speakerEntityId: selfEntityId,
           actorEntityId: selfEntityId,
           audienceEntityId: group,
-          participantEntityIds: [selfEntityId, group],
+          participantEntityIds: [selfEntityId, rec.externalSenderIds.get("sender"), group],
           sourceStreamEntryIds: ["strm_bbbbbbbbbbbbbbbb"],
         },
         touch: { at: 1000, messageCountDelta: 1 },
@@ -3234,7 +4541,7 @@ describe("memory sidecar handler", () => {
     expect(rec.ingestSessions).toEqual([payload.session]);
   });
 
-  it("returns a durable enhanced append when the awareness projection fails atomically", async () => {
+  it("returns a durable append when the awareness projection fails atomically", async () => {
     const { pool, rec } = recordingPool();
     const traceRegistry = new MemoryTraceRegistry();
     rec.activityProjectionError = Object.assign(new Error("injected projection failure"), {
@@ -3252,8 +4559,8 @@ describe("memory sidecar handler", () => {
           session: "tenant::alice::projection-failure",
           user: "durable user message",
           assistant: "durable assistant message",
-          sender: { external_id: "alice", display_name: "Alice" },
-          conversation: { type: "personal", name: "Alice" },
+          sender: { operator: false, external_id: "alice", display_name: "Alice" },
+          conversation: { external_id: "conversation", type: "personal", name: "Alice" },
         },
         TOKEN,
       );
@@ -3288,7 +4595,7 @@ describe("memory sidecar handler", () => {
     }
   });
 
-  it("uses a separate stable group identity for enhanced group and channel appends", async () => {
+  it("uses a separate stable group identity for group and channel appends", async () => {
     const { pool, rec } = recordingPool();
     const base = await start(pool);
 
@@ -3304,7 +4611,7 @@ describe("memory sidecar handler", () => {
           session: `session-${conversation.external_id}`,
           user: "hello",
           assistant: "hi",
-          sender: { external_id: "alice", display_name: "Alice" },
+          sender: { operator: false, external_id: "alice", display_name: "Alice" },
           conversation,
         },
         TOKEN,
@@ -3332,167 +4639,238 @@ describe("memory sidecar handler", () => {
     ]);
   });
 
-  it("keeps the exact legacy append path when a group sender lacks conversation.external_id", async () => {
+  it.each([
+    { label: "missing focus for episodes", fields: { context_turns: [] }, error: "focus:" },
+    {
+      label: "missing context turns",
+      fields: { focus: "Current question" },
+      error: "context_turns",
+    },
+    {
+      label: "opaque query only",
+      fields: { query: "user: earlier\nassistant: reply" },
+      error: "query: unrecognized field",
+    },
+    {
+      label: "query alongside structured input",
+      fields: { focus: "Current question", context_turns: [], query: "opaque" },
+      error: "query: unrecognized field",
+    },
+    {
+      label: "query on a venue-only request",
+      fields: { sections: ["venue_recent"], venue_since: 0, query: "opaque" },
+      error: "query: unrecognized field",
+    },
+    {
+      label: "query on a binding-only request",
+      fields: { sections: ["commitments", "directives"], query: "opaque" },
+      error: "query: unrecognized field",
+    },
+    {
+      label: "opaque context",
+      fields: { focus: "Current question", context_turns: "user: earlier" },
+      error: "context_turns",
+    },
+    { label: "empty focus", fields: { focus: " ", context_turns: [] }, error: "focus" },
+    {
+      label: "invalid role",
+      fields: { focus: "Current question", context_turns: [{ role: "system", text: "earlier" }] },
+      error: "role",
+    },
+    {
+      label: "missing turn text",
+      fields: { focus: "Current question", context_turns: [{ role: "user" }] },
+      error: "text",
+    },
+    {
+      label: "too many turns",
+      fields: {
+        focus: "Current question",
+        context_turns: Array.from({ length: 4 }, () => ({ role: "user", text: "earlier" })),
+      },
+      error: "context_turns",
+    },
+    {
+      label: "unknown request option",
+      fields: { focus: "Current question", context_turns: [], semanticVariantCount: 2 },
+      error: "semanticVariantCount",
+    },
+    {
+      label: "missing focus for default sections",
+      fields: { context_turns: [], sections: undefined },
+      error: "focus:",
+    },
+    {
+      label: "missing context turns for default sections",
+      fields: { focus: "Current question", sections: undefined },
+      error: "context_turns:",
+    },
+    {
+      label: "missing focus for autobiographical recall",
+      fields: { context_turns: [], sections: ["episodes", "autobiographical"] },
+      error: "focus:",
+    },
+    {
+      label: "empty focus supplied for non-episode sections",
+      fields: { focus: " ", sections: ["commitments", "directives"] },
+      error: "focus:",
+    },
+  ])("rejects $label before opening a tenant", async ({ fields, error }) => {
     const { pool, rec } = recordingPool();
     const base = await start(pool);
     const response = await post(
       base,
-      "/memory/append-turn",
+      "/memory/context",
       {
         tenant: "acme",
-        session: "legacy-group",
-        user: "hello",
-        assistant: "hi",
-        sender: { external_id: "alice", display_name: "Alice", operator: "legacy-value" },
-        conversation: { type: "groupChat", name: "AI Ninjas" },
+        session: "structured-context",
+        sender: { operator: false, external_id: "alice", display_name: "Alice" },
+        conversation: { external_id: "conversation", type: "personal", name: "Alice" },
+        sections: ["episodes"],
+        ...fields,
       },
       TOKEN,
     );
-
-    expect(response.status).toBe(200);
-    await response.json();
-    const alice = rec.externalSenderIds.get("alice");
-    expect(rec.appendMany?.inputs).toEqual([
-      {
-        kind: "user_msg",
-        content: "hello",
-        sender_entity_id: alice,
-        conversation: { type: "groupChat", name: "AI Ninjas" },
-      },
-      {
-        kind: "agent_msg",
-        content: "hi",
-        conversation: { type: "groupChat", name: "AI Ninjas" },
-      },
-    ]);
-    expect(rec.sessionEnsures).toEqual([]);
-    expect(rec.activityRecords).toEqual([]);
-    expect(
-      rec.resolvedExternalEntities.some(
-        (input) => (input as { source?: string }).source === "team-agent.conversation",
-      ),
-    ).toBe(false);
-  });
-
-  it("validates sender.operator only when complete enhanced identity is available", async () => {
-    const { pool, rec } = recordingPool();
-    const base = await start(pool);
-    const response = await post(
-      base,
-      "/memory/append-turn",
-      {
-        tenant: "acme",
-        session: "personal",
-        user: "hello",
-        assistant: "hi",
-        sender: { external_id: "alice", display_name: "Alice", operator: "not-boolean" },
-        conversation: { type: "personal", name: "Alice" },
-      },
-      TOKEN,
-    );
-
     expect(response.status).toBe(400);
-    expect(await response.json()).toEqual({
-      error: "invalid 'sender.operator'; expected boolean",
-    });
+    expect(await response.json()).toMatchObject({ error: expect.stringContaining(error) });
     expect(rec.tenants).toEqual([]);
-    expect(rec.appendManyCalls).toEqual([]);
   });
 
-  it("validates structured focus/context requests while retaining query-only compatibility", async () => {
+  it("accepts an explicit empty dialogue history", async () => {
     const { pool, rec } = recordingPool();
     const base = await start(pool);
-    const identity = {
-      tenant: "acme",
-      session: "structured-context",
-      sender: { external_id: "alice", display_name: "Alice" },
-      conversation: { type: "personal", name: "Alice" },
-      sections: ["episodes"],
-    };
-
-    const focusOnly = await post(
-      base,
-      "/memory/context",
-      { ...identity, focus: "What happened?", context_turns: [] },
-      TOKEN,
-    );
-    expect(focusOnly.status).toBe(200);
-    await focusOnly.json();
-    expect(rec.lastRecallQuery).toBe("What happened?");
-
-    expect(
-      (
-        await post(
-          base,
-          "/memory/context",
-          {
-            ...identity,
-            query: "legacy",
-            context_turns: [{ role: "user", text: "missing focus" }],
-          },
-          TOKEN,
-        )
-      ).status,
-    ).toBe(400);
-    expect((await post(base, "/memory/context", identity, TOKEN)).status).toBe(400);
-    expect(
-      (
-        await post(
-          base,
-          "/memory/context",
-          {
-            ...identity,
-            focus: "bounded",
-            context_turns: Array.from({ length: 4 }, () => ({ role: "user", text: "turn" })),
-          },
-          TOKEN,
-        )
-      ).status,
-    ).toBe(400);
-    expect(
-      (
-        await post(
-          base,
-          "/memory/context",
-          { ...identity, focus: "bounded", semanticVariantCount: 2 },
-          TOKEN,
-        )
-      ).status,
-    ).toBe(400);
-  });
-
-  it("treats a query-only role-prefixed legacy blob as opaque planner FOCUS", async () => {
-    const { pool, rec } = recordingPool();
-    const base = await start(pool);
-    const legacyQuery = [
-      "user: I described the chat and reviewer roles.",
-      "assistant: You compared their permissions.",
-      "user: Which one did Jacek ask about?",
-    ].join("\n");
-
     const response = await post(
       base,
       "/memory/context",
       {
         tenant: "acme",
-        session: "legacy-role-prefixed-query",
-        sender: { external_id: "alice", display_name: "Alice" },
-        conversation: { type: "personal", name: "Alice" },
-        query: legacyQuery,
+        session: "structured-context",
+        sender: { operator: false, external_id: "alice", display_name: "Alice" },
+        conversation: { external_id: "conversation", type: "personal", name: "Alice" },
+        focus: "What happened?",
+        context_turns: [],
         sections: ["episodes"],
       },
       TOKEN,
     );
-
     expect(response.status).toBe(200);
     await response.json();
-    expect(rec.lastRecallQuery).toBe(legacyQuery);
-    expect(rec.lastRecallOptions?.recallQueryPlannerContext).toMatchObject({
-      contextTurns: [],
-    });
+    expect(rec.lastRecallQuery).toBe("What happened?");
+    expect(rec.lastRecallOptions?.recallQueryPlannerContext).toMatchObject({ contextTurns: [] });
   });
 
-  it("assembles personal context from only the person and observed group audiences", async () => {
+  it("accepts the query-free team-agent chat payload with structured recall input", async () => {
+    const { pool, rec } = recordingPool();
+    const base = await start(pool);
+    const episode = testEpisode(undefined, { shared: true });
+    rec.recallEpisodes = [episode];
+    const response = await post(
+      base,
+      "/memory/context",
+      {
+        tenant: "acme",
+        session: "acme::shared::groupChat::conversation-1",
+        sender: { external_id: "user-1", display_name: "Alex Example", operator: false },
+        conversation: {
+          type: "groupChat",
+          name: "Example Group",
+          external_id: "conversation-1",
+        },
+        sections: ["episodes", "venue_recent", "autobiographical"],
+        focus: "What happened today?",
+        context_turns: [{ role: "assistant", text: "Earlier reply." }],
+        limit: 8,
+        exclude: {
+          episode_ids: [],
+          source_stream_ids: [],
+        },
+        venue_since: 1_725_000_000_000,
+        venue_limit: 12,
+        entity_terms: ["Alex Example", "Sam Example"],
+        participants: [{ external_id: "user-2", display_name: "Sam Example", operator: false }],
+      },
+      TOKEN,
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      ok: true,
+      episodes: [expect.objectContaining({ id: episode.id })],
+      venue_recent: [],
+      autobiographical: null,
+      degraded: false,
+    });
+    expect(rec.recallOptionsCalls).toHaveLength(1);
+    expect(rec.lastRecallQuery).toBe("What happened today?");
+    expect(rec.lastRecallOptions?.recallQueryPlannerContext).toMatchObject({
+      contextTurns: [{ role: "assistant", content: "Earlier reply." }],
+    });
+    expect(rec.lastVenueOptions).toMatchObject({ sinceMs: 1_725_000_000_000, limit: 36 });
+  });
+
+  it.each([
+    { label: "commitments and directives", sections: ["commitments", "directives"] },
+    {
+      label: "team-agent binding",
+      sections: ["audience", "recent_activity", "commitments", "directives"],
+    },
+    {
+      label: "combined venue and binding",
+      sections: ["venue_recent", "commitments", "directives"],
+    },
+  ])("accepts $label context without recall input", async ({ sections }) => {
+    const { pool, rec } = recordingPool();
+    const base = await start(pool);
+    rec.commitments = [testCommitment({ directive: "Keep commitments visible." })];
+    const directive = testDirective({ operational_directive: "Keep answers concise." });
+    rec.directiveApplicable = [
+      {
+        directive,
+        recipient_entity_ids: [],
+        activation: { active: true, reason: "public" },
+        disclosure: { render_mode: "content", reason: "public" },
+        render_mode: "content",
+        reason: "public",
+      },
+    ];
+    const response = await post(
+      base,
+      "/memory/context",
+      {
+        tenant: "acme",
+        session: "acme::user-1::conversation-1",
+        sender: { external_id: "user-1", display_name: "Alex Example", operator: true },
+        conversation: { type: "personal", name: "", external_id: "conversation-1" },
+        sections,
+        ...(sections.includes("venue_recent") ? { venue_since: 1_725_000_000_000 } : {}),
+      },
+      TOKEN,
+    );
+
+    expect(response.status).toBe(200);
+    const payload = (await response.json()) as Record<string, unknown>;
+    expect(payload).toMatchObject({
+      ok: true,
+      commitments: [expect.objectContaining({ directive: "Keep commitments visible." })],
+      directives: [expect.objectContaining({ id: directive.id, text: "Keep answers concise." })],
+      degraded: false,
+    });
+    expect(Object.keys(payload).sort()).toEqual(
+      [
+        ...sections,
+        "ok",
+        "degraded",
+        "degraded_reason",
+        ...(sections.includes("recent_activity") ? ["recent_activity_selection"] : []),
+      ].sort(),
+    );
+    expect(rec.recallOptionsCalls).toEqual([]);
+    expect(rec.autobiographicalRecallInputs).toEqual([]);
+    expect(rec.livedExperienceListInputs).toEqual([]);
+    expect(rec.retrievalRecords).toEqual([]);
+  });
+
+  it("recalls globally with disclosure labels and separate commitment applicability", async () => {
     const { pool, rec } = recordingPool();
     const base = await start(pool, TOKEN, {
       recentActivityWindowMs: 24 * 60 * 60_000,
@@ -3534,7 +4912,7 @@ describe("memory sidecar handler", () => {
     rec.externalSenderIds.set("alice", alice);
     rec.observedGroupAudienceIds = [group];
     const occurredAt = Date.now() - 60_000;
-    rec.visibleActivityEvents = [
+    rec.activityEvents = [
       {
         kind: "user_contact",
         occurredAt,
@@ -3618,11 +4996,12 @@ describe("memory sidecar handler", () => {
       base,
       "/memory/context",
       {
+        context_turns: [],
         tenant: "acme",
         session: "tenant::alice::personal",
         sender: { external_id: "alice", display_name: "Alice", operator: true },
-        conversation: { type: "personal", name: "Alice" },
-        query: "What matters now?",
+        conversation: { external_id: "conversation", type: "personal", name: "Alice" },
+        focus: "What matters now?",
       },
       TOKEN,
     );
@@ -3639,11 +5018,22 @@ describe("memory sidecar handler", () => {
       "ep_public0000000000",
       "ep_alice00000000000",
       "ep_group00000000000",
+      "ep_bob0000000000000",
     ]);
-    expect(payload.hidden_episode_count).toBe(1);
+    expect(payload.hidden_episode_count).toBe(0);
+    expect(payload.disclosure_guidance).toBe(MEMORY_DISCLOSURE_GUIDANCE_FOR_MODEL);
+    expect(payload.context_id).toEqual(expect.any(String));
     expect(payload.commitments).toEqual([
-      expect.objectContaining({ directive: "Global rule" }),
-      expect.objectContaining({ directive: "Alice rule" }),
+      expect.objectContaining({ directive: "Global rule", applicable_to_current_audience: true }),
+      expect.objectContaining({ directive: "Alice rule", applicable_to_current_audience: true }),
+      expect.objectContaining({
+        directive: "Group rule",
+        applicable_to_current_audience: false,
+        disclosure: expect.objectContaining({
+          private_to_names: ["AI Ninjas"],
+          private_to_current_audience: false,
+        }),
+      }),
     ]);
     expect(payload.directives).toEqual([
       expect.objectContaining({
@@ -3662,14 +5052,15 @@ describe("memory sidecar handler", () => {
       }),
     ]);
     expect(rec.lastRecallOptions).toMatchObject({
-      audienceEntityId: alice,
-      visibleAudienceEntityIds: [alice, group],
-      limit: 8,
+      recallContext: { reader: "self", currentAudienceEntityId: alice },
+      disclosureContext: { audienceRole: "operator", senderEntityId: alice },
+      limit: 24,
+      recordRetrieval: false,
     });
-    expect(rec.lastVisibleActivityInput).toMatchObject({
-      audienceEntityIds: [alice, group],
-      limit: 12,
+    expect(rec.lastActivityInput).toMatchObject({
+      limit: 96,
     });
+    expect(rec.lastActivityInput).not.toHaveProperty("audienceEntityIds");
     expect(rec.directiveApplicableOptions).toEqual([
       {
         currentAudienceEntityId: alice,
@@ -3682,7 +5073,135 @@ describe("memory sidecar handler", () => {
     expect(rec.exclusives).toEqual([true, undefined, undefined]);
   });
 
-  it("forwards bounded entity terms while preserving requests that omit them", async () => {
+  it("ranks the wider activity pool before the row cap and reports ranking failure", async () => {
+    const { pool, rec } = recordingPool();
+    const nowMs = Date.now();
+    const otherSession = createSessionId();
+    rec.activityEvents = Array.from({ length: 13 }, (_, index) => {
+      const id = createStreamEntryId();
+      rec.indexedStreamEntries.set(id, {
+        id,
+        kind: "user_msg",
+        content: index === 12 ? "Authorized leave dates" : "Transport test",
+        timestamp: nowMs - index * 60_000,
+        session_id: otherSession,
+        turn_status: "active",
+        sender_entity_id: null,
+        reply_target_entity_id: null,
+        compressed: false,
+      });
+      return {
+        kind: "user_contact",
+        occurredAt: nowMs - index * 60_000,
+        sessionId: otherSession,
+        audienceEntityId: createEntityId(),
+        sourceStreamEntryIds: [id],
+        conversationKind: "dm",
+        conversationName: "Elsewhere",
+        participantLabel: `Person ${index}`,
+      };
+    });
+    rec.activityRankingKeys = ["12", ...Array.from({ length: 12 }, (_, index) => String(index))];
+    const base = await start(pool, TOKEN, { recentActivityWindowMs: 7 * 24 * 60 * 60_000 });
+    const body = {
+      tenant: "acme",
+      session: "activity-relevance",
+      ...TRANSPORT_IDENTITY,
+      sections: ["recent_activity"],
+      focus: "Who is on leave?",
+    };
+    const response = await post(base, "/memory/context", body, TOKEN);
+    const payload = (await response.json()) as {
+      recent_activity_selection: string;
+      recent_activity: Array<{ excerpt: string; disclosure: { class: string } }>;
+    };
+    expect(payload.recent_activity).toHaveLength(12);
+    expect(payload.recent_activity[0]).toMatchObject({
+      excerpt: "Authorized leave dates",
+      disclosure: { class: "self_private" },
+    });
+    expect(payload.recent_activity_selection).toBe("relevance");
+    expect(rec.lastActivityInput).toMatchObject({ limit: 96 });
+    expect(rec.activityRankingInputs[0]?.focus).toBe(body.focus);
+    expect(rec.activityRankingInputs[0]?.candidates).toHaveLength(13);
+
+    rec.activityRankingError = new Error("embedding service unavailable");
+    const failed = await post(base, "/memory/context", body, TOKEN);
+    expect(await failed.json()).toMatchObject({
+      degraded: true,
+      recent_activity_selection: "recency_fallback",
+      degraded_reason: expect.stringContaining("recent_activity_relevance"),
+    });
+  });
+
+  it("recalls episodes after abandoning a stalled activity embedding batch", async () => {
+    const { rec } = recordingPool();
+    rec.activityEvents = [
+      {
+        kind: "borg_replied",
+        occurredAt: Date.now(),
+        sessionId: createSessionId(),
+        audienceEntityId: createEntityId(),
+        sourceStreamEntryIds: [],
+        conversationKind: "dm",
+        conversationName: "Elsewhere",
+        participantLabel: "Borg",
+      },
+    ];
+    let finishBatch!: (vectors: Float32Array[]) => void;
+    const batch = new Promise<Float32Array[]>((resolve) => {
+      finishBatch = resolve;
+    });
+    const queryEmbed = vi.fn(async () => Float32Array.from([1, 0]));
+    const embedBatch = vi.fn(() => batch);
+    const client = createCachingEmbeddingClient(
+      { embed: queryEmbed, embedBatch },
+      { model: "scw/bge-m3", dims: 2 },
+    );
+    const borg = stubBorg(rec);
+    borg.activity.rankByRelevance = (input) => rankActivityByRelevance(input, client);
+    const recall = borg.episodic.recallForCognition;
+    borg.episodic.recallForCognition = async (query, options) => {
+      await client.embed(query);
+      return recall(query, options);
+    };
+    const pool: MemoryPool = {
+      withTenant: async (_tenant, fn) => fn(borg),
+      listTenantIds: async () => [...STUB_TENANTS],
+    };
+    try {
+      const base = await start(pool, TOKEN, {
+        recentActivityRankingBudgetMs: 20,
+        recallDeadlineMs: 300,
+      });
+      const response = await post(
+        base,
+        "/memory/context",
+        {
+          tenant: "acme",
+          session: "stalled-batch",
+          ...TRANSPORT_IDENTITY,
+          focus: "leave dates",
+          context_turns: [],
+          sections: ["episodes", "recent_activity"],
+        },
+        TOKEN,
+      );
+      expect(response.status).toBe(200);
+      const payload = (await response.json()) as Record<string, unknown>;
+      expect(payload.episodes).toEqual([expect.objectContaining({ id: "ep_1" })]);
+      expect(payload.recent_activity_selection).toBe("recency_fallback");
+      expect(payload.degraded_reason).toContain("recent_activity_relevance");
+      expect(payload.degraded_reason).not.toContain("deadline:");
+      expect(queryEmbed).toHaveBeenCalledTimes(1);
+      expect(embedBatch).toHaveBeenCalledTimes(1);
+    } finally {
+      finishBatch([Float32Array.from([0, 1])]);
+      await batch;
+    }
+  });
+
+  it("gives caller entity hints to the LLM without seeding exact lanes directly", async () => {
     const { pool, rec } = recordingPool();
     const base = await start(pool, TOKEN, {
       recencyPrior: { weight: 0.15, halfLifeHours: 36 },
@@ -3690,23 +5209,24 @@ describe("memory sidecar handler", () => {
     const request = {
       tenant: "acme",
       session: "entity-context",
-      sender: { external_id: "alice", display_name: "Alice" },
-      conversation: { type: "personal", name: "Alice" },
-      query: "What did Jacek say about team-agent?",
+      sender: { external_id: "alice", display_name: "Alice", operator: false },
+      conversation: { type: "personal", name: "Alice", external_id: "conversation" },
+      focus: "What did Alex say about team-agent?",
+      context_turns: [],
       sections: ["episodes"],
     };
 
     const withTerms = await post(
       base,
       "/memory/context",
-      { ...request, entity_terms: ["Jacek", "team-agent"] },
+      { ...request, entity_terms: ["Alex", "team-agent"] },
       TOKEN,
     );
     expect(withTerms.status).toBe(200);
     await withTerms.json();
     expect(rec.lastRecallOptions).toMatchObject({
-      entityTerms: ["Jacek", "team-agent"],
       recencyPrior: { weight: 0.15, halfLifeHours: 36 },
+      audienceTerms: [],
       semanticVariantCount: 1,
       recallQueryPlannerContext: {
         contextTurns: [],
@@ -3715,15 +5235,17 @@ describe("memory sidecar handler", () => {
           currentSenderName: "Alice",
           currentAudienceName: "Alice",
           currentVenue: { type: "personal", name: "Alice" },
-          entityTerms: ["Jacek", "team-agent"],
+          entityTerms: ["Alex", "team-agent"],
         },
         ownerRecentActivity: [],
       },
     });
 
-    const oldShape = await post(base, "/memory/context", request, TOKEN);
-    expect(oldShape.status).toBe(200);
-    await oldShape.json();
+    expect(rec.lastRecallOptions).not.toHaveProperty("entityTerms");
+
+    const withoutTerms = await post(base, "/memory/context", request, TOKEN);
+    expect(withoutTerms.status).toBe(200);
+    await withoutTerms.json();
     expect(rec.lastRecallOptions).not.toHaveProperty("entityTerms");
     expect(rec.lastRecallOptions?.recallQueryPlannerContext).toMatchObject({
       contextTurns: [],
@@ -3751,20 +5273,19 @@ describe("memory sidecar handler", () => {
       "/memory/context",
       {
         tenant: "acme",
-        session: "tenant::ai-ninjas::thread",
-        sender: { external_id: "jacek", display_name: "Jacek Nowak" },
+        session: "tenant::example-group::thread",
+        sender: { operator: false, external_id: "alex", display_name: "Alex Example" },
         conversation: {
           type: "groupChat",
-          name: "AI Ninjas",
-          external_id: "ai-ninjas",
+          name: "Example Group",
+          external_id: "example-group",
         },
-        query: "user: legacy blob\nassistant: legacy answer",
-        focus: "O które role pytał Jacek?",
+        focus: "O które role pytał Alex?",
         context_turns: [
           { role: "user", text: "Opisałem role chat i reviewer." },
-          { role: "assistant", text: "Na grupie AI Ninjas." },
+          { role: "assistant", text: "Na grupie Example Group." },
         ],
-        entity_terms: ["Jacek", "AI Ninjas"],
+        entity_terms: ["Alex", "Example Group"],
         sections: ["episodes"],
       },
       TOKEN,
@@ -3772,27 +5293,27 @@ describe("memory sidecar handler", () => {
 
     expect(response.status).toBe(200);
     await response.json();
-    expect(rec.lastRecallQuery).toBe("O które role pytał Jacek?");
+    expect(rec.lastRecallQuery).toBe("O które role pytał Alex?");
     expect(rec.lastRecallOptions).toMatchObject({
       semanticVariantCount: 3,
       recallQueryPlannerContext: {
         contextTurns: [
           { role: "user", content: "Opisałem role chat i reviewer." },
-          { role: "assistant", content: "Na grupie AI Ninjas." },
+          { role: "assistant", content: "Na grupie Example Group." },
         ],
         identity: {
           memoryOwnerName: "team-agent",
-          currentSenderName: "Jacek Nowak",
-          currentAudienceName: "AI Ninjas",
-          currentVenue: { type: "groupChat", name: "AI Ninjas" },
-          entityTerms: ["Jacek", "AI Ninjas"],
+          currentSenderName: "Alex Example",
+          currentAudienceName: "Example Group",
+          currentVenue: { type: "groupChat", name: "Example Group" },
+          entityTerms: ["Alex", "Example Group"],
         },
         ownerRecentActivity: [],
       },
     });
   });
 
-  it("projects only visible episode source messages with shared count and text caps", async () => {
+  it("projects labeled episode source messages across audiences with shared count and text caps", async () => {
     const { pool, rec } = recordingPool();
     const base = await start(pool);
     const alice = createEntityId();
@@ -3860,11 +5381,12 @@ describe("memory sidecar handler", () => {
       base,
       "/memory/context",
       {
+        context_turns: [],
         tenant: "acme",
         session: "source-context",
-        sender: { external_id: "alice", display_name: "Alice" },
-        conversation: { type: "personal", name: "Alice" },
-        query: "What was said?",
+        sender: { operator: false, external_id: "alice", display_name: "Alice" },
+        conversation: { external_id: "conversation", type: "personal", name: "Alice" },
+        focus: "What was said?",
         sections: ["episodes"],
       },
       TOKEN,
@@ -3874,9 +5396,9 @@ describe("memory sidecar handler", () => {
     };
 
     expect(response.status).toBe(200);
-    expect(payload.episodes).toHaveLength(1);
-    expect(payload.episodes[0]?.id).toBe(visible.id);
-    expect(payload.episodes[0]?.source_messages).toEqual([
+    expect(payload.episodes).toHaveLength(2);
+    expect(payload.episodes.map((episode) => episode.id)).toEqual([hidden.id, visible.id]);
+    expect(payload.episodes[1]?.source_messages).toEqual([
       {
         id: "strm_sourcevisible001",
         kind: "user_msg",
@@ -3898,7 +5420,8 @@ describe("memory sidecar handler", () => {
         text: "Third message",
       },
     ]);
-    expect(JSON.stringify(payload)).not.toContain("Bob private source");
+    expect(JSON.stringify(payload)).toContain("Bob private source");
+    expect(payload.episodes[0]).toMatchObject({ disclosure: { class: "relationship_private" } });
 
     rec.recallEpisodes = [visible];
     const legacyResponse = await post(
@@ -3913,7 +5436,7 @@ describe("memory sidecar handler", () => {
     expect(legacyPayload.episodes[0]).not.toHaveProperty("source_messages");
   });
 
-  it("hydrates only visible, active, session- and kind-matched activity sources within budget", async () => {
+  it("hydrates cross-audience, active, session- and kind-matched activity sources within budget", async () => {
     const root = mkdtempSync(join(tmpdir(), "borg-memory-activity-excerpts-http-"));
     const pool = new BorgPool({
       root,
@@ -3938,15 +5461,15 @@ describe("memory sidecar handler", () => {
           session: "teams::personal::activity-alice",
           user: "Alice private source",
           assistant: "Alice private reply",
-          sender: { external_id: "alice", display_name: "Alice" },
-          conversation: { type: "personal" as const, name: "Alice" },
+          sender: { external_id: "alice", display_name: "Alice", operator: false },
+          conversation: { type: "personal" as const, name: "Alice", external_id: "personal-a" },
         },
         {
           key: "shared-group",
           session: "teams::group::activity-shared",
           user: "Shared group source",
           assistant: "Shared group reply",
-          sender: { external_id: "alice", display_name: "Alice" },
+          sender: { external_id: "alice", display_name: "Alice", operator: false },
           conversation: {
             type: "groupChat" as const,
             name: "AI Ninjas",
@@ -3958,8 +5481,8 @@ describe("memory sidecar handler", () => {
           session: "teams::personal::activity-bob",
           user: "Bob private source",
           assistant: "Bob private reply",
-          sender: { external_id: "bob", display_name: "Bob" },
-          conversation: { type: "personal" as const, name: "Bob" },
+          sender: { external_id: "bob", display_name: "Bob", operator: false },
+          conversation: { type: "personal" as const, name: "Bob", external_id: "personal-b" },
         },
       ] as const;
       const appended = new Map<
@@ -4080,10 +5603,12 @@ describe("memory sidecar handler", () => {
           base,
           "/memory/context",
           {
+            focus: "Current conversation",
+            context_turns: [],
             tenant: "acme",
             session: "teams::personal::activity-alice",
-            sender: { external_id: "alice", display_name: "Alice" },
-            conversation: { type: "personal", name: "Alice" },
+            sender: { operator: false, external_id: "alice", display_name: "Alice" },
+            conversation: { external_id: "conversation", type: "personal", name: "Alice" },
             sections: ["recent_activity"],
           },
           TOKEN,
@@ -4099,9 +5624,11 @@ describe("memory sidecar handler", () => {
       const hydratedSourceIds = lookupBatches.flat();
 
       expect(lookupBatches).toHaveLength(1);
-      expect(new Set(hydratedSourceIds)).toEqual(new Set([sharedUser.id, sharedReply.id]));
-      for (const hiddenSourceId of [...bobSourceIds, ...aliceSourceIds]) {
-        expect(hydratedSourceIds).not.toContain(hiddenSourceId);
+      expect(new Set(hydratedSourceIds)).toEqual(
+        new Set([sharedUser.id, sharedReply.id, ...bobSourceIds]),
+      );
+      for (const currentSessionSourceId of aliceSourceIds) {
+        expect(hydratedSourceIds).not.toContain(currentSessionSourceId);
       }
       expect(
         visibleActivity.find(
@@ -4236,14 +5763,14 @@ describe("memory sidecar handler", () => {
     }
   });
 
-  it("feeds only hydrated owner-authored activity to episode planning without serializing it", async () => {
+  it("carries private cross-audience owner activity into the actual labeled planner request", async () => {
     const { pool, rec } = recordingPool();
     const replySourceId = parseStreamEntryId("strm_ownerreplysource");
     const userSourceId = parseStreamEntryId("strm_usercontactsrc01");
     const replySession = parseSessionId("sess_owneractivity001");
     const userSession = parseSessionId("sess_useractivity0001");
     const groupAudience = createEntityId();
-    rec.visibleActivityEvents = [
+    rec.activityEvents = [
       {
         kind: "borg_replied",
         occurredAt: 9_000,
@@ -4281,10 +5808,11 @@ describe("memory sidecar handler", () => {
       base,
       "/memory/context",
       {
+        context_turns: [],
         tenant: "acme",
         session: "activity-planner-context",
-        sender: { external_id: "alice", display_name: "Alice" },
-        conversation: { type: "personal", name: "Alice" },
+        sender: { operator: false, external_id: "alice", display_name: "Alice" },
+        conversation: { external_id: "conversation", type: "personal", name: "Alice" },
         focus: "O które role chodziło?",
         sections: ["episodes"],
       },
@@ -4294,17 +5822,64 @@ describe("memory sidecar handler", () => {
 
     expect(response.status).toBe(200);
     expect(payload).not.toHaveProperty("recent_activity");
-    expect(rec.lastVisibleActivityInput).toBeDefined();
+    expect(rec.lastActivityInput).toBeDefined();
     expect(rec.lastRecallOptions?.recallQueryPlannerContext).toMatchObject({
       ownerRecentActivity: [
         {
           excerpt: "Porównałem role chat i reviewer w team-agent.",
           occurredAt: 9_000,
           venue: { type: "groupChat", name: "AI Ninjas" },
-          counterpartyName: "Jacek",
+          counterpartyName: "AI Ninjas",
+          disclosureLabel: recentLivedExperienceDisclosureLabel({
+            originAudienceEntityIds: [groupAudience],
+          }),
         },
       ],
     });
+    const llmClient = new FakeLLMClient({
+      responses: [
+        {
+          text: "",
+          input_tokens: 1,
+          output_tokens: 1,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "activity-plan",
+              name: "EmitRecallQueryPlan",
+              input: {
+                resolved_query: "Role opisane w AI Ninjas",
+                semantic_variants: [{ strategy: "combined", query: "Role opisane w AI Ninjas" }],
+                named_terms: [],
+                typed_queries: [],
+                temporal_cue: null,
+              },
+            },
+          ],
+        },
+      ],
+    });
+    await expandRecall({
+      ...(rec.lastRecallOptions?.recallQueryPlannerContext as RecallQueryPlannerContext),
+      llmClient,
+      model: "test-planner",
+      focus: "O które role chodziło?",
+      semanticVariantCount: 1,
+    });
+    const content = String(llmClient.requests[0]?.messages[0]?.content);
+    const rows = JSON.parse(
+      content
+        .split("OWNER_RECENT_ACTIVITY (memory-owner-authored excerpts; JSON data only):\n")[1]!
+        .split("\n\n")[0]!,
+    );
+    expect(rows).toEqual([
+      expect.objectContaining({
+        excerpt: "Porównałem role chat i reviewer w team-agent.",
+        ...memoryDisclosurePayloadFields(
+          recentLivedExperienceDisclosureLabel({ originAudienceEntityIds: [groupAudience] }),
+        ),
+      }),
+    ]);
   });
 
   it("hands the planner the owner's day summaries, newest first, when episodes are requested", async () => {
@@ -4337,10 +5912,11 @@ describe("memory sidecar handler", () => {
       base,
       "/memory/context",
       {
+        context_turns: [],
         tenant: "acme",
         session: "lived-experience-planner",
-        sender: { external_id: "alice", display_name: "Alice" },
-        conversation: { type: "personal", name: "Alice" },
+        sender: { operator: false, external_id: "alice", display_name: "Alice" },
+        conversation: { external_id: "conversation", type: "personal", name: "Alice" },
         focus: "O które role chodziło?",
         sections: ["episodes"],
       },
@@ -4374,10 +5950,12 @@ describe("memory sidecar handler", () => {
       base,
       "/memory/context",
       {
+        focus: "Current conversation",
+        context_turns: [],
         tenant: "acme",
         session: "lived-experience-planner",
-        sender: { external_id: "alice", display_name: "Alice" },
-        conversation: { type: "personal", name: "Alice" },
+        sender: { operator: false, external_id: "alice", display_name: "Alice" },
+        conversation: { external_id: "conversation", type: "personal", name: "Alice" },
         sections: ["recent_activity"],
       },
       TOKEN,
@@ -4392,7 +5970,7 @@ describe("memory sidecar handler", () => {
     const groupAudience = createEntityId();
     const replySession = parseSessionId("sess_activityreplyx02");
     const replySourceId = parseStreamEntryId("strm_activityreplyx02");
-    const chatter: ActivityVisibleSessionEvent[] = Array.from({ length: 12 }, (_, index) => {
+    const chatter: ActivityProjectionSourceEvent[] = Array.from({ length: 12 }, (_, index) => {
       const sourceId = parseStreamEntryId(`strm_activitychat${String(index).padStart(4, "0")}`);
       rec.indexedStreamEntries.set(sourceId, {
         session_id: replySession,
@@ -4411,7 +5989,7 @@ describe("memory sidecar handler", () => {
       };
     });
     rec.observedGroupAudienceIds = [groupAudience];
-    rec.visibleActivityEvents = [
+    rec.activityEvents = [
       ...chatter,
       {
         kind: "borg_replied",
@@ -4435,10 +6013,11 @@ describe("memory sidecar handler", () => {
       base,
       "/memory/context",
       {
+        context_turns: [],
         tenant: "acme",
         session: "activity-planner-starved",
-        sender: { external_id: "alice", display_name: "Alice" },
-        conversation: { type: "personal", name: "Alice" },
+        sender: { operator: false, external_id: "alice", display_name: "Alice" },
+        conversation: { external_id: "conversation", type: "personal", name: "Alice" },
         focus: "O które role chodziło?",
         sections: ["episodes", "recent_activity"],
       },
@@ -4451,13 +6030,15 @@ describe("memory sidecar handler", () => {
     expect(response.status).toBe(200);
     expect(payload.recent_activity).toHaveLength(12);
     expect(payload.recent_activity.every((event) => event.kind === "user_contact")).toBe(true);
-    expect(rec.visibleActivityInputs).toHaveLength(2);
-    const [responseRead, ownerRead] = rec.visibleActivityInputs as Array<Record<string, unknown>>;
+    expect(rec.activityInputs).toHaveLength(2);
+    const [responseRead, ownerRead] = rec.activityInputs as Array<Record<string, unknown>>;
     expect(responseRead).not.toHaveProperty("kinds");
     expect(ownerRead).toMatchObject({ kinds: ["borg_replied"] });
     const { kinds: _ownerKinds, ...ownerReadRest } = ownerRead ?? {};
     expect(ownerReadRest).toEqual(responseRead);
-    expect(ownerRead).toMatchObject({ limit: 12 });
+    expect(ownerRead).toMatchObject({ limit: 96 });
+    expect(ownerRead).not.toHaveProperty("audienceEntityIds");
+    expect(responseRead).not.toHaveProperty("audienceEntityIds");
     expect(rec.streamHydrateCalls).toHaveLength(1);
     expect(rec.streamHydrateCalls[0]?.ids[0]).toBe(replySourceId);
     expect(rec.streamHydrateCalls[0]?.ids).toHaveLength(13);
@@ -4476,10 +6057,11 @@ describe("memory sidecar handler", () => {
       base,
       "/memory/context",
       {
+        context_turns: [],
         tenant: "acme",
         session: "activity-planner-starved",
-        sender: { external_id: "alice", display_name: "Alice" },
-        conversation: { type: "personal", name: "Alice" },
+        sender: { operator: false, external_id: "alice", display_name: "Alice" },
+        conversation: { external_id: "conversation", type: "personal", name: "Alice" },
         focus: "O które role chodziło?",
         sections: ["episodes"],
       },
@@ -4487,8 +6069,8 @@ describe("memory sidecar handler", () => {
     );
     expect(episodesOnly.status).toBe(200);
     await episodesOnly.json();
-    expect(rec.visibleActivityInputs).toHaveLength(3);
-    expect(rec.visibleActivityInputs[2]).toMatchObject({ kinds: ["borg_replied"] });
+    expect(rec.activityInputs).toHaveLength(3);
+    expect(rec.activityInputs[2]).toMatchObject({ kinds: ["borg_replied"] });
     expect(rec.streamHydrateCalls).toHaveLength(2);
     expect(rec.streamHydrateCalls[1]?.ids).toEqual([replySourceId]);
   });
@@ -4500,7 +6082,7 @@ describe("memory sidecar handler", () => {
     const hydrationError = new Error(privateFixtureText, {
       cause: new Error(`nested cause: ${privateFixtureText}`),
     });
-    rec.visibleActivityEvents = [
+    rec.activityEvents = [
       {
         kind: "borg_replied",
         occurredAt: Date.now() - 60_000,
@@ -4521,11 +6103,12 @@ describe("memory sidecar handler", () => {
         base,
         "/memory/context",
         {
+          context_turns: [],
           tenant: "acme",
           session: "activity-context",
-          sender: { external_id: "alice", display_name: "Alice" },
-          conversation: { type: "personal", name: "Alice" },
-          query: "activity context",
+          sender: { operator: false, external_id: "alice", display_name: "Alice" },
+          conversation: { external_id: "conversation", type: "personal", name: "Alice" },
+          focus: "activity context",
           sections: ["episodes", "recent_activity"],
         },
         TOKEN,
@@ -4613,15 +6196,16 @@ describe("memory sidecar handler", () => {
       base,
       "/memory/context",
       {
+        context_turns: [],
         tenant: "acme",
         session: "group-session",
-        sender: { external_id: "alice", display_name: "Alice" },
+        sender: { operator: false, external_id: "alice", display_name: "Alice" },
         conversation: {
           type: "groupChat",
           name: "Current Group",
           external_id: "current",
         },
-        query: "group context",
+        focus: "group context",
         sections: ["episodes"],
       },
       TOKEN,
@@ -4631,15 +6215,18 @@ describe("memory sidecar handler", () => {
       hidden_episode_count: number;
     };
 
-    expect(payload.episodes.map((episode) => episode.id)).toEqual(["ep_current000000000"]);
-    expect(payload.hidden_episode_count).toBe(1);
+    expect(payload.episodes.map((episode) => episode.id)).toEqual([
+      "ep_current000000000",
+      "ep_other00000000000",
+    ]);
+    expect(payload.hidden_episode_count).toBe(0);
     expect(rec.lastRecallOptions).toMatchObject({
-      audienceEntityId: currentGroup,
-      visibleAudienceEntityIds: [currentGroup],
+      recallContext: { reader: "self", currentAudienceEntityId: currentGroup },
+      disclosureContext: { currentAudienceEntityId: currentGroup, senderEntityId: sender },
     });
-    expect(rec.lastVisibleActivityInput).toMatchObject({
-      audienceEntityIds: [currentGroup],
-    });
+    expect(rec.lastRecallOptions).not.toHaveProperty("audienceEntityId");
+    expect(rec.lastRecallOptions).not.toHaveProperty("visibleAudienceEntityIds");
+    expect(rec.lastActivityInput).not.toHaveProperty("audienceEntityIds");
   });
 
   it("orders in-range context episodes first, tops up, and keeps legacy recall fallback", async () => {
@@ -4663,11 +6250,12 @@ describe("memory sidecar handler", () => {
       base,
       "/memory/context",
       {
+        context_turns: [],
         tenant: "acme",
         session: "personal-time-range",
-        sender: { external_id: "alice", display_name: "Alice" },
-        conversation: { type: "personal", name: "Alice" },
-        query: "today's discussion",
+        sender: { operator: false, external_id: "alice", display_name: "Alice" },
+        conversation: { external_id: "conversation", type: "personal", name: "Alice" },
+        focus: "today's discussion",
         limit: 2,
         sections: ["episodes"],
         time_range: { start: 100, end: 200 },
@@ -4788,16 +6376,35 @@ describe("memory sidecar handler", () => {
       sourceEpisodeIds: [],
       metadata: {},
     };
-    rec.autobiographicalEvidence = [publicRow, someoneElsesRow, episodeRow, openQuestionRow];
+    const observedGroup = createEntityId();
+    rec.observedGroupAudienceIds = [observedGroup];
+    const observedGroupRow: AutobiographicalRecallEvidenceItem = {
+      ...someoneElsesRow,
+      id: "activity:evt_observed_group",
+      disclosureLabel: {
+        disclosureClass: "self_private",
+        originAudienceEntityIds: [observedGroup],
+        privateToEntityIds: [observedGroup],
+        publicToEntityIds: [],
+      },
+    };
+    rec.autobiographicalEvidence = [
+      publicRow,
+      observedGroupRow,
+      someoneElsesRow,
+      episodeRow,
+      openQuestionRow,
+    ];
 
     const response = await post(
       base,
       "/memory/context",
       {
+        context_turns: [],
         tenant: "acme",
         session: "personal-planner-cue",
-        sender: { external_id: "alice", display_name: "Alice" },
-        conversation: { type: "personal", name: "Alice" },
+        sender: { operator: false, external_id: "alice", display_name: "Alice" },
+        conversation: { external_id: "conversation", type: "personal", name: "Alice" },
         focus: "Co wczoraj ustaliliśmy?",
         limit: 2,
         sections: ["episodes", "autobiographical"],
@@ -4851,8 +6458,19 @@ describe("memory sidecar handler", () => {
           source_episode_ids: [inRange.id],
           disclosure: expect.objectContaining({ class: "public" }),
         }),
+        expect.objectContaining({
+          id: observedGroupRow.id,
+          disclosure: expect.objectContaining({ class: "self_private" }),
+        }),
+        expect.objectContaining({
+          id: someoneElsesRow.id,
+          disclosure: expect.objectContaining({
+            class: "self_private",
+            private_to_entity_ids: someoneElsesRow.disclosureLabel.privateToEntityIds,
+          }),
+        }),
       ],
-      hidden_count: 1,
+      hidden_count: 0,
       truncated_count: 0,
     });
     expect(payload.degraded).toBe(false);
@@ -4922,8 +6540,9 @@ describe("memory sidecar handler", () => {
         {
           tenant: "acme",
           session: "personal-real-recall",
-          sender: { external_id: "alice", display_name: "Alice" },
-          conversation: { type: "personal", name: "Alice" },
+          sender: { external_id: "alice", display_name: "Alice", operator: false },
+          conversation: { external_id: "conversation", type: "personal", name: "Alice" },
+          context_turns: [],
           focus: "Co wtedy ustaliliśmy?",
           sections: ["episodes", "autobiographical"],
         },
@@ -4972,10 +6591,11 @@ describe("memory sidecar handler", () => {
       base,
       "/memory/context",
       {
+        context_turns: [],
         tenant: "acme",
         session: "personal-no-budget",
-        sender: { external_id: "alice", display_name: "Alice" },
-        conversation: { type: "personal", name: "Alice" },
+        sender: { operator: false, external_id: "alice", display_name: "Alice" },
+        conversation: { external_id: "conversation", type: "personal", name: "Alice" },
         focus: "Co wczoraj?",
         sections: ["episodes", "autobiographical"],
       },
@@ -5002,10 +6622,11 @@ describe("memory sidecar handler", () => {
       base,
       "/memory/context",
       {
+        context_turns: [],
         tenant: "acme",
         session: "personal-no-cue",
-        sender: { external_id: "alice", display_name: "Alice" },
-        conversation: { type: "personal", name: "Alice" },
+        sender: { operator: false, external_id: "alice", display_name: "Alice" },
+        conversation: { external_id: "conversation", type: "personal", name: "Alice" },
         focus: "Jaki był plan?",
         sections: ["episodes", "autobiographical"],
       },
@@ -5027,10 +6648,11 @@ describe("memory sidecar handler", () => {
       base,
       "/memory/context",
       {
+        context_turns: [],
         tenant: "acme",
         session: "personal-failed-cue",
-        sender: { external_id: "alice", display_name: "Alice" },
-        conversation: { type: "personal", name: "Alice" },
+        sender: { operator: false, external_id: "alice", display_name: "Alice" },
+        conversation: { external_id: "conversation", type: "personal", name: "Alice" },
         focus: "Co wczoraj?",
         sections: ["episodes", "autobiographical"],
       },
@@ -5047,10 +6669,12 @@ describe("memory sidecar handler", () => {
       base,
       "/memory/context",
       {
+        focus: "Current conversation",
+        context_turns: [],
         tenant: "acme",
         session: "personal-rejected",
-        sender: { external_id: "alice", display_name: "Alice" },
-        conversation: { type: "personal", name: "Alice" },
+        sender: { operator: false, external_id: "alice", display_name: "Alice" },
+        conversation: { external_id: "conversation", type: "personal", name: "Alice" },
         sections: ["audience", "autobiographical"],
       },
       TOKEN,
@@ -5058,7 +6682,7 @@ describe("memory sidecar handler", () => {
     expect(rejected.status).toBe(400);
   });
 
-  it("applies episode exclusions before the requested limit on recall and context", async () => {
+  it("applies structural episode and source IDs before the requested limit without matching text", async () => {
     const { pool, rec } = recordingPool();
     const base = await start(pool);
     const excludedTitle = testEpisode("ep_excludedtitle001" as Episode["id"], {
@@ -5068,10 +6692,12 @@ describe("memory sidecar handler", () => {
     const excludedNarrative = testEpisode("ep_excludedmarker01" as Episode["id"], {
       title: "Decision digest",
       narrative: "OUTCOME fp=123 decision=ship",
+      source_stream_ids: [createStreamEntryId()],
       shared: true,
     });
     const firstIncluded = testEpisode("ep_includedfirst001" as Episode["id"], {
-      title: "Python discussion",
+      title: excludedTitle.title,
+      narrative: excludedNarrative.narrative,
       shared: true,
     });
     const secondIncluded = testEpisode("ep_includedsecond01" as Episode["id"], {
@@ -5090,8 +6716,8 @@ describe("memory sidecar handler", () => {
       overflow,
     ];
     const exclude = {
-      title_prefixes: ["OUTCOME rollup"],
-      narrative_markers: ["OUTCOME fp="],
+      episode_ids: [excludedTitle.id],
+      source_stream_ids: excludedNarrative.source_stream_ids,
     };
 
     const recallResponse = await post(
@@ -5122,11 +6748,12 @@ describe("memory sidecar handler", () => {
       base,
       "/memory/context",
       {
+        context_turns: [],
         tenant: "acme",
         session: "personal-exclusions",
-        sender: { external_id: "alice", display_name: "Alice" },
-        conversation: { type: "personal", name: "Alice" },
-        query: "technology",
+        sender: { operator: false, external_id: "alice", display_name: "Alice" },
+        conversation: { external_id: "conversation", type: "personal", name: "Alice" },
+        focus: "technology",
         limit: 2,
         sections: ["episodes"],
         exclude,
@@ -5149,7 +6776,85 @@ describe("memory sidecar handler", () => {
     ]);
   });
 
-  it("returns excluded-filtered recent episodes for only the current venue", async () => {
+  it.each(["/memory/context", "/memory/recall"])(
+    "rejects free-text exclusions and names structural replacements on %s",
+    async (route) => {
+      const { pool, rec } = recordingPool();
+      const base = await start(pool);
+      for (const exclude of [
+        { title_prefixes: ["OUTCOME"] },
+        { narrative_markers: ["decision="] },
+      ]) {
+        const response = await post(
+          base,
+          route,
+          {
+            tenant: "acme",
+            ...(route === "/memory/context"
+              ? {
+                  session: "reject-text-exclusions",
+                  ...TRANSPORT_IDENTITY,
+                  focus: "recall",
+                  context_turns: [],
+                  sections: ["episodes"],
+                }
+              : { query: "recall" }),
+            exclude,
+          },
+          TOKEN,
+        );
+        expect(response.status).toBe(400);
+        const body = (await response.json()) as { error: string };
+        expect(body.error).toContain(Object.keys(exclude)[0]);
+        expect(body.error).toContain("episode_ids");
+        expect(body.error).toContain("source_stream_ids");
+      }
+      expect(rec.tenants).toEqual([]);
+    },
+  );
+
+  it("returns private and multi-origin venue episodes with disclosure labels across audiences", async () => {
+    const { pool, rec } = recordingPool();
+    const base = await start(pool);
+    const privateAudience = createEntityId();
+    const otherAudience = createEntityId();
+    rec.venueEpisodes = [
+      testEpisode(createEpisodeId(), {
+        audience_entity_id: privateAudience,
+        origin_audience_entity_ids: [privateAudience],
+        shared: false,
+      }),
+      testEpisode(createEpisodeId(), {
+        audience_entity_id: null,
+        origin_audience_entity_ids: [privateAudience, otherAudience],
+        shared: false,
+      }),
+    ];
+    const response = await post(
+      base,
+      "/memory/context",
+      {
+        tenant: "acme",
+        session: "cross-audience-venue",
+        ...TRANSPORT_IDENTITY,
+        sections: ["venue_recent"],
+        venue_since: 0,
+      },
+      TOKEN,
+    );
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      venue_recent: Array<{ id: string; disclosure: { class: string } }>;
+    };
+    expect(body.venue_recent.map((row) => row.id)).toEqual(rec.venueEpisodes.map((row) => row.id));
+    expect(body.venue_recent.every((row) => row.disclosure.class === "relationship_private")).toBe(
+      true,
+    );
+    expect(rec.lastVenueOptions).not.toHaveProperty("audienceEntityId");
+    expect(rec.lastVenueOptions).toMatchObject({ sinceMs: 0, limit: 12 });
+  });
+
+  it("accepts the team-agent venue-only payload without recall input and filters exclusions", async () => {
     const { pool, rec } = recordingPool();
     const base = await start(pool);
     const venueSince = 1_725_000_000_000;
@@ -5176,10 +6881,10 @@ describe("memory sidecar handler", () => {
       {
         tenant: "acme",
         session: "venue-room",
-        sender: { external_id: "alice", display_name: "Alice" },
+        sender: { external_id: "alice", display_name: "Alice", operator: false },
         conversation: {
           type: "groupChat",
-          name: "AI Ninjas",
+          name: "Example Group",
           external_id: "group-42",
         },
         sections: ["venue_recent"],
@@ -5194,15 +6899,19 @@ describe("memory sidecar handler", () => {
       {
         tenant: "acme",
         session: "venue-room",
-        sender: { external_id: "alice", display_name: "Alice" },
+        sender: { external_id: "alice", display_name: "Alice", operator: false },
         conversation: {
           type: "groupChat",
-          name: "AI Ninjas",
+          name: "Example Group",
           external_id: "group-42",
         },
         sections: ["venue_recent"],
         venue_since: venueSince,
-        exclude: { title_prefixes: ["OUTCOME rollup"], narrative_markers: [] },
+        venue_limit: 12,
+        exclude: {
+          episode_ids: [excluded.id],
+          source_stream_ids: [],
+        },
       },
       TOKEN,
     );
@@ -5233,7 +6942,6 @@ describe("memory sidecar handler", () => {
     expect(rec.lastVenueOptions).toEqual({
       sessionId: expectedSession,
       sinceMs: venueSince,
-      audienceEntityId: rec.externalEntityIds.get("team-agent.conversation\u0000group-42"),
       limit: 36,
     });
     expect(rec.recallOptionsCalls).toEqual([]);
@@ -5248,7 +6956,14 @@ describe("memory sidecar handler", () => {
         await post(
           base,
           "/memory/append-turn",
-          { tenant: "acme", session: "observed", user: "message", observed_at: "now" },
+          {
+            sender: TRANSPORT_IDENTITY.sender,
+            conversation: TRANSPORT_IDENTITY.conversation,
+            tenant: "acme",
+            session: "observed",
+            user: "message",
+            observed_at: "now",
+          },
           TOKEN,
         )
       ).status,
@@ -5260,6 +6975,8 @@ describe("memory sidecar handler", () => {
           base,
           "/memory/append-turn",
           {
+            sender: TRANSPORT_IDENTITY.sender,
+            conversation: TRANSPORT_IDENTITY.conversation,
             tenant: "acme",
             session: "observed",
             user: "message",
@@ -5275,6 +6992,8 @@ describe("memory sidecar handler", () => {
           base,
           "/memory/append-turn",
           {
+            sender: TRANSPORT_IDENTITY.sender,
+            conversation: TRANSPORT_IDENTITY.conversation,
             tenant: "acme",
             session: "observed",
             user: "message",
@@ -5302,7 +7021,7 @@ describe("memory sidecar handler", () => {
           {
             tenant: "acme",
             query: "query",
-            exclude: { title_prefixes: [], narrative_markers: [], extra: true },
+            exclude: { episode_ids: [], source_stream_ids: [], extra: true },
           },
           TOKEN,
         )
@@ -5314,10 +7033,12 @@ describe("memory sidecar handler", () => {
           base,
           "/memory/context",
           {
+            focus: "Current conversation",
+            context_turns: [],
             tenant: "acme",
             session: "venue",
-            sender: { external_id: "alice", display_name: "Alice" },
-            conversation: { type: "personal", name: "Alice" },
+            sender: { operator: false, external_id: "alice", display_name: "Alice" },
+            conversation: { external_id: "conversation", type: "personal", name: "Alice" },
             sections: ["venue_recent"],
             venue_since: 100,
             venue_limit: 51,
@@ -5332,10 +7053,12 @@ describe("memory sidecar handler", () => {
           base,
           "/memory/context",
           {
+            focus: "Current conversation",
+            context_turns: [],
             tenant: "acme",
             session: "participants",
-            sender: { external_id: "alice", display_name: "Alice" },
-            conversation: { type: "personal", name: "Alice" },
+            sender: { operator: false, external_id: "alice", display_name: "Alice" },
+            conversation: { external_id: "conversation", type: "personal", name: "Alice" },
             participants: [{ external_id: "bob", display_name: "Bob", operator: "not-a-boolean" }],
             sections: ["audience"],
           },
@@ -5349,10 +7072,12 @@ describe("memory sidecar handler", () => {
           base,
           "/memory/context",
           {
+            focus: "Current conversation",
+            context_turns: [],
             tenant: "acme",
             session: "participants",
-            sender: { external_id: "alice", display_name: "Alice" },
-            conversation: { type: "personal", name: "Alice" },
+            sender: { operator: false, external_id: "alice", display_name: "Alice" },
+            conversation: { external_id: "conversation", type: "personal", name: "Alice" },
             participants: Array.from({ length: 33 }, (_, index) => ({
               external_id: `person-${index}`,
               display_name: `Person ${index}`,
@@ -5377,10 +7102,12 @@ describe("memory sidecar handler", () => {
           base,
           "/memory/context",
           {
+            focus: "",
+            context_turns: [],
             tenant: "acme",
             session: "personal",
-            sender: { external_id: "alice", display_name: "Alice" },
-            conversation: { type: "personal", name: "Alice" },
+            sender: { operator: false, external_id: "alice", display_name: "Alice" },
+            conversation: { external_id: "conversation", type: "personal", name: "Alice" },
           },
           TOKEN,
         )
@@ -5392,10 +7119,12 @@ describe("memory sidecar handler", () => {
           base,
           "/memory/context",
           {
+            focus: "Current conversation",
+            context_turns: [],
             tenant: "acme",
             session: "personal",
-            sender: { external_id: "alice", display_name: "Alice" },
-            conversation: { type: "personal", name: "Alice" },
+            sender: { operator: false, external_id: "alice", display_name: "Alice" },
+            conversation: { external_id: "conversation", type: "personal", name: "Alice" },
             sections: ["unknown"],
           },
           TOKEN,
@@ -5408,11 +7137,12 @@ describe("memory sidecar handler", () => {
           base,
           "/memory/context",
           {
+            context_turns: [],
             tenant: "acme",
             session: "group",
-            sender: { external_id: "alice", display_name: "Alice" },
+            sender: { operator: false, external_id: "alice", display_name: "Alice" },
             conversation: { type: "channel", name: "General" },
-            query: "context",
+            focus: "context",
           },
           TOKEN,
         )
@@ -5424,11 +7154,12 @@ describe("memory sidecar handler", () => {
       base,
       "/memory/context",
       {
+        context_turns: [],
         tenant: "acme",
         session: "personal",
-        sender: { external_id: "alice", display_name: "Alice" },
-        conversation: { type: "personal", name: "Alice" },
-        query: "context",
+        sender: { operator: false, external_id: "alice", display_name: "Alice" },
+        conversation: { external_id: "conversation", type: "personal", name: "Alice" },
+        focus: "context",
         sections: ["audience", "episodes"],
       },
       TOKEN,
@@ -5450,11 +7181,12 @@ describe("memory sidecar handler", () => {
       base,
       "/memory/context",
       {
+        context_turns: [],
         tenant: "acme",
         session: "personal",
-        sender: { external_id: "alice", display_name: "Alice" },
-        conversation: { type: "personal", name: "Alice" },
-        query: "context",
+        sender: { operator: false, external_id: "alice", display_name: "Alice" },
+        conversation: { external_id: "conversation", type: "personal", name: "Alice" },
+        focus: "context",
         sections: ["audience", "episodes"],
       },
       TOKEN,
@@ -5469,88 +7201,90 @@ describe("memory sidecar handler", () => {
     expect(payload.degraded_reason).toContain("deadline");
   });
 
-  it("rejects malformed optional sender objects before touching the tenant", async () => {
-    const { pool, rec } = recordingPool();
-    const base = await start(pool);
-    const response = await post(
-      base,
-      "/memory/append-turn",
-      {
-        tenant: "acme",
-        session: "room",
-        user: "hello",
-        assistant: "hi",
-        sender: { external_id: "platform-alice", display_name: "" },
-      },
-      TOKEN,
-    );
-
-    expect(response.status).toBe(400);
-    expect(await response.json()).toEqual({
-      error: "invalid 'sender'; expected non-empty 'external_id' and 'display_name'",
-    });
-    expect(rec.tenants).toEqual([]);
-  });
-
-  it.each([
-    null,
-    [],
-    "personal",
-    { type: "directMessage", name: "Alice" },
-    { type: "personal", name: 42 },
-    { type: 42, name: "Alice" },
-    { type: "channel" },
-  ])(
-    "rejects malformed optional conversation %# before touching the tenant",
-    async (conversation) => {
+  it.each([{ sections: ["episodes"] }, { sections: ["episodes", "recent_activity"] }])(
+    "shares one deadline between activity ranking and recall for $sections",
+    async ({ sections }) => {
       const { pool, rec } = recordingPool();
-      const base = await start(pool);
+      rec.activityEvents = [
+        {
+          kind: "borg_replied",
+          occurredAt: Date.now(),
+          sessionId: createSessionId(),
+          audienceEntityId: createEntityId(),
+          sourceStreamEntryIds: [],
+          conversationKind: "dm",
+          conversationName: "Elsewhere",
+          participantLabel: "Borg",
+        },
+      ];
+      rec.activityRankingDelayMs = 200;
+      rec.recallDelayMs = 350;
+      const base = await start(pool, TOKEN, {
+        recallDeadlineMs: 500,
+        recentActivityRankingBudgetMs: 1000,
+      });
       const response = await post(
         base,
-        "/memory/append-turn",
+        "/memory/context",
         {
           tenant: "acme",
-          session: "room",
-          user: "hello",
-          assistant: "hi",
-          conversation,
+          session: "deadline-test",
+          ...TRANSPORT_IDENTITY,
+          focus: "leave dates",
+          context_turns: [],
+          sections,
         },
         TOKEN,
       );
-
-      expect(response.status).toBe(400);
-      expect(await response.json()).toEqual({
-        error:
-          "invalid 'conversation'; expected type 'personal', 'groupChat', or 'channel' and string 'name'",
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        episodes: [],
+        degraded: true,
+        degraded_reason: expect.stringContaining("deadline"),
       });
-      expect(rec.tenants).toEqual([]);
+      expect(rec.activityRankingInputs).toHaveLength(1);
+      expect(rec.recallOptionsCalls).toHaveLength(1);
     },
   );
 
+  it("bounds identity preparation by the same context deadline", async () => {
+    const pool: MemoryPool = {
+      withTenant: async () => new Promise(() => {}),
+      listTenantIds: async () => [...STUB_TENANTS],
+    };
+    const base = await start(pool, TOKEN, { recallDeadlineMs: 25 });
+    const response = await post(
+      base,
+      "/memory/context",
+      {
+        tenant: "acme",
+        session: "stalled-identity",
+        ...TRANSPORT_IDENTITY,
+        focus: "leave dates",
+        context_turns: [],
+        sections: ["episodes"],
+      },
+      TOKEN,
+    );
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({
+      degraded: true,
+      degraded_reason: expect.stringContaining("deadline"),
+    });
+  });
+
   it("does not serialize later append-turn requests behind pending ingestion", async () => {
-    const appendSessions: string[] = [];
+    const { rec } = recordingPool();
     let ingestionStarted = false;
     let releaseIngestion!: () => void;
     const ingestion = new Promise<{ ran: boolean; processedEntries: number }>((resolve) => {
       releaseIngestion = () => resolve({ ran: true, processedEntries: 2 });
     });
-    const borg = {
-      stream: {
-        appendMany: async (_inputs: unknown[], options?: { session?: string }) => {
-          appendSessions.push(options?.session ?? "");
-          return [
-            { id: "strm_aaaaaaaaaaaaaaaa", kind: "user_msg" },
-            { id: "strm_bbbbbbbbbbbbbbbb", kind: "agent_msg" },
-          ];
-        },
-      },
-      episodic: {
-        ingest: async () => {
-          ingestionStarted = true;
-          return ingestion;
-        },
-      },
-    } as unknown as Borg;
+    const borg = stubBorg(rec);
+    borg.episodic.ingest = async () => {
+      ingestionStarted = true;
+      return ingestion;
+    };
     let exclusiveTail: Promise<unknown> = Promise.resolve();
     const pool: MemoryPool = {
       listTenantIds: () => Promise.resolve([...STUB_TENANTS]),
@@ -5575,7 +7309,14 @@ describe("memory sidecar handler", () => {
     const first = await post(
       base,
       "/memory/append-turn",
-      { tenant: "acme", session: "first", user: "u1", assistant: "a1" },
+      {
+        sender: TRANSPORT_IDENTITY.sender,
+        conversation: TRANSPORT_IDENTITY.conversation,
+        tenant: "acme",
+        session: "first",
+        user: "u1",
+        assistant: "a1",
+      },
       TOKEN,
     );
     expect(first.status).toBe(200);
@@ -5586,7 +7327,14 @@ describe("memory sidecar handler", () => {
       post(
         base,
         "/memory/append-turn",
-        { tenant: "acme", session: "second", user: "u2", assistant: "a2" },
+        {
+          sender: TRANSPORT_IDENTITY.sender,
+          conversation: TRANSPORT_IDENTITY.conversation,
+          tenant: "acme",
+          session: "second",
+          user: "u2",
+          assistant: "a2",
+        },
         TOKEN,
       ).then(async (res) => {
         await res.json();
@@ -5599,7 +7347,8 @@ describe("memory sidecar handler", () => {
     releaseIngestion();
 
     expect(secondStatus).toBe(200);
-    expect(appendSessions).toHaveLength(2);
+    expect(rec.appendManyCalls).toHaveLength(2);
+    expect(rec.activityProjectionInputs).toHaveLength(2);
   });
 
   it("accepts an already-valid borg session id for append-turn", async () => {
@@ -5609,7 +7358,14 @@ describe("memory sidecar handler", () => {
     const res = await post(
       base,
       "/memory/append-turn",
-      { tenant: "acme", session, user: "u", assistant: "a" },
+      {
+        sender: TRANSPORT_IDENTITY.sender,
+        conversation: TRANSPORT_IDENTITY.conversation,
+        tenant: "acme",
+        session,
+        user: "u",
+        assistant: "a",
+      },
       TOKEN,
     );
 
@@ -5628,7 +7384,13 @@ describe("memory sidecar handler", () => {
         await post(
           base,
           "/memory/append-turn",
-          { tenant: "acme", user: "u", assistant: "a" },
+          {
+            sender: TRANSPORT_IDENTITY.sender,
+            conversation: TRANSPORT_IDENTITY.conversation,
+            tenant: "acme",
+            user: "u",
+            assistant: "a",
+          },
           TOKEN,
         )
       ).status,
@@ -5638,14 +7400,32 @@ describe("memory sidecar handler", () => {
         await post(
           base,
           "/memory/append-turn",
-          { tenant: "acme", session: "s", assistant: "a" },
+          {
+            sender: TRANSPORT_IDENTITY.sender,
+            conversation: TRANSPORT_IDENTITY.conversation,
+            tenant: "acme",
+            session: "s",
+            assistant: "a",
+          },
           TOKEN,
         )
       ).status,
     ).toBe(200);
     expect(
-      (await post(base, "/memory/append-turn", { tenant: "acme", session: "s", user: "u" }, TOKEN))
-        .status,
+      (
+        await post(
+          base,
+          "/memory/append-turn",
+          {
+            sender: TRANSPORT_IDENTITY.sender,
+            conversation: TRANSPORT_IDENTITY.conversation,
+            tenant: "acme",
+            session: "s",
+            user: "u",
+          },
+          TOKEN,
+        )
+      ).status,
     ).toBe(200);
   });
 
@@ -5755,8 +7535,8 @@ describe("memory sidecar handler", () => {
           session: "teams::personal::projection-rollback",
           user: "Durable input",
           assistant: "Durable reply",
-          sender: { external_id: "alice", display_name: "Alice" },
-          conversation: { type: "personal", name: "Alice" },
+          sender: { operator: false, external_id: "alice", display_name: "Alice" },
+          conversation: { external_id: "conversation", type: "personal", name: "Alice" },
         },
         TOKEN,
       );
@@ -5897,7 +7677,7 @@ describe("memory sidecar handler", () => {
           session: "teams::group::observation",
           user: "An observed room message",
           observed_at: observedAt,
-          sender: { external_id: "alice", display_name: "Alice" },
+          sender: { operator: false, external_id: "alice", display_name: "Alice" },
           conversation: {
             type: "groupChat",
             name: "Observation Room",
@@ -6023,6 +7803,7 @@ describe("memory sidecar handler", () => {
         base,
         "/memory/append-turn",
         {
+          sender: TRANSPORT_IDENTITY.sender,
           tenant: "acme",
           session: "teams::group::reply-only",
           assistant: "A proactive update from Sol.",
@@ -6129,7 +7910,7 @@ describe("memory sidecar handler", () => {
           session: "teams::group::directive-room",
           user: "Hello room",
           assistant: "Hello Alice",
-          sender: { external_id: "alice", display_name: "Alice" },
+          sender: { operator: false, external_id: "alice", display_name: "Alice" },
           conversation: {
             type: "groupChat",
             name: "Directive Room",
@@ -6145,9 +7926,11 @@ describe("memory sidecar handler", () => {
         base,
         "/memory/context",
         {
+          focus: "Current conversation",
+          context_turns: [],
           tenant: "acme",
           session: "teams::group::directive-room",
-          sender: { external_id: "alice", display_name: "Alice" },
+          sender: { operator: false, external_id: "alice", display_name: "Alice" },
           conversation: {
             type: "groupChat",
             name: "Directive Room",
@@ -6224,9 +8007,11 @@ describe("memory sidecar handler", () => {
         base,
         "/memory/context",
         {
+          focus: "Current conversation",
+          context_turns: [],
           tenant: "acme",
           session: "teams::group::directive-room",
-          sender: { external_id: "alice", display_name: "Alice" },
+          sender: { operator: false, external_id: "alice", display_name: "Alice" },
           conversation: {
             type: "groupChat",
             name: "Directive Room",
@@ -6278,12 +8063,12 @@ describe("memory sidecar handler", () => {
           key: "alice-personal",
           session: "teams::personal::alice",
           sender: { external_id: "alice", display_name: "Alice", operator: true },
-          conversation: { type: "personal", name: "Alice" },
+          conversation: { type: "personal", name: "Alice", external_id: "personal-a" },
         },
         {
           key: "alice-group",
           session: "teams::group::ai-ninjas",
-          sender: { external_id: "alice", display_name: "Alice" },
+          sender: { external_id: "alice", display_name: "Alice", operator: false },
           conversation: {
             type: "groupChat",
             name: "AI Ninjas",
@@ -6293,8 +8078,8 @@ describe("memory sidecar handler", () => {
         {
           key: "bob-personal",
           session: "teams::personal::bob",
-          sender: { external_id: "bob", display_name: "Bob" },
-          conversation: { type: "personal", name: "Bob" },
+          sender: { external_id: "bob", display_name: "Bob", operator: false },
+          conversation: { type: "personal", name: "Bob", external_id: "personal-b" },
         },
       ] as const;
       const sessions = new Map<string, SessionId>();
@@ -6520,12 +8305,13 @@ describe("memory sidecar handler", () => {
         base,
         "/memory/context",
         {
+          context_turns: [],
           tenant: "acme",
           session: "teams::personal::alice",
           sender: { external_id: "alice", display_name: "Alice", operator: true },
-          conversation: { type: "personal", name: "Alice" },
+          conversation: { external_id: "conversation", type: "personal", name: "Alice" },
           participants: [{ external_id: "bob", display_name: "Bob", operator: true }],
-          query: "situational awareness",
+          focus: "situational awareness",
           sections: ["audience", "episodes", "recent_activity", "commitments", "directives"],
         },
         TOKEN,
@@ -6561,9 +8347,7 @@ describe("memory sidecar handler", () => {
           }),
         ]),
       );
-      expect(context.recent_activity.map((activity) => activity.participant_name)).not.toContain(
-        "Bob",
-      );
+      expect(context.recent_activity.map((activity) => activity.participant_name)).toContain("Bob");
       expect(context.commitments).toEqual([
         expect.objectContaining({
           directive: "Keep Alice's private context in Alice's audience.",
@@ -6585,29 +8369,31 @@ describe("memory sidecar handler", () => {
           persistedEpisodes["Observed group episode"],
         ]),
       );
-      expect(aliceEpisodeIds).not.toContain(persistedEpisodes["Bob personal episode"]);
+      expect(aliceEpisodeIds).toContain(persistedEpisodes["Bob personal episode"]);
       expect(context.hidden_episode_count).toBe(0);
 
       const groupContextResponse = await post(
         base,
         "/memory/context",
         {
+          context_turns: [],
           tenant: "acme",
           session: "teams::group::ai-ninjas",
-          sender: { external_id: "alice", display_name: "Alice" },
+          sender: { operator: false, external_id: "alice", display_name: "Alice" },
           conversation: {
             type: "groupChat",
             name: "AI Ninjas",
             external_id: "ai-ninjas",
           },
-          query: "situational awareness",
-          sections: ["episodes"],
+          focus: "situational awareness",
+          sections: ["episodes", "recent_activity"],
         },
         TOKEN,
       );
       const groupContext = (await groupContextResponse.json()) as {
         episodes: Array<{ id: Episode["id"] }>;
         hidden_episode_count: number;
+        recent_activity: Array<{ disclosure: unknown }>;
       };
       const groupEpisodeIds = groupContext.episodes.map((episode) => episode.id);
 
@@ -6618,9 +8404,32 @@ describe("memory sidecar handler", () => {
           persistedEpisodes["Observed group episode"],
         ]),
       );
-      expect(groupEpisodeIds).not.toContain(persistedEpisodes["Alice personal episode"]);
-      expect(groupEpisodeIds).not.toContain(persistedEpisodes["Bob personal episode"]);
+      expect(groupEpisodeIds).toContain(persistedEpisodes["Alice personal episode"]);
+      expect(groupEpisodeIds).toContain(persistedEpisodes["Bob personal episode"]);
       expect(groupContext.hidden_episode_count).toBe(0);
+      expect(groupContext.recent_activity).toHaveLength(4);
+      expect(groupContext.recent_activity).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            disclosure: {
+              class: "self_private",
+              origin_audience_names: ["Alice"],
+              private_to_names: ["Alice"],
+              private_to_current_sender: true,
+              private_to_current_audience: false,
+            },
+          }),
+          expect.objectContaining({
+            disclosure: {
+              class: "self_private",
+              origin_audience_names: ["Bob"],
+              private_to_names: ["Bob"],
+              private_to_current_sender: false,
+              private_to_current_audience: false,
+            },
+          }),
+        ]),
+      );
 
       const retrievalCountsBefore = await pool.withTenant("acme", (borg) =>
         Object.fromEntries(
@@ -6635,16 +8444,16 @@ describe("memory sidecar handler", () => {
         base,
         "/memory/context",
         {
+          context_turns: [],
           tenant: "acme",
           session: "teams::personal::alice",
           sender: { external_id: "alice", display_name: "Alice", operator: true },
-          conversation: { type: "personal", name: "Alice" },
-          query: "situational awareness",
+          conversation: { external_id: "conversation", type: "personal", name: "Alice" },
+          focus: "situational awareness",
           limit: 1,
           sections: ["episodes"],
           exclude: {
-            title_prefixes: ["Public episode"],
-            narrative_markers: [],
+            episode_ids: [persistedEpisodes["Public episode"]],
           },
         },
         TOKEN,
@@ -6704,5 +8513,45 @@ describe("memory sidecar handler", () => {
       await pool.closeAll();
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("embedding migration administration", () => {
+  it("requires the token and drains a tenant without reopening it", async () => {
+    const evict = vi.fn(async () => {});
+    const withTenant = vi.fn(async () => {
+      throw new Error("must not open");
+    });
+    const base = await start({ withTenant, evict, listTenantIds: async () => [] });
+    expect((await post(base, "/memory/admin/evict?tenant=acme", {})).status).toBe(401);
+    expect(evict).not.toHaveBeenCalled();
+    const response = await post(base, "/memory/admin/evict?tenant=acme", {}, TOKEN);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ tenant: "acme", status: "closed" });
+    expect(evict).toHaveBeenCalledWith("acme");
+    expect(withTenant).not.toHaveBeenCalled();
+  });
+  it.each([
+    "EMBEDDING_MIGRATION_FENCED",
+    "EMBEDDING_PROFILE_MISMATCH",
+    "EMBEDDING_CLIENT_PROFILE_REQUIRED",
+    "EMBEDDING_PROFILE_REQUIRED",
+    "EMBEDDING_SCHEMA_INVALID",
+  ])("reports %s as unavailable without a stack", async (code) => {
+    const base = await start({
+      withTenant: async () => {
+        throw new EmbeddingBankError("embedding migration unavailable", { code });
+      },
+      listTenantIds: async () => [],
+    });
+    const response = await post(base, "/memory/recall", { tenant: "acme", query: "memory" }, TOKEN);
+    expect(response.status).toBe(503);
+    const body = await response.json();
+    expect(body).toMatchObject({
+      code,
+      degraded: true,
+      degraded_reason: "embedding migration unavailable",
+    });
+    expect(body).not.toHaveProperty("stack");
   });
 });

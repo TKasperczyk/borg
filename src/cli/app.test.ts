@@ -16,12 +16,14 @@ import { createTestConfig } from "../offline/test-support.js";
 import { FixedClock } from "../util/clock.js";
 import { readJsonFile, writeFileAtomic, writeJsonFileAtomic } from "../util/atomic-write.js";
 import { createMigrations as createBorgMigrations } from "../borg/storage-setup.js";
+import { seedTestEmbeddingProfile } from "../test-support/embedding-profile.js";
 import { runCli } from "./app.js";
 
 const CONSOLIDATION_TOOL_NAME = "EmitConsolidation";
 const EPISODE_TOOL_NAME = "EmitEpisodeCandidates";
 
 class ScriptedEmbeddingClient implements EmbeddingClient {
+  readonly profile = { model: "fake-embed", dimensions: 4 };
   async embed(text: string): Promise<Float32Array> {
     return this.vector(text);
   }
@@ -58,9 +60,11 @@ function createOutputBuffer() {
 function createCliTempDir(tempDirs: string[]): string {
   const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
   tempDirs.push(tempDir);
+  seedTestEmbeddingProfile(tempDir);
   writeJsonFileAtomic(join(tempDir, "config.json"), {
     embedding: {
       dims: 4,
+      model: "fake-embed",
     },
   });
   return tempDir;

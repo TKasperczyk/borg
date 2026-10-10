@@ -1,3 +1,5 @@
+import { FailureReportTracker } from "../../util/failure-reports.js";
+import { similarityThresholds, type SimilarityConfigSource } from "../../config/similarity.js";
 import { z } from "zod";
 
 import {
@@ -24,6 +26,7 @@ const CONTRADICTION_JUDGE_TOOL = {
 } satisfies LLMToolDefinition;
 
 export type SemanticReviewServiceOptions = {
+  similarityConfig?: SimilarityConfigSource;
   nodeRepository: SemanticNodeRepository;
   enqueueReview?: (input: ReviewQueueInsertInput) => ReviewQueueInsertInput | unknown;
   llmClient?: LLMClient;
@@ -78,18 +81,28 @@ async function judgeContradiction(
 }
 
 export class SemanticReviewService {
+  private readonly pendingDuplicateReviews = new Set<Promise<void>>();
+  private readonly failureReports = new FailureReportTracker("semantic duplicate review");
+
   constructor(private readonly options: SemanticReviewServiceOptions) {}
 
   queueDuplicateReview(node: SemanticNode, options: SemanticReviewQueueOptions = {}): void {
-    void this.reviewDuplicateCandidate(node, options).catch((error) => {
-      try {
-        void Promise.resolve(this.options.onDuplicateReviewError?.(error, node)).catch(
-          () => undefined,
-        );
-      } catch {
-        // Best-effort background observability only.
-      }
+    const task = this.reviewDuplicateCandidate(node, options).catch(async (error) => {
+      await this.failureReports.report(() => this.options.onDuplicateReviewError?.(error, node));
     });
+    this.pendingDuplicateReviews.add(task);
+    void task.finally(() => {
+      this.pendingDuplicateReviews.delete(task);
+    });
+  }
+
+  async flushDuplicateReviews(): Promise<void> {
+    // A duplicate review can enqueue an open-question hook or append its own
+    // failure report. Drain it before the review queue and before closing stores.
+    while (this.pendingDuplicateReviews.size > 0) {
+      await Promise.all([...this.pendingDuplicateReviews]);
+    }
+    await this.failureReports.flush();
   }
 
   async reviewDuplicateCandidate(
@@ -107,7 +120,7 @@ export class SemanticReviewService {
 
     const matches = await this.options.nodeRepository.searchByVector(node.embedding, {
       limit: 3,
-      minSimilarity: 0.9,
+      minSimilarity: similarityThresholds(this.options.similarityConfig).semanticDuplicateReview,
       kindFilter: ["proposition"],
       includeArchived: false,
     });

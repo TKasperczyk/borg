@@ -17,7 +17,7 @@ import type { MoodHistoryEntry, MoodState } from "../memory/affective/types.js";
 import type {
   ActivityEvent,
   ActivityEventRecordInput,
-  ActivityVisibleSessionEvent,
+  ActivityProjectionSourceEvent,
 } from "../memory/activity/types.js";
 import type {
   ActionActor,
@@ -149,6 +149,7 @@ import type {
   ValueId,
 } from "../util/ids.js";
 import type { BorgDreamOptions, BorgEpisodeGetOptions, BorgEpisodeSearchOptions } from "./types.js";
+import type { CognitionRetrievalOptions } from "../retrieval/index.js";
 import type {
   AutobiographicalRecallInput,
   AutobiographicalRecallResult,
@@ -193,6 +194,7 @@ export type BorgExtractFromStreamResult = {
 
 export type BorgRetrievedEpisode = {
   episode: Episode;
+  disclosureLabel?: MemoryDisclosureLabel;
   score: number;
   // Pre-clamp fused score — the operative relevance value used for MMR
   // selection and result ordering; `score` is its clamped [0,1] form.
@@ -250,6 +252,13 @@ export type BorgStreamFacade = {
 };
 
 export type BorgEpisodicFacade = {
+  rememberForTenant(
+    input: import("../memory/episodic/types.js").RememberTenantFactInput,
+  ): Promise<import("../memory/episodic/types.js").RememberTenantFactResult>;
+  recallForCognition(
+    query: string,
+    options: CognitionRetrievalOptions,
+  ): Promise<BorgRetrievedEpisode[]>;
   get(id: EpisodeId, options?: BorgEpisodeGetOptions): Promise<BorgRetrievedEpisode | null>;
   inspect(id: Episode["id"]): Promise<Episode | null>;
   search(query: string, options?: BorgEpisodeSearchOptions): Promise<BorgRetrievedEpisode[]>;
@@ -275,6 +284,11 @@ export type BorgEpisodicFacade = {
     audienceEntityId?: EntityId | null;
     visibleAudienceEntityIds?: readonly EntityId[];
     crossAudience?: boolean;
+  }): Promise<EpisodeSearchCandidate[]>;
+  listRecentForSessionForCognition(options: {
+    sessionId: SessionId;
+    sinceMs: number;
+    limit?: number;
   }): Promise<EpisodeSearchCandidate[]>;
   getStats(id: Episode["id"]): EpisodeStats | null;
 };
@@ -884,6 +898,9 @@ export type BorgCommitmentsFacade = {
 };
 
 export type BorgActivityFacade = {
+  rankByRelevance(
+    input: import("../memory/activity/types.js").ActivityRelevanceInput,
+  ): Promise<string[]>;
   record(input: ActivityEventRecordInput): ActivityEvent;
   projectObservedTurn(input: BorgActivityObservedTurnProjectionInput): {
     userContact: ActivityEvent;
@@ -899,13 +916,12 @@ export type BorgActivityFacade = {
     session: SessionRecord;
   };
   listObservedGroupAudienceEntityIdsForSpeaker(speakerEntityId: EntityId): EntityId[];
-  listRecentVisibleOtherSessionEvents(input: {
+  listRecentOtherActiveSessionEvents(input: {
     currentSessionId: SessionId;
-    audienceEntityIds: readonly EntityId[];
     sinceMs: number;
     limit: number;
-    kinds?: readonly ActivityVisibleSessionEvent["kind"][];
-  }): ActivityVisibleSessionEvent[];
+    kinds?: readonly ActivityProjectionSourceEvent["kind"][];
+  }): ActivityProjectionSourceEvent[];
 };
 
 export type BorgActivityObservedTurnProjectionInput = {
@@ -1177,22 +1193,6 @@ export type BorgOrchestratorResult = {
   errors: BorgOfflineProcessError[];
 };
 
-export type BorgOfflineMaintenanceProcessPlan = {
-  process: string;
-  tokens_used: number;
-  errors: BorgOfflineProcessError[];
-  budget_exhausted: boolean;
-  [key: string]: unknown;
-};
-
-export type BorgMaintenancePlan = {
-  kind: "borg_maintenance_plan";
-  version: 2;
-  run_id: MaintenanceRunId;
-  created_at: number;
-  processes: BorgOfflineMaintenanceProcessPlan[];
-};
-
 export type BorgMaintenanceAuditRecord = {
   id: AuditId;
   run_id: MaintenanceRunId;
@@ -1397,7 +1397,7 @@ export type BorgAppendBacklogTerminalInput = {
 
 export type BorgAppendBacklogTerminalResult = {
   terminalEntry: StreamEntry;
-  responseTo: NonNullable<StreamEntry["response_to"]>;
+  responseTo: Extract<NonNullable<StreamEntry["response_to"]>, { kind: "stream_backlog" }>;
   sourceEntries: readonly StreamEntry[];
 };
 
@@ -1408,10 +1408,25 @@ export type BorgFindTerminalCoveringEntryResult =
   | {
       status: "found";
       terminalEntry: StreamEntry;
-      responseTo: NonNullable<StreamEntry["response_to"]>;
+      responseTo: Extract<NonNullable<StreamEntry["response_to"]>, { kind: "stream_backlog" }>;
     };
 
 export type BorgInboxFacade = {
+  enqueueTaskEvent(input: {
+    sessionId: SessionId;
+    event: import("../stream/types.js").TaskEvent;
+  }): Promise<{ status: "enqueued" | "duplicate"; entry_id: StreamEntryId } | null>;
+  listUnansweredTaskEvents(
+    sessionId: SessionId,
+  ): import("../cognition/ingestion/task-events.js").StoredTaskEvent[];
+  findTaskEventTerminal(
+    sessionId: SessionId,
+    event: import("../cognition/ingestion/task-events.js").StoredTaskEvent,
+  ): StreamEntry | null;
+  deliveries: Pick<
+    import("../cognition/ingestion/agent-deliveries.js").AgentDeliveryRepository,
+    "claim" | "ack"
+  >;
   catchUp: BorgInboxCatchUpController;
   appendBacklogTerminal(
     input: BorgAppendBacklogTerminalInput,

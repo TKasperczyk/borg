@@ -1,3 +1,4 @@
+import { similarityThresholds } from "../../config/similarity.js";
 import { z } from "zod";
 
 import {
@@ -845,7 +846,9 @@ async function refsArchivedPostPlan(
   episodeIds: readonly Episode["id"][],
 ): Promise<boolean> {
   const uniqueIds = [...new Set(episodeIds)];
-  const episodes = await Promise.all(uniqueIds.map((episodeId) => ctx.episodicRepository.get(episodeId)));
+  const episodes = await Promise.all(
+    uniqueIds.map((episodeId) => ctx.episodicRepository.get(episodeId)),
+  );
 
   return episodes.some((episode) => episode === null);
 }
@@ -1093,6 +1096,7 @@ export class AssociatorProcess implements OfflineProcess<AssociatorPlan> {
             advisoryDuplicate?.status === "open" || existingByDedupeKey?.status === "open"
               ? null
               : await findOpenQuestionDuplicateBackstop({
+                  minSimilarity: similarityThresholds(ctx.config).openQuestionDuplicateBackstop,
                   repository: ctx.openQuestionsRepository,
                   question: finding.question,
                   onSearchFailure: (error) => {

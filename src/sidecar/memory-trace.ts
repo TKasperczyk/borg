@@ -58,6 +58,8 @@ function shouldStoreMemoryTraceEvent(event: TurnTraceEventName, data: TurnTraceD
     event === "recall_expansion.completed" ||
     event === "commitment_classification.downgraded" ||
     event === "sidecar.append_projection.degraded" ||
+    event === "sidecar.guard_reply.completed" ||
+    event === "internal_identifier_guard.completed" ||
     event.startsWith("retrieval.") ||
     event.startsWith("extraction.commitments.") ||
     event.startsWith("corrective_preference.") ||

@@ -69,7 +69,7 @@ import type {
 import type { MemoryDisclosureLabel } from "../retrieval/index.js";
 import type { PromptKey } from "../cognition/prompts/registry.js";
 import type { OfflineProcessName } from "../offline/index.js";
-import type { RetrievedEpisode } from "../retrieval/index.js";
+import type { CognitionRetrievalOptions, RetrievedEpisode } from "../retrieval/index.js";
 import type {
   SessionEnsureInput,
   SessionListOptions,
@@ -128,6 +128,13 @@ export type BorgStreamFacade = {
 };
 
 export type BorgEpisodicFacade = {
+  rememberForTenant(
+    input: import("../memory/episodic/types.js").RememberTenantFactInput,
+  ): Promise<import("../memory/episodic/types.js").RememberTenantFactResult>;
+  recallForCognition: (
+    query: string,
+    options: CognitionRetrievalOptions,
+  ) => Promise<RetrievedEpisode[]>;
   get: (id: EpisodeId, options?: BorgEpisodeGetOptions) => Promise<RetrievedEpisode | null>;
   inspect: (id: EpisodeId) => ReturnType<EpisodicRepository["get"]>;
   search: (query: string, options?: BorgEpisodeSearchOptions) => Promise<RetrievedEpisode[]>;
@@ -149,6 +156,9 @@ export type BorgEpisodicFacade = {
   listRecentForSession: (
     ...args: Parameters<EpisodicRepository["listRecentForSessionForDisclosure"]>
   ) => ReturnType<EpisodicRepository["listRecentForSessionForDisclosure"]>;
+  listRecentForSessionForCognition: (
+    ...args: Parameters<EpisodicRepository["listRecentForSessionForCognition"]>
+  ) => ReturnType<EpisodicRepository["listRecentForSessionForCognition"]>;
   getStats: (
     ...args: Parameters<EpisodicRepository["getStats"]>
   ) => ReturnType<EpisodicRepository["getStats"]>;
@@ -504,8 +514,11 @@ export type BorgCommitmentsFacade = {
 
 export type BorgActivityFacade = Pick<
   ActivityRepository,
-  "record" | "listObservedGroupAudienceEntityIdsForSpeaker" | "listRecentVisibleOtherSessionEvents"
+  "record" | "listObservedGroupAudienceEntityIdsForSpeaker" | "listRecentOtherActiveSessionEvents"
 > & {
+  rankByRelevance(
+    input: import("../memory/activity/types.js").ActivityRelevanceInput,
+  ): Promise<string[]>;
   projectObservedTurn(input: BorgActivityObservedTurnProjectionInput): {
     userContact: ReturnType<ActivityRepository["record"]>;
     session: SessionRecord;
@@ -669,7 +682,10 @@ export type BorgMaintenanceFacade = {
   };
 };
 
-export type BorgInboxFacade = {
+export type BorgInboxFacade = Pick<
+  import("./public-facade.js").BorgInboxFacade,
+  "enqueueTaskEvent" | "listUnansweredTaskEvents" | "findTaskEventTerminal" | "deliveries"
+> & {
   catchUp: ChatResponseCatchUpWorker;
   appendBacklogTerminal(input: AppendBacklogTerminalInput): Promise<AppendBacklogTerminalResult>;
   sealPendingBacklog(input: SealPendingBacklogInput): Promise<AppendBacklogTerminalResult | null>;

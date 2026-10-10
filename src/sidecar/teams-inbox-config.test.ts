@@ -26,6 +26,13 @@ describe("teamsInboxConfigFromEnv", () => {
     });
   });
 
+  it("accepts the minimal Teams inbox configuration", () => {
+    expect(teamsInboxConfigFromEnv({
+      TEAM_AGENT_BASE_URL: "http://localhost:8080",
+      TEAM_AGENT_API_TOKEN: "test-token",
+    })).toMatchObject({ enabled: true, baseUrl: "http://localhost:8080" });
+  });
+
   it("rejects an enabled configuration without a token", () => {
     expect(() =>
       teamsInboxConfigFromEnv({ TEAM_AGENT_BASE_URL: "http://team-agent:8080" }),

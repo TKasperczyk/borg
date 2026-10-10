@@ -1,3 +1,5 @@
+import { similarityThresholds, type SimilarityConfigSource } from "../../config/similarity.js";
+import { buildNodeEmbeddingText } from "./embedding-text.js";
 import { z } from "zod";
 
 import type { EmbeddingClient } from "../../embeddings/index.js";
@@ -43,10 +45,7 @@ import {
   type EpisodicRepository,
 } from "../episodic/index.js";
 import type { EntityRecord, EntityRepository } from "../commitments/index.js";
-import type {
-  RelationshipEvidenceStreamEntryTrustResult,
-  RelationshipEvidenceStreamEntryTrustValidator,
-} from "../source-trust.js";
+import type { RelationshipEvidenceStreamEntryTrustValidator } from "../source-trust.js";
 import { SemanticEdgeRepository, SemanticNodeRepository } from "./repository.js";
 import type { SemanticReviewService } from "./review-service.js";
 import type { ReviewQueueInsertInput } from "../review-queue/review-queue.js";
@@ -134,7 +133,6 @@ type SkippedEdgeTraceDetail = {
 };
 
 const DEFAULT_CONFIDENCE_CEILING = 0.7;
-const DEDUP_THRESHOLD = 0.88;
 const SKIPPED_EDGE_TRACE_DETAIL_LIMIT = 10;
 const EXTRACT_SEMANTIC_TOOL_NAME = "EmitSemanticCandidates";
 export const EXTRACT_SEMANTIC_TOOL = {
@@ -144,6 +142,7 @@ export const EXTRACT_SEMANTIC_TOOL = {
 } satisfies LLMToolDefinition;
 
 export type SemanticExtractorOptions = {
+  similarityConfig?: SimilarityConfigSource;
   nodeRepository: SemanticNodeRepository;
   edgeRepository: SemanticEdgeRepository;
   embeddingClient: EmbeddingClient;
@@ -162,11 +161,6 @@ export type SemanticExtractorOptions = {
   dedupThreshold?: number;
   confidenceCeiling?: number;
 };
-
-export type SemanticRelationshipEvidenceStreamEntryTrustResult =
-  RelationshipEvidenceStreamEntryTrustResult;
-export type SemanticRelationshipEvidenceStreamEntryTrustValidator =
-  RelationshipEvidenceStreamEntryTrustValidator;
 
 export type ExtractSemanticResult = {
   insertedNodes: number;
@@ -453,21 +447,6 @@ function mergeAliases(left: readonly string[], right: readonly string[]): string
   ];
 }
 
-export function buildNodeEmbeddingText(input: {
-  label: string;
-  description: string;
-  aliases: readonly string[];
-  observationMetadata: SemanticObservationMetadata | null;
-}): string {
-  const parts = [input.label, input.description, input.aliases.join(" ")];
-
-  if (input.observationMetadata !== null) {
-    parts.push(JSON.stringify(input.observationMetadata));
-  }
-
-  return parts.join("\n");
-}
-
 function observationMetadataIdentity(input: SemanticObservationMetadata | null): string | null {
   if (input === null) {
     return null;
@@ -659,7 +638,11 @@ export class SemanticExtractor {
 
   constructor(private readonly options: SemanticExtractorOptions) {
     this.clock = options.clock ?? new SystemClock();
-    this.dedupThreshold = options.dedupThreshold ?? DEDUP_THRESHOLD;
+    this.dedupThreshold =
+      options.dedupThreshold ??
+      similarityThresholds(
+        options.similarityConfig ?? { embedding: options.embeddingClient.profile },
+      ).semanticExtractionDuplicate;
     this.confidenceCeiling = options.confidenceCeiling ?? DEFAULT_CONFIDENCE_CEILING;
   }
 

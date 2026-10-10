@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { FakeLLMClient } from "../llm/test-support/fake-client.js";
-import { BudgetExceededError } from "../util/errors.js";
+import { BudgetExceededError, LLMToolArgumentsError } from "../util/errors.js";
 
 import { BudgetTracker, getBudgetErrorTokens, withBudget } from "./budget.js";
 
@@ -106,5 +106,46 @@ describe("offline budget", () => {
       result: "ok",
       tokens_used: 100_000,
     });
+  });
+
+  it("charges a tool call whose arguments were cut off before rethrowing it", async () => {
+    const cutOff = new LLMToolArgumentsError("cut off", {
+      toolName: "EmitOverseerFlags",
+      stopReason: "max_tokens",
+      argumentsLength: 16_454,
+      usage: { input_tokens: 4_000, output_tokens: 16_000 },
+    });
+    const failing = {
+      complete: async () => {
+        throw cutOff;
+      },
+      converse: async () => {
+        throw cutOff;
+      },
+    };
+
+    const thrown = await withBudget("overseer", 100_000, async ({ wrapClient }) =>
+      wrapClient(failing).complete({
+        model: "qwen",
+        messages: [{ role: "user", content: "audit" }],
+        max_tokens: 16_000,
+        budget: "offline-overseer",
+      }),
+    ).catch((error: unknown) => error);
+
+    expect(thrown).toBe(cutOff);
+    expect(getBudgetErrorTokens(thrown)).toBe(20_000);
+
+    const exhausted = await withBudget("overseer", 10_000, async ({ wrapClient }) =>
+      wrapClient(failing).complete({
+        model: "qwen",
+        messages: [{ role: "user", content: "audit" }],
+        max_tokens: 16_000,
+        budget: "offline-overseer",
+      }),
+    ).catch((error: unknown) => error);
+
+    expect(exhausted).toBeInstanceOf(BudgetExceededError);
+    expect(getBudgetErrorTokens(exhausted)).toBe(20_000);
   });
 });

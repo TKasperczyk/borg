@@ -52,7 +52,7 @@ export function awaitResponseForTerminal(input: {
   terminalEntry: StreamEntry;
 }): Exclude<InboxAwaitResponse, { status: "pending" } | { status: "generating" }> {
   const responseTo = input.terminalEntry.response_to;
-  if (responseTo === undefined) {
+  if (responseTo?.kind !== "stream_backlog") {
     throw new Error("terminal entry is missing response_to");
   }
   const common = {
@@ -184,7 +184,7 @@ export class ResponseWaiterRegistry {
   }
 
   resolveTerminal(tenant: string, terminalEntry: StreamEntry): void {
-    if (this.shuttingDown) {
+    if (this.shuttingDown || terminalEntry.response_to?.kind !== "stream_backlog") {
       return;
     }
 

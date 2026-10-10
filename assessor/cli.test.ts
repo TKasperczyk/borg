@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 
 function runAssess(args: readonly string[]): string {
-  return execFileSync("pnpm", ["tsx", "assessor/cli.ts", ...args], {
+  return execFileSync(process.execPath, ["--import", "tsx", "assessor/cli.ts", ...args], {
     cwd: process.cwd(),
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],

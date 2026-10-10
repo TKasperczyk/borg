@@ -479,6 +479,7 @@ export class SemanticExtractorProcess implements OfflineProcess<SemanticExtracto
           entityRepository: ctx.entityRepository,
         });
         const extractor = new SemanticExtractor({
+          similarityConfig: ctx.config,
           nodeRepository: ctx.semanticNodeRepository,
           edgeRepository: ctx.semanticEdgeRepository,
           embeddingClient: ctx.embeddingClient,

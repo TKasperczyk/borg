@@ -1,3 +1,4 @@
+import { similarityThresholds } from "../../config/similarity.js";
 import { z } from "zod";
 
 import { computeWeights } from "../../cognition/attention/index.js";
@@ -280,10 +281,6 @@ export function unwrapTensionParameterScaffolding(value: string): string[] {
  * addressed to a different field, so it is not tension content. Same structural
  * predicate as the rejecting variant, different cost when it fires.
  */
-export function unwrapTensionParameterScaffoldingForParse(value: string): string[] {
-  return unwrapTensionParameterScaffoldingForParseWithDrops(value);
-}
-
 function unwrapTensionParameterScaffoldingForParseWithDrops(
   value: string,
   onDrop?: TensionScaffoldingDropObserver,
@@ -1735,7 +1732,7 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
             const duplicateMerges = planDuplicateMerges(
               presentedPairs,
               judgments,
-              ctx.config.offline.ruminator.duplicateSimilarityThreshold,
+              similarityThresholds(ctx.config).ruminatorDuplicate,
             ).filter(
               (item) =>
                 item.action === "merge_duplicate" &&

@@ -1,0 +1,1097 @@
+{
+  "query": "[from Kasperczyk, Tomasz] Czy Marcin będzie w przyszłym tygodniu w pracy, czy idzie na urlop?",
+  "attention_weights": {
+    "semantic": 0.65,
+    "goal_relevance": 0,
+    "value_alignment": 0,
+    "mood": 0,
+    "time": 0,
+    "social": 0.15,
+    "entity": 0.2,
+    "heat": 0.15,
+    "suppression_penalty": 0.5
+  },
+  "source_file": "baseline-P.json",
+  "sha256": "79e1cc709ca12b1d2a103fe0efe560c8257f034dfcc5c6b4f0ff542f9e6588a5",
+  "turn_id": "sidecar_recall:team-agent-ai:1788905527194:9",
+  "now_ms": 1788905527195,
+  "similarity_weight": 0.65,
+  "target_episode_id": "ep_xij9l0i4k8uvespi",
+  "lanes": [
+    {
+      "id": "recall_raw_text_0",
+      "kind": "raw_text",
+      "candidates": [
+        {
+          "episode_id": "ep_xij9l0i4k8uvespi",
+          "score": 0.6465777284681957,
+          "vector_score": 0.5851200819015503
+        },
+        {
+          "episode_id": "ep_9url6dn62ctpe68u",
+          "score": 0.35958575253139174,
+          "vector_score": 0.48220473527908325
+        },
+        {
+          "episode_id": "ep_5id501anyii3g71x",
+          "score": 0.5089904290606755,
+          "vector_score": 0.4796086549758911
+        },
+        {
+          "episode_id": "ep_hzgdwd6hy556bvoe",
+          "score": 0.3398868944667284,
+          "vector_score": 0.4788207411766052
+        },
+        {
+          "episode_id": "ep_bx09sz118xjhfsz4",
+          "score": 0.36859665411033593,
+          "vector_score": 0.4737136960029602
+        },
+        {
+          "episode_id": "ep_k0dic33mfar4q7yl",
+          "score": 0.4038735266689888,
+          "vector_score": 0.4707376956939697
+        },
+        {
+          "episode_id": "ep_ts3of80ozx1ljk9y",
+          "score": 0.5039480287768839,
+          "vector_score": 0.4623680114746094
+        },
+        {
+          "episode_id": "ep_6lawkwbvh5abks1r",
+          "score": 0.44899137253729404,
+          "vector_score": 0.460685133934021
+        },
+        {
+          "episode_id": "ep_3s7i50g9pew6ozdd",
+          "score": 0.5052404336586437,
+          "vector_score": 0.4596090316772461
+        },
+        {
+          "episode_id": "ep_algtzr1hbxubs2wc",
+          "score": 0.35613270451812334,
+          "vector_score": 0.4562661647796631
+        },
+        {
+          "episode_id": "ep_u8q7x72yyk0t1rw8",
+          "score": 0.3356814989036928,
+          "vector_score": 0.452762246131897
+        },
+        {
+          "episode_id": "ep_u328r32ybf00k0qm",
+          "score": 0.32237107990044855,
+          "vector_score": 0.45144277811050415
+        },
+        {
+          "episode_id": "ep_wmi1j67amh6aviy4",
+          "score": 0.38546718215096964,
+          "vector_score": 0.44521474838256836
+        },
+        {
+          "episode_id": "ep_o2s1a8ys05oif5qq",
+          "score": 0.49078884902139486,
+          "vector_score": 0.4431110620498657
+        },
+        {
+          "episode_id": "ep_g10mqpa4rmdwu1w2",
+          "score": 0.4713544676408186,
+          "vector_score": 0.44106990098953247
+        },
+        {
+          "episode_id": "ep_ez536ouwfd7s41ni",
+          "score": 0.44082589237044695,
+          "vector_score": 0.43923527002334595
+        },
+        {
+          "episode_id": "ep_ua3b7hsmu77yjdu8",
+          "score": 0.47062999388558696,
+          "vector_score": 0.4383375644683838
+        },
+        {
+          "episode_id": "ep_ba64o7vr1597qoyx",
+          "score": 0.4157455345957054,
+          "vector_score": 0.43695712089538574
+        },
+        {
+          "episode_id": "ep_5l8g3y3bkp3sllvw",
+          "score": 0.6138269588943728,
+          "vector_score": 0.43281829357147217
+        },
+        {
+          "episode_id": "ep_q17my9zmsklu71i7",
+          "score": 0.5733426188657594,
+          "vector_score": 0.4323440194129944
+        },
+        {
+          "episode_id": "ep_cez6o7mzckwbw09d",
+          "score": 0.6681432491354891,
+          "vector_score": 0.4298363924026489
+        },
+        {
+          "episode_id": "ep_yh0rsjnc8g1kwhzz",
+          "score": 0.3382714924848092,
+          "vector_score": 0.42815709114074707
+        },
+        {
+          "episode_id": "ep_x1tswmuzto5y23oe",
+          "score": 0.3699788547675034,
+          "vector_score": 0.42425429821014404
+        },
+        {
+          "episode_id": "ep_dld2lnbged40ljr1",
+          "score": 0.3660194185064315,
+          "vector_score": 0.4239932894706726
+        },
+        {
+          "episode_id": "ep_6jo85kpbfocmpr2a",
+          "score": 0.36778027633980515,
+          "vector_score": 0.42391300201416016
+        },
+        {
+          "episode_id": "ep_ziupoc6bl6bfkh3r",
+          "score": 0.27559564649949686,
+          "vector_score": 0.4238426089286804
+        },
+        {
+          "episode_id": "ep_g8utokuemkcat08u",
+          "score": 0.34272328696294935,
+          "vector_score": 0.4228142499923706
+        },
+        {
+          "episode_id": "ep_8l2gjq6gzt0d26bp",
+          "score": 0.7347363592978524,
+          "vector_score": 0.422671914100647
+        },
+        {
+          "episode_id": "ep_3vux044ckqoq7qhv",
+          "score": 0.5239980816542235,
+          "vector_score": 0.41866016387939453
+        },
+        {
+          "episode_id": "ep_1vccxlm7ht9rk5h5",
+          "score": 0.3959912295262238,
+          "vector_score": 0.41811949014663696
+        },
+        {
+          "episode_id": "ep_tjsdb0in2qxhtue0",
+          "score": 0.39897529025605966,
+          "vector_score": 0.41421306133270264
+        },
+        {
+          "episode_id": "ep_0ji2t2vdzngy8tcg",
+          "score": 0.4000356530671176,
+          "vector_score": 0.4127974510192871
+        },
+        {
+          "episode_id": "ep_mzp951pftjjhpkp5",
+          "score": 0.39030743289955666,
+          "vector_score": 0.41241633892059326
+        },
+        {
+          "episode_id": "ep_8mepn6ebhc7mypkx",
+          "score": 0.44447007822091844,
+          "vector_score": 0.4122995138168335
+        },
+        {
+          "episode_id": "ep_y7on3mjtdjz6fu8t",
+          "score": 0.38349686899485463,
+          "vector_score": 0.41204410791397095
+        },
+        {
+          "episode_id": "ep_d1wblg7hdetovhsk",
+          "score": 0.3966508826042705,
+          "vector_score": 0.41082972288131714
+        },
+        {
+          "episode_id": "ep_2252uo68sotsn91a",
+          "score": 0.6963702415572669,
+          "vector_score": 0.40980076789855957
+        },
+        {
+          "episode_id": "ep_i66ll3ooogpk4j7v",
+          "score": 0.7260033833304244,
+          "vector_score": 0.4092365503311157
+        },
+        {
+          "episode_id": "ep_vl8va6nsfp17n1uu",
+          "score": 0.385245458571223,
+          "vector_score": 0.4087856411933899
+        },
+        {
+          "episode_id": "ep_1pgiscadagd0fwq6",
+          "score": 0.6931928281089667,
+          "vector_score": 0.40491247177124023
+        },
+        {
+          "episode_id": "ep_w31pulf5bwpkj4g4",
+          "score": 0.4203674902247521,
+          "vector_score": 0.40455102920532227
+        },
+        {
+          "episode_id": "ep_8tczfqd9wk5gaq84",
+          "score": 0.4835297938449262,
+          "vector_score": 0.40371739864349365
+        },
+        {
+          "episode_id": "ep_wga0nr5n4rgy486t",
+          "score": 0.5629294077408377,
+          "vector_score": 0.4025903344154358
+        },
+        {
+          "episode_id": "ep_wh4rpf440hf8a5tw",
+          "score": 0.3823514813306065,
+          "vector_score": 0.40141499042510986
+        },
+        {
+          "episode_id": "ep_8koel0m2p5azupym",
+          "score": 0.32043598361807474,
+          "vector_score": 0.4006768465042114
+        },
+        {
+          "episode_id": "ep_ata1waod2d3n4bx0",
+          "score": 0.6977795240787357,
+          "vector_score": 0.40043067932128906
+        },
+        {
+          "episode_id": "ep_kfqrlru6d26dqnm2",
+          "score": 0.350715682035175,
+          "vector_score": 0.4004138708114624
+        },
+        {
+          "episode_id": "ep_l1tvgerppn58w6yh",
+          "score": 0.2890732299238149,
+          "vector_score": 0.4003678560256958
+        }
+      ],
+      "source": "raw-user-message"
+    },
+    {
+      "id": "recall_semantic_query_0",
+      "kind": "semantic_query",
+      "candidates": [
+        {
+          "episode_id": "ep_xij9l0i4k8uvespi",
+          "score": 0.7048616416037242,
+          "vector_score": 0.6747876405715942
+        },
+        {
+          "episode_id": "ep_1pgiscadagd0fwq6",
+          "score": 0.7619408820173147,
+          "vector_score": 0.5106787085533142
+        },
+        {
+          "episode_id": "ep_u8q7x72yyk0t1rw8",
+          "score": 0.36029656614726885,
+          "vector_score": 0.4906315803527832
+        },
+        {
+          "episode_id": "ep_dxnc5djuyd61v3ro",
+          "score": 0.4633743093096792,
+          "vector_score": 0.4872533082962036
+        },
+        {
+          "episode_id": "ep_cez6o7mzckwbw09d",
+          "score": 0.7019285177998491,
+          "vector_score": 0.4818137288093567
+        },
+        {
+          "episode_id": "ep_hzgdwd6hy556bvoe",
+          "score": 0.3243488904260103,
+          "vector_score": 0.4549161195755005
+        },
+        {
+          "episode_id": "ep_hr408y0p65kzu6r4",
+          "score": 0.3386169349529833,
+          "vector_score": 0.45458078384399414
+        },
+        {
+          "episode_id": "ep_u328r32ybf00k0qm",
+          "score": 0.31666485307473446,
+          "vector_score": 0.4426639676094055
+        },
+        {
+          "episode_id": "ep_uc6alrbkitjpdvrp",
+          "score": 0.3092397500216343,
+          "vector_score": 0.4376893639564514
+        },
+        {
+          "episode_id": "ep_algtzr1hbxubs2wc",
+          "score": 0.3313753729083974,
+          "vector_score": 0.4181779623031616
+        },
+        {
+          "episode_id": "ep_lrb53yb2cnruglso",
+          "score": 0.42099917511311524,
+          "vector_score": 0.416825532913208
+        },
+        {
+          "episode_id": "ep_5id501anyii3g71x",
+          "score": 0.4674709689786214,
+          "vector_score": 0.41573256254196167
+        },
+        {
+          "episode_id": "ep_ua3b7hsmu77yjdu8",
+          "score": 0.4511617817579014,
+          "vector_score": 0.4083864688873291
+        },
+        {
+          "episode_id": "ep_2dt7sedvb6so7s39",
+          "score": 0.36621668964312204,
+          "vector_score": 0.40691274404525757
+        },
+        {
+          "episode_id": "ep_olvbb37fy7r8qdqc",
+          "score": 0.30404181361616733,
+          "vector_score": 0.4067925214767456
+        },
+        {
+          "episode_id": "ep_lw1l3j2oluxs6ri2",
+          "score": 0.4419469421167366,
+          "vector_score": 0.40254735946655273
+        },
+        {
+          "episode_id": "ep_1efg1t09khwq1fhg",
+          "score": 0.29694942340870806,
+          "vector_score": 0.40211331844329834
+        },
+        {
+          "episode_id": "ep_ch9tgse7uusmovde",
+          "score": 0.2650948150466783,
+          "vector_score": 0.40075546503067017
+        },
+        {
+          "episode_id": "ep_g8utokuemkcat08u",
+          "score": 0.32762815437360915,
+          "vector_score": 0.39959096908569336
+        },
+        {
+          "episode_id": "ep_g10mqpa4rmdwu1w2",
+          "score": 0.4429347196921721,
+          "vector_score": 0.39734721183776855
+        },
+        {
+          "episode_id": "ep_o2zpnv49719mk30l",
+          "score": 0.6868385690960079,
+          "vector_score": 0.3951364755630493
+        },
+        {
+          "episode_id": "ep_9url6dn62ctpe68u",
+          "score": 0.30218328182349835,
+          "vector_score": 0.3938932418823242
+        },
+        {
+          "episode_id": "ep_2252uo68sotsn91a",
+          "score": 0.6851681624995735,
+          "vector_score": 0.3925668001174927
+        },
+        {
+          "episode_id": "ep_8tczfqd9wk5gaq84",
+          "score": 0.4738453950745939,
+          "vector_score": 0.38881832361221313
+        },
+        {
+          "episode_id": "ep_nrxeezn653yii2ea",
+          "score": 0.26880342468597207,
+          "vector_score": 0.3885434865951538
+        },
+        {
+          "episode_id": "ep_wlfmbrsueox8m9zn",
+          "score": 0.2514895630703705,
+          "vector_score": 0.38610345125198364
+        },
+        {
+          "episode_id": "ep_j85c571dstt0kke6",
+          "score": 0.2588462702292953,
+          "vector_score": 0.3853336572647095
+        },
+        {
+          "episode_id": "ep_9c7jvwuh2e15tmtu",
+          "score": 0.6481889078880415,
+          "vector_score": 0.3816795349121094
+        },
+        {
+          "episode_id": "ep_lkgu9oq4rcrjq0jg",
+          "score": 0.46296680087129455,
+          "vector_score": 0.3798881769180298
+        },
+        {
+          "episode_id": "ep_93ktldxbuil9a8li",
+          "score": 0.46832097714634735,
+          "vector_score": 0.37955784797668457
+        },
+        {
+          "episode_id": "ep_3mnivhgzxuh3sf57",
+          "score": 0.6760522295657826,
+          "vector_score": 0.37854230403900146
+        },
+        {
+          "episode_id": "ep_ootrkga6la5bfb7k",
+          "score": 0.6398898973512562,
+          "vector_score": 0.3773871660232544
+        },
+        {
+          "episode_id": "ep_tzmx024dh6wfgl72",
+          "score": 0.24425029172384574,
+          "vector_score": 0.37498778104782104
+        },
+        {
+          "episode_id": "ep_3tcf0h6jx7y8c1kc",
+          "score": 0.44712075557855685,
+          "vector_score": 0.37338167428970337
+        },
+        {
+          "episode_id": "ep_evugzh5f47htaof5",
+          "score": 0.5944065593578378,
+          "vector_score": 0.3715336322784424
+        },
+        {
+          "episode_id": "ep_hqm8of5kyr4a74u1",
+          "score": 0.3180369983543111,
+          "vector_score": 0.3713998794555664
+        },
+        {
+          "episode_id": "ep_hvgxtf5qtxtl3vn3",
+          "score": 0.4726447096421855,
+          "vector_score": 0.37119317054748535
+        },
+        {
+          "episode_id": "ep_9o76kr4v8nowsnwe",
+          "score": 0.32905376481704696,
+          "vector_score": 0.371127724647522
+        },
+        {
+          "episode_id": "ep_vysqjlkcx5llvsf1",
+          "score": 0.24169941291700411,
+          "vector_score": 0.37106335163116455
+        },
+        {
+          "episode_id": "ep_a7dapujutmm342am",
+          "score": 0.24117351414052657,
+          "vector_score": 0.3702542781829834
+        },
+        {
+          "episode_id": "ep_7hahtkvhp1a3j41f",
+          "score": 0.2409004917493625,
+          "vector_score": 0.3698342442512512
+        },
+        {
+          "episode_id": "ep_lsoj6gss14heatob",
+          "score": 0.25978078111984054,
+          "vector_score": 0.36889326572418213
+        },
+        {
+          "episode_id": "ep_egv9385x3id4rxsj",
+          "score": 0.240187937141575,
+          "vector_score": 0.36872947216033936
+        },
+        {
+          "episode_id": "ep_r19nep4q9nuuyt20",
+          "score": 0.46122106285638886,
+          "vector_score": 0.3686543107032776
+        },
+        {
+          "episode_id": "ep_xijt67hgr8dp6xvm",
+          "score": 0.27581196963056975,
+          "vector_score": 0.36864930391311646
+        },
+        {
+          "episode_id": "ep_usbxpj5pkp5albhc",
+          "score": 0.239621971934268,
+          "vector_score": 0.36786729097366333
+        },
+        {
+          "episode_id": "ep_x1tswmuzto5y23oe",
+          "score": 0.3330065466086289,
+          "vector_score": 0.36737382411956787
+        },
+        {
+          "episode_id": "ep_a4nawuqjqyruq2pj",
+          "score": 0.24591094207749742,
+          "vector_score": 0.36590367555618286
+        }
+      ],
+      "source": "llm-expansion"
+    },
+    {
+      "id": "recall_known_term_0",
+      "kind": "known_term",
+      "candidates": [
+        {
+          "episode_id": "ep_lw1l3j2oluxs6ri2",
+          "score": 0.6302911584634773,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_xij9l0i4k8uvespi",
+          "score": 0.7162496752321881,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_cez6o7mzckwbw09d",
+          "score": 0.8387495940737673,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_2dt7sedvb6so7s39",
+          "score": 0.5517234060137046,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_jtbulqz836f7e2ri",
+          "score": 0.5809308931342543,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_3h0znkb5wr3gcnfb",
+          "score": 0.5517234060137046,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_u1yadqgha0i21a0z",
+          "score": 0.4931714479999669,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_hr408y0p65kzu6r4",
+          "score": 0.49313942545438716,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_3r1m9aj0sdgxtib8",
+          "score": 0.567880836421342,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_olvbb37fy7r8qdqc",
+          "score": 0.48962667465628273,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_1efg1t09khwq1fhg",
+          "score": 0.48557576642056416,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_dxnc5djuyd61v3ro",
+          "score": 0.5966596589171469,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_algtzr1hbxubs2wc",
+          "score": 0.5095596974113423,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_zm0007qfxcsdnp99",
+          "score": 0.789995001831762,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_73vh4i756oemhcme",
+          "score": 0.5913902766619604,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_n97qxeahaox87hky",
+          "score": 0.47474173525242325,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_jr9s5kg8j2855jk5",
+          "score": 0.47050741381649513,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_eytzbw1n5ukezotd",
+          "score": 0.2883343592356118,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_uc6alrbkitjpdvrp",
+          "score": 0.2747416634499408,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_g8utokuemkcat08u",
+          "score": 0.31789402446790843,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_ootrkga6la5bfb7k",
+          "score": 0.6445882394361409,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_o2zpnv49719mk30l",
+          "score": 0.6799998599800259,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_km46o7mopwuralof",
+          "score": 0.679999871211572,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_lrb53yb2cnruglso",
+          "score": 0.40006257871953,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_u8q7x72yyk0t1rw8",
+          "score": 0.2913860389179598,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_raf9gr2yhdadfrbz",
+          "score": 0.5875686571063201,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_1pgiscadagd0fwq6",
+          "score": 0.6799997214576604,
+          "vector_score": 0
+        }
+      ],
+      "source": "llm-expansion"
+    },
+    {
+      "id": "recall_known_term_1",
+      "kind": "known_term",
+      "candidates": [],
+      "source": "llm-expansion"
+    },
+    {
+      "id": "recall_known_term_2",
+      "kind": "known_term",
+      "candidates": [
+        {
+          "episode_id": "ep_g7i38j0waw4lb7bu",
+          "score": 0.5749996788021564,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_jtbulqz836f7e2ri",
+          "score": 0.3809308931342542,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_zm0007qfxcsdnp99",
+          "score": 0.5899950018317619,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_2252uo68sotsn91a",
+          "score": 0.6799997424232032,
+          "vector_score": 0
+        }
+      ],
+      "source": "llm-expansion"
+    },
+    {
+      "id": "recall_known_term_3",
+      "kind": "known_term",
+      "candidates": [
+        {
+          "episode_id": "ep_xij9l0i4k8uvespi",
+          "score": 0.7162496752321881,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_5id501anyii3g71x",
+          "score": 0.4472448033263463,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_lkgu9oq4rcrjq0jg",
+          "score": 0.4660394858745751,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_d1wblg7hdetovhsk",
+          "score": 0.3796115627314143,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_g10mqpa4rmdwu1w2",
+          "score": 0.43465903199762257,
+          "vector_score": 0
+        }
+      ],
+      "source": "llm-expansion"
+    },
+    {
+      "id": "recall_known_term_4",
+      "kind": "known_term",
+      "candidates": [
+        {
+          "episode_id": "ep_j72ksuwej0k98g1h",
+          "score": 0.7474956578915364,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_lkgu9oq4rcrjq0jg",
+          "score": 0.6660394858745752,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_3s7i50g9pew6ozdd",
+          "score": 0.6564945630684338,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_5l8g3y3bkp3sllvw",
+          "score": 0.7824950680729157,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_wga0nr5n4rgy486t",
+          "score": 0.7512456903708044,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_w31pulf5bwpkj4g4",
+          "score": 0.6074093212412925,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_o2s1a8ys05oif5qq",
+          "score": 0.6527666586889821,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_tg4tgjncxge7tgsl",
+          "score": 0.8049998313133188,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_f6kc84pd1wcplpyv",
+          "score": 0.8424997019099031,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_ata1waod2d3n4bx0",
+          "score": 0.8874995825198979,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_d6vrueloan1qqvrb",
+          "score": 0.6565166646668251,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_ts3of80ozx1ljk9y",
+          "score": 0.6534088213183877,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_wjxlcyc56gh08aqa",
+          "score": 0.5804069569796038,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_vl8va6nsfp17n1uu",
+          "score": 0.5695347917955196,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_kljcbunwm3m3vorc",
+          "score": 0.5257851810937129,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_bx09sz118xjhfsz4",
+          "score": 0.5106827517084118,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_8l2gjq6gzt0d26bp",
+          "score": 0.9099996151324318,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_e8zk5ycasng21nfu",
+          "score": 0.6034308969081192,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_leiid4qcupsa4tcp",
+          "score": 0.5759868049690657,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_i66ll3ooogpk4j7v",
+          "score": 0.9099996256151991,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_450jvddub0sffml4",
+          "score": 0.6042234060137046,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_tjsdb0in2qxhtue0",
+          "score": 0.5797368003898029,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_93jer6d5exmu6iog",
+          "score": 0.9099996585610416,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_yebxjnaf7bpqsgo7",
+          "score": 0.909999637595505,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_yz58q0mv0e1flm4x",
+          "score": 0.9099996480782729,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_mzp951pftjjhpkp5",
+          "score": 0.572236812601171,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_hpkz2snsppn4waw6",
+          "score": 0.9099996697925795,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_559p07u2vjo6sw1y",
+          "score": 0.5037730868415432,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_0ji2t2vdzngy8tcg",
+          "score": 0.581717309904581,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_1vccxlm7ht9rk5h5",
+          "score": 0.5742135609309098,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_8koel0m2p5azupym",
+          "score": 0.5099960333903373,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_yh0rsjnc8g1kwhzz",
+          "score": 0.5099693832433236,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_ba64o7vr1597qoyx",
+          "score": 0.5817234060137046,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_algtzr1hbxubs2wc",
+          "score": 0.5095596974113423,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_fr3to0exhse279ck",
+          "score": 0.5095482297709937,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_ez536ouwfd7s41ni",
+          "score": 0.605322966855272,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_re17rqdickcgsyxw",
+          "score": 0.6239266269892597,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_6w3akojl9rjs6wph",
+          "score": 0.8349951682049208,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_of1kw20vxoir7l8w",
+          "score": 0.5732970765015442,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_wmi1j67amh6aviy4",
+          "score": 0.5460775957023002,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_7nq6hzzn8zfxew9x",
+          "score": 0.5546072686906302,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_k0dic33mfar4q7yl",
+          "score": 0.5478940244679085,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_5id501anyii3g71x",
+          "score": 0.4472448033263463,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_6jeyxghg3ngn656t",
+          "score": 0.45489655427275494,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_eytzbw1n5ukezotd",
+          "score": 0.2883343592356118,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_hzgdwd6hy556bvoe",
+          "score": 0.2786534127019349,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_n97qxeahaox87hky",
+          "score": 0.2747417352524233,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_g8utokuemkcat08u",
+          "score": 0.31789402446790843,
+          "vector_score": 0
+        }
+      ],
+      "source": "audience-aliases"
+    },
+    {
+      "id": "recall_recent_0",
+      "kind": "recent",
+      "candidates": [
+        {
+          "episode_id": "ep_g7i38j0waw4lb7bu",
+          "score": 0.3749996788021564,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_s58z1p0114no1gha",
+          "score": 0.27844038417123623,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_495st4sizoeycb1c",
+          "score": 0.19848206130703655,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_gblhqmuhulvs0ne3",
+          "score": 0.26339966759154837,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_ihetucgp95if0b3i",
+          "score": 0.3283810460060696,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_ofee2kd26a77sjg5",
+          "score": 0.36327013803517266,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_92ad4gsqo7ro3ucm",
+          "score": 0.36702012880721757,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_zidphtndopc4k438",
+          "score": 0.3088124420381776,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_3dywtlo8xl2w0p5r",
+          "score": 0.3088118502578267,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_5id501anyii3g71x",
+          "score": 0.2472448033263463,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_j72ksuwej0k98g1h",
+          "score": 0.3474956578915363,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_flmnhs0w729at897",
+          "score": 0.47999948548119287,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_ozxy8t39bw2222le",
+          "score": 0.4795373566802605,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_j7qufop1i89nr2mx",
+          "score": 0.4795374381613597,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_k5j6akfgdvii2ok0",
+          "score": 0.47953742694836304,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_3n9k7uzguz6fstz2",
+          "score": 0.479533573441797,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_ootrkga6la5bfb7k",
+          "score": 0.44458823943614084,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_ukt771g9h5hbh2dx",
+          "score": 0.4795336070803247,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_yy5g3lm7h4hl3nzl",
+          "score": 0.4795336145555537,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_awf1yvmziyh38q2u",
+          "score": 0.49700003362192263,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_sjr2a5q4kiljd786",
+          "score": 0.47952940603328337,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_ane5c9zkt2eozfe6",
+          "score": 0.47953356447152357,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_0lm81cpnea9vx6lj",
+          "score": 0.5260793025189593,
+          "vector_score": 0
+        },
+        {
+          "episode_id": "ep_123ft200pavndjtq",
+          "score": 0.5032802955010646,
+          "vector_score": 0
+        }
+      ],
+      "source": "recency"
+    }
+  ]
+}

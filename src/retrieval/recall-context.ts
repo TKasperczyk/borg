@@ -41,17 +41,34 @@ export {
  */
 export const SELF_RECALL_SCOPE = "self" as const;
 
-export const MEMORY_DISCLOSURE_GUIDANCE_FOR_MODEL = [
-  "Memory disclosure labels are input-side guidance for my reasoning with recalled memory.",
-  "Some entries may be labeled relationship_private, operator_private, self_private, sensitive, or unknown, with private-to=<ids> and origin_audience=<ids> metadata.",
-  "I use labeled-private memories internally to inform my judgment, empathy, caution, continuity, and uncertainty.",
-  "I do not reveal labeled-private content, source details, or the existence of a private memory to the current audience unless the rendered disclosure policy, creator/operator context, or current audience authorization permits it.",
-  "Operator or creator context may permit fuller discussion; I use the rendered authority and disclosure context to decide how much I can discuss.",
-  "Disclosure permission and common-ground status are different: my being allowed to say something does not mean the current audience already knows it.",
-  "A memory I can recall or disclose is not automatically common ground. I do not frame cross-session memory as already-shared knowledge unless the current audience is in its origin_audience, it is established as common ground for them, or there is evidence they have seen it.",
-  "When disclosure is permitted but the current audience likely does not know a memory, I introduce it as new information rather than presuming it is shared.",
-  "For a group audience, origin_audience means a memory was shared in that venue, not that every current participant saw it; if a participant's presence or prior exposure is uncertain, I do not assume it is common ground for them -- I introduce it as new or qualify the framing.",
-].join("\n");
+/** Select guidance from disclosure labels actually rendered on this page, never from prose. */
+export function renderMemoryDisclosureGuidanceForModel(
+  labels: readonly { class: string; scope?: string }[] = [],
+): string {
+  const hasTenantPublicFact = labels.some(
+    (label) => label.class === "public" && label.scope === "tenant",
+  );
+  return [
+    "Memory disclosure labels are input-side guidance for my reasoning with recalled memory.",
+    "Some entries may be labeled relationship_private, operator_private, self_private, sensitive, or unknown, with private-to=<ids> and origin_audience=<ids> metadata.",
+    "I use labeled-private memories internally to inform my judgment, empathy, caution, continuity, and uncertainty.",
+    "I do not reveal labeled-private content, source details, or the existence of a private memory to the current audience unless the rendered disclosure policy, creator/operator context, or current audience authorization permits it.",
+    ...(hasTenantPublicFact
+      ? [
+          "A tenant-authorized public fact is shareable with any tenant member; its private source is not.",
+        ]
+      : []),
+    "Operator or creator context may permit fuller discussion; I use the rendered authority and disclosure context to decide how much I can discuss.",
+    "Disclosure permission and common-ground status are different: my being allowed to say something does not mean the current audience already knows it.",
+    "A memory I can recall or disclose is not automatically common ground. I do not frame cross-session memory as already-shared knowledge unless the current audience is in its origin_audience, it is established as common ground for them, or there is evidence they have seen it.",
+    "When disclosure is permitted but the current audience likely does not know a memory, I introduce it as new information rather than presuming it is shared.",
+    "For a group audience, origin_audience means a memory was shared in that venue, not that every current participant saw it; if a participant's presence or prior exposure is uncertain, I do not assume it is common ground for them -- I introduce it as new or qualify the framing.",
+  ].join("\n");
+}
+
+// Core prompt labels have no tenant scope. Sidecar pages carrying scoped authorization
+// labels use the renderer above; ordinary public labels do not imply tenant authorization.
+export const MEMORY_DISCLOSURE_GUIDANCE_FOR_MODEL = renderMemoryDisclosureGuidanceForModel();
 
 export type CognitionRecallContext = {
   readonly reader: typeof SELF_RECALL_SCOPE;

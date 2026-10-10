@@ -1,0 +1,89 @@
+{
+  "autonomy": {
+    "maxWakesPerWindow": 25,
+    "proactiveOutbound": {
+      "enabled": true,
+      "maxPostsPerWindow": 6,
+      "maxPostsPerTargetPerWindow": 6,
+      "allowByConfig": {
+        "sourceTypes": ["botarena"],
+        "sessionIds": ["sess_41uuw7ztyzh00kjc"]
+      }
+    },
+    "triggers": {
+      "commitmentExpiring": {
+        "enabled": true
+      },
+      "openQuestionDormant": {
+        "enabled": true
+      },
+      "goalFollowupDue": {
+        "enabled": true
+      },
+      "scheduledReflection": {
+        "enabled": true
+      }
+    }
+  },
+  "streamIngestion": {
+    "settle": {
+      "settleMs": 3000,
+      "maxSettleMs": 30000
+    }
+  },
+  "anthropic": {
+    "models": {
+      "cognition": "claude-opus-5-5",
+      "background": "claude-opus-5-5",
+      "extraction": "claude-opus-5-5",
+      "preTurnExtraction": "claude-sonnet-5"
+    }
+  },
+  "generation": {
+    "cognition": {
+      "thinking": {
+        "enabled": true,
+        "mode": "adaptive",
+        "effort": "high"
+      }
+    }
+  },
+  "retrieval": {
+    "attentionWeights": {
+      "semantic": 0.35,
+      "heat": 0.45
+    },
+    "recallExpansionTimeoutMs": 20000,
+    "recallPlannerTimeZone": "Europe/Warsaw"
+  },
+  "embedding": {
+    "model": "text-embedding-qwen3-8b-text-embedding"
+  },
+  "frameAnomaly": {
+    "peerChannelSourceTypes": ["kira", "claude_code"]
+  },
+  "internalIdentifierGuard": {
+    "substratePrivilegedSourceTypes": ["claude_code"]
+  },
+  "offline": {
+    "reviewResolver": {
+      "autonomous": true,
+      "maxItemsPerPass": 12
+    },
+    "ruminator": {
+      "budget": 400000
+    },
+    "selfNarrator": {
+      "budget": 1200000
+    },
+    "commitmentReconciler": {
+      "budget": 250000
+    },
+    "associator": {
+      "budget": 150000
+    },
+    "reflector": {
+      "budget": 900000
+    }
+  }
+}

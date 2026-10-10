@@ -8,7 +8,7 @@ import { EXTRACT_EPISODES_TOOL } from "../memory/episodic/extractor.js";
 import { EXTRACT_SEMANTIC_TOOL } from "../memory/semantic/extractor.js";
 import { ASSOCIATOR_TOOL } from "../offline/associator/index.js";
 import { MERGE_TOOL } from "../offline/consolidator/index.js";
-import { OVERSEER_TOOL } from "../offline/overseer/index.js";
+import { OVERSEER_TOOLS } from "../offline/overseer/index.js";
 import { REFLECTOR_TOOL } from "../offline/reflector/index.js";
 import { RUMINATOR_TOOL } from "../offline/ruminator/index.js";
 import { SELF_NARRATOR_TOOL } from "../offline/self-narrator/index.js";
@@ -55,7 +55,7 @@ describe("tool schemas", () => {
       { tool: EXTRACT_EPISODES_TOOL, required: ["episodes"] },
       { tool: EXTRACT_SEMANTIC_TOOL, required: ["nodes", "edges"] },
       { tool: MERGE_TOOL, required: ["title", "narrative"] },
-      { tool: OVERSEER_TOOL, required: ["flags"] },
+      ...Object.values(OVERSEER_TOOLS).map((tool) => ({ tool, required: ["flags"] })),
       {
         tool: REFLECTOR_TOOL,
         required: ["label", "description", "confidence", "source_episode_ids"],
@@ -132,8 +132,10 @@ describe("tool schemas", () => {
     }
     expect(JSON.stringify(recordSchema)).not.toContain('"propertyNames":');
 
-    const overseerSchema = JSON.stringify(OVERSEER_TOOL.inputSchema);
-    expect(overseerSchema).not.toContain('"propertyNames":');
-    expect(overseerSchema).not.toContain('"patternProperties":');
+    for (const tool of Object.values(OVERSEER_TOOLS)) {
+      const overseerSchema = JSON.stringify(tool.inputSchema);
+      expect(overseerSchema).not.toContain('"propertyNames":');
+      expect(overseerSchema).not.toContain('"patternProperties":');
+    }
   });
 });

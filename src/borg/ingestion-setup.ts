@@ -62,8 +62,6 @@ export function buildStreamIngestionCoordinator(
 
     try {
       await appendInternalFailureEvent(writer, hook, error, details);
-    } catch {
-      // Best-effort observability on the detached ingestion path.
     } finally {
       writer.close();
     }
@@ -140,22 +138,23 @@ export function buildStreamIngestionCoordinator(
     settleMs: options.config.streamIngestion.settle.settleMs,
     maxSettleMs: options.config.streamIngestion.settle.maxSettleMs,
     clock: options.clock,
-    onError: (error, sessionId) => {
+    onError: async (error, sessionId) => {
       // Use a fresh writer: the turn's writer closes before ingestion
       // resolves, and we must not hold onto stream handles across
       // fire-and-forget boundaries.
       const writer = options.createStreamWriter(sessionId);
-      void writer
-        .append({
-          kind: "internal_event",
-          content: `Live stream ingestion failed: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        })
-        .catch(() => undefined)
-        .finally(() => {
-          writer.close();
-        });
+      try {
+        await writer.failureReports.report(() =>
+          writer.append({
+            kind: "internal_event",
+            content: `Live stream ingestion failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          }),
+        );
+      } finally {
+        writer.close();
+      }
     },
   });
 }

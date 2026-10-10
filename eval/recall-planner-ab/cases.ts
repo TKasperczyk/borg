@@ -6,6 +6,7 @@ import { z } from "zod";
 import { episodeIdSchema } from "../../src/memory/episodic/index.js";
 import { streamConversationSchema } from "../../src/stream/index.js";
 import { parseIsoInstant } from "../../src/util/iso-instant.js";
+import { memoryDisclosureLabelSchema } from "../../src/memory/common/disclosure-label.js";
 
 import type { RecallPlannerCase } from "./types.js";
 
@@ -29,6 +30,7 @@ const identitySchema = z
 const recentActivitySchema = z
   .object({
     excerpt: z.string().min(1),
+    disclosure_label: memoryDisclosureLabelSchema.optional(),
     occurred_at: z.number().int().nonnegative(),
     venue: streamConversationSchema.strict(),
     counterparty_name: z.string().min(1).optional(),

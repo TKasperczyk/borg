@@ -15,7 +15,12 @@ import {
   traceLlmCallStarted,
 } from "../tracing/llm-call-trace.js";
 import type { TurnTraceData, TurnTracer } from "../tracing/tracer.js";
-import { BudgetExceededError, LLMError } from "../util/errors.js";
+import {
+  BudgetExceededError,
+  findInErrorCauseChain,
+  LLMError,
+  LLMToolArgumentsError,
+} from "../util/errors.js";
 import type { SessionId } from "../util/ids.js";
 import type { JsonValue } from "../util/json-value.js";
 import { parseErrorMessage } from "../util/zod-errors.js";
@@ -352,9 +357,17 @@ export async function callStructuredTool<T>(
       if (consumed !== undefined) usage = addLlmUsage(usage, consumed);
       traceError(options, error, attemptCount, schemaRepair);
 
-      if (error instanceof BudgetExceededError) {
-        throw error;
-      }
+      const budgetError = findInErrorCauseChain(
+        error,
+        (candidate): candidate is BudgetExceededError => candidate instanceof BudgetExceededError,
+      );
+      if (budgetError !== undefined) throw budgetError;
+
+      const unparseable = findInErrorCauseChain(
+        error,
+        (candidate): candidate is LLMToolArgumentsError =>
+          candidate instanceof LLMToolArgumentsError,
+      );
 
       throw new StructuredToolCallError(
         `Structured tool call ${options.toolName} failed before a response was available`,
@@ -362,7 +375,7 @@ export async function callStructuredTool<T>(
           kind: "llm_failed",
           toolName: options.toolName,
           acceptedToolNames: names,
-          stopReason: null,
+          stopReason: unparseable?.stopReason ?? null,
           cause: error,
           ...errorAccounting(),
         },
@@ -393,11 +406,57 @@ export async function callStructuredTool<T>(
     return toolCall;
   };
 
-  let response = await complete(request, false);
-  let toolCall = acceptedCall(response);
+  let response: LLMCompleteResult;
+  let retriedMalformedArguments = false;
+
+  try {
+    response = await complete(request, false);
+  } catch (error) {
+    // Syntactically broken tool arguments surface inside complete(), so the
+    // validation-repair path below never sees them. Re-issue the identical
+    // request once - unless the arguments were cut off by the output limit,
+    // where a retry at the same max_tokens fails the same way.
+    const unparseable = findInErrorCauseChain(
+      error,
+      (candidate): candidate is LLMToolArgumentsError => candidate instanceof LLMToolArgumentsError,
+    );
+
+    if (
+      error instanceof BudgetExceededError ||
+      unparseable === undefined ||
+      unparseable.stopReason === "max_tokens" ||
+      attemptCount >= maxAttempts
+    ) {
+      throw error;
+    }
+
+    notifySchemaRepair(options, { status: "attempted", attempt: 2, error });
+
+    try {
+      response = await complete(request, true);
+    } catch (retryError) {
+      notifySchemaRepair(options, { status: "failed", attempt: 2, error: retryError });
+      throw retryError;
+    }
+
+    retriedMalformedArguments = true;
+  }
+
+  let toolCall: LLMToolCall;
+  try {
+    toolCall = acceptedCall(response);
+  } catch (error) {
+    if (retriedMalformedArguments) {
+      notifySchemaRepair(options, { status: "failed", attempt: 2, error });
+    }
+    throw error;
+  }
 
   try {
     const parsed = options.parse(toolCall.input, { toolCall, response });
+    if (retriedMalformedArguments) {
+      notifySchemaRepair(options, { status: "succeeded", attempt: 2 });
+    }
 
     return {
       response,
@@ -422,8 +481,12 @@ export async function callStructuredTool<T>(
         },
       );
 
-    if (maxAttempts < 2) {
-      throw originalInvalidPayload();
+    if (attemptCount >= maxAttempts) {
+      const failure = originalInvalidPayload();
+      if (retriedMalformedArguments) {
+        notifySchemaRepair(options, { status: "failed", attempt: 2, error: failure });
+      }
+      throw failure;
     }
 
     const repairRequest = validationRepairRequest(options, request, toolCall, error);

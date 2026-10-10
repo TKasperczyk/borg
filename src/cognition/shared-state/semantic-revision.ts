@@ -1,3 +1,4 @@
+import { similarityThresholds } from "../../config/similarity.js";
 import { z } from "zod";
 
 import { type EpisodicRepository } from "../../memory/episodic/index.js";
@@ -46,11 +47,6 @@ import {
 } from "./semantic-revision-cache.js";
 
 const SHARED_STATE_SEMANTIC_REVISION_TOOL_NAME = "EmitSharedStateSemanticRevision";
-const LEGACY_SHARED_STATE_SEMANTIC_REVISION_TOOL_NAME = "EmitDecisionArtifactSemanticRevision";
-const SHARED_STATE_SEMANTIC_REVISION_ACCEPTED_TOOL_NAMES = [
-  SHARED_STATE_SEMANTIC_REVISION_TOOL_NAME,
-  LEGACY_SHARED_STATE_SEMANTIC_REVISION_TOOL_NAME,
-] as const;
 const SHARED_STATE_SEMANTIC_REVISION_LABEL = "shared_state_semantic_revision";
 const DEFAULT_SEMANTIC_REVISION_CANDIDATE_LIMIT = 10;
 const MAX_SEMANTIC_REVISION_CANDIDATE_LIMIT = 10;
@@ -58,7 +54,6 @@ const MAX_SEMANTIC_REVISION_JUDGE_CANDIDATE_LIMIT = 10;
 const SEMANTIC_REVISION_OVERFETCH_MULTIPLIER = 3;
 const MAX_SEMANTIC_REVISION_RAW_CANDIDATE_LIMIT =
   DEFAULT_SEMANTIC_REVISION_CANDIDATE_LIMIT * SEMANTIC_REVISION_OVERFETCH_MULTIPLIER;
-const DEFAULT_SEMANTIC_REVISION_MIN_SIMILARITY = 0.01;
 const SHARED_STATE_SEMANTIC_REVISION_ENTRY_CAP = 3;
 
 const semanticRevisionVerdictSchema = z
@@ -289,7 +284,10 @@ async function enumerateSemanticRevisionCandidates(input: {
   const embedding = await input.dependencies.embeddingClient.embed(input.entry.text);
   const candidates = await input.dependencies.semanticNodeRepository.searchByVector(embedding, {
     limit: rawLimit,
-    minSimilarity: input.dependencies.minSimilarity ?? DEFAULT_SEMANTIC_REVISION_MIN_SIMILARITY,
+    minSimilarity:
+      input.dependencies.minSimilarity ??
+      similarityThresholds({ embedding: input.dependencies.embeddingClient.profile })
+        .semanticRevision,
     includeArchived: false,
   });
   const selected: LabeledSemanticNodeSearchCandidate[] = [];
@@ -424,7 +422,6 @@ async function judgeSemanticRevision(input: {
           budget: "shared-state-semantic-revision",
         },
         toolName: SHARED_STATE_SEMANTIC_REVISION_TOOL_NAME,
-        acceptedToolNames: SHARED_STATE_SEMANTIC_REVISION_ACCEPTED_TOOL_NAMES,
         parse: parseSemanticRevisionJudgeResult,
         trace: {
           tracer: input.tracer,

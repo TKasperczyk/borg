@@ -57,7 +57,12 @@ describe("OpenQuestionsRepository", () => {
     }
   });
 
-  async function openVectorFixture(embeddingClient: EmbeddingClient) {
+  async function openVectorFixture(
+    embeddingClient: EmbeddingClient,
+    onEmbeddingFailure?: ConstructorParameters<
+      typeof OpenQuestionsRepository
+    >[0]["onEmbeddingFailure"],
+  ) {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-open-questions-"));
     const store = new LanceDbStore({
       uri: join(tempDir, "lancedb"),
@@ -73,6 +78,7 @@ describe("OpenQuestionsRepository", () => {
       db,
       table,
       embeddingClient,
+      onEmbeddingFailure,
       clock: new FixedClock(10_000),
     });
 
@@ -87,6 +93,37 @@ describe("OpenQuestionsRepository", () => {
       table,
     };
   }
+
+  it.each(["synchronous", "asynchronous"])(
+    "retains a %s embedding reporter failure without failing the question mutation",
+    async (mode) => {
+      const failure = new Error("embedding reporter unavailable");
+      const log = vi.spyOn(console, "error").mockImplementation(() => {});
+      const { repository } = await openVectorFixture(new MapEmbeddingClient(new Map()), () => {
+        if (mode === "synchronous") throw failure;
+        return Promise.reject(failure);
+      });
+      try {
+        expect(() =>
+          repository.add({
+            question: "An embedding failure must retain its reporting outcome",
+            urgency: 0.4,
+            source: "user",
+            provenance: { kind: "manual" },
+          }),
+        ).not.toThrow();
+        await expect(repository.waitForPendingEmbeddings()).rejects.toMatchObject({
+          errors: [failure],
+        });
+        expect(log).toHaveBeenCalled();
+        await expect(repository.waitForPendingEmbeddings()).rejects.toMatchObject({
+          errors: [failure],
+        });
+      } finally {
+        log.mockRestore();
+      }
+    },
+  );
 
   it("dedupes by normalized full question text and related ids", () => {
     const clock = new FixedClock(10_000);
@@ -1066,6 +1103,32 @@ describe("OpenQuestionsRepository", () => {
       expect(
         repository.findByHandles({ semanticNodeIds: [nodeId] }).map((question) => question.id),
       ).toEqual([stillOpen.id, dismissed.id]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("looks up exact open-question duplicates globally without an audience argument", async () => {
+    const db = openDatabase(":memory:", { migrations: selfMigrations });
+    const repository = new OpenQuestionsRepository({ db, clock: new FixedClock(10_000) });
+    try {
+      const question = repository.add({
+        question: "Which constraint is still unresolved?",
+        audience_entity_id: createEntityId(),
+        urgency: 0.5,
+        source: "user",
+        provenance: manualProvenance,
+      });
+      await expect(
+        repository.findSimilarOpenQuestion({
+          question: "Which constraint is still unresolved?",
+        }),
+      ).resolves.toMatchObject({ question: { id: question.id }, similarity: 1 });
+      await expect(
+        repository.findSimilarOpenQuestion({
+          question: "Which separate constraint is unresolved?",
+        }),
+      ).resolves.toBeNull();
     } finally {
       db.close();
     }

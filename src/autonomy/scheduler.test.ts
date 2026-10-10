@@ -2110,12 +2110,10 @@ describe("AutonomyScheduler", () => {
         durationMs: 1,
       });
       const turnRunner = {
-        run: vi
-          .fn()
-          .mockResolvedValue({
-            ...createStructuralTurnResult({ emissionKind: "suppressed" }),
-            shownOpenQuestionIds: shown.map((index) => questions[index]!.id),
-          }),
+        run: vi.fn().mockResolvedValue({
+          ...createStructuralTurnResult({ emissionKind: "suppressed" }),
+          shownOpenQuestionIds: shown.map((index) => questions[index]!.id),
+        }),
       };
       const scheduler = createScheduler({
         db: harness.db,
@@ -6161,6 +6159,124 @@ describe("AutonomyScheduler", () => {
       error_streak: 10,
       bypass_count: 3,
     });
+  });
+
+  it("drains delayed fleet error notifications on graceful stop after the tick completes", async () => {
+    const clock = new ManualClock(2_600_000);
+    const harness = await createOfflineTestHarness({ clock });
+    cleanup = harness.cleanup;
+    const watermarkRepository = new StreamWatermarkRepository({ db: harness.db, clock });
+    watermarkRepository.set(FLEET_BRAKE_PROCESS_NAME, DEFAULT_SESSION_ID, {
+      lastTs: clock.now(),
+      lastEntryId: "malformed-fleet-state",
+      metadata: { empty_streak: "invalid" },
+    });
+    let finishReport!: () => void;
+    const report = new Promise<void>((resolve) => {
+      finishReport = resolve;
+    });
+    const onError = vi.fn(async () => await report);
+    const createStreamWriter = (sessionId: typeof DEFAULT_SESSION_ID) =>
+      new StreamWriter({ dataDir: harness.tempDir, sessionId, clock });
+    const scheduler = createScheduler({
+      db: harness.db,
+      enabled: true,
+      intervalMs: 1_000,
+      maxWakesPerWindow: 20,
+      fleetBrake: TEST_FLEET_BRAKE,
+      clock,
+      createStreamWriter,
+      watermarkRepository,
+      turnOrchestrator: {
+        run: vi.fn().mockResolvedValue(createStructuralTurnResult({ emissionKind: "suppressed" })),
+      },
+      toolDispatcher: new ToolDispatcher({ createStreamWriter, clock }),
+      sources: [
+        createPersistentDueSource({ watermarkRepository, eventIds: ["delayed-fleet-error"] }),
+      ],
+    });
+    scheduler.setObserver({ onError });
+    let stopped = false;
+    let stopping: Promise<void> | undefined;
+    try {
+      await scheduler.tick();
+      expect(onError).toHaveBeenCalledOnce();
+      stopping = scheduler.stop().then(() => {
+        stopped = true;
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(stopped).toBe(false);
+      finishReport();
+      await stopping;
+      expect(stopped).toBe(true);
+    } finally {
+      finishReport();
+      await (stopping ?? scheduler.stop());
+    }
+  });
+
+  it("drains an independent fleet report after the active tick rejects", async () => {
+    const clock = new ManualClock(2_600_000);
+    const harness = await createOfflineTestHarness({ clock });
+    cleanup = harness.cleanup;
+    const watermarkRepository = new StreamWatermarkRepository({ db: harness.db, clock });
+    watermarkRepository.set(FLEET_BRAKE_PROCESS_NAME, DEFAULT_SESSION_ID, {
+      lastTs: clock.now(),
+      lastEntryId: "malformed-fleet-state",
+      metadata: { empty_streak: "invalid" },
+    });
+    let finishReport!: () => void;
+    const report = new Promise<void>((resolve) => {
+      finishReport = resolve;
+    });
+    let failAppend!: (error: Error) => void;
+    const append = new Promise<never>((_resolve, reject) => {
+      failAppend = reject;
+    });
+    const onError = vi.fn(async () => await report);
+    const createStreamWriter = (sessionId: typeof DEFAULT_SESSION_ID) => {
+      const writer = new StreamWriter({ dataDir: harness.tempDir, sessionId, clock });
+      vi.spyOn(writer, "append").mockImplementation(async () => await append);
+      return writer;
+    };
+    const scheduler = createScheduler({
+      db: harness.db,
+      enabled: true,
+      intervalMs: 1_000,
+      maxWakesPerWindow: 20,
+      fleetBrake: TEST_FLEET_BRAKE,
+      clock,
+      createStreamWriter,
+      watermarkRepository,
+      turnOrchestrator: { run: vi.fn() },
+      toolDispatcher: new ToolDispatcher({ createStreamWriter, clock }),
+      sources: [
+        createPersistentDueSource({ watermarkRepository, eventIds: ["failed-wake-append"] }),
+      ],
+    });
+    scheduler.setObserver({ onError });
+    const failure = new Error("wake append failed");
+    const tick = scheduler.tick().catch((error: unknown) => error);
+    await vi.waitFor(() => expect(onError).toHaveBeenCalledOnce());
+    let stopped = false;
+    const stopping = scheduler
+      .stop()
+      .catch((error: unknown) => error)
+      .finally(() => {
+        stopped = true;
+      });
+    try {
+      failAppend(failure);
+      expect(await tick).toBe(failure);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(stopped).toBe(false);
+      finishReport();
+      expect(await stopping).toMatchObject({ errors: [failure] });
+    } finally {
+      finishReport();
+      failAppend(failure);
+      await stopping;
+    }
   });
 
   it("reports malformed fleet metadata once and self-heals on bookkeeping", async () => {

@@ -6,7 +6,7 @@ import {
   TestEmbeddingClient,
 } from "../offline/test-support.js";
 import { FixedClock } from "../util/clock.js";
-import { parseEpisodeId, parseStreamEntryId } from "../util/ids.js";
+import { DEFAULT_SESSION_ID, parseEpisodeId, parseStreamEntryId } from "../util/ids.js";
 
 import * as evidenceProjections from "./evidence-projections.js";
 import { RetrievalPipeline } from "./pipeline.js";
@@ -59,6 +59,49 @@ describe("RetrievalProjection episodes-only", () => {
     expect(spies.openQuestions).toHaveBeenCalled();
     expect(spies.imagePerception).toHaveBeenCalled();
     expect(spies.commitments).toHaveBeenCalled();
+  });
+
+  it("recallEpisodeHitsForCognition recalls other audiences with labels and skips context lanes", async () => {
+    const harness = await createHarness();
+    try {
+      const alice = harness.entityRepository.resolve("Alice");
+      const bob = harness.entityRepository.resolve("Bob");
+      const episode = createEpisodeFixture(
+        {
+          title: QUERY,
+          audience_entity_id: alice,
+          origin_audience_entity_ids: [alice],
+          shared: false,
+        },
+        [1, 0, 0, 0],
+      );
+      await harness.episodicRepository.createEpisode(episode);
+      const spies = laneSpies(harness.retrievalPipeline);
+      const hits = await harness.retrievalPipeline.recallEpisodeHitsForCognition(QUERY, {
+        limit: 3,
+        recallContext: {
+          reader: "self",
+          currentSessionId: DEFAULT_SESSION_ID,
+          currentAudienceEntityId: bob,
+          currentParticipantEntityIds: [bob],
+        },
+        recordRetrieval: false,
+      });
+      expect(hits).toEqual([
+        expect.objectContaining({
+          episode: expect.objectContaining({ id: episode.id }),
+          disclosureLabel: {
+            disclosureClass: "relationship_private",
+            originAudienceEntityIds: [alice],
+            privateToEntityIds: [alice],
+            publicToEntityIds: [],
+          },
+        }),
+      ]);
+      for (const spy of Object.values(spies)) expect(spy).not.toHaveBeenCalled();
+    } finally {
+      await harness.cleanup();
+    }
   });
 
   it("makes zero lexical calls and disables exact-term reservation when the flag is off", async () => {

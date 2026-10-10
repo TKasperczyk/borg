@@ -222,6 +222,7 @@ export function createNoTemporalCueResponse() {
 }
 
 export class ScriptedEmbeddingClient implements EmbeddingClient {
+  readonly profile = { model: "fake-embed", dimensions: 4 };
   async embed(text: string): Promise<Float32Array> {
     return this.vector(text);
   }

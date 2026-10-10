@@ -3,6 +3,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
   unlinkSync,
   utimesSync,
@@ -11,20 +12,433 @@ import {
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { fork, spawn, type ChildProcess } from "node:child_process";
+import { once } from "node:events";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { isFileLockLive, withFileLock } from "./file-lock.js";
+import {
+  acquireFileLockLease,
+  FILE_LOCK_HEARTBEAT_INTERVAL_MS,
+  FILE_LOCK_STALE_MS,
+  isFileLockLive,
+  withFileLock,
+} from "./file-lock.js";
+import * as atomicWrite from "../util/atomic-write.js";
 
 describe("file-lock", () => {
   const tempDirs: string[] = [];
+  const children: ChildProcess[] = [];
 
-  afterEach(() => {
+  function leasePath(): string {
+    const dir = mkdtempSync(join(tmpdir(), "file-lock-heartbeat-"));
+    tempDirs.push(dir);
+    return join(dir, "lease.lock");
+  }
+
+  async function contender(path: string, host: string): Promise<ChildProcess> {
+    const child = fork(
+      new URL("./test-support/file-lock-process.ts", import.meta.url),
+      [path, host],
+      {
+        execArgv: ["--import", "tsx"],
+        stdio: ["ignore", "ignore", "inherit", "ipc"],
+      },
+    );
+    children.push(child);
+    expect((await once(child, "message"))[0]).toBe("ready");
+    return child;
+  }
+
+  async function commandInChild(
+    child: ChildProcess,
+    action: string | { advanceMs: number },
+  ): Promise<unknown> {
+    const response = once(child, "message");
+    child.send(action);
+    return (await response)[0];
+  }
+
+  it("holds a lease across calls, propagates contention, and releases idempotently", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "file-lock-lease-"));
+    tempDirs.push(dir);
+    const path = join(dir, "lease.lock");
+    const lease = await acquireFileLockLease(path);
+    expect(isFileLockLive(path)).toBe(true);
+    await expect(acquireFileLockLease(path, { timeoutMs: 0 })).rejects.toThrow("Timed out");
+    await Promise.all([lease.release(), lease.release()]);
+    expect(existsSync(path)).toBe(false);
+    const next = await acquireFileLockLease(path, { timeoutMs: 0 });
+    await next.release();
+  });
+
+  it("reaps a dead lease owner and surfaces acquisition I/O errors", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "file-lock-dead-"));
+    tempDirs.push(dir);
+    const path = join(dir, "lease.lock");
+    writeFileSync(path, JSON.stringify({ heartbeat: 0, owner: "test-lease-owner", pid: 999_999, host: hostname(), timestamp: Date.now() }));
+    await (await acquireFileLockLease(path, { timeoutMs: 0 })).release();
+    await expect(acquireFileLockLease(join(dir, "missing", "lease.lock"))).rejects.toThrow();
+  });
+
+  afterEach(async () => {
+    for (const child of children.splice(0)) {
+      if (child.exitCode === null && child.signalCode === null) {
+        const exited = once(child, "exit");
+        child.kill("SIGKILL");
+        await exited;
+      }
+    }
+    vi.useRealTimers();
     vi.restoreAllMocks();
     while (tempDirs.length > 0) {
       rmSync(tempDirs.pop() as string, { recursive: true, force: true });
     }
   });
+
+  it.each([
+    ["current clock", 0],
+    ["one hour ahead", 3_600_000],
+    ["one hour behind", -3_600_000],
+    ["absurd finite timestamp", 1e30],
+  ])("observes a full stale window for a foreign heartbeat (%s)", async (_label, skew) => {
+    vi.useFakeTimers();
+    const path = leasePath();
+    writeFileSync(
+      path,
+      JSON.stringify({
+        owner: "test-lease-owner",
+        pid: process.pid,
+        host: "former-pod",
+        timestamp: Date.now() - FILE_LOCK_STALE_MS * 3,
+        heartbeat: Date.now() + skew,
+      }),
+    );
+    expect(isFileLockLive(path)).toBe(true);
+    await expect(acquireFileLockLease(path, { timeoutMs: 0 })).rejects.toThrow("Timed out");
+    await vi.advanceTimersByTimeAsync(FILE_LOCK_STALE_MS - 1);
+    expect(isFileLockLive(path)).toBe(true);
+    await expect(acquireFileLockLease(path, { timeoutMs: 0 })).rejects.toThrow("Timed out");
+    await vi.advanceTimersByTimeAsync(1);
+    expect(isFileLockLive(path)).toBe(false);
+    const lease = await acquireFileLockLease(path, { timeoutMs: 0 });
+    await lease.release();
+  });
+
+  it.each(["heartbeat", "owner", "both"])(
+    "observes malformed foreign metadata missing %s for the grace period",
+    async (missing) => {
+      vi.useFakeTimers();
+      const path = leasePath();
+      writeFileSync(path, JSON.stringify({
+        pid: 999_999,
+        host: "foreign-pod",
+        timestamp: 1e30,
+        ...(missing === "heartbeat" || missing === "both" ? {} : { heartbeat: 1e30 }),
+        ...(missing === "owner" || missing === "both" ? {} : { owner: "foreign-owner" }),
+      }));
+      expect(isFileLockLive(path)).toBe(true);
+      await expect(acquireFileLockLease(path, { timeoutMs: 0 })).rejects.toThrow("Timed out");
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(isFileLockLive(path)).toBe(true);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(isFileLockLive(path)).toBe(false);
+      await (await acquireFileLockLease(path, { timeoutMs: 0 })).release();
+    },
+  );
+
+  it.each([-3_600_000, 3_600_000])(
+    "never reaps a foreign holder whose heartbeat keeps advancing (skew=%s)",
+    async (skew) => {
+      vi.useFakeTimers();
+      const path = leasePath();
+      // Exercise observed renewal independently of the retained guard. Actual
+      // primitive timers and stopped foreign holders are covered separately.
+      for (
+        let elapsed = 0;
+        elapsed <= FILE_LOCK_STALE_MS * 3;
+        elapsed += FILE_LOCK_HEARTBEAT_INTERVAL_MS
+      ) {
+        atomicWrite.writeFileAtomic(
+          path,
+          JSON.stringify({
+            owner: "test-lease-owner",
+            pid: process.pid,
+            host: "live-foreign-pod",
+            timestamp: Date.now() + skew,
+            heartbeat: Date.now() + skew,
+          }),
+        );
+        expect(isFileLockLive(path)).toBe(true);
+        await expect(acquireFileLockLease(path, { timeoutMs: 0 })).rejects.toThrow("Timed out");
+        await vi.advanceTimersByTimeAsync(FILE_LOCK_HEARTBEAT_INTERVAL_MS);
+      }
+    },
+  );
+
+  it.each(["contents", "inode", "mtime"])(
+    "restarts observation when only the %s changes",
+    async (change) => {
+      vi.useFakeTimers();
+      const path = leasePath();
+      const metadata = { owner: "test-lease-owner", pid: 999_999, host: "foreign-pod", timestamp: 0, heartbeat: 1e30 };
+      writeFileSync(path, JSON.stringify(metadata));
+      utimesSync(path, 0, 0);
+      expect(isFileLockLive(path)).toBe(true);
+      await vi.advanceTimersByTimeAsync(FILE_LOCK_STALE_MS - 1);
+      if (change === "contents") {
+        // Same inode, byte length, and mtime; only the contents change.
+        writeFileSync(path, JSON.stringify({ ...metadata, heartbeat: 2e30 }));
+        utimesSync(path, 0, 0);
+      } else if (change === "inode") {
+        atomicWrite.writeFileAtomic(path, JSON.stringify(metadata));
+        utimesSync(path, 0, 0);
+      } else {
+        const future = new Date(Date.now() + 3_600_000);
+        utimesSync(path, future, future);
+      }
+      expect(isFileLockLive(path)).toBe(true);
+      await vi.advanceTimersByTimeAsync(FILE_LOCK_STALE_MS - 1);
+      await expect(acquireFileLockLease(path, { timeoutMs: 0 })).rejects.toThrow("Timed out");
+      await vi.advanceTimersByTimeAsync(1);
+      await (await acquireFileLockLease(path, { timeoutMs: 0 })).release();
+    },
+  );
+
+  it("forgets observation when the file disappears, even if the same inode returns", async () => {
+    vi.useFakeTimers();
+    const path = leasePath();
+    writeFileSync(path, JSON.stringify({ heartbeat: 0, owner: "test-lease-owner", pid: 999_999, host: "foreign-pod", timestamp: 0 }));
+    expect(isFileLockLive(path)).toBe(true);
+    await vi.advanceTimersByTimeAsync(FILE_LOCK_STALE_MS);
+    renameSync(path, `${path}.moved`);
+    expect(isFileLockLive(path)).toBe(false);
+    renameSync(`${path}.moved`, path);
+    await expect(acquireFileLockLease(path, { timeoutMs: 0 })).rejects.toThrow("Timed out");
+    await vi.advanceTimersByTimeAsync(FILE_LOCK_STALE_MS);
+    await (await acquireFileLockLease(path, { timeoutMs: 0 })).release();
+  });
+
+  it("restarts the observation window if the contender's clock moves backward", async () => {
+    vi.useFakeTimers();
+    const path = leasePath();
+    writeFileSync(path, JSON.stringify({ heartbeat: 0, owner: "test-lease-owner", pid: 999_999, host: "foreign-pod", timestamp: 1e30 }));
+    expect(isFileLockLive(path)).toBe(true);
+    await vi.advanceTimersByTimeAsync(FILE_LOCK_STALE_MS - 1);
+    expect(isFileLockLive(path)).toBe(true);
+    vi.setSystemTime(Date.now() - 3_600_000);
+    expect(isFileLockLive(path)).toBe(true);
+    await vi.advanceTimersByTimeAsync(FILE_LOCK_STALE_MS - 1);
+    await expect(acquireFileLockLease(path, { timeoutMs: 0 })).rejects.toThrow("Timed out");
+    await vi.advanceTimersByTimeAsync(1);
+    await (await acquireFileLockLease(path, { timeoutMs: 0 })).release();
+  });
+
+  it("heartbeats a long-held lease and stops refreshing after release", async () => {
+    vi.useFakeTimers();
+    const path = leasePath();
+    const lease = await acquireFileLockLease(path);
+    const initial = JSON.parse(readFileSync(path, "utf8"));
+    try {
+      await vi.advanceTimersByTimeAsync(FILE_LOCK_STALE_MS * 3);
+      expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({
+        ...initial,
+        timestamp: Date.now(),
+        heartbeat: Date.now(),
+      });
+      await expect(acquireFileLockLease(path, { timeoutMs: 0 })).rejects.toThrow("Timed out");
+    } finally {
+      await lease.release();
+    }
+    await vi.advanceTimersByTimeAsync(FILE_LOCK_STALE_MS * 2);
+    expect(existsSync(path)).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("retains a live local PID that already existed when the lock was last stamped", async () => {
+    // The parent process started before us; a lock it stamped a second ago is a
+    // live (possibly stalled) holder and must be kept, however old its heartbeat
+    // interval makes it look to a contender.
+    const path = leasePath();
+    const stamp = Date.now() - 1_000;
+    writeFileSync(
+      path,
+      JSON.stringify({ heartbeat: stamp, owner: "test-lease-owner", pid: process.ppid, host: hostname(), timestamp: stamp }),
+    );
+    expect(isFileLockLive(path)).toBe(true);
+    await expect(acquireFileLockLease(path, { timeoutMs: 0 })).rejects.toThrow("Timed out");
+  });
+
+  it("retains a lock this process created itself", async () => {
+    const path = leasePath();
+    const lease = await acquireFileLockLease(path);
+    expect(isFileLockLive(path)).toBe(true);
+    await expect(acquireFileLockLease(path, { timeoutMs: 0 })).rejects.toThrow("Timed out");
+    await lease.release();
+    expect(isFileLockLive(path)).toBe(false);
+  });
+
+  it("reaps a same-host lock whose PID was reassigned to this process after the lock was created", async () => {
+    // In-place container restart: same hostname, the dead owner's PID is now
+    // ours, and the lock predates our start. It must not look alive forever.
+    const path = leasePath();
+    const beforeOurStart = Date.now() - process.uptime() * 1000 - 60_000;
+    writeFileSync(
+      path,
+      JSON.stringify({
+        heartbeat: beforeOurStart,
+        owner: "dead-owner",
+        pid: process.pid,
+        host: hostname(),
+        timestamp: beforeOurStart,
+      }),
+    );
+    expect(isFileLockLive(path)).toBe(false);
+    const lease = await acquireFileLockLease(path, { timeoutMs: 0 });
+    expect(JSON.parse(readFileSync(path, "utf8")).owner).not.toBe("dead-owner");
+    await lease.release();
+  });
+
+  it.each([
+    ["last heartbeat 500 ms before our start", -500],
+    ["last heartbeat after our start (fast restart)", 60_000],
+  ])("reaps a lock bearing our PID with an owner we never issued: %s", async (_label, offsetMs) => {
+    // Owner-id bookkeeping makes the same-PID case exact: no dependence on how
+    // close the dead owner's last heartbeat landed to our own start.
+    const path = leasePath();
+    const stamp = Date.now() - process.uptime() * 1000 + offsetMs;
+    writeFileSync(
+      path,
+      JSON.stringify({ heartbeat: stamp, owner: "dead-owner", pid: process.pid, host: hostname(), timestamp: stamp }),
+    );
+    expect(isFileLockLive(path)).toBe(false);
+    const lease = await acquireFileLockLease(path, { timeoutMs: 0 });
+    expect(JSON.parse(readFileSync(path, "utf8")).owner).not.toBe("dead-owner");
+    await lease.release();
+  });
+
+  it.skipIf(process.platform !== "linux")(
+    "reaps a same-host lock whose live PID belongs to a process started after the lock was last stamped",
+    async () => {
+    // Different PID, same host: the process now wearing the PID started after the
+    // lock's last heartbeat, so it cannot be the stamper. Linux-only (/proc).
+    const child = spawn("sleep", ["30"], { stdio: "ignore" });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const path = leasePath();
+      const beforeChildStart = Date.now() - 60_000;
+      writeFileSync(
+        path,
+        JSON.stringify({
+          heartbeat: beforeChildStart,
+          owner: "dead-owner",
+          pid: child.pid,
+          host: hostname(),
+          timestamp: beforeChildStart,
+        }),
+      );
+      expect(isFileLockLive(path)).toBe(false);
+      const lease = await acquireFileLockLease(path, { timeoutMs: 0 });
+      await lease.release();
+    } finally {
+      child.kill();
+    }
+  },
+  );
+
+  it.each([false, true])(
+    "logs heartbeat I/O failure and still releases (renamed=%s)",
+    async (renamed) => {
+      vi.useFakeTimers();
+      const path = leasePath();
+      const lease = await acquireFileLockLease(path);
+      const original = atomicWrite.writeFileAtomic;
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      vi.spyOn(atomicWrite, "writeFileAtomic").mockImplementationOnce((...args) => {
+        if (renamed) original(...args);
+        throw new Error("simulated fsync failure");
+      });
+      try {
+        await vi.advanceTimersByTimeAsync(FILE_LOCK_HEARTBEAT_INTERVAL_MS);
+        expect(warn).toHaveBeenCalledOnce();
+        // Release immediately, including when rename succeeded but fsync failed.
+      } finally {
+        await lease.release();
+      }
+      expect(existsSync(path)).toBe(false);
+      expect(warn).toHaveBeenCalledOnce();
+      await (await acquireFileLockLease(path, { timeoutMs: 0 })).release();
+    },
+  );
+
+  it("does not refresh or delete a replacement owner", async () => {
+    vi.useFakeTimers();
+    const path = leasePath();
+    const lease = await acquireFileLockLease(path);
+    const replacement = JSON.stringify({ heartbeat: 0, owner: "test-lease-owner", pid: process.pid, host: hostname(), timestamp: 42 });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    writeFileSync(path, replacement);
+    await vi.advanceTimersByTimeAsync(FILE_LOCK_HEARTBEAT_INTERVAL_MS * 2);
+    expect(readFileSync(path, "utf8")).toBe(replacement);
+    expect(warn).toHaveBeenCalledOnce();
+    await lease.release();
+    expect(readFileSync(path, "utf8")).toBe(replacement);
+  });
+
+  it("allows exactly one of two processes racing to reap and acquire a stale foreign lease", async () => {
+    const path = leasePath();
+    writeFileSync(
+      path,
+      JSON.stringify({
+        owner: "test-lease-owner",
+        pid: 999_999,
+        host: "dead-pod",
+        timestamp: 0,
+        heartbeat: 0,
+      }),
+    );
+    const [a, b] = await Promise.all([contender(path, "pod-a"), contender(path, "pod-b")]);
+    // Every process must observe its own full window before it can reap.
+    expect(await commandInChild(a, "observe")).toBe(true);
+    expect(await commandInChild(b, "acquire")).toMatch(/^Timed out/);
+    await Promise.all(
+      [a, b].map((child) => commandInChild(child, { advanceMs: FILE_LOCK_STALE_MS })),
+    );
+    const newcomer = await contender(path, "new-pod");
+    expect(await commandInChild(newcomer, "acquire")).toMatch(/^Timed out/);
+    const results = await Promise.all([commandInChild(a, "acquire"), commandInChild(b, "acquire")]);
+    expect(results.filter((result) => result === "acquired")).toHaveLength(1);
+    expect(
+      results.filter((result) => typeof result === "string" && result.startsWith("Timed out")),
+    ).toHaveLength(1);
+    const winner = results[0] === "acquired" ? a : b;
+    expect(JSON.parse(readFileSync(path, "utf8")).pid).toBe(winner.pid);
+    await expect(acquireFileLockLease(path, { timeoutMs: 0 })).rejects.toThrow("Timed out");
+    const exited = once(winner, "exit");
+    winner.send("release");
+    await exited;
+    expect(existsSync(path)).toBe(false);
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "protects a stopped foreign holder and recovers after SIGKILL",
+    async () => {
+      const path = leasePath();
+      const child = await contender(path, "paused-pod");
+      expect(await commandInChild(child, "acquire")).toBe("acquired");
+      child.kill("SIGSTOP");
+      vi.useFakeTimers({ toFake: ["Date"] });
+      expect(isFileLockLive(path)).toBe(true);
+      vi.setSystemTime(Date.now() + FILE_LOCK_STALE_MS * 3);
+      expect(isFileLockLive(path)).toBe(true);
+      await expect(acquireFileLockLease(path, { timeoutMs: 0 })).rejects.toThrow("Timed out");
+      const exited = once(child, "exit");
+      child.kill("SIGKILL");
+      await exited;
+      expect(isFileLockLive(path)).toBe(false);
+      await (await acquireFileLockLease(path, { timeoutMs: 0 })).release();
+    },
+  );
 
   it("reaps stale locks from dead processes", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
@@ -36,6 +450,8 @@ describe("file-lock", () => {
     writeFileSync(
       lockPath,
       JSON.stringify({
+        heartbeat: 0,
+        owner: "test-lease-owner",
         pid: 999_999,
         host: hostname(),
         timestamp: Date.now() - 10_000,
@@ -65,33 +481,46 @@ describe("file-lock", () => {
     expect(warnSpy).toHaveBeenCalledOnce();
   });
 
-  it("treats malformed locks as live during a grace period, then reaps them", async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
-    tempDirs.push(tempDir);
-    const lockPath = join(tempDir, "malformed.lock");
-    writeFileSync(lockPath, "partial lock metadata");
+  it.each([
+    ["partial lock metadata", -3_600_000],
+    ["partial lock metadata", 3_600_000],
+    ['{"timestamp":null}', -3_600_000],
+    ['{"timestamp":null}', 3_600_000],
+  ])(
+    "observes malformed locks for the grace period regardless of mtime (%s, %s)",
+    async (contents, skew) => {
+      vi.useFakeTimers();
+      const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+      tempDirs.push(tempDir);
+      const lockPath = join(tempDir, "malformed.lock");
+      writeFileSync(lockPath, contents);
+      const mtime = new Date(Date.now() + skew);
+      utimesSync(lockPath, mtime, mtime);
 
-    expect(isFileLockLive(lockPath, { malformedGraceMs: 5_000 })).toBe(true);
-    await expect(
-      withFileLock(lockPath, () => "unreachable", {
-        malformedGraceMs: 5_000,
-        timeoutMs: 5,
-        retryDelayMs: 1,
-      }),
-    ).rejects.toThrow("Timed out waiting for stream lock");
+      expect(isFileLockLive(lockPath, { malformedGraceMs: 5_000 })).toBe(true);
+      await expect(
+        withFileLock(lockPath, () => "unreachable", {
+          malformedGraceMs: 5_000,
+          timeoutMs: 0,
+          retryDelayMs: 1,
+        }),
+      ).rejects.toThrow("Timed out waiting for stream lock");
 
-    const old = new Date(Date.now() - 10_000);
-    utimesSync(lockPath, old, old);
-    await expect(
-      withFileLock(lockPath, () => "acquired", { malformedGraceMs: 5_000 }),
-    ).resolves.toBe("acquired");
-  });
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(isFileLockLive(lockPath)).toBe(true);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(isFileLockLive(lockPath)).toBe(false);
+      await expect(
+        withFileLock(lockPath, () => "acquired", { malformedGraceMs: 5_000 }),
+      ).resolves.toBe("acquired");
+    },
+  );
 
   it("does not unlink a replacement lock during release", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
     const lockPath = join(tempDir, "replacement.lock");
-    const replacement = JSON.stringify({ pid: process.pid, host: hostname(), timestamp: 42 });
+    const replacement = JSON.stringify({ heartbeat: 0, owner: "test-lease-owner", pid: process.pid, host: hostname(), timestamp: 42 });
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
     await withFileLock(lockPath, () => {
@@ -101,5 +530,19 @@ describe("file-lock", () => {
 
     expect(readFileSync(lockPath, "utf8")).toBe(replacement);
     expect(warnSpy).toHaveBeenCalledOnce();
+  });
+
+  it("restarts malformed grace when a partial write changes", async () => {
+    vi.useFakeTimers();
+    const path = leasePath();
+    writeFileSync(path, '{"pid":');
+    expect(isFileLockLive(path)).toBe(true);
+    await vi.advanceTimersByTimeAsync(4_000);
+    writeFileSync(path, '{"pid":999999,');
+    expect(isFileLockLive(path)).toBe(true);
+    await vi.advanceTimersByTimeAsync(4_999);
+    await expect(acquireFileLockLease(path, { timeoutMs: 0 })).rejects.toThrow("Timed out");
+    await vi.advanceTimersByTimeAsync(1);
+    await (await acquireFileLockLease(path, { timeoutMs: 0 })).release();
   });
 });

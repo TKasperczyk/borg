@@ -1,3 +1,4 @@
+import { FailureReportTracker } from "../util/failure-reports.js";
 import { StreamWatermarkRepository, StreamWriter } from "../stream/index.js";
 import { SystemClock, type Clock } from "../util/clock.js";
 import {
@@ -634,6 +635,7 @@ export class AutonomyScheduler {
   private readonly triggerErrorBackoff = new Map<AutonomyWakeSource["name"], RetryBackoffState>();
   private intervalHandle: IntervalHandle | null = null;
   private activeTick: Promise<TickResult> | null = null;
+  private readonly failureReports = new FailureReportTracker("autonomy observer failure");
   private stopping = false;
   private observer: AutonomySchedulerObserver | null = null;
   private intervalStartedTs: number | null = null;
@@ -895,9 +897,20 @@ export class AutonomyScheduler {
 
     const activeTick = this.activeTick;
 
-    if (activeTick !== null) {
+    const errors: unknown[] = [];
+    try {
       await activeTick;
+    } catch (error) {
+      errors.push(error);
     }
+    // Fleet metadata parsing reports synchronously and cannot await the observer.
+    // Its asynchronous writes still belong to the scheduler's shutdown lifetime.
+    try {
+      await this.failureReports.flush();
+    } catch (error) {
+      errors.push(error);
+    }
+    if (errors.length > 0) throw new AggregateError(errors, "Autonomy scheduler failed to drain");
   }
 
   async tick(): Promise<TickResult> {
@@ -2354,11 +2367,7 @@ export class AutonomyScheduler {
   }
 
   private async notifyError(error: unknown): Promise<void> {
-    try {
-      await this.observer?.onError?.(error);
-    } catch {
-      // Observer failures must not stop the scheduler loop.
-    }
+    await this.failureReports.report(() => this.observer?.onError?.(error));
   }
 
   private scheduleRetryBackoff(dueEvent: DueEvent): void {

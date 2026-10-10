@@ -236,6 +236,8 @@ describe("Borg", () => {
         dataDir: tempDir,
         clock,
         embeddingDimensions: 4,
+        // Preserve the effective injected model used by the initial open.
+        embeddingProfile: { model: "fake-embed", dimensions: 4 },
         embeddingClient: new ScriptedEmbeddingClient(),
         llmClient: new FakeLLMClient(),
       });

@@ -1,3 +1,4 @@
+import { similarityThresholds, type SimilarityConfigSource } from "../../config/similarity.js";
 import { z } from "zod";
 
 import {
@@ -52,7 +53,6 @@ import type { RecencyMessage } from "../recency/index.js";
 import type { TurnTracer } from "../../tracing/tracer.js";
 
 const ACTION_STATE_TOOL_NAME = "EmitActionStates";
-const ACTION_PERSISTENCE_DUPLICATE_SIMILARITY_THRESHOLD = 0.85;
 
 export const ACTION_CANDIDATE_CLASSIFICATIONS = [
   "concrete_action",
@@ -186,6 +186,7 @@ export type ActionStateExtractorDegradedReason =
   | "repository_failed";
 
 export type ActionStateExtractorOptions = {
+  similarityConfig?: SimilarityConfigSource;
   llmClient?: LLMClient;
   model?: string;
   actionRepository?: Pick<ActionRepository, "add"> &
@@ -1145,11 +1146,14 @@ export class ActionStateExtractor {
           let bestMatch: { actionId: ActionId; similarity: number; record: ActionRecord } | null =
             null;
 
+          const duplicateThreshold = similarityThresholds(
+            this.options.similarityConfig ?? { embedding: this.options.embeddingClient.profile },
+          ).actionPersistenceDuplicate;
           for (const existing of [...dedupState.activeVectors, ...dedupState.acceptedVectors]) {
             const similarity = cosineSimilarity(candidateVector, existing.vector);
 
             if (
-              similarity >= ACTION_PERSISTENCE_DUPLICATE_SIMILARITY_THRESHOLD &&
+              similarity >= duplicateThreshold &&
               (bestMatch === null || similarity > bestMatch.similarity)
             ) {
               bestMatch = {

@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 
 import { SystemClock, type Clock } from "../util/clock.js";
+import { FailureReportTracker } from "../util/failure-reports.js";
 import { StreamError } from "../util/errors.js";
 import { createStreamEntryId } from "../util/ids.js";
 import { serializeJsonValue } from "../util/json-value.js";
@@ -30,6 +31,7 @@ const FORWARD_SCAN_CHUNK_SIZE_BYTES = 64 * 1024;
 const NEWLINE_BYTE = 0x0a;
 
 export type StreamWriterOptions = {
+  failureReports?: FailureReportTracker;
   dataDir: string;
   sessionId?: SessionId;
   clock?: Clock;
@@ -42,6 +44,7 @@ export type StreamWriterOptions = {
 };
 
 export class StreamWriter {
+  readonly failureReports: FailureReportTracker;
   private readonly dataDir: string;
   private readonly sessionId: SessionId;
   private readonly clock: Clock;
@@ -54,6 +57,7 @@ export class StreamWriter {
   private closed = false;
 
   constructor(options: StreamWriterOptions) {
+    this.failureReports = options.failureReports ?? new FailureReportTracker("stream diagnostic");
     this.dataDir = options.dataDir;
     this.sessionId = options.sessionId ?? DEFAULT_SESSION_ID;
     this.clock = options.clock ?? new SystemClock();

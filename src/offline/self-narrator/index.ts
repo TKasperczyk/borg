@@ -203,7 +203,9 @@ function buildObservationPrompt(
   currentPeriod: AutobiographicalPeriod | null,
   priorGrowthMarkers: readonly GrowthMarker[],
   availableMessageTokens: number,
-): { sourceEpisodes: Episode[]; prompt: string } {
+  maxEpisodes: number,
+  maxInputTokens: number,
+): { sourceEpisodes: Episode[]; prompt: string; coverage: string } {
   const priorContext = [
     "I narrate my own recent experience by identifying thematic clusters and grounded autobiographical growth observations from these candidate episodes.",
     `I emit my result by calling the ${SELF_NARRATOR_TOOL_NAME} tool exactly once.`,
@@ -252,32 +254,52 @@ function buildObservationPrompt(
   for (const episode of episodes) {
     prefixEndTimes.push(Math.max(prefixEndTimes.at(-1) ?? -Infinity, episode.end_time));
   }
-  const coverage = (omittedCount: number): string =>
+  type LimitingBound = "maxEpisodesPerRun" | "maxInputTokensPerRun" | "maxPromptTokens";
+  const coverage = (omittedCount: number, bound: LimitingBound): string =>
     omittedCount === 0
       ? `All ${episodes.length} candidate episodes are shown; 0 earlier episodes omitted.`
-      : `${omittedCount} earlier episodes of this period are not shown due to the prompt token cap. They cover ${new Date(episodes[0]!.start_time).toISOString()} to ${new Date(prefixEndTimes[omittedCount - 1]!).toISOString()}. The newest ${episodes.length - omittedCount} episodes are shown below in chronological order.`;
-  const header = (omittedCount: number) => `${priorContext}\n${coverage(omittedCount)}\nEpisodes:`;
+      : `${omittedCount} earlier episodes of this period are not shown due to ${bound}. They cover ${new Date(episodes[0]!.start_time).toISOString()} to ${new Date(prefixEndTimes[omittedCount - 1]!).toISOString()}. The newest ${episodes.length - omittedCount} episodes are shown below in chronological order.`;
+  const header = (omittedCount: number, bound: LimitingBound) =>
+    `${priorContext}\n${coverage(omittedCount, bound)}\nEpisodes:`;
   const rows: string[] = [];
   let rowsLength = 0;
+  let rowTokens = 0;
   let omittedCount = episodes.length;
+  let limitingBound: LimitingBound = "maxPromptTokens";
   for (let index = episodes.length - 1; index >= 0; index -= 1) {
     const episode = episodes[index]!;
     const row = JSON.stringify(
       episodeEvidencePromptRow(episode, { start_time: episode.start_time }),
     );
     const nextRowsLength = rowsLength + 1 + row.length;
+    const nextRowTokens = rowTokens + estimatePromptTokens(row);
+    if (rows.length >= maxEpisodes) {
+      limitingBound = "maxEpisodesPerRun";
+      break;
+    }
+    if (nextRowTokens > maxInputTokens) {
+      limitingBound = "maxInputTokensPerRun";
+      break;
+    }
+    // Reserve the longest bound label so reporting the eventual stopping reason
+    // cannot push a previously admitted suffix beyond the complete-prompt cap.
     if (
-      estimatePromptTokensFromLength(header(index).length + nextRowsLength) > availableMessageTokens
+      estimatePromptTokensFromLength(
+        header(index, "maxInputTokensPerRun").length + nextRowsLength,
+      ) > availableMessageTokens
     ) {
+      limitingBound = "maxPromptTokens";
       break;
     }
     rows.push(row);
     rowsLength = nextRowsLength;
+    rowTokens = nextRowTokens;
     omittedCount = index;
   }
   return {
     sourceEpisodes: episodes.slice(omittedCount),
-    prompt: [header(omittedCount), ...rows.reverse()].join("\n"),
+    prompt: [header(omittedCount, limitingBound), ...rows.reverse()].join("\n"),
+    coverage: coverage(omittedCount, limitingBound),
   };
 }
 
@@ -476,13 +498,15 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
     const promptOverheadTokens =
       estimatePromptTokens(SELF_NARRATOR_SYSTEM_PROMPT) +
       estimatePromptTokens(JSON.stringify(tools));
-    const { sourceEpisodes, prompt } = buildObservationPrompt(
+    const { sourceEpisodes, prompt, coverage } = buildObservationPrompt(
       candidateEpisodes,
       minSupportEpisodes,
       maxObservationsPerRun,
       currentPeriod,
       priorGrowthMarkers,
       ctx.config.offline.selfNarrator.maxPromptTokens - promptOverheadTokens,
+      ctx.config.offline.selfNarrator.maxEpisodesPerRun,
+      ctx.config.offline.selfNarrator.maxInputTokensPerRun,
     );
     if (
       candidateEpisodes.length >= minSupportEpisodes &&
@@ -491,7 +515,7 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
       errors.push({
         process: this.name,
         code: "SELF_NARRATOR_PROMPT_BUDGET_TOO_SMALL",
-        message: `Self-narrator prompt cap could not fit system/tool overhead, prior context and ${minSupportEpisodes} newest episodes; skipped model call.`,
+        message: `Self-narrator evidence bounds could not fit system/tool overhead, prior context and ${minSupportEpisodes} newest episodes; skipped model call. ${coverage}`,
       });
     }
     const markerCandidates: Array<z.infer<typeof serializableGrowthMarkerSchema>> = [];

@@ -1,9 +1,8 @@
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { writeJsonFileAtomic } from "../../src/util/atomic-write.js";
-import { appendDurableJsonl } from "../../src/util/durable-jsonl.js";
+import { appendDurableJsonl, parseJsonLines } from "../../src/util/durable-jsonl.js";
 
 const VECTOR_CACHE_VERSION = 1;
 const VALUE_CACHE_VERSION = 1;
@@ -33,37 +32,6 @@ function sha256(value: string): string {
 function safeModelStem(model: string): string {
   const stem = model.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
   return (stem || "model").slice(0, 80);
-}
-
-function parseJsonLines(path: string): unknown[] {
-  if (!existsSync(path)) {
-    return [];
-  }
-
-  const records: unknown[] = [];
-  const contents = readFileSync(path, "utf8");
-  const lines = contents.split("\n");
-
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index];
-    if (line === undefined || line.trim().length === 0) {
-      continue;
-    }
-
-    try {
-      records.push(JSON.parse(line) as unknown);
-    } catch (error) {
-      if (index === lines.length - 1 && !contents.endsWith("\n")) {
-        // appendDurableJsonl repairs an interrupted final record before the next append.
-        continue;
-      }
-      throw new Error(
-        `Invalid JSONL cache record at ${path}:${index + 1}: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-  }
-
-  return records;
 }
 
 function encodeVector(vector: Float32Array): string {

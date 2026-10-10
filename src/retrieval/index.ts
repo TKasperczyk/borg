@@ -52,6 +52,7 @@ export {
   memoryDisclosureLabelSchema,
   publicMemoryDisclosureLabel,
   relationshipPrivateMemoryDisclosureLabel,
+  renderMemoryDisclosureGuidanceForModel,
   renderMemoryDisclosureLabelFieldsForModel,
   renderMemoryDisclosureLabelForModel,
   renderSemanticSourceDisclosureLabelForModel,
@@ -83,7 +84,6 @@ export {
   type RetrievalGetEpisodeOptions,
   type RetrievalPipelineOptions,
   type RetrievalSharedOptions,
-  type RetrievalSearchOptions,
 } from "./pipeline.js";
 export type {
   RecallContextTurn,
