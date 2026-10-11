@@ -1218,6 +1218,54 @@ describe("identity service", () => {
     }
   });
 
+  it("keeps which online reflector writer resolved an open question on its identity event", () => {
+    const harness = createHarness(new FixedClock(3_800));
+
+    try {
+      const evidenceStreamEntryId = createStreamEntryId();
+      const resolve = (question: string, process?: string) => {
+        const record = harness.openQuestionsRepository.add({
+          question,
+          urgency: 0.5,
+          related_episode_ids: [createEpisodeId()],
+          source: "reflection",
+        });
+        const result = harness.identity.resolveOpenQuestion(
+          record.id,
+          {
+            resolution_evidence_episode_ids: [],
+            resolution_evidence_stream_entry_ids: [evidenceStreamEntryId],
+            resolution_note: "Settled from the thread.",
+          },
+          {
+            kind: "online_reflector",
+            ...(process === undefined ? {} : { process }),
+            evidence_episode_ids: [],
+            evidence_stream_entry_ids: [evidenceStreamEntryId],
+          },
+        );
+
+        expect(result.status).toBe("applied");
+        return harness.identityEvents.list({ recordType: "open_question", recordId: record.id })[0]
+          ?.provenance;
+      };
+
+      expect(resolve("Which writer closed this?", "tool.openQuestions.resolve")).toStrictEqual({
+        kind: "online_reflector",
+        process: "tool.openQuestions.resolve",
+        evidence_episode_ids: [],
+        evidence_stream_entry_ids: [evidenceStreamEntryId],
+      });
+      expect(resolve("Which writer closed that?")).toStrictEqual({
+        kind: "online_reflector",
+        evidence_episode_ids: [],
+        evidence_stream_entry_ids: [evidenceStreamEntryId],
+      });
+    } finally {
+      harness.db.close();
+    }
+  });
+
   it("rolls back period, growth marker, and open question updates when event recording fails", () => {
     const harness = createHarness(new FixedClock(4_000));
 

@@ -73,8 +73,8 @@ export type OpenQuestionsResolveToolOptions = {
     episodeIds: readonly z.infer<typeof episodeIdSchema>[],
     streamEntryIds: readonly z.infer<typeof streamEntryIdSchema>[],
   ) => Promise<MemoryDisclosureLabel>;
-  // The stored provenance is online_reflector either way, so this trace is the only record
-  // that tells a resolution made by this tool from one made by the post-turn reflector.
+  // This tool shares provenance kind online_reflector with the post-turn reflector; the
+  // stored process and this trace's source_path tell the two writers apart.
   tracer?: LifecycleTracer;
 };
 
@@ -145,6 +145,7 @@ export function createOpenQuestionsResolveTool(
         },
         provenance: {
           kind: "online_reflector",
+          process: "tool.openQuestions.resolve",
           evidence_episode_ids: evidenceEpisodeIds,
           evidence_stream_entry_ids: evidenceStreamEntryIds,
         },

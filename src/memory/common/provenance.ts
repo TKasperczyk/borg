@@ -51,6 +51,9 @@ const baseProvenanceSchema = z.discriminatedUnion("kind", [
   }),
   z.object({
     kind: z.literal("online_reflector"),
+    // Unset means the post-turn reflector. Another writer that shares this kind (and its
+    // guard lane) names itself here, so the stored row keeps who wrote it.
+    process: z.string().min(1).optional(),
     evidence_episode_ids: z.array(episodeIdSchema),
     evidence_stream_entry_ids: z.array(streamEntryIdSchema),
   }),
@@ -86,6 +89,8 @@ const DEFAULT_MANUAL_PROVENANCE = {
   kind: "manual" as const,
 };
 
+const ONLINE_REFLECTOR_DEFAULT_PROCESS = "reflector";
+
 export function isEpisodeProvenance(
   provenance: Provenance,
 ): provenance is Extract<Provenance, { kind: "episodes" }> {
@@ -110,7 +115,7 @@ export function toStoredProvenance(provenance: Provenance): StoredProvenance {
       provenance.kind === "offline" || provenance.kind === "online"
         ? provenance.process
         : provenance.kind === "online_reflector"
-          ? "reflector"
+          ? (provenance.process ?? ONLINE_REFLECTOR_DEFAULT_PROCESS)
           : null,
     ...(provenance.kind === "online_reflector"
       ? {
@@ -136,7 +141,7 @@ export function summarizeProvenanceForPrompt(provenance: Provenance, limit = 2):
     case "online":
       return `(online: ${provenance.process})`;
     case "online_reflector":
-      return "(online: reflector)";
+      return `(online: ${provenance.process ?? ONLINE_REFLECTOR_DEFAULT_PROCESS})`;
   }
 }
 
@@ -160,6 +165,11 @@ export function parseStoredProvenance(input: {
       : {}),
     ...(input.provenance_kind === "online_reflector"
       ? {
+          // The default writer reads back with no process key, as it was written.
+          ...(typeof input.provenance_process === "string" &&
+          input.provenance_process !== ONLINE_REFLECTOR_DEFAULT_PROCESS
+            ? { process: input.provenance_process }
+            : {}),
           evidence_episode_ids: parseStoredProvenanceEpisodeIds(input.provenance_episode_ids),
           evidence_stream_entry_ids: parseStoredProvenanceStreamEntryIds(
             input.provenance_stream_entry_ids,

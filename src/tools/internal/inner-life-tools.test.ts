@@ -234,6 +234,7 @@ describe("inner life internal tools", () => {
       }),
       {
         kind: "online_reflector",
+        process: "tool.openQuestions.resolve",
         evidence_episode_ids: [],
         evidence_stream_entry_ids: [evidenceStreamEntryId],
       },
@@ -252,9 +253,9 @@ describe("inner life internal tools", () => {
     });
   });
 
-  // This tool and the post-turn reflector both store provenance online_reflector / reflector,
-  // so the transition trace is the one record that names which writer resolved the question.
-  // The tool passed its source path without a tracer, and the event was never emitted.
+  // This tool and the post-turn reflector share provenance kind online_reflector; the
+  // transition trace names the writer beside the stored process. The tool once passed its
+  // source path without a tracer, and the event was never emitted.
   it("traces an applied resolution under the tool's own source path", async () => {
     const record = sampleOpenQuestion({ status: "resolved" });
     const emit = vi.fn();
