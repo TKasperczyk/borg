@@ -134,12 +134,14 @@ const OBJECT_ID_PREFIXES = [
 
 // A retrieved row's metadata names the object it renders next to the evidence that object rests on
 // (an episode row also carries its source stream ids), so the most specific id present is the object.
+// A semantic-edge recall row renders the node the edge reached; read as the edge, it absorbed the
+// graph row that renders the edge's relation, so the node outranks the edge.
 const RETRIEVED_OBJECT_ID_KEYS = [
   ["open_question_id", "open_question"],
   ["commitment_id", "commitment"],
   ["image_perception_id", "image_perception"],
-  ["edge_id", "semantic_edge"],
   ["node_id", "semantic_node"],
+  ["edge_id", "semantic_edge"],
   ["episode_id", "episode"],
 ] as const;
 

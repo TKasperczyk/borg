@@ -1101,6 +1101,50 @@ describe("compactEvidenceLedger", () => {
     expect(compacted.traceSummary.dedupedEntryCount).toBe(1);
   });
 
+  it("keeps the graph row that renders an edge's relation beside the recall row that reached its node", () => {
+    const ledger = makeLedger();
+
+    section(ledger, "prior_session_memory").entries.push(
+      syntheticEntry({
+        id: "retrieved_evidence:evidence_semantic_edge_seme_e_recall",
+        source_type: "semantic_node",
+        text: "Reached node: what the reached node says.",
+        trust_rank: 30,
+        state_metadata: { node_id: "semn_to", edge_id: "seme_e" },
+      }),
+      syntheticEntry({
+        id: "semantic_edge:seme_e",
+        source_type: "semantic_edge",
+        text: "semn_from supports semn_to",
+        trust_rank: 30,
+        state_metadata: { edge_id: "seme_e", evidence_episode_ids: ["ep_e"] },
+      }),
+      syntheticEntry({
+        id: "semantic_node:semn_to",
+        source_type: "semantic_node",
+        text: "What the reached node says.",
+        trust_rank: 30,
+        state_metadata: { node_id: "semn_to", source_episode_ids: ["ep_e"] },
+      }),
+    );
+
+    const compacted = compactEvidenceLedger(ledger, {
+      targetTokens: 20_000,
+      hardCapTokens: 40_000,
+    });
+
+    expect(
+      section(compacted.ledger, "prior_session_memory").entries.map((entry) => [
+        entry.id,
+        entry.citations,
+      ]),
+    ).toEqual([
+      ["retrieved_evidence:evidence_semantic_edge_seme_e_recall", ["ep_e", "semn_to", "seme_e"]],
+      ["semantic_edge:seme_e", undefined],
+    ]);
+    expect(compacted.traceSummary.dedupedEntryCount).toBe(1);
+  });
+
   it("leaves a duplicate on the page when the cap cuts the row it would fold into", () => {
     const ledger = makeLedger();
 
