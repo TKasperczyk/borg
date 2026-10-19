@@ -41,6 +41,20 @@ nice -n 19 node --import tsx scripts/migrate-embeddings.ts --help
 
 Use Node >= 22.18.0, the installed `tsx`, and the pod's gateway credentials/CA environment. No `pnpm` is needed. The CLI uses `LLM_API_KEY` and `KRATOS_BASE_URL`, including the sidecar's existing default gateway URL. `BORG_EMBEDDING_API_KEY` and `BORG_EMBEDDING_BASE_URL` are fallbacks. It uses a 60-second request timeout and at most four attempts per batch (backoff 1, 4, 10 seconds). Batch size defaults to 32 and embedding concurrency to 2. Tenant processing is always sequential.
 
+For routing/privacy options, set `BORG_EMBEDDING_PROVIDER` to the same JSON object
+used by the live client, for example:
+
+```sh
+export BORG_EMBEDDING_PROVIDER='{"data_collection":"deny","ignore":["SiliconFlow"]}'
+```
+
+The migration CLI passes it unchanged in the embedding request body, using the same
+strict parser as library configuration. Malformed, blank, or non-object JSON fails
+before migration starts. The CLI does not read tenant `embedding.provider` settings;
+copy that object into this environment variable when routing is configured in a
+live tenant's `config.json`. Preserve the same value across migration resumes and
+live-client cutover. With no variable set, the CLI omits the `provider` field.
+
 Do not change the shared sidecar model while tenants have mixed profiles. After each tenant migrates, the old-configured sidecar returns HTTP 503 for that tenant until the final environment cutover. Other tenants can continue serving. Plan for this per-tenant downtime.
 
 All commands below name the source model explicitly as a check against the required persisted profile. The source dimension is read from **every existing table** and must be consistent with that profile. No text is sent to an LLM. The migration uses the production embedding client directly.

@@ -990,6 +990,62 @@ describe("config", () => {
     expect(config.host_capabilities).not.toContain("Proactive outbound messaging");
   });
 
+  it("preserves arbitrary embedding provider JSON from the config file", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const provider = {
+      data_collection: "deny",
+      ignore: ["SiliconFlow"],
+      future_option: { nested: [null, true, 1.25, "étiquette", { enabled: false }] },
+    };
+    writeJsonFileAtomic(join(tempDir, "config.json"), { embedding: { provider } });
+
+    expect(loadConfig({ dataDir: tempDir, env: {} }).embedding.provider).toEqual(provider);
+    expect(DEFAULT_CONFIG.embedding).not.toHaveProperty("provider");
+  });
+
+  it.each([{}, { data_collection: "deny", ignore: ["SiliconFlow"] }])(
+    "replaces the complete file provider object with the env object %j",
+    (provider) => {
+      const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+      tempDirs.push(tempDir);
+      writeJsonFileAtomic(join(tempDir, "config.json"), {
+        embedding: {
+          model: "file-model",
+          provider: { data_collection: "allow", order: ["file-provider"] },
+        },
+      });
+
+      const config = loadConfig({
+        dataDir: tempDir,
+        env: { BORG_EMBEDDING_PROVIDER: JSON.stringify(provider) },
+      });
+
+      expect(config.embedding.provider).toEqual(provider);
+      expect(config.embedding.model).toBe("file-model");
+    },
+  );
+
+  it.each(["", "  ", "{", "undefined", "null", "[]", '"router"', "42", "true", "false"])(
+    "rejects invalid or non-object BORG_EMBEDDING_PROVIDER %j with ConfigError",
+    (provider) => {
+      const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+      tempDirs.push(tempDir);
+      const load = () =>
+        loadConfig({ dataDir: tempDir, env: { BORG_EMBEDDING_PROVIDER: provider } });
+
+      expect(load).toThrow(ConfigError);
+      expect(load).toThrow("BORG_EMBEDDING_PROVIDER must be a JSON object");
+    },
+  );
+
+  it.each([null, [], "router", 42, true, new Date(0), { nested: undefined }, { nested: Infinity }])(
+    "rejects non-object or non-JSON embedding provider config %j",
+    (provider) => {
+      expect(configSchema.safeParse({ embedding: { provider } }).success).toBe(false);
+    },
+  );
+
   it("merges config file values with environment overrides", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
@@ -1511,6 +1567,8 @@ describe("config", () => {
       dataDir: tempDir,
       env: {
         ANTHROPIC_API_KEY: "secret",
+        BORG_EMBEDDING_API_KEY: "embedding-secret",
+        BORG_EMBEDDING_PROVIDER: '{"data_collection":"deny","ignore":["SiliconFlow"]}',
       },
     });
 
@@ -1523,6 +1581,7 @@ describe("config", () => {
       },
       embedding: {
         apiKey: "[REDACTED]",
+        provider: { data_collection: "deny", ignore: ["SiliconFlow"] },
       },
       anthropic: {
         apiKey: "[REDACTED]",

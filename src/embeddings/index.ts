@@ -1,4 +1,5 @@
 import type { EmbeddingProfile } from "./bank-profile.js";
+import type { EmbeddingProvider } from "../config/embedding-provider.js";
 import OpenAI from "openai";
 
 import { sleep } from "../util/clock.js";
@@ -11,6 +12,7 @@ type OpenAIEmbeddingsClient = {
       input: string | string[];
       model: string;
       encoding_format?: "float" | "base64";
+      provider?: EmbeddingProvider;
     }): Promise<{
       data: Array<{
         embedding: number[];
@@ -35,6 +37,7 @@ export type OpenAICompatibleEmbeddingClientOptions = {
   client?: OpenAIEmbeddingsClient;
   modelReloadRetryDelaysMs?: readonly number[];
   maxBatchSize?: number;
+  provider?: EmbeddingProvider;
 };
 
 const DEFAULT_MODEL_RELOAD_RETRY_DELAYS_MS: readonly number[] = [1000, 4000, 10_000];
@@ -160,6 +163,7 @@ export class OpenAICompatibleEmbeddingClient implements EmbeddingClient {
   private readonly dims: number;
   private readonly modelReloadRetryDelaysMs: readonly number[];
   private readonly maxBatchSize: number;
+  private readonly provider: EmbeddingProvider | undefined;
 
   constructor(options: OpenAICompatibleEmbeddingClientOptions) {
     if (!Number.isInteger(options.dims) || options.dims <= 0) {
@@ -189,6 +193,7 @@ export class OpenAICompatibleEmbeddingClient implements EmbeddingClient {
 
     this.model = options.model;
     this.dims = options.dims;
+    this.provider = options.provider;
     this.modelReloadRetryDelaysMs =
       options.modelReloadRetryDelaysMs ?? DEFAULT_MODEL_RELOAD_RETRY_DELAYS_MS;
 
@@ -287,6 +292,7 @@ export class OpenAICompatibleEmbeddingClient implements EmbeddingClient {
       // silently returns a truncated, all-zero Float32Array. Asking for
       // "float" explicitly bypasses the client-side decode.
       encoding_format: "float" as const,
+      ...(this.provider === undefined ? {} : { provider: this.provider }),
     };
 
     const maxAttempts = this.modelReloadRetryDelaysMs.length;

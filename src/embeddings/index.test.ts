@@ -1,5 +1,7 @@
+import OpenAI from "openai";
 import { describe, expect, it, vi } from "vitest";
 
+import type { EmbeddingProvider } from "../config/embedding-provider.js";
 import { ConfigError, EmbeddingError } from "../util/errors.js";
 import { FakeEmbeddingClient, OpenAICompatibleEmbeddingClient } from "./index.js";
 
@@ -48,6 +50,73 @@ describe("embeddings", () => {
     });
     expect(Array.from(embeddings[0] ?? [])).toEqual([1, 2, 3]);
     expect(Array.from(embeddings[1] ?? [])).toEqual([4, 5, 6]);
+  });
+
+  it.each<EmbeddingProvider | undefined>([
+    undefined,
+    {},
+    {
+      data_collection: "deny",
+      ignore: ["SiliconFlow"],
+      future_option: { values: [null, true, 2.5, "étiquette"] },
+    },
+  ])("serializes provider routing through the OpenAI SDK: %j", async (provider) => {
+    const bodies: string[] = [];
+    const fetch = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      bodies.push(String(init?.body));
+      return new Response(JSON.stringify({ data: [{ index: 0, embedding: [1, 2] }] }), {
+        headers: { "content-type": "application/json" },
+      });
+    });
+    const client = new OpenAICompatibleEmbeddingClient({
+      model: "embed-model",
+      dims: 2,
+      provider,
+      client: new OpenAI({
+        apiKey: "test-key",
+        baseURL: "https://embeddings.invalid/v1",
+        maxRetries: 0,
+        fetch,
+      }),
+    });
+
+    await client.embed("hello");
+
+    const originalBody = { input: "hello", model: "embed-model", encoding_format: "float" };
+    expect(bodies).toEqual([
+      JSON.stringify(provider === undefined ? originalBody : { ...originalBody, provider }),
+    ]);
+    if (provider === undefined) {
+      expect(JSON.parse(bodies[0]!)).not.toHaveProperty("provider");
+    } else {
+      expect(JSON.parse(bodies[0]!).provider).toEqual(provider);
+    }
+  });
+
+  it("carries the same provider object through batch chunks and model reload retries", async () => {
+    const provider = { data_collection: "deny", ignore: ["SiliconFlow"] };
+    const create = vi
+      .fn(async (params: { input: string | string[]; provider?: unknown }) => {
+        const inputs = Array.isArray(params.input) ? params.input : [params.input];
+        return { data: inputs.map((text, index) => ({ index, embedding: [Number(text)] })) };
+      })
+      .mockRejectedValueOnce(
+        Object.assign(new Error("model not loaded"), { status: 404, code: "model_not_found" }),
+      );
+    const client = new OpenAICompatibleEmbeddingClient({
+      model: "embed-model",
+      dims: 1,
+      maxBatchSize: 2,
+      modelReloadRetryDelaysMs: [0],
+      provider,
+      client: { embeddings: { create } },
+    });
+
+    const result = await client.embedBatch(["1", "2", "3"]);
+
+    expect(result.map((vector) => Array.from(vector))).toEqual([[1], [2], [3]]);
+    expect(create).toHaveBeenCalledTimes(3);
+    for (const [params] of create.mock.calls) expect(params.provider).toBe(provider);
   });
 
   it("splits an oversized batch into sequential requests, preserving order", async () => {

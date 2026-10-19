@@ -476,6 +476,7 @@ export async function selectScriptClients(options: {
         apiKey: loaded.embedding.apiKey,
         model: loaded.embedding.model,
         dims: loaded.embedding.dims,
+        provider: loaded.embedding.provider,
       });
       await realEmbeddings.embed("ping");
       embeddings = realEmbeddings;

@@ -1,3 +1,4 @@
+import { readEmbeddingProviderEnv } from "../src/config/embedding-provider.js";
 import { logSimilarityProfile } from "../src/config/similarity.js";
 import { requireEmbeddingClientProfile } from "../src/embeddings/bank-profile.js";
 import { DEFAULT_GATEWAY_BASE_URL } from "../src/sidecar/gateway-config.js";
@@ -162,6 +163,7 @@ const embeddingClient = createCachingEmbeddingClient(
       client: openai,
       model: embeddingModel,
       dims: embeddingDims,
+      provider: readEmbeddingProviderEnv(process.env),
     }),
     {
       timeoutMs: embeddingStallTimeoutMs,

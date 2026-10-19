@@ -1,3 +1,4 @@
+import { readEmbeddingProviderEnv } from "../src/config/embedding-provider.js";
 import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -110,6 +111,7 @@ export async function embeddingMigrationMain(args = process.argv.slice(2)): Prom
     );
     return 0;
   }
+  const provider = readEmbeddingProviderEnv(process.env);
   const banked = await listBankTenantIds(options.dataRoot, DEFAULT_TENANT_ID_PATTERN, {
     strict: true,
   });
@@ -144,6 +146,7 @@ export async function embeddingMigrationMain(args = process.argv.slice(2)): Prom
           model: options.target.model,
           dims: options.target.dimensions,
           maxBatchSize: options.batchSize,
+          provider,
           modelReloadRetryDelaysMs: [],
           client: new OpenAI({
             apiKey: z

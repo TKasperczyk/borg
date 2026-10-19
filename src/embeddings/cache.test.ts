@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createEmbeddingClient } from "../borg/clients.js";
-import type { Config } from "../config/index.js";
+import { configSchema, type Config } from "../config/index.js";
 import type { EmbeddingClient } from "./index.js";
 import { createCachingEmbeddingClient, type EmbeddingCacheStats } from "./cache.js";
 
@@ -431,6 +431,28 @@ describe("createCachingEmbeddingClient", () => {
 
     expect(firstInner.embed).toHaveBeenCalledTimes(1);
     expect(secondInner.embed).toHaveBeenCalledTimes(1);
+  });
+
+  it("carries configured provider routing through the production client factory", async () => {
+    const provider = { data_collection: "deny", ignore: ["SiliconFlow"] };
+    const config = configSchema.parse({
+      embedding: {
+        baseUrl: "https://embeddings.invalid/v1",
+        apiKey: "test-key",
+        model: "model-a",
+        dims: 1,
+        provider,
+      },
+    });
+
+    await createEmbeddingClient(config).embed("foo");
+
+    expect(openAiMocks.createEmbeddings).toHaveBeenCalledExactlyOnceWith({
+      input: "foo",
+      model: "model-a",
+      encoding_format: "float",
+      provider,
+    });
   });
 
   it("keeps createEmbeddingClient cache state per factory-created instance", async () => {

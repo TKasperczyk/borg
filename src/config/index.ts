@@ -1,4 +1,5 @@
 import { similarityConfigSchema, similarityValuesSchema } from "./similarity.js";
+import { embeddingProviderSchema, readEmbeddingProviderEnv } from "./embedding-provider.js";
 export {
   similarityThresholds,
   logSimilarityProfile,
@@ -400,6 +401,7 @@ const configBaseSchema = z.object({
       apiKey: z.string().min(1).default("lm-studio"),
       model: z.string().min(1).default("text-embedding-qwen3-embedding-8b"),
       dims: z.number().int().positive().default(4096),
+      provider: embeddingProviderSchema.optional(),
       // Largest array sent to the embeddings endpoint in one request. Local
       // inference servers fail hard rather than degrade on big batches -- an 8B
       // model under LM Studio returned `400 "Model has unloaded or crashed."`
@@ -1222,6 +1224,7 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     ["embedding", "dims"],
     readOptionalEnvNumber(env, "BORG_EMBEDDING_DIMS"),
   );
+  setConfigOverride(overrides, ["embedding", "provider"], readEmbeddingProviderEnv(env));
   setConfigOverride(
     overrides,
     ["anthropic", "auth"],
@@ -2318,6 +2321,9 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
   const fileOverrides = parseConfigFile(lookupDataDir);
   const envOverrides = loadEnvOverrides(env);
   let candidate = mergeConfigOverrides(fileOverrides, envOverrides);
+  // Provider routing is opaque: the env object replaces the file object in full,
+  // so migration and live requests do not inherit different routing options.
+  setConfigOverride(candidate, ["embedding", "provider"], envOverrides.embedding?.provider);
 
   if (options.dataDir !== undefined) {
     candidate = mergeConfigOverrides(candidate, { dataDir: expandPath(options.dataDir) });

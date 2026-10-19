@@ -268,6 +268,19 @@ See [similarity calibration](docs/similarity-calibration.md) for model-specific 
   either side with `BORG_ANTHROPIC_AUTH=api-key|oauth`; run `borg auth status`
   to see what resolves.
 
+Embedding routing options can be supplied as an optional `embedding.provider` JSON
+object in `config.json`, or through `BORG_EMBEDDING_PROVIDER`:
+
+```sh
+export BORG_EMBEDDING_PROVIDER='{"data_collection":"deny","ignore":["SiliconFlow"]}'
+```
+
+Borg sends this object unchanged as `provider` in every embedding request body.
+When absent, requests contain no `provider` field. The environment object replaces
+the entire file value (including when set to `{}`); malformed JSON, blank values,
+and non-object JSON fail with `ConfigError`. `borg config` displays routing options
+and continues to redact the embedding API key.
+
 The being targets **Opus 4.6**. The substrate co-produces identity with the
 model, so the design accepts drift when migrating to a successor rather than
 chasing model-swap conformance.
