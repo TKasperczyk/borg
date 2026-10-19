@@ -288,6 +288,22 @@ cap, input is unchanged. Truncation affects only the transport copy; stored text
 hashes, and cache keys retain original content. Use the same cap and routing
 options for [embedding migration](docs/embedding-migration.md).
 
+Raw vector recall uses `retrieval.rawQueryMaxBytes` (default **6144 bytes**, or
+6 KiB). Override it with the positive integer
+`BORG_RETRIEVAL_RAW_QUERY_MAX_BYTES`; the environment value takes precedence over
+`config.json`. Short queries are unchanged. When a query exceeds the budget,
+a live batch supplies whole source messages newest-first until the next older
+message no longer fits, counting separators in the budget. An oversized newest
+message uses its UTF-8-safe tail. Callers with only a query string use that string's
+UTF-8-safe tail. This keeps the raw vector focused on recent input with a
+language-independent budget well below the 32000-byte embedding transport cap.
+
+The full original query still goes to recall expansion; its existing internal
+4000-character prompt-focus limit remains in effect. The `retrieval.raw_query`
+trace event records whether bounding occurred, its mode, byte counts, and message
+counts once per recall, including time-range fallback, without adding query
+content. Stored messages and the other recall intents are unchanged.
+
 The being targets **Opus 4.6**. The substrate co-produces identity with the
 model, so the design accepts drift when migrating to a successor rather than
 chasing model-swap conformance.

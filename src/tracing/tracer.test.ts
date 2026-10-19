@@ -680,6 +680,7 @@ describe("TurnTracer", () => {
       "turn_phase.completed",
       "turn_phase.started",
       "retrieval.started",
+      "retrieval.raw_query",
       "llm_call.started",
       "llm_call.completed",
       "retrieval.degraded",

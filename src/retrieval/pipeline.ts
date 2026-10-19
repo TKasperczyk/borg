@@ -70,6 +70,7 @@ import {
 import { DEFAULT_MMR_LAMBDA } from "./mmr.js";
 import { retrieveOpenQuestionsForQuery as retrieveOpenQuestionsForQueryFromRepository } from "./open-questions.js";
 import { RawStreamAdapter } from "./raw-stream-adapter.js";
+import { boundRawRecallQuery, DEFAULT_RAW_QUERY_MAX_BYTES } from "./raw-query.js";
 import {
   DEFAULT_RECALL_STATE_MAX_ACTIVE_HANDLES,
   DEFAULT_RECALL_STATE_MAX_NEW_HANDLES_PER_TURN,
@@ -159,6 +160,7 @@ export type RetrievalPipelineOptions = {
   llmClient?: LLMClient;
   recallExpansionModel?: string;
   recallExpansionSemanticVariantCount?: number;
+  rawQueryMaxBytes?: number;
   // Hard cap for the recall-expansion LLM call; on timeout recall proceeds
   // without expansion via the existing degraded path. Unset or 0 disables it.
   recallExpansionTimeoutMs?: number;
@@ -222,6 +224,8 @@ export type RecallPlanOutcome = {
 };
 
 export type RetrievalSharedOptions = EpisodeCognitionRecallOptions & {
+  // Whole current-input messages in durable oldest-first order; only for this query.
+  rawQueryMessages?: readonly string[];
   onDegraded?: (degradation: RetrievalDegradation) => void;
   onRecallPlan?: (plan: RecallPlanOutcome) => void;
   rankingAudienceEntityId?: EntityId | null;
@@ -545,6 +549,7 @@ export class RetrievalPipeline {
       timeRange: { start: number; end: number };
     },
   ): Promise<{ episodes: RetrievedEpisode[]; timeRangeFallback: boolean }> {
+    const rawQuery = this.prepareRawRecallQuery(query, options);
     const expansion = await this.tryExpandRecall(query, options);
     const intentQueryVectors: IntentQueryVectorMemo = new Map();
     const scoped = await this.searchWithContextInternal(
@@ -554,6 +559,7 @@ export class RetrievalPipeline {
       "episodes-only",
       expansion,
       intentQueryVectors,
+      rawQuery,
     );
     const strictEpisodes = scoped.episodes.filter(
       (result) =>
@@ -586,6 +592,7 @@ export class RetrievalPipeline {
       "episodes-only",
       expansion,
       intentQueryVectors,
+      rawQuery,
     );
 
     return { episodes: fallback.episodes, timeRangeFallback: true };
@@ -598,6 +605,7 @@ export class RetrievalPipeline {
     projection: RetrievalProjection = "full",
     expansionOverride?: ExpansionOutcome,
     intentQueryVectorsOverride?: IntentQueryVectorMemo,
+    rawQueryOverride?: string,
   ): Promise<RetrievedContext> {
     options = this.options.entityRepository?.resolveReferences?.(options) ?? options;
     if (this.tracer.enabled && options.traceTurnId !== undefined) {
@@ -646,7 +654,8 @@ export class RetrievalPipeline {
       }
     }
 
-    const intents = await this.buildRecallIntents(query, options, expansionOverride);
+    const rawQuery = rawQueryOverride ?? this.prepareRawRecallQuery(query, options);
+    const intents = await this.buildRecallIntents(query, rawQuery, options, expansionOverride);
     const timeSignalPresent =
       options.timeRange !== undefined || intents.some((intent) => intent.kind === "time");
     const plannerTimeWeightApplied =
@@ -1437,8 +1446,27 @@ export class RetrievalPipeline {
     );
   }
 
+  private prepareRawRecallQuery(query: string, options: RetrievalExecutionOptions): string {
+    const maxBytes = this.options.rawQueryMaxBytes ?? DEFAULT_RAW_QUERY_MAX_BYTES;
+    const rawQuery = boundRawRecallQuery(query, maxBytes, options.rawQueryMessages);
+    if (this.tracer.enabled && options.traceTurnId !== undefined) {
+      this.tracer.emit("retrieval.raw_query", {
+        turnId: options.traceTurnId,
+        session_id: options.sessionId,
+        bounded: rawQuery.bounded,
+        mode: rawQuery.mode,
+        original_bytes: rawQuery.originalBytes,
+        query_bytes: rawQuery.queryBytes,
+        max_bytes: maxBytes,
+        selected_message_count: rawQuery.selectedMessageCount,
+      });
+    }
+    return rawQuery.query;
+  }
+
   private async buildRecallIntents(
     query: string,
+    rawQuery: string,
     options: RetrievalExecutionOptions,
     expansionOverride?: ExpansionOutcome,
   ): Promise<RecallIntent[]> {
@@ -1446,7 +1474,7 @@ export class RetrievalPipeline {
       {
         id: "recall_raw_text_0",
         kind: "raw_text",
-        query,
+        query: rawQuery,
         terms: [],
         priority: 100,
         source: "raw-user-message",

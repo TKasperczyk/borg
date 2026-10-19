@@ -1,4 +1,5 @@
 import { similarityConfigSchema, similarityValuesSchema } from "./similarity.js";
+import { DEFAULT_RAW_QUERY_MAX_BYTES } from "../retrieval/raw-query.js";
 import { embeddingProviderSchema, readEmbeddingProviderEnv } from "./embedding-provider.js";
 import { embeddingMaxInputBytesSchema, readEmbeddingMaxInputBytesEnv } from "./embedding-input.js";
 export {
@@ -418,6 +419,9 @@ const configBaseSchema = z.object({
   retrieval: z
     .object({
       semanticOverfetchMultiplier: z.number().int().min(1).max(10).default(3),
+      // Keep the raw recall vector focused on recent input; bytes work in every
+      // language. 6 KiB leaves room for several messages below the transport cap.
+      rawQueryMaxBytes: z.number().int().positive().default(DEFAULT_RAW_QUERY_MAX_BYTES),
       // Hard cap for the recall-expansion LLM call (ms); recall degrades to
       // raw-query intents on timeout. 0 disables the cap. Sized so expansion
       // (2000) plus a double-stalled query embedding (2x1000) plus local
@@ -1369,6 +1373,11 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["retrieval", "lexicalFusion", "enabled"],
     readOptionalEnvBoolean(env, "BORG_RETRIEVAL_LEXICAL_FUSION_ENABLED"),
+  );
+  setConfigOverride(
+    overrides,
+    ["retrieval", "rawQueryMaxBytes"],
+    readOptionalEnvNumber(env, "BORG_RETRIEVAL_RAW_QUERY_MAX_BYTES"),
   );
   setConfigOverride(
     overrides,
@@ -2378,6 +2387,7 @@ export function redactConfig(config: Config): Config {
     },
     retrieval: {
       semanticOverfetchMultiplier: config.retrieval.semanticOverfetchMultiplier,
+      rawQueryMaxBytes: config.retrieval.rawQueryMaxBytes,
       recallExpansionTimeoutMs: config.retrieval.recallExpansionTimeoutMs,
       recallPlannerTimeZone: config.retrieval.recallPlannerTimeZone,
       recallExpansionSemanticVariantCount: config.retrieval.recallExpansionSemanticVariantCount,

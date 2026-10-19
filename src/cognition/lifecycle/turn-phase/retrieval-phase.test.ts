@@ -2877,6 +2877,12 @@ describe("creator directive retrieval briefing", () => {
         closureLoopAssessment: null,
       });
 
+      expect(options.turnRetrievalCoordinator.coordinate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          rawQueryMessages: currentUserEntries.map((entry) => entry.content),
+        }),
+      );
+
       return result.currentTimeContext.previousUserMessageAt;
     };
 

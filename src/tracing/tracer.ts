@@ -39,6 +39,7 @@ export type TurnTraceEventName =
   | "retrieval.degraded"
   | "recall_expansion.completed"
   | "retrieval.started"
+  | "retrieval.raw_query"
   | "retrieval.completed"
   | "retrieval.intent_candidates"
   | "observed_event_recall.degraded"

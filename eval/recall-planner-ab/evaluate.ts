@@ -361,6 +361,7 @@ async function runCaseConfiguration(input: {
     ...(pinnedNowMs === undefined ? {} : { clock: new FixedClock(pinnedNowMs) }),
     ...(isBaseline ? {} : { llmClient: input.plannerClient }),
     recallExpansionModel: input.plannerModel,
+    rawQueryMaxBytes: input.bank.config.retrieval.rawQueryMaxBytes,
     recallExpansionTimeoutMs:
       input.plannerTimeoutMs ?? input.bank.config.retrieval.recallExpansionTimeoutMs,
     recallPlannerTimeZone:

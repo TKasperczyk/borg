@@ -509,6 +509,7 @@ describe("TurnRetrievalCoordinator", () => {
       userMessage: "Solve Atlas",
       recentMessages,
       cognitionInput: "Solve Atlas",
+      rawQueryMessages: ["oldest current message", "newest current message"],
       inputAudience: "alice",
       isSelfAudience: false,
       ...makeContexts({ audienceEntityId }),
@@ -571,6 +572,7 @@ describe("TurnRetrievalCoordinator", () => {
     expect(recallEpisodesForCognition).toHaveBeenCalledWith(
       "Solve Atlas",
       expect.objectContaining({
+        rawQueryMessages: ["oldest current message", "newest current message"],
         rankingAudienceEntityId: audienceEntityId,
         recallContext: expect.objectContaining({
           reader: SELF_RECALL_SCOPE,
@@ -637,6 +639,8 @@ describe("TurnRetrievalCoordinator", () => {
     );
     const cognitionCalls = recallEpisodesForCognition.mock.calls as unknown[][];
     expect(cognitionCalls).toHaveLength(2);
+    expect(cognitionCalls[1]?.[1]).not.toHaveProperty("rawQueryMessages");
+    expect(result.retrievalOptions).not.toHaveProperty("rawQueryMessages");
     for (const call of cognitionCalls) {
       expect(call[1]).toEqual(
         expect.objectContaining({

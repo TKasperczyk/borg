@@ -754,6 +754,8 @@ export async function runRetrievalPhase(input: {
     input.persistedUserEntry?.conversation ??
     input.currentUserEntries?.find((entry) => entry.conversation !== undefined)?.conversation;
 
+  const rawQueryMessages = input.currentUserEntries?.map((entry) => entry.content);
+
   const retrievalContext = await input.options.turnRetrievalCoordinator.coordinate({
     turnId: input.turnId,
     userMessage: input.turnInput.userMessage,
@@ -762,6 +764,11 @@ export async function runRetrievalPhase(input: {
       content: message.content,
     })),
     cognitionInput: input.cognitionInput,
+    // Hydrated batches contain text; custom callers with non-text entries use the
+    // complete query fallback rather than silently dropping a message boundary.
+    ...(rawQueryMessages?.every((content): content is string => typeof content === "string")
+      ? { rawQueryMessages }
+      : {}),
     inputAudience: input.turnInput.audience,
     isSelfAudience: input.isSelfAudience,
     recallContext,

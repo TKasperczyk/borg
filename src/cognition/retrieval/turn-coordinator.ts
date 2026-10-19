@@ -129,6 +129,7 @@ export type TurnRetrievalCoordinatorInput = {
   userMessage: string;
   recentMessages: readonly { role: "user" | "assistant"; content: string }[];
   cognitionInput: string;
+  rawQueryMessages?: readonly string[];
   inputAudience?: string;
   isSelfAudience: boolean;
   recallContext: CognitionRecallContext;
@@ -369,7 +370,12 @@ export class TurnRetrievalCoordinator {
     };
     const retrieval = await this.options.retrievalPipeline.recallEpisodesForCognition(
       input.cognitionInput,
-      retrievalOptions,
+      {
+        ...retrievalOptions,
+        ...(input.rawQueryMessages === undefined
+          ? {}
+          : { rawQueryMessages: input.rawQueryMessages }),
+      },
     );
     const retrievedEpisodes = retrieval.episodes;
     const retrievedSemantic = retrieval.semantic;

@@ -848,6 +848,7 @@ export async function createOfflineTestHarness(
     embeddingClient,
     llmClient,
     recallExpansionModel: config.anthropic.models.recallExpansion,
+    rawQueryMaxBytes: config.retrieval.rawQueryMaxBytes,
     recallExpansionSemanticVariantCount: config.retrieval.recallExpansionSemanticVariantCount,
     episodicRepository,
     semanticNodeRepository,

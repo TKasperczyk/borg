@@ -604,6 +604,45 @@ describe("config", () => {
     ).toThrow();
   });
 
+  it("defaults raw recall queries to 6 KiB and lets env override the file budget", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    expect(DEFAULT_CONFIG.retrieval.rawQueryMaxBytes).toBe(6144);
+    expect(loadConfig({ dataDir: tempDir, env: {} }).retrieval.rawQueryMaxBytes).toBe(6144);
+    writeJsonFileAtomic(join(tempDir, "config.json"), {
+      retrieval: { rawQueryMaxBytes: 8192, recallExpansionTimeoutMs: 4500 },
+    });
+    expect(loadConfig({ dataDir: tempDir, env: {} }).retrieval.rawQueryMaxBytes).toBe(8192);
+    const config = loadConfig({
+      dataDir: tempDir,
+      env: { BORG_RETRIEVAL_RAW_QUERY_MAX_BYTES: "4096" },
+    });
+    expect(config.retrieval.rawQueryMaxBytes).toBe(4096);
+    expect(config.retrieval.recallExpansionTimeoutMs).toBe(4500);
+    expect(redactConfig(config).retrieval.rawQueryMaxBytes).toBe(4096);
+  });
+
+  it.each(["0", "-1", "1.5", "NaN", "Infinity", "many", "9007199254740992"])(
+    "rejects an invalid raw recall query byte budget from env: %s",
+    (value) => {
+      const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+      tempDirs.push(tempDir);
+      expect(() =>
+        loadConfig({
+          dataDir: tempDir,
+          env: { BORG_RETRIEVAL_RAW_QUERY_MAX_BYTES: value },
+        }),
+      ).toThrow(ConfigError);
+    },
+  );
+
+  it.each([0, -1, 1.5, "4096", null, Number.MAX_SAFE_INTEGER + 1])(
+    "rejects an invalid raw recall query byte budget in config: %j",
+    (rawQueryMaxBytes) => {
+      expect(configSchema.safeParse({ retrieval: { rawQueryMaxBytes } }).success).toBe(false);
+    },
+  );
+
   it("loads the recall-expansion timeout from the environment and defaults it to 2000ms", () => {
     const overrideDir = mkdtempSync(join(tmpdir(), "borg-"));
     const disabledDir = mkdtempSync(join(tmpdir(), "borg-"));

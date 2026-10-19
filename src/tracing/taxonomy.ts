@@ -32,6 +32,7 @@ export const TRACE_EVENT_TAXONOMY = {
   executive_focus: [],
   retrieval: [
     "retrieval.started",
+    "retrieval.raw_query",
     "retrieval.completed",
     "retrieval.intent_candidates",
     "retrieval.degraded",
