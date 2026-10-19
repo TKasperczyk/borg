@@ -12,7 +12,7 @@
  */
 import { ConfigError, EmbeddingError } from "../util/errors.js";
 
-import type { EmbeddingClient } from "./index.js";
+import type { EmbeddingClient, EmbeddingClientStats } from "./index.js";
 
 export type EmbeddingStallGuardOptions = {
   // Per-attempt cap for single-input calls (embed / one-element batches).
@@ -103,6 +103,10 @@ export class StallGuardEmbeddingClient implements EmbeddingClient {
 
   get profile() {
     return this.inner.profile;
+  }
+
+  stats(): EmbeddingClientStats {
+    return this.inner.stats?.() ?? { input_truncations: 0 };
   }
 
   async embed(text: string): Promise<Float32Array> {

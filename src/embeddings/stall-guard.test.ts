@@ -28,6 +28,19 @@ function stallThenSucceed(stalledAttempts: number): EmbeddingClient & { calls: n
 }
 
 describe("StallGuardEmbeddingClient", () => {
+  it("forwards current transport statistics through the stall guard", () => {
+    let truncations = 2;
+    const inner: EmbeddingClient = {
+      ...stallThenSucceed(0),
+      stats: () => ({ input_truncations: truncations }),
+    };
+    const guarded = new StallGuardEmbeddingClient(inner);
+    expect(guarded.stats().input_truncations).toBe(2);
+    truncations += 1;
+    expect(guarded.stats().input_truncations).toBe(3);
+    expect(new StallGuardEmbeddingClient(stallThenSucceed(0)).stats().input_truncations).toBe(0);
+  });
+
   it("rescues a stalled embed call on the retry attempt", async () => {
     const inner = stallThenSucceed(1);
     const guarded = new StallGuardEmbeddingClient(inner, { timeoutMs: 20 });
@@ -60,9 +73,7 @@ describe("StallGuardEmbeddingClient", () => {
         return VECTOR;
       },
       embedBatch(texts: readonly string[]): Promise<Float32Array[]> {
-        return new Promise((resolve) =>
-          setTimeout(() => resolve(texts.map(() => VECTOR)), 40),
-        );
+        return new Promise((resolve) => setTimeout(() => resolve(texts.map(() => VECTOR)), 40));
       },
     };
     const guarded = new StallGuardEmbeddingClient(inner, {
@@ -83,9 +94,7 @@ describe("StallGuardEmbeddingClient", () => {
         return VECTOR;
       },
       embedBatch(texts: readonly string[]): Promise<Float32Array[]> {
-        return new Promise((resolve) =>
-          setTimeout(() => resolve(texts.map(() => VECTOR)), 200),
-        );
+        return new Promise((resolve) => setTimeout(() => resolve(texts.map(() => VECTOR)), 200));
       },
     };
     const guarded = new StallGuardEmbeddingClient(inner, {

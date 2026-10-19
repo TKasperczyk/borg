@@ -1,12 +1,12 @@
 import { createHash } from "node:crypto";
 
 import { ConfigError } from "../util/errors.js";
-import type { EmbeddingClient } from "./index.js";
+import type { EmbeddingClient, EmbeddingClientStats } from "./index.js";
 import { assertEmbeddingProfilesMatch } from "./bank-profile.js";
 
 const DEFAULT_MAX_ENTRIES = 5_000;
 
-export type EmbeddingCacheStats = {
+export type EmbeddingCacheStats = EmbeddingClientStats & {
   cache_hits: number;
   cache_misses: number;
   cache_evictions: number;
@@ -32,6 +32,7 @@ function normalizeMaxEntries(maxEntries: number | undefined): number {
   return maxEntries;
 }
 
+// Hash the original input: transport truncation must not merge distinct source texts.
 function cacheKey(input: { model: string; dims: number; text: string }): string {
   return createHash("sha256")
     .update(input.model)
@@ -140,6 +141,7 @@ class CachingEmbeddingClient implements EmbeddingClient {
       cache_misses: this.cacheMisses,
       cache_evictions: this.cacheEvictions,
       pending_overflow: this.pendingOverflow,
+      input_truncations: this.inner.stats?.().input_truncations ?? 0,
     };
   }
 

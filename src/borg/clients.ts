@@ -16,6 +16,7 @@ export function createEmbeddingClient(config: Config): EmbeddingClient {
     dims: config.embedding.dims,
     maxBatchSize: config.embedding.maxBatchSize,
     provider: config.embedding.provider,
+    maxInputBytes: config.embedding.maxInputBytes,
   });
 
   return createCachingEmbeddingClient(inner, {

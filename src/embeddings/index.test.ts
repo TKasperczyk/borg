@@ -93,6 +93,140 @@ describe("embeddings", () => {
     }
   });
 
+  it.each([
+    { name: "ASCII", input: "abcdef", maxInputBytes: 4, expected: "abcd" },
+    { name: "Polish diacritics", input: "zażółć", maxInputBytes: 7, expected: "zażó" },
+    { name: "CJK", input: "中文漢字", maxInputBytes: 8, expected: "中文" },
+    { name: "complete emoji", input: "A😀B", maxInputBytes: 5, expected: "A😀" },
+    { name: "split emoji", input: "A😀B", maxInputBytes: 4, expected: "A" },
+    { name: "leading emoji", input: "😀tail", maxInputBytes: 3, expected: "" },
+    { name: "exact byte limit", input: "zażó", maxInputBytes: 6, expected: "zażó" },
+    { name: "empty input", input: "", maxInputBytes: 1, expected: "" },
+  ])("caps $name at a UTF-8 code-point boundary", async ({ input, maxInputBytes, expected }) => {
+    const create = vi.fn().mockResolvedValue({ data: [{ index: 0, embedding: [1] }] });
+    const client = new OpenAICompatibleEmbeddingClient({
+      model: "embed-model",
+      dims: 1,
+      maxInputBytes,
+      client: { embeddings: { create } },
+    });
+
+    await client.embed(input);
+
+    const sent = create.mock.calls[0]?.[0].input as string;
+    expect(sent).toBe(expected);
+    expect(Buffer.byteLength(sent, "utf8")).toBeLessThanOrEqual(maxInputBytes);
+    expect(Buffer.from(sent, "utf8").toString("utf8")).toBe(sent);
+    expect(client.stats().input_truncations).toBe(input === expected ? 0 : 1);
+  });
+
+  it.each([
+    { input: "a\ud800b", maxInputBytes: 3, expected: "a", truncations: 1 },
+    { input: "a\ud800b", maxInputBytes: 4, expected: "a\ufffd", truncations: 1 },
+    { input: "\udc00a", maxInputBytes: 3, expected: "\ufffd", truncations: 1 },
+    { input: "a\ud800", maxInputBytes: 4, expected: "a\ufffd", truncations: 0 },
+  ])("repairs lone surrogates before applying the $maxInputBytes-byte cap", async (testCase) => {
+    const create = vi.fn().mockResolvedValue({ data: [{ index: 0, embedding: [1] }] });
+    const client = new OpenAICompatibleEmbeddingClient({
+      model: "embed-model",
+      dims: 1,
+      maxInputBytes: testCase.maxInputBytes,
+      client: { embeddings: { create } },
+    });
+
+    await client.embed(testCase.input);
+
+    expect(create.mock.calls[0]?.[0].input).toBe(testCase.expected);
+    expect(client.stats().input_truncations).toBe(testCase.truncations);
+  });
+
+  it("leaves the serialized request body unchanged without an input byte cap", async () => {
+    const bodies: string[] = [];
+    const input = "zażółć中文😀".repeat(4_000);
+    const client = new OpenAICompatibleEmbeddingClient({
+      model: "embed-model",
+      dims: 1,
+      client: new OpenAI({
+        apiKey: "test-key",
+        baseURL: "https://embeddings.invalid/v1",
+        maxRetries: 0,
+        fetch: async (_url, init) => {
+          bodies.push(String(init?.body));
+          return new Response(JSON.stringify({ data: [{ index: 0, embedding: [1] }] }), {
+            headers: { "content-type": "application/json" },
+          });
+        },
+      }),
+    });
+
+    await client.embed(input);
+
+    expect(Buffer.byteLength(input, "utf8")).toBeGreaterThan(32_000);
+    expect(bodies).toEqual([
+      JSON.stringify({ input, model: "embed-model", encoding_format: "float" }),
+    ]);
+    expect(client.stats().input_truncations).toBe(0);
+  });
+
+  it("preserves mixed-length batch indices and counts truncations once across retries", async () => {
+    const create = vi
+      .fn(async (params: { input: string | string[] }) => {
+        const inputs = Array.isArray(params.input) ? params.input : [params.input];
+        return {
+          data: inputs
+            .map((text, index) => ({ index, embedding: [text.codePointAt(0)!] }))
+            .reverse(),
+        };
+      })
+      .mockRejectedValueOnce(
+        Object.assign(new Error("model not loaded"), { status: 404, code: "model_not_found" }),
+      );
+    const client = new OpenAICompatibleEmbeddingClient({
+      model: "embed-model",
+      dims: 1,
+      maxBatchSize: 2,
+      maxInputBytes: 4,
+      modelReloadRetryDelaysMs: [0],
+      client: { embeddings: { create } },
+    });
+    const texts = ["alpha", "b", "中文", "😀tail", "z"];
+
+    const result = await client.embedBatch(texts);
+
+    expect(create.mock.calls.map(([params]) => params.input)).toEqual([
+      ["alph", "b"],
+      ["alph", "b"],
+      ["中", "😀"],
+      "z",
+    ]);
+    expect(result.map((vector) => Array.from(vector))).toEqual([
+      [97],
+      [98],
+      [20013],
+      [128512],
+      [122],
+    ]);
+    expect(texts).toEqual(["alpha", "b", "中文", "😀tail", "z"]);
+    expect(client.stats().input_truncations).toBe(3);
+    await client.embed("tail!");
+    expect(client.stats().input_truncations).toBe(4);
+  });
+
+  it.each([0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])(
+    "rejects an invalid max input byte cap: %s",
+    (maxInputBytes) => {
+      expect(
+        () =>
+          new OpenAICompatibleEmbeddingClient({
+            model: "embed-model",
+            dims: 1,
+            maxInputBytes,
+            client: { embeddings: { create: vi.fn() } },
+          }),
+      ).toThrow(ConfigError);
+    },
+  );
+
   it("carries the same provider object through batch chunks and model reload retries", async () => {
     const provider = { data_collection: "deny", ignore: ["SiliconFlow"] };
     const create = vi

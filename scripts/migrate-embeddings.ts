@@ -1,4 +1,5 @@
 import { readEmbeddingProviderEnv } from "../src/config/embedding-provider.js";
+import { readEmbeddingMaxInputBytesEnv } from "../src/config/embedding-input.js";
 import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -112,6 +113,7 @@ export async function embeddingMigrationMain(args = process.argv.slice(2)): Prom
     return 0;
   }
   const provider = readEmbeddingProviderEnv(process.env);
+  const maxInputBytes = readEmbeddingMaxInputBytesEnv(process.env);
   const banked = await listBankTenantIds(options.dataRoot, DEFAULT_TENANT_ID_PATTERN, {
     strict: true,
   });
@@ -147,6 +149,7 @@ export async function embeddingMigrationMain(args = process.argv.slice(2)): Prom
           dims: options.target.dimensions,
           maxBatchSize: options.batchSize,
           provider,
+          maxInputBytes,
           modelReloadRetryDelaysMs: [],
           client: new OpenAI({
             apiKey: z
@@ -166,14 +169,20 @@ export async function embeddingMigrationMain(args = process.argv.slice(2)): Prom
     // Each fresh CLI process needs its own complete observation window. Short
     // retries in separate invocations could otherwise never reap a remote lease.
     const lockTimeoutMs = FILE_LOCK_STALE_MS + 5_000;
+    const priorTruncations = client?.stats().input_truncations ?? 0;
+    const embeddingStats = () =>
+      client === undefined
+        ? {}
+        : { input_truncations: client.stats().input_truncations - priorTruncations };
     const report = await migrateTenant(
       { ...options, tenantDir: join(options.dataRoot, tenant), lockTimeoutMs },
       {
         client,
-        progress: (event) => process.stdout.write(`${JSON.stringify({ tenant, ...event })}\n`),
+        progress: (event) =>
+          process.stdout.write(`${JSON.stringify({ tenant, ...event, ...embeddingStats() })}\n`),
       },
     );
-    process.stdout.write(`${JSON.stringify({ report })}\n`);
+    process.stdout.write(`${JSON.stringify({ report: { ...report, ...embeddingStats() } })}\n`);
     if (!options.dryRun && report.complete !== true) return 1;
   }
   return 0;

@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createEmbeddingClient } from "../borg/clients.js";
 import { configSchema, type Config } from "../config/index.js";
-import type { EmbeddingClient } from "./index.js";
+import { OpenAICompatibleEmbeddingClient, type EmbeddingClient } from "./index.js";
 import { createCachingEmbeddingClient, type EmbeddingCacheStats } from "./cache.js";
 
 const openAiMocks = vi.hoisted(() => {
@@ -22,7 +22,7 @@ vi.mock("openai", () => ({
   default: openAiMocks.OpenAI,
 }));
 
-type StatsClient = EmbeddingClient & {
+type StatsClient = Omit<EmbeddingClient, "stats"> & {
   stats(): EmbeddingCacheStats;
 };
 
@@ -104,6 +104,52 @@ describe("createCachingEmbeddingClient", () => {
     await client.embed("bar");
 
     expect(inner.embed).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps original-text keys when different inputs share a truncated transport prefix", async () => {
+    const create = vi.fn().mockResolvedValue({
+      data: [
+        { index: 1, embedding: [22] },
+        { index: 0, embedding: [11] },
+      ],
+    });
+    const inner = new OpenAICompatibleEmbeddingClient({
+      model: "model-a",
+      dims: 1,
+      maxInputBytes: 6,
+      client: { embeddings: { create } },
+    });
+    const client = createCachingEmbeddingClient(inner, {
+      model: "model-a",
+      dims: 1,
+    }) as StatsClient;
+    const texts = ["prefix-one", "prefix-two", "prefix-one"];
+
+    const first = await client.embedBatch(texts);
+    first[0]![0] = 99;
+    const second = await client.embedBatch(["prefix-two", "prefix-one"]);
+    const single = await client.embed("prefix-one");
+
+    expect(create).toHaveBeenCalledExactlyOnceWith({
+      input: ["prefix", "prefix"],
+      model: "model-a",
+      encoding_format: "float",
+    });
+    expect(first.map((vector) => Array.from(vector))).toEqual([[99], [22], [11]]);
+    expect(second.map((vector) => Array.from(vector))).toEqual([[22], [11]]);
+    expect(Array.from(single)).toEqual([11]);
+    expect(texts).toEqual(["prefix-one", "prefix-two", "prefix-one"]);
+    expect(client.stats()).toMatchObject({ cache_misses: 2, input_truncations: 2 });
+  });
+
+  it("reports zero truncations for clients without transport statistics", async () => {
+    const inner = createInnerClient();
+    const client = createCachingEmbeddingClient(inner.client, {
+      model: "model-a",
+      dims: 1,
+    }) as StatsClient;
+    await client.embed("foo");
+    expect(client.stats().input_truncations).toBe(0);
   });
 
   it("shares an in-flight promise for concurrent embed calls", async () => {
@@ -433,7 +479,7 @@ describe("createCachingEmbeddingClient", () => {
     expect(secondInner.embed).toHaveBeenCalledTimes(1);
   });
 
-  it("carries configured provider routing through the production client factory", async () => {
+  it("carries configured provider routing and input byte cap through the production client factory", async () => {
     const provider = { data_collection: "deny", ignore: ["SiliconFlow"] };
     const config = configSchema.parse({
       embedding: {
@@ -442,13 +488,14 @@ describe("createCachingEmbeddingClient", () => {
         model: "model-a",
         dims: 1,
         provider,
+        maxInputBytes: 2,
       },
     });
 
     await createEmbeddingClient(config).embed("foo");
 
     expect(openAiMocks.createEmbeddings).toHaveBeenCalledExactlyOnceWith({
-      input: "foo",
+      input: "fo",
       model: "model-a",
       encoding_format: "float",
       provider,

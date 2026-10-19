@@ -40,6 +40,7 @@ describe("embedding migration CLI client routing", () => {
     vi.stubEnv("BORG_EMBEDDING_API_KEY", "test-key");
     vi.stubEnv("BORG_EMBEDDING_BASE_URL", "https://embeddings.invalid/v1");
     vi.stubEnv("BORG_EMBEDDING_PROVIDER", undefined);
+    vi.stubEnv("BORG_EMBEDDING_MAX_INPUT_BYTES", undefined);
     vi.spyOn(process.stdout, "write").mockReturnValue(true);
     // An unexpected request must fail inside the mock, never reach the network.
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("Unexpected fetch")));
@@ -96,6 +97,74 @@ describe("embedding migration CLI client routing", () => {
     if (provider === undefined) {
       for (const body of bodies) expect(JSON.parse(body)).not.toHaveProperty("provider");
     }
+  });
+
+  it("carries the input byte cap and provider through the fresh CLI client and reports truncations", async () => {
+    vi.stubEnv("BORG_EMBEDDING_MAX_INPUT_BYTES", "4");
+    vi.stubEnv("BORG_EMBEDDING_PROVIDER", '{"data_collection":"deny"}');
+    const bodies: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: unknown, init?: RequestInit) => {
+        bodies.push(String(init?.body));
+        const body = JSON.parse(String(init?.body)) as { input: string | string[] };
+        const inputs = Array.isArray(body.input) ? body.input : [body.input];
+        return new Response(
+          JSON.stringify({ data: inputs.map((_, index) => ({ index, embedding: [1, 2] })) }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }),
+    );
+    const originals = ["first", "second", "ok"];
+    vi.mocked(migrateTenant).mockImplementation(async (_options, dependencies) => {
+      await dependencies!.client!.embedBatch(originals);
+      dependencies!.progress!({ phase: "embedding", completed: 3 });
+      return { complete: true };
+    });
+
+    await expect(embeddingMigrationMain(args)).resolves.toBe(0);
+
+    expect(originals).toEqual(["first", "second", "ok"]);
+    expect(bodies).toEqual(
+      [["firs", "seco"], "ok"].map((input) =>
+        JSON.stringify({
+          input,
+          model: "qwen/qwen3-embedding-8b",
+          encoding_format: "float",
+          provider: { data_collection: "deny" },
+        }),
+      ),
+    );
+    expect(process.stdout.write).toHaveBeenCalledWith(
+      JSON.stringify({
+        tenant: "test-tenant",
+        phase: "embedding",
+        completed: 3,
+        input_truncations: 2,
+      }) + "\n",
+    );
+    expect(process.stdout.write).toHaveBeenCalledWith(
+      JSON.stringify({ report: { complete: true, input_truncations: 2 } }) + "\n",
+    );
+  });
+
+  it.each(["", " ", "0", "-1", "1.5", "32e3", "0x7d00", "1x", "Infinity", "9007199254740992"])(
+    "rejects invalid byte cap %j before migration or requests",
+    async (value) => {
+      vi.stubEnv("BORG_EMBEDDING_MAX_INPUT_BYTES", value);
+      await expect(embeddingMigrationMain(args)).rejects.toThrow(ConfigError);
+      expect(migrateTenant).not.toHaveBeenCalled();
+      expect(fetch).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["--dry-run", "--verify-only"])("validates input byte cap before %s", async (mode) => {
+    vi.stubEnv("BORG_EMBEDDING_MAX_INPUT_BYTES", "0");
+    await expect(embeddingMigrationMain([...args, mode])).rejects.toThrow(
+      "BORG_EMBEDDING_MAX_INPUT_BYTES must be a positive integer",
+    );
+    expect(migrateTenant).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it.each(["{", "[]", "", "  ", "null"])(

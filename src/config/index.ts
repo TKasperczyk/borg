@@ -1,5 +1,6 @@
 import { similarityConfigSchema, similarityValuesSchema } from "./similarity.js";
 import { embeddingProviderSchema, readEmbeddingProviderEnv } from "./embedding-provider.js";
+import { embeddingMaxInputBytesSchema, readEmbeddingMaxInputBytesEnv } from "./embedding-input.js";
 export {
   similarityThresholds,
   logSimilarityProfile,
@@ -402,6 +403,9 @@ const configBaseSchema = z.object({
       model: z.string().min(1).default("text-embedding-qwen3-embedding-8b"),
       dims: z.number().int().positive().default(4096),
       provider: embeddingProviderSchema.optional(),
+      // Qwen3 uses byte-level BPE: tokens <= UTF-8 bytes, so 32000 bytes fits
+      // every provider in any language. A character cap cannot guarantee this.
+      maxInputBytes: embeddingMaxInputBytesSchema.optional(),
       // Largest array sent to the embeddings endpoint in one request. Local
       // inference servers fail hard rather than degrade on big batches -- an 8B
       // model under LM Studio returned `400 "Model has unloaded or crashed."`
@@ -1225,6 +1229,7 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     readOptionalEnvNumber(env, "BORG_EMBEDDING_DIMS"),
   );
   setConfigOverride(overrides, ["embedding", "provider"], readEmbeddingProviderEnv(env));
+  setConfigOverride(overrides, ["embedding", "maxInputBytes"], readEmbeddingMaxInputBytesEnv(env));
   setConfigOverride(
     overrides,
     ["anthropic", "auth"],

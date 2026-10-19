@@ -105,10 +105,6 @@ const BORG_OBSERVATION_MARKER_PREFIX = "[borg observation:";
 export const EMISSION_BASELINE_INCOMPATIBLE_SHADOW_MESSAGE =
   "--emission-baseline sets per-guard modes explicitly; --shadow-post-gen-guards is incompatible";
 
-type EmbeddingClientWithStats = {
-  stats(): EmbeddingCacheStats;
-};
-
 type ChannelTranscriptLogEntry = PersonaChannelTranscriptEntry & {
   speakerIndex: number | null;
 };
@@ -238,17 +234,16 @@ function incrementNestedStringCounts(
 function embeddingCacheStatsFromTransport(
   transport: BorgTransport,
 ): Pick<EmbeddingCacheStats, "pending_overflow"> | undefined {
-  const embeddingClient = transport.getEmbeddingClient();
-
+  const stats = transport.getEmbeddingClient()?.stats?.();
   if (
-    embeddingClient === undefined ||
-    !("stats" in embeddingClient) ||
-    typeof embeddingClient.stats !== "function"
+    stats === undefined ||
+    !("pending_overflow" in stats) ||
+    typeof stats.pending_overflow !== "number"
   ) {
     return undefined;
   }
 
-  return (embeddingClient as EmbeddingClientWithStats).stats();
+  return { pending_overflow: stats.pending_overflow };
 }
 
 function postGenerationRejectedForTurn(

@@ -990,6 +990,63 @@ describe("config", () => {
     expect(config.host_capabilities).not.toContain("Proactive outbound messaging");
   });
 
+  it("leaves the input byte cap absent by default and loads a file cap", () => {
+    expect(DEFAULT_CONFIG.embedding).not.toHaveProperty("maxInputBytes");
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    writeJsonFileAtomic(join(tempDir, "config.json"), {
+      embedding: { maxInputBytes: 32000 },
+    });
+    expect(loadConfig({ dataDir: tempDir, env: {} }).embedding.maxInputBytes).toBe(32000);
+  });
+
+  it.each(["1", "32000", " 32000 ", "0032000"])(
+    "lets the input byte cap environment value %j override the file",
+    (value) => {
+      const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+      tempDirs.push(tempDir);
+      writeJsonFileAtomic(join(tempDir, "config.json"), {
+        embedding: { maxInputBytes: 64000, model: "file-model" },
+      });
+      const config = loadConfig({
+        dataDir: tempDir,
+        env: { BORG_EMBEDDING_MAX_INPUT_BYTES: value },
+      });
+      expect(config.embedding.maxInputBytes).toBe(Number(value));
+      expect(config.embedding.model).toBe("file-model");
+    },
+  );
+
+  it.each([
+    "",
+    "  ",
+    "0",
+    "-1",
+    "1.5",
+    "32000.0",
+    "32e3",
+    "0x7d00",
+    "+32000",
+    "32000bytes",
+    "Infinity",
+    "NaN",
+    "9007199254740992",
+  ])("rejects invalid BORG_EMBEDDING_MAX_INPUT_BYTES %j with ConfigError", (value) => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const load = () =>
+      loadConfig({ dataDir: tempDir, env: { BORG_EMBEDDING_MAX_INPUT_BYTES: value } });
+    expect(load).toThrow(ConfigError);
+    expect(load).toThrow("BORG_EMBEDDING_MAX_INPUT_BYTES must be a positive integer");
+  });
+
+  it.each([0, -1, 1.5, "32000", null, true, Infinity, NaN, Number.MAX_SAFE_INTEGER + 1])(
+    "rejects invalid input byte cap config %j",
+    (maxInputBytes) => {
+      expect(configSchema.safeParse({ embedding: { maxInputBytes } }).success).toBe(false);
+    },
+  );
+
   it("preserves arbitrary embedding provider JSON from the config file", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
@@ -1568,6 +1625,7 @@ describe("config", () => {
       env: {
         ANTHROPIC_API_KEY: "secret",
         BORG_EMBEDDING_API_KEY: "embedding-secret",
+        BORG_EMBEDDING_MAX_INPUT_BYTES: "32000",
         BORG_EMBEDDING_PROVIDER: '{"data_collection":"deny","ignore":["SiliconFlow"]}',
       },
     });
@@ -1582,6 +1640,7 @@ describe("config", () => {
       embedding: {
         apiKey: "[REDACTED]",
         provider: { data_collection: "deny", ignore: ["SiliconFlow"] },
+        maxInputBytes: 32000,
       },
       anthropic: {
         apiKey: "[REDACTED]",

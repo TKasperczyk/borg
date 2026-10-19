@@ -281,6 +281,13 @@ the entire file value (including when set to `{}`); malformed JSON, blank values
 and non-object JSON fail with `ConfigError`. `borg config` displays routing options
 and continues to redact the embedding API key.
 
+Set optional `embedding.maxInputBytes` or `BORG_EMBEDDING_MAX_INPUT_BYTES=32000`
+to cap each embedding input by UTF-8 bytes at a code-point boundary. The environment
+value must be a positive decimal integer and overrides the file value. Without a
+cap, input is unchanged. Truncation affects only the transport copy; stored text,
+hashes, and cache keys retain original content. Use the same cap and routing
+options for [embedding migration](docs/embedding-migration.md).
+
 The being targets **Opus 4.6**. The substrate co-produces identity with the
 model, so the design accepts drift when migrating to a successor rather than
 chasing model-swap conformance.

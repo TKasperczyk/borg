@@ -55,6 +55,39 @@ copy that object into this environment variable when routing is configured in a
 live tenant's `config.json`. Preserve the same value across migration resumes and
 live-client cutover. With no variable set, the CLI omits the `provider` field.
 
+For providers that reject long inputs, also set the same optional byte cap used by
+the live client (`embedding.maxInputBytes` in tenant config, or this environment
+override):
+
+```sh
+export BORG_EMBEDDING_MAX_INPUT_BYTES=32000
+```
+
+The CLI and live config share a strict positive decimal integer parser. Blank,
+zero, negative, fractional, exponent, hex, unsafe, and malformed values fail with
+`ConfigError`; surrounding whitespace is allowed. An absent cap leaves inputs
+unchanged. The cap applies to each input, after lone-surrogate repair, and keeps
+only complete UTF-8 code points. It is applied locally, never sent as a request
+body parameter. Qwen3's byte-level BPE has at most one token per UTF-8 byte, so
+32000 bytes fits even the 32768-token providers in any language. Character caps
+cannot give that guarantee.
+
+The CLI reads both `BORG_EMBEDDING_PROVIDER` and
+`BORG_EMBEDDING_MAX_INPUT_BYTES` from its environment, not tenant configuration.
+Keep both values unchanged across resumes and live-client cutover: model/dimension
+profiles do not record transport settings. Truncation changes only the transport
+copy. Stored text, migration text hashes, row identities, and checkpoints keep the
+original content. The live cache still keys by SHA-256 of model, dimensions, and
+original text; different originals with the same truncated prefix remain separate
+cache entries.
+
+The client's `stats().input_truncations` counter is also forwarded by the live
+cache wrapper. Migration includes `input_truncations` on its existing progress
+lines and final report, cumulative per tenant for the current CLI process. It
+counts prepared truncated inputs (including failed calls); in-place transport
+retries reuse prepared input, and cache hits add nothing. A restarted migration
+starts a new count.
+
 Do not change the shared sidecar model while tenants have mixed profiles. After each tenant migrates, the old-configured sidecar returns HTTP 503 for that tenant until the final environment cutover. Other tenants can continue serving. Plan for this per-tenant downtime.
 
 All commands below name the source model explicitly as a check against the required persisted profile. The source dimension is read from **every existing table** and must be consistent with that profile. No text is sent to an LLM. The migration uses the production embedding client directly.

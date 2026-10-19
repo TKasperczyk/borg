@@ -159,6 +159,7 @@ export {
   FakeEmbeddingClient,
   OpenAICompatibleEmbeddingClient,
   type EmbeddingClient,
+  type EmbeddingClientStats,
   type OpenAICompatibleEmbeddingClientOptions,
 } from "./embeddings/index.js";
 export {
