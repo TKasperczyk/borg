@@ -84,8 +84,10 @@ export function boundRawRecallQuery(
     queryBytes += addedBytes;
   }
 
+  // Selection runs newest-first; restore conversation order so the newest
+  // message ends the query (Qwen3 embeddings pool on the last token).
   return {
-    query: selected.join(separator),
+    query: selected.slice().reverse().join(separator),
     bounded: true,
     mode: "messages",
     originalBytes,

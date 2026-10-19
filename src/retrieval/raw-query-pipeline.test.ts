@@ -116,7 +116,7 @@ describe("raw-query recall integration", () => {
     const messages = ["oldest message", "older", "newest"];
     const query = messages.join("\n\n");
     await pipeline.recallEpisodesForCognition(query, { ...options, rawQueryMessages: messages });
-    expect(embed).toHaveBeenCalledWith("newest\n\nolder");
+    expect(embed).toHaveBeenCalledWith("older\n\nnewest");
     expect(expandRecall).toHaveBeenCalledWith(expect.objectContaining({ focus: query }));
     expect(emit).toHaveBeenCalledWith(
       "retrieval.raw_query",

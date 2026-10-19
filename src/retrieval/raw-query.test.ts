@@ -46,11 +46,11 @@ describe("boundRawRecallQuery", () => {
     expect(Buffer.from(result.query).toString("utf8")).toBe(result.query);
   });
 
-  it("selects whole structured messages newest-first and counts separator bytes", () => {
+  it("selects whole structured messages newest-first, keeps conversation order, and counts separator bytes", () => {
     const messages = Object.freeze(["oldest", "older", "newest"]);
     const query = messages.join("\n\n");
     expect(boundRawRecallQuery(query, 13, messages)).toMatchObject({
-      query: "newest\n\nolder",
+      query: "older\n\nnewest",
       mode: "messages",
       queryBytes: 13,
       selectedMessageCount: 2,
