@@ -2294,6 +2294,59 @@ describe("compact planner context", () => {
     expect(surface).not.toContain("HEAD+TAIL EXCERPT");
   });
 
+  it("keeps every presented dormant question's id on the planner surface when labels outgrow its cap", () => {
+    const audience = Array.from({ length: 8 }, (_, index) => `ent_${String(index).padStart(16, "h")}`);
+    const label = {
+      disclosure: `disclosure_class=self_private origin_audience=${audience.join(",")} private-to=${audience.join(",")}; I can use this internally; I do not disclose it to the current audience unless authorized`,
+      disclosure_label: {
+        disclosure_class: "self_private",
+        origin_audience_entity_ids: audience,
+        private_to_entity_ids: audience,
+        public_to_entity_ids: [],
+      },
+    };
+    const question = (id: string, text: string, offsetMs: number) => ({
+      open_question_id: id,
+      question: text,
+      urgency: 0.5,
+      last_touched: NOW_MS - offsetMs,
+      unresolved_rumination_ticks: 0,
+      last_ruminated_at: null,
+      ...label,
+      related_episodes: Array.from({ length: 5 }, (_, index) => ({
+        id: `ep_${id.slice(3, 8)}${String(index).padStart(11, "i")}`,
+        narrative: "narracja epizodu ".repeat(40),
+        ...label,
+      })),
+    });
+    const ids = ["oq_jjjjjjjjjjjjjjjj", "oq_kkkkkkkkkkkkkkkk", "oq_llllllllllllllll"];
+    const trigger = {
+      source_name: "open_question_dormant",
+      source_type: "trigger" as const,
+      event_id: `${ids[0]}:${NOW_MS - 86_400_000}`,
+      sort_ts: NOW_MS - 86_400_000,
+      payload: {
+        ...question(ids[0]!, `Czy to pole coś zapisuje? ${"Gdzie to widać? ".repeat(15)}`, 86_400_000),
+        additional_questions: [
+          question(ids[1]!, `この問いは計画に届くか。${"どの欄か。".repeat(30)}`, 86_300_000),
+          question(ids[2]!, `Did the plan see this one? ${"Which page? ".repeat(20)}`, 86_200_000),
+        ],
+        prior_self_thought: { text: "poprzednia myśl ".repeat(20), ...label },
+      },
+    };
+
+    const surface = taggedBlock(
+      allSystemText(build(context({ turnOrigin: "autonomous", autonomyTrigger: trigger }))),
+      "autonomy_trigger",
+    );
+    for (const id of ids) {
+      expect(surface).toContain(`"open_question_id": "${id}"`);
+    }
+    expect(surface).toContain("mechanically bounded to 4000 chars");
+    expect(surface).toMatch(/payload_fields_omitted: \d+\./);
+    expect(surface).not.toContain("HEAD+TAIL EXCERPT");
+  });
+
   it("keeps the generic excerpt shape mechanical and announces every cut", () => {
     const source = `HEAD_${"x".repeat(500)}_TAIL`;
     const excerpt = headTailPlannerExcerpt(source, 120);

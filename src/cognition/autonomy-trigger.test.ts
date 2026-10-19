@@ -575,6 +575,107 @@ describe("formatAutonomyTriggerContext epoch annotation", () => {
       }
       expect(partial).toBeGreaterThan(0);
     });
+
+    it("keeps every additional question's id when whole labels outgrow a small cap", () => {
+      // Eight audiences on every label, as a question raised across rooms carries them.
+      const audience = Array.from(
+        { length: 8 },
+        (_, index) => `ent_${String(index).padStart(16, "w")}`,
+      );
+      const label = {
+        disclosure: `disclosure_class=self_private origin_audience=${audience.join(",")} private-to=${audience.join(",")}; I can use this internally; I do not disclose it to the current audience unless authorized`,
+        disclosure_label: {
+          disclosure_class: "self_private",
+          origin_audience_entity_ids: audience,
+          private_to_entity_ids: audience,
+          public_to_entity_ids: [],
+        },
+      };
+      const episodes = (offset: number) =>
+        Array.from({ length: 5 }, (_, index) => ({
+          id: `ep_${String(offset + index).padStart(16, "x")}`,
+          narrative: "narracja epizodu ".repeat(40),
+          ...label,
+        }));
+      const question = (id: string, text: string, lastTouched: number) => ({
+        open_question_id: id,
+        question: text,
+        urgency: 0.5,
+        last_touched: lastTouched,
+        unresolved_rumination_ticks: 0,
+        last_ruminated_at: null,
+        ...label,
+      });
+      const payload = {
+        ...question(
+          "oq_aaaaaaaaaaaaaaaa",
+          `Czy ta granica ma pokrycie poza własną narracją? ${"Które pole ją zapisuje? ".repeat(12)}`,
+          1_787_050_000_000,
+        ),
+        additional_questions: [
+          {
+            ...question(
+              "oq_bbbbbbbbbbbbbbbb",
+              `この沈黙は選択だったのか。${"どの記録が決めるのか。".repeat(20)}`,
+              1_787_050_100_000,
+            ),
+            related_episodes: episodes(5),
+          },
+          {
+            ...question(
+              "oq_cccccccccccccccc",
+              `Was the second record a copy of the first? ${"Which field says so? ".repeat(15)}`,
+              1_787_050_200_000,
+            ),
+            related_episodes: episodes(10),
+          },
+        ],
+        related_episodes: episodes(0),
+        prior_self_thought: { text: "myśl poprzednia ".repeat(30), ...label },
+      };
+      const context = { ...DORMANT, payload };
+
+      const presentation = renderAutonomyTriggerPresentation(context, 4_000);
+      const rendered = presentation.text;
+      expect(rendered.length).toBeLessThanOrEqual(4_000);
+      expect(rendered).toContain("related_episodes_omitted: 15.");
+      expect(rendered).toMatch(/payload_fields_omitted: \d+\./);
+      const parsed = parsePayload(rendered);
+      const shown = [parsed, ...parsed.additional_questions];
+      expect(shown.map((row: { open_question_id: string }) => row.open_question_id)).toEqual([
+        "oq_aaaaaaaaaaaaaaaa",
+        "oq_bbbbbbbbbbbbbbbb",
+        "oq_cccccccccccccccc",
+      ]);
+      // Text never stays without its labels; a question that gave its text up keeps its id
+      // and scalars, and is not counted as shown.
+      for (const row of shown) {
+        if ("question" in row) {
+          expect(row.disclosure).toBe(label.disclosure);
+          expect(row.disclosure_label).toEqual(label.disclosure_label);
+        } else {
+          expect(Object.keys(row)).toEqual([
+            "open_question_id",
+            "urgency",
+            "last_touched",
+            "unresolved_rumination_ticks",
+            "last_ruminated_at",
+          ]);
+          expect(presentation.shownOpenQuestionIds).not.toContain(row.open_question_id);
+        }
+      }
+      expect(shown.filter((row: object) => !("question" in row)).length).toBeGreaterThan(0);
+      expect(parsed.question.startsWith("Czy ta granica ma pokrycie")).toBe(true);
+
+      // The shared cap still carries every question whole.
+      const uncut = renderAutonomyTriggerPresentation(context);
+      expect(uncut.text).not.toContain("payload_fields_omitted");
+      expect(uncut.shownOpenQuestionIds).toEqual([
+        "oq_aaaaaaaaaaaaaaaa",
+        "oq_bbbbbbbbbbbbbbbb",
+        "oq_cccccccccccccccc",
+      ]);
+    });
   });
 
   it("stays silent on dormancy for a wake that carries no open question", () => {

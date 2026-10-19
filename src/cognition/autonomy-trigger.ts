@@ -200,6 +200,29 @@ function omitTrailingRelatedEpisodes(
   ) as Record<string, unknown>;
 }
 
+// A question's text leaves together with the labels that cover it and the episodes attached to
+// it; its id and scalar fields stay.
+const QUESTION_FIELDS_THAT_LEAVE_WITH_ITS_TEXT = new Set([
+  "question",
+  "disclosure",
+  "disclosure_label",
+  "related_episodes",
+]);
+
+function questionIdOnly(question: unknown): { kept: unknown; omittedFields: number } {
+  if (
+    question === null ||
+    typeof question !== "object" ||
+    Array.isArray(question) ||
+    typeof (question as Record<string, unknown>).open_question_id !== "string"
+  ) {
+    return { kept: question, omittedFields: 0 };
+  }
+  const entries = Object.entries(question as Record<string, unknown>);
+  const kept = entries.filter(([key]) => !QUESTION_FIELDS_THAT_LEAVE_WITH_ITS_TEXT.has(key));
+  return { kept: Object.fromEntries(kept), omittedFields: entries.length - kept.length };
+}
+
 function excerptPayloadText(value: unknown, maxChars: number, keepQuestionText: boolean): unknown {
   if (typeof value === "string") {
     const marker = "[ELIDED]";
@@ -379,7 +402,27 @@ function boundAutonomyTriggerContext(
     (key) => key !== "recent_identity_events",
   );
   while (bounded.text.length > maxChars && otherFields.length > 0) {
-    delete retainedPayload[otherFields.pop()!];
+    const field = otherFields.pop()!;
+    const additional = retainedPayload[field];
+    if (field === "additional_questions" && Array.isArray(additional)) {
+      // Whole labels can outgrow a small cap, and a question that leaves this field whole leaves
+      // the page with no trace of having been presented. So the additional questions keep their
+      // ids: from the last, each gives up its text, labels and episodes while that can still let
+      // the rest fit.
+      const omittedBefore = omittedPayloadFields;
+      const questions = [...additional];
+      for (let index = questions.length - 1; index >= 0; index -= 1) {
+        if (bounded.text.length <= maxChars) break;
+        const { kept, omittedFields } = questionIdOnly(questions[index]);
+        questions[index] = kept;
+        omittedPayloadFields += omittedFields;
+        retainedPayload.additional_questions = [...questions];
+        bounded = render(0);
+      }
+      if (bounded.text.length <= maxChars) continue;
+      omittedPayloadFields = omittedBefore;
+    }
+    delete retainedPayload[field];
     omittedPayloadFields += 1;
     bounded = render(0);
   }
