@@ -9,6 +9,7 @@ import {
   type ReviewQueueHandler,
   type ReviewResolution,
 } from "../review-queue.js";
+import { updateEpisodeFromReview } from "./episode-repair-event.js";
 import { closeSemanticEdgeFromReview } from "./semantic-edge-closure.js";
 
 const TEMPORAL_DRIFT_REVIEW_RESOLUTIONS = new Set<ReviewResolution>([
@@ -134,7 +135,13 @@ export function createTemporalDriftReviewQueueHandler(): ReviewQueueHandler<
           ...(refs.corrected_end_time === undefined ? {} : { end_time: refs.corrected_end_time }),
           ...(refs.patch_description === undefined ? {} : { narrative: refs.patch_description }),
         });
-        const updated = await ctx.episodicRepository.update(refs.target_id, patch);
+        const updated = await updateEpisodeFromReview({
+          ctx,
+          item,
+          episodeId: refs.target_id,
+          patch,
+          action: "temporal_drift_apply",
+        });
 
         if (updated === null) {
           throw new SemanticError(

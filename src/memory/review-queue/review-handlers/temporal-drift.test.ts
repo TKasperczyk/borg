@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { openDatabase } from "../../../storage/sqlite/index.js";
 import { FixedClock } from "../../../util/clock.js";
+import { identityMigrations } from "../../identity/migrations.js";
+import { IdentityEventRepository } from "../../identity/repository.js";
 import type { ReviewHandlerContext, ReviewQueueItem } from "../review-queue.js";
 import type { SemanticEdge } from "../../semantic/types.js";
 import {
@@ -78,6 +81,69 @@ describe("temporal drift review handler", () => {
         narrative: "The incident happened after the rollback.",
       }),
     );
+  });
+
+  it("records the episode's replaced times and narrative on accept", async () => {
+    const refs = temporalDriftReviewRefsSchema.parse({
+      target_type: "episode",
+      target_id: "ep_aaaaaaaaaaaaaaaa",
+      corrected_start_time: 2_000,
+      patch_description: "The incident happened after the rollback.",
+    });
+    const before = {
+      id: "ep_aaaaaaaaaaaaaaaa",
+      narrative: "The incident happened before the rollback.",
+      start_time: 1_500,
+      end_time: 3_000,
+      updated_at: 1_000,
+    };
+    const after = {
+      ...before,
+      narrative: "The incident happened after the rollback.",
+      start_time: 2_000,
+      updated_at: 6_000,
+    };
+    const db = openDatabase(":memory:", { migrations: identityMigrations });
+    const identityEventRepository = new IdentityEventRepository({
+      db,
+      clock: new FixedClock(6_000),
+    });
+
+    try {
+      await createTemporalDriftReviewQueueHandler().apply({
+        item: itemFor(refs),
+        refs,
+        resolution: { decision: "accept" },
+        applyingState: null,
+        ctx: ctxWith({
+          episodicRepository: {
+            get: vi.fn(async () => before),
+            update: vi.fn(async () => after),
+          } as never,
+          identityEventRepository,
+        }),
+      });
+
+      expect(identityEventRepository.list({ recordType: "episode" })).toEqual([
+        expect.objectContaining({
+          action: "temporal_drift_apply",
+          review_item_id: 2,
+          provenance: { kind: "manual" },
+          old_value: {
+            narrative: "The incident happened before the rollback.",
+            start_time: 1_500,
+            updated_at: 1_000,
+          },
+          new_value: {
+            narrative: "The incident happened after the rollback.",
+            start_time: 2_000,
+            updated_at: 6_000,
+          },
+        }),
+      ]);
+    } finally {
+      db.close();
+    }
   });
 
   it("accepts semantic-node description repairs", async () => {

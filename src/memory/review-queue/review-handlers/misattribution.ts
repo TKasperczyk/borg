@@ -10,6 +10,7 @@ import {
   type ReviewQueueHandler,
   type ReviewResolution,
 } from "../review-queue.js";
+import { updateEpisodeFromReview } from "./episode-repair-event.js";
 
 const MISATTRIBUTION_REVIEW_RESOLUTIONS = new Set<ReviewResolution>([
   "accept",
@@ -139,7 +140,13 @@ export function createMisattributionReviewQueueHandler(): ReviewQueueHandler<
           });
         }
 
-        const updated = await ctx.episodicRepository.update(refs.target_id, refs.patch);
+        const updated = await updateEpisodeFromReview({
+          ctx,
+          item,
+          episodeId: refs.target_id,
+          patch: refs.patch,
+          action: "misattribution_apply",
+        });
 
         if (updated === null) {
           throw new SemanticError(

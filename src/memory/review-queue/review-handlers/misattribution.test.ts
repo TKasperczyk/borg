@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { openDatabase } from "../../../storage/sqlite/index.js";
 import { FixedClock } from "../../../util/clock.js";
 import { createStreamEntryId } from "../../../util/ids.js";
+import { identityMigrations } from "../../identity/migrations.js";
+import { IdentityEventRepository } from "../../identity/repository.js";
 import type { ReviewHandlerContext, ReviewQueueItem } from "../review-queue.js";
 import {
   createMisattributionReviewQueueHandler,
@@ -75,6 +78,83 @@ describe("misattribution review handler", () => {
       narrative: "Alex led the review.",
       tags: ["review", "alex"],
     });
+  });
+
+  it("keeps the overwritten episode fields in one identity event per review item", async () => {
+    const refs = misattributionReviewRefsSchema.parse({
+      target_type: "episode",
+      target_id: "ep_aaaaaaaaaaaaaaaa",
+      patch: {
+        participants: ["team", "Alex"],
+        narrative: "Alex led the review.",
+      },
+      proposed_provenance: {
+        kind: "offline",
+        process: "overseer",
+      },
+    });
+    const before = {
+      id: "ep_aaaaaaaaaaaaaaaa",
+      narrative: "Sam led the review.",
+      participants: ["team", "Sam"],
+      tags: ["review"],
+      source_stream_ids: ["strm_aaaaaaaaaaaaaaaa"],
+      embedding: new Float32Array([0.25, 0.5]),
+      updated_at: 1_000,
+    };
+    const after = {
+      ...before,
+      narrative: "Alex led the review.",
+      participants: ["team", "Alex"],
+      updated_at: 5_000,
+    };
+    const get = vi.fn(async () => before);
+    const update = vi.fn(async () => after);
+    const db = openDatabase(":memory:", { migrations: identityMigrations });
+    const identityEventRepository = new IdentityEventRepository({
+      db,
+      clock: new FixedClock(5_000),
+    });
+    const handler = createMisattributionReviewQueueHandler();
+    const ctx = ctxWith({
+      episodicRepository: { get, update } as never,
+      identityEventRepository,
+    });
+
+    try {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        await handler.apply({
+          item: itemFor(refs),
+          refs,
+          resolution: { decision: "accept" },
+          applyingState: null,
+          ctx,
+        });
+      }
+
+      expect(get).toHaveBeenCalledWith("ep_aaaaaaaaaaaaaaaa", { includeArchived: true });
+      expect(identityEventRepository.list({ recordType: "episode" })).toEqual([
+        expect.objectContaining({
+          record_id: "ep_aaaaaaaaaaaaaaaa",
+          action: "misattribution_apply",
+          review_item_id: 1,
+          reason: "attribution should be repaired",
+          provenance: { kind: "offline", process: "overseer" },
+          old_value: {
+            narrative: "Sam led the review.",
+            participants: ["team", "Sam"],
+            updated_at: 1_000,
+          },
+          new_value: {
+            narrative: "Alex led the review.",
+            participants: ["team", "Alex"],
+            updated_at: 5_000,
+          },
+        }),
+      ]);
+    } finally {
+      db.close();
+    }
   });
 
   it("accepts semantic-node patches with replacement flags", async () => {
