@@ -6778,6 +6778,80 @@ describe("AutonomyScheduler", () => {
     });
   });
 
+  it("holds the scheduled stamp at a running tick's entry and counts the fires it refused once it ends", async () => {
+    const clock = new ManualClock(1_000_000);
+    const harness = await createOfflineTestHarness({ clock });
+    cleanup = harness.cleanup;
+    const source = createTestDueSource();
+    let finishScan!: (events: Awaited<ReturnType<AutonomyWakeSource["scan"]>>) => void;
+    source.scan = vi.fn(
+      () =>
+        new Promise<Awaited<ReturnType<AutonomyWakeSource["scan"]>>>((resolve) => {
+          finishScan = resolve;
+        }),
+    );
+    let intervalCallback!: () => void;
+    const scheduler = createScheduler({
+      db: harness.db,
+      enabled: true,
+      intervalMs: 60_000,
+      maxWakesPerWindow: 6,
+      clock,
+      createStreamWriter: (sessionId) =>
+        new StreamWriter({ dataDir: harness.tempDir, sessionId, clock }),
+      watermarkRepository: new StreamWatermarkRepository({ db: harness.db, clock }),
+      turnOrchestrator: { run: vi.fn() },
+      toolDispatcher: new ToolDispatcher({
+        createStreamWriter: (sessionId) =>
+          new StreamWriter({ dataDir: harness.tempDir, sessionId, clock }),
+        clock,
+      }),
+      sources: [source],
+      setIntervalFn: ((callback: () => void) => {
+        intervalCallback = callback;
+        return 1;
+      }) as unknown as typeof setInterval,
+      clearIntervalFn: vi.fn(),
+    });
+
+    scheduler.start();
+    clock.advance(60_000);
+    intervalCallback(); // admitted: the tick enters at 1_060_000 and waits in scan
+    await vi.waitFor(() => expect(source.scan).toHaveBeenCalledTimes(1));
+    clock.advance(60_000);
+    intervalCallback(); // refused at 1_120_000
+    clock.advance(60_000);
+    intervalCallback(); // refused at 1_180_000
+    clock.advance(10_000);
+    await expect(scheduler.describe()).resolves.toMatchObject({
+      tick_in_flight: true,
+      dropped_interval_fires: { since_interval_armed: 2, current_tick: 2 },
+      scheduled_tick_at: 1_120_000,
+    });
+
+    finishScan([]);
+    await vi.waitFor(async () => expect((await scheduler.describe()).tick_in_flight).toBe(false));
+    clock.advance(30_000);
+    // Read at 1_220_000: the handle last fired at 1_180_000 and fires next at 1_240_000. The
+    // tick's entry plus the interval, 1_120_000, would print a loop 100s behind.
+    await expect(scheduler.describe()).resolves.toMatchObject({
+      tick_in_flight: false,
+      dropped_interval_fires: { since_interval_armed: 2, current_tick: null },
+      scheduled_tick_at: 1_240_000,
+      next_tick_at: 1_240_000,
+    });
+
+    clock.advance(30_000);
+    intervalCallback(); // admitted at 1_250_000, after the refused fire
+    await vi.waitFor(() => expect(source.scan).toHaveBeenCalledTimes(2));
+    finishScan([]);
+    await vi.waitFor(async () => expect((await scheduler.describe()).tick_in_flight).toBe(false));
+    await expect(scheduler.describe()).resolves.toMatchObject({
+      scheduled_tick_at: 1_310_000,
+    });
+    await scheduler.stop();
+  });
+
   it("waits for an active tick to finish during graceful stop", async () => {
     const clock = new ManualClock(1_000_000);
     const harness = await createOfflineTestHarness({

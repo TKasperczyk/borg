@@ -3290,11 +3290,12 @@ describe("buildBaseSystemPrompt", () => {
       expect(line).not.toContain(absent);
     }
     // The period travels with the stamps on every branch. Two scheduled stamps
-    // are only comparable against it: the anchor advances on tick entry and
-    // keeps the lateness that entry arrived with, so the delta is a multiple
-    // plus that residue and does not separate a re-arm from a late entry.
+    // are only comparable against it: the anchor advances on each fire a
+    // finished tick saw and keeps the lateness that fire arrived with, so the
+    // delta is a multiple plus that residue and does not separate a re-arm from
+    // a late fire.
     expect(line).toContain(
-      "The scheduled stamp is the last tick entry plus the interval, which is 60000ms: it moves in multiples of that plus the lateness each entry kept, so an off-grid delta between two reads is lateness or a re-arm alike -- which needs the loop stopped and started again, since starting it while a handle exists does nothing.",
+      "The scheduled stamp is the last fire not refused by a tick still in flight, plus the interval, which is 60000ms: it moves in multiples of that plus the lateness each fire kept, so an off-grid delta between two reads is lateness or a re-arm alike -- which needs the loop stopped and started again.",
     );
     // The arming stamp is the direct form of the question the grid clause above
     // raises and cannot close: an off-grid residue is a late tick entry and a
@@ -3753,7 +3754,7 @@ describe("buildBaseSystemPrompt", () => {
       scheduledTickAt: NOW_MS - 41_000,
       nextTickAt: NOW_MS - 29_000,
       expected:
-        "next tick was due 2023-11-14T22:12:39.000Z, 12000ms before that read, and had not fired, so the loop is behind by that much; next_tick_at floors forward and reports 2023-11-14T22:12:51.000Z, which is the read clock, not a scheduled time.",
+        "next tick was due 2023-11-14T22:12:39.000Z, 12000ms before that read, so the loop is behind by that much; next_tick_at floors forward and reports 2023-11-14T22:12:51.000Z, which is the read clock, not a scheduled time.",
       absent: "next tick 2023-11-14T22:12:51.000Z (",
       closesAgainstLag: false,
     },

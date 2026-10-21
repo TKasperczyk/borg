@@ -358,9 +358,9 @@ export type AutonomySchedulerDescription = {
   tick_in_flight: boolean;
   /**
    * The interval the handle was armed with. Load-bearing to any consumer
-   * comparing `scheduled_tick_at` across reads: that stamp is the last tick
-   * entry plus this, so consecutive values differ by a multiple of it plus the
-   * lateness each entry kept -- an off-grid residue is that lateness and a
+   * comparing `scheduled_tick_at` across reads: that stamp is the last fire
+   * not refused by a tick still in flight plus this, so consecutive values differ
+   * by a multiple of it plus the lateness each fire kept -- an off-grid residue is that lateness and a
    * re-arm alike, and only `interval_armed_at` separates them. Without this
    * term a series of stamps is just a series of stamps -- the phase is only
    * readable against the period.

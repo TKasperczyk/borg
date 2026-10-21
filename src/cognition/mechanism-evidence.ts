@@ -91,7 +91,7 @@ export type HydratedRecentRegeneration = {
 //
 // `intervalMs` and `droppedIntervalFires` are the fourth and fifth, and both were dropped at the
 // same call site as the three above. The interval length is what a series of `scheduledTickAt`
-// stamps is read against: the stamp is the last tick entry plus the interval, so consecutive reads
+// stamps is read against: the stamp is the last fire not refused by a tick still in flight plus the interval, so consecutive reads
 // differ by a multiple of it plus whatever lateness each entry kept -- an off-grid residue is that
 // lateness and a re-arm alike, which is what `intervalArmedAt` is for. Without the period a reader
 // holding two stamps can see that they differ and nothing more. The refused-fire counts answer the question `tickInFlight`

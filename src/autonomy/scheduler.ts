@@ -640,6 +640,10 @@ export class AutonomyScheduler {
   private observer: AutonomySchedulerObserver | null = null;
   private intervalStartedTs: number | null = null;
   private lastTickTs: number | null = null;
+  // A refused fire re-arms the interval exactly as an admitted one does, so once
+  // the refusing tick has ended the handle counts from this fire, not from that
+  // tick's entry.
+  private lastRefusedFireTs: number | null = null;
   // Fires the interval callback refused because a tick was already running.
   // Counted here because the early return below is the one path in the
   // scheduler that produces no row anywhere: a refused fire is a wake that
@@ -867,12 +871,14 @@ export class AutonomyScheduler {
     this.stopping = false;
     this.intervalStartedTs = this.clock.now();
     this.lastTickTs = null;
+    this.lastRefusedFireTs = null;
     this.droppedIntervalFires = 0;
     this.droppedIntervalFiresForActiveTick = 0;
     this.intervalHandle = this.setIntervalFn(() => {
       if (this.activeTick !== null) {
         this.droppedIntervalFires += 1;
         this.droppedIntervalFiresForActiveTick += 1;
+        this.lastRefusedFireTs = this.clock.now();
         return;
       }
 
@@ -888,6 +894,7 @@ export class AutonomyScheduler {
     }
     this.intervalStartedTs = null;
     this.lastTickTs = null;
+    this.lastRefusedFireTs = null;
     this.droppedIntervalFires = 0;
     this.droppedIntervalFiresForActiveTick = 0;
 
@@ -1138,10 +1145,11 @@ export class AutonomyScheduler {
   // When the tick the interval handle is counting toward is due, unfloored. The
   // handle is what actually fires; this is a derivation from the anchor for
   // description only, and it can sit in the past of `nowMs` -- an interval that
-  // is behind (event-loop pressure, a long-running tick) has a due time that has
-  // already passed. That difference is the only place "how late is the loop" is
-  // expressible, which is why the floor is applied at the field that needs it
-  // rather than here.
+  // is behind (event-loop pressure) or a tick still running has a due time that
+  // has already passed. That difference is the only place "how late is the loop"
+  // is expressible, which is why the floor is applied at the field that needs it
+  // rather than here. A running tick holds the anchor at its own entry; once it
+  // has ended, the fires it refused count, since each re-armed the handle.
   private describeScheduledTickAt(nowMs: number): number | null {
     if (this.intervalHandle === null) {
       return null;
@@ -1151,8 +1159,12 @@ export class AutonomyScheduler {
       this.lastTickTs === null || this.intervalStartedTs === null
         ? (this.lastTickTs ?? this.intervalStartedTs ?? nowMs)
         : Math.max(this.lastTickTs, this.intervalStartedTs);
+    const anchor =
+      this.activeTick === null && this.lastRefusedFireTs !== null
+        ? Math.max(tickAnchor, this.lastRefusedFireTs)
+        : tickAnchor;
 
-    return tickAnchor + this.options.intervalMs;
+    return anchor + this.options.intervalMs;
   }
 
   private async tickOnce(): Promise<TickResult> {

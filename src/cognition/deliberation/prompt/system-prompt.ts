@@ -2086,7 +2086,7 @@ export function summarizeAutonomySchedulerState(
       : scheduledTickAt < schedulerState.observedAt
         ? `next tick was due ${new Date(scheduledTickAt).toISOString()}, ${
             schedulerState.observedAt - scheduledTickAt
-          }ms before that read, and had not fired, so the loop is behind by that much; next_tick_at floors forward and reports ${new Date(
+          }ms before that read, so the loop is behind by that much; next_tick_at floors forward and reports ${new Date(
             schedulerState.nextTickAt,
           ).toISOString()}, which is the read clock, not a scheduled time.`
         : `next tick ${new Date(scheduledTickAt).toISOString()}, ${
@@ -2098,8 +2098,8 @@ export function summarizeAutonomySchedulerState(
           }`;
   // (5) The stamps above were rendered without the period they are spaced on. A reader holding two
   //     of them across reads could see that they differed and nothing more: the anchor is written
-  //     on tick entry, so a stamp is spaced on the entries and not on the interval's own phase --
-  //     each entry keeps the lateness it arrived with and nothing catches it back up, so an
+  //     on tick entry, or on a fire refused after it once that tick has ended, so a stamp is
+  //     spaced on fires -- each keeps the lateness it arrived with and nothing catches it back up, so an
   //     off-grid delta is retained lateness and a re-arm alike. The copy said the second reading
   //     only, which made a non-multiple delta read as proof of a re-arm; `interval_armed_at` below
   //     is the field that actually answers it. `tick_in_flight` cannot: a tick that runs nine
@@ -2109,7 +2109,7 @@ export function summarizeAutonomySchedulerState(
   const gridClause =
     scheduledTickAt === null
       ? ""
-      : ` The scheduled stamp is the last tick entry plus the interval, which is ${schedulerState.intervalMs}ms: it moves in multiples of that plus the lateness each entry kept, so an off-grid delta between two reads is lateness or a re-arm alike -- which needs the loop stopped and started again, since starting it while a handle exists does nothing.`;
+      : ` The scheduled stamp is the last fire not refused by a tick still in flight, plus the interval, which is ${schedulerState.intervalMs}ms: it moves in multiples of that plus the lateness each fire kept, so an off-grid delta between two reads is lateness or a re-arm alike -- which needs the loop stopped and started again.`;
   // (6) A fire that arrives while a tick is running is dropped at the interval callback's early
   //     return, and that early return is the only path in the scheduler that writes nothing at
   //     all -- no wake row, no outcome, no error. So the budget and outcome counts above cannot
