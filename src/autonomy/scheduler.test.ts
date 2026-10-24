@@ -3251,6 +3251,45 @@ describe("AutonomyScheduler", () => {
     },
   );
 
+  it("records the error outcome when the failed turn's metrics name the questions it showed", async () => {
+    const clock = new ManualClock(1_000_000);
+    const harness = await createOfflineTestHarness({ clock });
+    cleanup = harness.cleanup;
+    const wakeRepository = new AutonomyWakesRepository({ db: harness.db, clock });
+    const failure = new Error("Failed to complete Anthropic request: Overloaded");
+    associateTurnExecutionMetricsWithError(failure, {
+      shownOpenQuestionIds: ["oq_shown"],
+      finalizer_rounds: 1,
+      stall_retries: 0,
+    });
+    const createStreamWriter = (sessionId: typeof DEFAULT_SESSION_ID) =>
+      new StreamWriter({ dataDir: harness.tempDir, sessionId, clock });
+    const scheduler = createScheduler({
+      db: harness.db,
+      wakeRepository,
+      enabled: true,
+      intervalMs: 1_000,
+      maxWakesPerWindow: 6,
+      clock,
+      createStreamWriter,
+      watermarkRepository: new StreamWatermarkRepository({ db: harness.db, clock }),
+      turnOrchestrator: { run: vi.fn().mockRejectedValue(failure) },
+      toolDispatcher: new ToolDispatcher({ createStreamWriter, clock }),
+      sources: [createTestDueSource("shown-question-error-counts")],
+    });
+
+    expect(await scheduler.tick()).toMatchObject({
+      errorCount: 1,
+      events: [expect.objectContaining({ status: "error", errorName: "Error" })],
+    });
+    expect(wakeRepository.listSince(0, 1)[0]).toMatchObject({
+      outcome: "error",
+      outcome_detail: expect.stringContaining("Overloaded"),
+      finalizer_rounds: 1,
+      stall_retries: 0,
+    });
+  });
+
   it("records interrupted with executed counts when completed-turn outcome bookkeeping fails", async () => {
     const clock = new ManualClock(1_000_000);
     const harness = await createOfflineTestHarness({ clock });

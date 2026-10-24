@@ -1426,9 +1426,15 @@ export class AutonomyScheduler {
               // cannot bypass retry spacing even when logging fails.
               this.scheduleBatchTriggerErrorBackoff(wakeBatch);
             }
+            // The error carries the whole metrics snapshot; the wake row's strict
+            // schema takes only the two counts, so project before recording.
+            const errorMetrics = turnExecutionMetricsFromError(error);
             const executionCounts =
-              turnExecutionMetricsFromError(error) ??
-              (busy ? ZERO_TURN_EXECUTION_COUNTS : undefined);
+              errorMetrics === null
+                ? busy
+                  ? ZERO_TURN_EXECUTION_COUNTS
+                  : undefined
+                : executionCountsForTurnResult(errorMetrics);
             const outcomeSummary = busy
               ? "Skipped autonomous turn because the session was busy."
               : `Autonomous turn failed: ${formatError(error)}`;
