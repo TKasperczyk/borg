@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import {
   callStructuredTool,
+  isLlmProviderTransportError,
   isStructuredToolCallError,
   toToolInputSchema,
   type LLMClient,
@@ -190,9 +191,8 @@ export class CommitmentChecker {
       commitmentLines.push(describeCommitmentForJudge(commitment, this.options.entityRepository));
     }
 
-    let judged: z.infer<typeof judgeSchema>;
-    try {
-      judged = (
+    const judge = async () =>
+      (
         await callStructuredTool({
           llmClient: this.options.llmClient,
           request: {
@@ -245,6 +245,18 @@ export class CommitmentChecker {
           },
         })
       ).parsed;
+
+    let judged: z.infer<typeof judgeSchema>;
+    try {
+      judged = await judge().catch((error: unknown) => {
+        // A provider failure means no judge read the response, so failing closed on the first
+        // one reports a violation nobody found. Ask once more before treating it as one.
+        if (isStructuredToolCallError(error, "llm_failed") && isLlmProviderTransportError(error)) {
+          return judge();
+        }
+
+        throw error;
+      });
     } catch (error) {
       if (isStructuredToolCallError(error, "missing_tool_call")) {
         return [

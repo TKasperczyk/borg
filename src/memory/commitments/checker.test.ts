@@ -1,9 +1,11 @@
+import Anthropic from "@anthropic-ai/sdk";
 import { describe, expect, it } from "vitest";
 
-import { type LLMCompleteResult } from "../../llm/index.js";
+import { AnthropicLLMClient, type LLMCompleteResult } from "../../llm/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { openDatabase } from "../../storage/sqlite/index.js";
 import { FixedClock } from "../../util/clock.js";
+import { LLMError } from "../../util/errors.js";
 import { commitmentMigrations } from "./migrations.js";
 import { CommitmentChecker, formatCommitmentsForPrompt } from "./checker.js";
 import { CommitmentRepository, EntityRepository } from "./repository.js";
@@ -438,6 +440,118 @@ describe("commitment checker", () => {
       kind: "message",
       content: "I should avoid discussing that topic.",
     });
+
+    db.close();
+  });
+
+  it("asks the judge again when the provider fails before any judge read the response", async () => {
+    const db = openDatabase(":memory:", { migrations: commitmentMigrations });
+    const clock = new FixedClock(1_000);
+    const entities = new EntityRepository({ db, clock });
+    const commitments = new CommitmentRepository({ db, clock });
+    const boundary = commitments.add({
+      type: "boundary",
+      kind: "boundary",
+      directiveFamily: "atlas_boundary",
+      directive: "Do not discuss Atlas",
+      priority: 10,
+      provenance: { kind: "manual" },
+    });
+    let creates = 0;
+    const llm = new AnthropicLLMClient({
+      client: {
+        messages: {
+          create: async () => {
+            creates += 1;
+            if (creates === 1) {
+              throw new Anthropic.APIError(
+                529,
+                { type: "error", error: { type: "overloaded_error", message: "Overloaded" } },
+                "Overloaded",
+                new Headers(),
+              );
+            }
+
+            return {
+              id: "msg_judge",
+              type: "message",
+              role: "assistant",
+              model: "test-model",
+              content: [
+                {
+                  type: "tool_use",
+                  id: "toolu_judge",
+                  name: JUDGE_TOOL,
+                  input: { violations: [] },
+                },
+              ],
+              stop_reason: "tool_use",
+              stop_sequence: null,
+              usage: { input_tokens: 8, output_tokens: 4 },
+            } as never;
+          },
+        },
+      },
+      transportStallMaxRetries: 0,
+    });
+    const checker = new CommitmentChecker({
+      llmClient: llm,
+      detectionModel: "test-model",
+      rewriteModel: "test-model",
+      entityRepository: entities,
+    });
+
+    const result = await checker.check({
+      response: "I can't go into Atlas.",
+      userMessage: "Tell me about Atlas.",
+      commitments: [boundary],
+    });
+
+    expect(creates).toBe(2);
+    expect(result.violations).toEqual([]);
+    expect(result.emission).toEqual({ kind: "message", content: "I can't go into Atlas." });
+
+    db.close();
+  });
+
+  it("fails closed when the provider fails on the second ask too", async () => {
+    const db = openDatabase(":memory:", { migrations: commitmentMigrations });
+    const clock = new FixedClock(1_000);
+    const entities = new EntityRepository({ db, clock });
+    const commitments = new CommitmentRepository({ db, clock });
+    const boundary = commitments.add({
+      type: "boundary",
+      kind: "boundary",
+      directiveFamily: "atlas_boundary",
+      directive: "Do not discuss Atlas",
+      priority: 10,
+      provenance: { kind: "manual" },
+    });
+    const overloaded = () => {
+      throw new LLMError("Failed to complete Anthropic request: Overloaded", {
+        cause: new Anthropic.APIError(529, {}, "Overloaded", new Headers()),
+      });
+    };
+    const llm = new FakeLLMClient({ responses: [overloaded, overloaded, judgeResponse([])] });
+    const checker = new CommitmentChecker({
+      llmClient: llm,
+      detectionModel: "haiku",
+      rewriteModel: "sonnet",
+      entityRepository: entities,
+    });
+
+    const result = await checker.check({
+      response: "Atlas deployment details are private.",
+      userMessage: "Tell me about Atlas.",
+      commitments: [boundary],
+    });
+
+    expect(llm.requests).toHaveLength(2);
+    expect(result.violations).toHaveLength(1);
+    expect(result.violations[0]?.reason).toContain(
+      "Commitment judge failed before returning a verdict",
+    );
+    expect(result.emission).toEqual({ kind: "suppressed", reason: "commitment_violation" });
 
     db.close();
   });
