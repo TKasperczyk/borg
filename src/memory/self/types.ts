@@ -311,6 +311,10 @@ export const openQuestionSchema = z.object({
   resolved_by_artifact_entry_id: openQuestionResolvedByArtifactEntryIdSchema.nullable().optional(),
   unresolved_rumination_ticks: z.number().int().nonnegative().default(0),
   last_ruminated_at: z.number().finite().nullable().default(null),
+  consecutive_refusals: z.number().int().nonnegative().default(0),
+  last_rumination_attempt_outcome: z.enum(["completed", "refused"]).nullable().default(null),
+  last_rumination_attempt_at: z.number().finite().nullable().default(null),
+  refusal_backoff_until: z.number().finite().nullable().default(null),
 });
 
 export const openQuestionRecordSchema = openQuestionSchema

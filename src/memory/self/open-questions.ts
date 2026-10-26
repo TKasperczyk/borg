@@ -415,6 +415,10 @@ export function mapOpenQuestionRow(row: Record<string, unknown>): OpenQuestion {
       row.last_ruminated_at === null || row.last_ruminated_at === undefined
         ? null
         : Number(row.last_ruminated_at),
+    consecutive_refusals: Number(row.consecutive_refusals ?? 0),
+    last_rumination_attempt_outcome: row.last_rumination_attempt_outcome ?? null,
+    last_rumination_attempt_at: row.last_rumination_attempt_at ?? null,
+    refusal_backoff_until: row.refusal_backoff_until ?? null,
   });
 
   if (!parsed.success) {
@@ -1978,7 +1982,9 @@ export class OpenQuestionsRepository {
               resolution_evidence_stream_entry_ids = ?, resolution_disclosure_label = ?,
               resolution_note = ?, resolved_at = ?,
               abandoned_reason = ?, abandoned_at = ?, resolved_by_artifact_entry_id = ?,
-              unresolved_rumination_ticks = ?, last_ruminated_at = ?
+              unresolved_rumination_ticks = ?, last_ruminated_at = ?,
+              consecutive_refusals = ?, last_rumination_attempt_outcome = ?,
+              last_rumination_attempt_at = ?, refusal_backoff_until = ?
           WHERE id = ?
         `,
       )
@@ -2008,6 +2014,10 @@ export class OpenQuestionsRepository {
         parsed.resolved_by_artifact_entry_id ?? null,
         parsed.unresolved_rumination_ticks,
         parsed.last_ruminated_at,
+        parsed.consecutive_refusals,
+        parsed.last_rumination_attempt_outcome,
+        parsed.last_rumination_attempt_at,
+        parsed.refusal_backoff_until,
         parsed.id,
       );
 
@@ -2155,6 +2165,8 @@ export class OpenQuestionsRepository {
               abandoned_reason = NULL, abandoned_at = NULL, last_touched = ?,
               resolved_by_artifact_entry_id = ?,
               unresolved_rumination_ticks = 0, last_ruminated_at = NULL,
+              consecutive_refusals = 0, last_rumination_attempt_outcome = NULL,
+              last_rumination_attempt_at = NULL, refusal_backoff_until = NULL,
               record_version = record_version + 1
           WHERE id = ? AND record_version = ?
         `,
@@ -2193,6 +2205,10 @@ export class OpenQuestionsRepository {
       last_touched: resolvedAt,
       unresolved_rumination_ticks: 0,
       last_ruminated_at: null,
+      consecutive_refusals: 0,
+      last_rumination_attempt_outcome: null,
+      last_rumination_attempt_at: null,
+      refusal_backoff_until: null,
     };
 
     this.scheduleQuestionVectorUpsert(resolved, "metadata_sync", {
@@ -2408,6 +2424,85 @@ export class OpenQuestionsRepository {
     return updated;
   }
 
+  // Separate from deliberation stamps: a provider refusal is not a no-traction tick.
+  recordRuminationAttemptForRun(
+    input: {
+      open_question_id: OpenQuestionId;
+      source_run_id: MaintenanceRunId;
+      outcome: "completed" | "refused";
+      attempted_at: number;
+      maxConsecutiveRefusals: number;
+      refusalBackoffMs: number;
+    },
+    options: IdentityCasOptions = {},
+  ): { question: OpenQuestion; recorded: boolean } {
+    const id = openQuestionIdSchema.parse(input.open_question_id);
+    const runId = maintenanceRunIdSchema.parse(input.source_run_id);
+    const outcome = z.enum(["completed", "refused"]).parse(input.outcome);
+    const attemptedAt = z.number().finite().parse(input.attempted_at);
+    const threshold = z.number().int().positive().parse(input.maxConsecutiveRefusals);
+    const backoffMs = z.number().positive().parse(input.refusalBackoffMs);
+    return this.db.transaction(() => {
+      const existing = this.get(id);
+      if (existing === null) {
+        throw new StorageError(`Unknown open question id: ${id}`, {
+          code: "OPEN_QUESTION_NOT_FOUND",
+        });
+      }
+      if (
+        this.db
+          .prepare(
+            `
+              SELECT 1 FROM open_question_rumination_attempts
+              WHERE open_question_id = ? AND source_run_id = ?
+            `,
+          )
+          .get(id, runId) !== undefined
+      ) {
+        return { question: existing, recorded: false };
+      }
+      const expectedVersion = expectedRecordVersion(existing, options);
+      const streak = outcome === "refused" ? existing.consecutive_refusals + 1 : 0;
+      const until = outcome === "refused" && streak >= threshold ? attemptedAt + backoffMs : null;
+      const result = this.db
+        .prepare(
+          `
+            UPDATE open_questions
+            SET consecutive_refusals = ?, last_rumination_attempt_outcome = ?,
+                last_rumination_attempt_at = ?, refusal_backoff_until = ?,
+                record_version = record_version + 1
+            WHERE id = ? AND record_version = ?
+          `,
+        )
+        .run(streak, outcome, attemptedAt, until, id, expectedVersion);
+      assertIdentityCasUpdated({
+        result,
+        recordType: "open_question",
+        recordId: id,
+        expectedVersion,
+      });
+      this.db
+        .prepare(
+          `
+            INSERT INTO open_question_rumination_attempts
+              (open_question_id, source_run_id, attempted_at, outcome)
+            VALUES (?, ?, ?, ?)
+          `,
+        )
+        .run(id, runId, attemptedAt, outcome);
+      const question: OpenQuestion = {
+        ...existing,
+        record_version: nextRecordVersion(expectedVersion),
+        consecutive_refusals: streak,
+        last_rumination_attempt_outcome: outcome,
+        last_rumination_attempt_at: attemptedAt,
+        refusal_backoff_until: until,
+      };
+      this.scheduleQuestionVectorUpsert(question, "metadata_sync", { skipIfMissing: true });
+      return { question, recorded: true };
+    })();
+  }
+
   stampRuminationForRun(
     input: OpenQuestionRuminationRunStampInput,
     options: IdentityCasOptions = {},
@@ -2547,6 +2642,8 @@ export class OpenQuestionsRepository {
               resolved_at = NULL, abandoned_reason = NULL, abandoned_at = NULL,
               resolved_by_artifact_entry_id = NULL,
               unresolved_rumination_ticks = 0, last_ruminated_at = NULL,
+              consecutive_refusals = 0, last_rumination_attempt_outcome = NULL,
+              last_rumination_attempt_at = NULL, refusal_backoff_until = NULL,
               record_version = record_version + 1
           WHERE id = ? AND record_version = ?
         `,
@@ -2581,6 +2678,10 @@ export class OpenQuestionsRepository {
       resolved_by_artifact_entry_id: null,
       unresolved_rumination_ticks: 0,
       last_ruminated_at: null,
+      consecutive_refusals: 0,
+      last_rumination_attempt_outcome: null,
+      last_rumination_attempt_at: null,
+      refusal_backoff_until: null,
     };
 
     this.scheduleQuestionVectorUpsert(reopened, "update");

@@ -128,6 +128,7 @@ describe("config", () => {
       "consolidator",
       "semantic-extractor",
       "curator",
+      "review-resolver",
     ]);
     expect(config.maintenance.optimizeStorage).toBe(true);
     expect(config.maintenance.lightBudget).toBeNull();
@@ -1541,6 +1542,94 @@ describe("config", () => {
     expect(config.offline.reviewResolver.autonomous).toBe(true);
     expect(config.offline.reviewResolver.maxNeedsManualAttempts).toBe(2);
   });
+
+  it("allows cadence overlap with independent process overrides and validates refusal backoff", () => {
+    const config = configSchema.parse({
+      maintenance: {
+        lightProcesses: ["review-resolver"],
+        heavyProcesses: ["review-resolver"],
+      },
+    });
+    expect(config.maintenance.processOverrides).toEqual({
+      light: { "review-resolver": { params: { maxItemsPerPass: 3 } } },
+      heavy: {},
+    });
+    expect(config.offline.ruminator).toMatchObject({
+      maxConsecutiveRefusals: 3,
+      refusalBackoffDays: 7,
+    });
+    expect(() =>
+      configSchema.parse({
+        maintenance: { lightProcesses: ["review-resolver", "review-resolver"] },
+      }),
+    ).toThrow();
+    expect(() =>
+      configSchema.parse({
+        maintenance: { processOverrides: { light: { "review-resolver": { budget: 0 } } } },
+      }),
+    ).toThrow();
+    for (const ruminator of [
+      { maxConsecutiveRefusals: 0 },
+      { maxConsecutiveRefusals: 1.5 },
+      { refusalBackoffDays: 0 },
+    ]) {
+      expect(() => configSchema.parse({ offline: { ruminator } })).toThrow();
+    }
+  });
+
+  it.each([
+    { light: { curator: { params: { custom: true } } }, expectedCut: 3 },
+    { light: { "review-resolver": { budget: 100 } }, expectedCut: 3 },
+    { light: { "review-resolver": { params: { custom: true } } }, expectedCut: 3 },
+    { light: { "review-resolver": { params: { maxItemsPerPass: 5 } } }, expectedCut: 5 },
+  ])(
+    "merges production cadence defaults with partial overrides: $light",
+    ({ light, expectedCut }) => {
+      const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+      tempDirs.push(tempDir);
+      writeJsonFileAtomic(join(tempDir, "config.json"), {
+        maintenance: { processOverrides: { light, heavy: { "review-resolver": { budget: 200 } } } },
+      });
+      const config = loadConfig({ dataDir: tempDir, env: {} });
+      expect(config.maintenance.processOverrides.light).toMatchObject(light);
+      expect(
+        config.maintenance.processOverrides.light["review-resolver"]?.params?.maxItemsPerPass,
+      ).toBe(expectedCut);
+      expect(config.maintenance.processOverrides.heavy).toEqual({
+        "review-resolver": { budget: 200 },
+      });
+    },
+  );
+
+  it.each(["light", "heavy"] as const)(
+    "rejects invalid review-resolver cuts through the production loader for %s",
+    (cadence) => {
+      const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+      tempDirs.push(tempDir);
+      for (const maxItemsPerPass of ["bad", "3", 0, -1, 1.5, null, true]) {
+        writeJsonFileAtomic(join(tempDir, "config.json"), {
+          maintenance: {
+            processOverrides: {
+              [cadence]: { "review-resolver": { params: { maxItemsPerPass } } },
+            },
+          },
+        });
+        expect(() => loadConfig({ dataDir: tempDir, env: {} })).toThrow(ConfigError);
+      }
+      writeJsonFileAtomic(join(tempDir, "config.json"), {
+        maintenance: {
+          processOverrides: {
+            [cadence]: { "review-resolver": { params: { maxItemsPerPass: 5 } } },
+          },
+        },
+      });
+      expect(
+        loadConfig({ dataDir: tempDir, env: {} }).maintenance.processOverrides[cadence][
+          "review-resolver"
+        ]?.params?.maxItemsPerPass,
+      ).toBe(5);
+    },
+  );
 
   it("defaults review resolver autonomous mode off", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));

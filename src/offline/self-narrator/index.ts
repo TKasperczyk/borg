@@ -899,6 +899,23 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
       }
 
       if (item.action === "update_period_narrative") {
+        // PLAN precedes every process's APPLY. An earlier resolver may have
+        // changed this period; only a fresh plan may replace its new narrative.
+        const current = ctx.autobiographicalRepository.getPeriod(item.period_id);
+        if (current === null || current.record_version !== item.previous.record_version) {
+          if (ctx.tracer?.enabled === true) {
+            ctx.tracer.emit("offline_process.completed", {
+              turnId: ctx.runId,
+              process_name: this.name,
+              phase: "enqueue",
+              decision: "skipped_stale_proposal",
+              target_id: item.period_id,
+              planned_record_version: item.previous.record_version ?? null,
+              current_record_version: current?.record_version ?? null,
+            });
+          }
+          continue;
+        }
         const result = ctx.identityService.updatePeriod(
           item.period_id,
           {

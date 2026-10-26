@@ -438,6 +438,16 @@ export function createTestConfig(
     maintenance: {
       ...DEFAULT_CONFIG.maintenance,
       ...overrides.maintenance,
+      processOverrides: {
+        light: {
+          ...DEFAULT_CONFIG.maintenance.processOverrides.light,
+          ...overrides.maintenance?.processOverrides?.light,
+        },
+        heavy: {
+          ...DEFAULT_CONFIG.maintenance.processOverrides.heavy,
+          ...overrides.maintenance?.processOverrides?.heavy,
+        },
+      },
     },
     autonomy: {
       ...DEFAULT_CONFIG.autonomy,

@@ -3322,6 +3322,8 @@ export function createDemoServerApp(args: DemoServerAppInput) {
     return c.json({ inflight: input.live.broadcaster.inflightSnapshot(query.session) });
   });
 
+  app.get("/api/maintenance/status", (c) => c.json(input.borg.maintenance.status()));
+
   app.get("/api/activity", (c) => {
     const query = parseRequest(activityQuerySchema, c.req.query());
     return c.json(activityFeed(input.borg, query.day));

@@ -66,7 +66,9 @@ type EvalConfigOverrides = {
     selfNarrator?: Partial<Config["offline"]["selfNarrator"]>;
     beliefReviser?: Partial<Config["offline"]["beliefReviser"]>;
   };
-  maintenance?: Partial<Config["maintenance"]>;
+  maintenance?: Partial<Omit<Config["maintenance"], "processOverrides">> & {
+    processOverrides?: Partial<Config["maintenance"]["processOverrides"]>;
+  };
   autonomy?: Partial<Omit<Config["autonomy"], "triggers">> & {
     triggers?: Partial<Config["autonomy"]["triggers"]> & {
       commitmentExpiring?: Partial<Config["autonomy"]["triggers"]["commitmentExpiring"]>;
@@ -263,6 +265,16 @@ export async function createEvalBorg(options: CreateEvalBorgOptions): Promise<Bo
     maintenance: {
       ...DEFAULT_CONFIG.maintenance,
       ...options.config?.maintenance,
+      processOverrides: {
+        light: {
+          ...DEFAULT_CONFIG.maintenance.processOverrides.light,
+          ...options.config?.maintenance?.processOverrides?.light,
+        },
+        heavy: {
+          ...DEFAULT_CONFIG.maintenance.processOverrides.heavy,
+          ...options.config?.maintenance?.processOverrides?.heavy,
+        },
+      },
       lightProcesses: [
         ...(options.config?.maintenance?.lightProcesses ??
           DEFAULT_CONFIG.maintenance.lightProcesses),

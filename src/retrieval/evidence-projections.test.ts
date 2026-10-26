@@ -676,6 +676,10 @@ function openQuestion(id: OpenQuestionId, question: string): OpenQuestion {
     abandoned_at: null,
     unresolved_rumination_ticks: 0,
     last_ruminated_at: null,
+    consecutive_refusals: 0,
+    last_rumination_attempt_outcome: null,
+    last_rumination_attempt_at: null,
+    refusal_backoff_until: null,
   };
 }
 

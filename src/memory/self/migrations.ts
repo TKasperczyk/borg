@@ -444,4 +444,24 @@ export const selfMigrations = [
       db.exec("ALTER TABLE goals ADD COLUMN target_assigned_at INTEGER NULL");
     },
   },
+  {
+    id: 12,
+    name: "open_question_refusal_backoff",
+    up: (db) => {
+      db.exec(`
+        ALTER TABLE open_questions ADD COLUMN consecutive_refusals INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE open_questions ADD COLUMN last_rumination_attempt_outcome TEXT;
+        ALTER TABLE open_questions ADD COLUMN last_rumination_attempt_at INTEGER;
+        ALTER TABLE open_questions ADD COLUMN refusal_backoff_until INTEGER;
+        CREATE TABLE open_question_rumination_attempts (
+          open_question_id TEXT NOT NULL,
+          source_run_id TEXT NOT NULL,
+          attempted_at INTEGER NOT NULL,
+          outcome TEXT NOT NULL CHECK (outcome IN ('completed', 'refused')),
+          PRIMARY KEY (open_question_id, source_run_id),
+          FOREIGN KEY (open_question_id) REFERENCES open_questions(id) ON DELETE CASCADE
+        );
+      `);
+    },
+  },
 ] as const satisfies readonly Migration[];

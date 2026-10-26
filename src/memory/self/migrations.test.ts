@@ -13,16 +13,50 @@ import { openDatabase } from "../../storage/sqlite/index.js";
 import { selfMigrations } from "./migrations.js";
 
 describe("self migrations", () => {
+  it("adds refusal scheduling state without changing existing questions or rumination stamps", () => {
+    const dir = mkdtempSync(join(tmpdir(), "borg-refusal-migration-"));
+    const path = join(dir, "legacy.db");
+    try {
+      const old = openDatabase(path, { migrations: selfMigrations.slice(0, -1) });
+      old.exec(`INSERT INTO open_questions
+        (id, question, urgency, status, related_episode_ids, related_semantic_node_ids, source, created_at, last_touched, unresolved_rumination_ticks, last_ruminated_at)
+        VALUES ('oq_legacy', '問い', 0.5, 'open', '[]', '[]', 'ruminator', 1, 2, 4, 3);
+        INSERT INTO open_question_rumination_stamps VALUES ('oq_legacy', 'mrun_legacy', 3);`);
+      old.close();
+      const db = openDatabase(path, { migrations: selfMigrations });
+      try {
+        expect(
+          db.prepare("SELECT * FROM open_questions WHERE id = 'oq_legacy'").get(),
+        ).toMatchObject({
+          question: "問い",
+          unresolved_rumination_ticks: 4,
+          last_ruminated_at: 3,
+          consecutive_refusals: 0,
+          last_rumination_attempt_outcome: null,
+          last_rumination_attempt_at: null,
+          refusal_backoff_until: null,
+        });
+        expect(db.prepare("SELECT * FROM open_question_rumination_stamps").all()).toHaveLength(1);
+        expect(db.prepare("SELECT * FROM open_question_rumination_attempts").all()).toEqual([]);
+      } finally {
+        db.close();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("applies the complete migration set to a fresh database", () => {
     const db = openDatabase(":memory:", { migrations: selfMigrations });
 
     try {
       const migrationNames = selfMigrations.map((migration) => migration.name);
       expect(new Set(migrationNames).size).toBe(migrationNames.length);
-      expect(migrationNames.slice(-3)).toEqual([
+      expect(migrationNames.slice(-4)).toEqual([
         "goal_counterparty_entity_id",
         "goal_named_block_history",
         "goal_deadline_assignment_basis",
+        "open_question_refusal_backoff",
       ]);
       expect(db.listAppliedMigrations().map((migration) => migration.name)).toEqual(migrationNames);
       expect(

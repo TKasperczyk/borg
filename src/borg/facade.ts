@@ -1325,6 +1325,11 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
       wakes: deps.autonomyWakesRepository,
     },
     maintenance: {
+      status: () => ({
+        active: deps.maintenanceOrchestrator.getActivePassStartedAt() !== null,
+        cadence: deps.maintenanceOrchestrator.getActivePassCadence(),
+        started_at: deps.maintenanceOrchestrator.getActivePassStartedAt(),
+      }),
       scheduler: deps.maintenanceScheduler,
       storageMemoryStats: () => deps.lance.memoryStats(),
       storageTableStats: () => deps.lance.tableStats(),

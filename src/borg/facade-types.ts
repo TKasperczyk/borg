@@ -662,6 +662,7 @@ export type BorgAutonomyFacade = {
 };
 
 export type BorgMaintenanceFacade = {
+  status(): { active: boolean; cadence: "light" | "heavy" | null; started_at: number | null };
   scheduler: MaintenanceScheduler;
   storageMemoryStats(): LanceDbMemoryStats;
   storageTableStats(): Promise<LanceDbTableStats[]>;

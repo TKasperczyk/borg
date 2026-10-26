@@ -7,6 +7,7 @@ import { BorgError } from "../util/errors.js";
 
 import type { AuditLog } from "./audit-log.js";
 import { maintenancePlanSchema, type MaintenancePlan } from "./plan-file.js";
+import type { MaintenanceCadence } from "./scheduler.js";
 import {
   MAX_OFFLINE_ERROR_DETAILS,
   MAX_OFFLINE_ERROR_MESSAGE_LENGTH,
@@ -30,6 +31,7 @@ export type MaintenanceOrchestratorOptions = {
 };
 
 export type MaintenanceRunOptions = {
+  cadence?: MaintenanceCadence;
   runId?: MaintenanceRunId;
   processes: OfflineProcess[];
   afterRun?: (result: OrchestratorResult) => Promise<void>;
@@ -61,6 +63,7 @@ function traceErrorDetails(errors: readonly OfflineProcessError[]) {
 export class MaintenanceOrchestrator {
   private operationQueue: Promise<void> = Promise.resolve();
   private activePassStartedAt: number | null = null;
+  private activePassCadence: MaintenanceCadence | null = null;
 
   constructor(private readonly options: MaintenanceOrchestratorOptions) {}
 
@@ -68,7 +71,14 @@ export class MaintenanceOrchestrator {
     return this.activePassStartedAt;
   }
 
-  private async runExclusive<T>(operation: () => Promise<T>): Promise<T> {
+  getActivePassCadence(): MaintenanceCadence | null {
+    return this.activePassCadence;
+  }
+
+  private async runExclusive<T>(
+    operation: () => Promise<T>,
+    cadence: MaintenanceCadence | null = null,
+  ): Promise<T> {
     const previous = this.operationQueue;
     let release: () => void = () => {};
 
@@ -79,10 +89,12 @@ export class MaintenanceOrchestrator {
     await previous;
 
     this.activePassStartedAt = this.options.baseContext.clock.now();
+    this.activePassCadence = cadence;
     try {
       return await operation();
     } finally {
       this.activePassStartedAt = null;
+      this.activePassCadence = null;
       release();
     }
   }
@@ -236,8 +248,9 @@ export class MaintenanceOrchestrator {
   }
 
   async plan(input: MaintenanceRunOptions): Promise<MaintenancePlan> {
-    return this.runExclusive(() =>
-      this.planUnlocked(input, input.runId ?? createMaintenanceRunId()),
+    return this.runExclusive(
+      () => this.planUnlocked(input, input.runId ?? createMaintenanceRunId()),
+      input.cadence,
     );
   }
 
@@ -337,8 +350,11 @@ export class MaintenanceOrchestrator {
     return this.runExclusive(() => this.applyUnlocked(plan, plan.run_id));
   }
 
-  async runMechanicalMaintenance<T>(operation: () => Promise<T>): Promise<T> {
-    return this.runExclusive(operation);
+  async runMechanicalMaintenance<T>(
+    operation: () => Promise<T>,
+    cadence?: MaintenanceCadence,
+  ): Promise<T> {
+    return this.runExclusive(operation, cadence);
   }
 
   async run(input: MaintenanceRunOptions): Promise<OrchestratorResult> {
@@ -351,6 +367,6 @@ export class MaintenanceOrchestrator {
           : await this.applyUnlocked(plan, runId);
       await input.afterRun?.(result);
       return result;
-    });
+    }, input.cadence);
   }
 }

@@ -47,7 +47,13 @@ import {
   parseMaintenanceRunId,
   type MaintenanceRunId,
 } from "../../util/ids.js";
-import { BudgetExceededError, IdentityCasMismatchError, StorageError } from "../../util/errors.js";
+import {
+  BudgetExceededError,
+  findInErrorCauseChain,
+  IdentityCasMismatchError,
+  LLMError,
+  StorageError,
+} from "../../util/errors.js";
 import { clamp } from "../../util/math.js";
 import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
 
@@ -482,6 +488,15 @@ export const ruminatorPlanSchema = z.object({
   budget_exhausted: z.boolean().default(false),
   planned_at: z.number().finite().default(0),
   rumination_run_id: maintenanceRunIdSchema.nullable().default(null),
+  attempts: z
+    .array(
+      z.object({
+        question_id: openQuestionIdSchema,
+        outcome: z.enum(["completed", "refused"]),
+        attempted_at: z.number().finite(),
+      }),
+    )
+    .default([]),
   scheduling: z
     .object({
       due_question_ids: z.array(openQuestionIdSchema).default([]),
@@ -811,6 +826,7 @@ async function shouldDismissStaleNoTraction(
   question: OpenQuestion,
 ): Promise<boolean> {
   return (
+    question.consecutive_refusals === 0 &&
     question.unresolved_rumination_ticks >= ctx.config.offline.ruminator.staleNoTractionTicks &&
     !(await hasPostCreationCitation(ctx, question))
   );
@@ -1312,7 +1328,7 @@ function planFallbackAction(
   const dayStalenessReached =
     ageMs >= ctx.config.offline.ruminator.stalenessDays * DAY_MS && question.urgency < 0.2;
 
-  if (dayStalenessReached) {
+  if (dayStalenessReached && question.consecutive_refusals === 0) {
     return {
       action: "abandon",
       question_id: question.id,
@@ -1415,6 +1431,9 @@ function dueOpenQuestions(input: {
 }): ScheduledOpenQuestion[] {
   return input.questions
     .flatMap((question): ScheduledOpenQuestion[] => {
+      if (question.refusal_backoff_until !== null && question.refusal_backoff_until > input.nowMs) {
+        return [];
+      }
       const periodDays =
         input.revisitPeriodMaxDays -
         question.urgency * (input.revisitPeriodMaxDays - input.revisitPeriodMinDays);
@@ -1563,6 +1582,7 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
   async plan(ctx: OfflineContext, opts: OfflineProcessRunOptions = {}) {
     const errors: OfflineProcessError[] = [];
     const items: RuminatorPlan["items"] = [];
+    const attempts: RuminatorPlan["attempts"] = [];
     const plannedAt = ctx.clock.now();
     const budget = opts.budget ?? ctx.config.offline.ruminator.budget;
     const maxQuestionsRaw = opts.params?.maxQuestionsPerRun;
@@ -1654,6 +1674,11 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
             );
 
             if (resolution !== null) {
+              attempts.push({
+                question_id: question.id,
+                outcome: "completed",
+                attempted_at: ctx.clock.now(),
+              });
               items.push(resolution);
               continue;
             }
@@ -1689,6 +1714,20 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
             });
           } catch (error) {
             failedQuestionIds.add(question.id);
+            if (
+              modelCalledQuestionIds.has(question.id) &&
+              findInErrorCauseChain(
+                error,
+                (cause): cause is LLMError =>
+                  cause instanceof LLMError && cause.code === "LLM_REFUSAL_EXHAUSTED",
+              ) !== undefined
+            ) {
+              attempts.push({
+                question_id: question.id,
+                outcome: "refused",
+                attempted_at: ctx.clock.now(),
+              });
+            }
             errors.push(
               offlineProcessError(this.name, error, {
                 target_type: "open_question",
@@ -1815,6 +1854,7 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
       budget_exhausted: budgetExhausted,
       planned_at: plannedAt,
       rumination_run_id: ctx.runId,
+      attempts,
       scheduling: {
         due_question_ids: dueQuestions.map(({ question }) => question.id),
         selected_question_ids: selectedQuestions.map((question) => question.id),
@@ -1854,10 +1894,40 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
     );
     const droppedFromRuminationIds: number[] = [];
     const stampCasConflictIds: OpenQuestion["id"][] = [];
+    const attemptQuestions = new Map<OpenQuestion["id"], OpenQuestion>();
     const processProvenance = {
       kind: "offline" as const,
       process: this.name,
     };
+
+    for (const attempt of plan.attempts) {
+      const current = ctx.openQuestionsRepository.get(attempt.question_id);
+      if (current === null) continue;
+      const { question, recorded } = ctx.openQuestionsRepository.recordRuminationAttemptForRun(
+        {
+          open_question_id: current.id,
+          source_run_id: stampRunId,
+          outcome: attempt.outcome,
+          attempted_at: attempt.attempted_at,
+          maxConsecutiveRefusals: ctx.config.offline.ruminator.maxConsecutiveRefusals,
+          refusalBackoffMs: ctx.config.offline.ruminator.refusalBackoffDays * DAY_MS,
+        },
+        { expectedVersion: expectedRecordVersion(current) },
+      );
+      attemptQuestions.set(question.id, question);
+      if (recorded && ctx.tracer?.enabled === true) {
+        ctx.tracer.emit("open_question_resolution.transitioned", {
+          turnId: ctx.runId,
+          source_path: "offline_ruminator",
+          oq_id: question.id,
+          decision: "rumination_attempt_recorded",
+          outcome: attempt.outcome,
+          consecutive_refusals: question.consecutive_refusals,
+          refusal_backoff_until: question.refusal_backoff_until,
+          backoff_applied: question.refusal_backoff_until !== null,
+        });
+      }
+    }
 
     for (const item of plan.items) {
       if (item.action === "mark_unresolved") {
@@ -1871,7 +1941,7 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
               );
         const stamp = markRuminatedWithCasRetry({
           ctx,
-          expected: item.previous,
+          expected: attemptQuestions.get(item.question_id) ?? item.previous,
           runId: stampRunId,
           nextUnresolvedRuminationTicks: item.next_unresolved_rumination_ticks,
           rumination:

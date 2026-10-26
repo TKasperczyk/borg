@@ -558,6 +558,62 @@ describe("OpenQuestionsRepository", () => {
     }
   });
 
+  it("records refusal attempts with CAS and per-run idempotency, independently of rumination stamps", () => {
+    const db = openDatabase(":memory:", { migrations: selfMigrations });
+    const repository = new OpenQuestionsRepository({ db, clock: new ManualClock(10_000) });
+    try {
+      const question = repository.add({
+        question: "疑問",
+        urgency: 0.4,
+        source: "ruminator",
+        provenance: manualProvenance,
+      });
+      const input = {
+        open_question_id: question.id,
+        source_run_id: createMaintenanceRunId(),
+        outcome: "refused" as const,
+        attempted_at: 10_000,
+        maxConsecutiveRefusals: 1,
+        refusalBackoffMs: 1000,
+      };
+      const current = repository.bumpUrgency(question.id, 0.1);
+      expect(() =>
+        repository.recordRuminationAttemptForRun(input, {
+          expectedVersion: expectedRecordVersion(question),
+        }),
+      ).toThrow(IdentityCasMismatchError);
+      expect(
+        repository.recordRuminationAttemptForRun(input, {
+          expectedVersion: expectedRecordVersion(current),
+        }),
+      ).toMatchObject({
+        recorded: true,
+        question: {
+          consecutive_refusals: 1,
+          refusal_backoff_until: 11_000,
+          unresolved_rumination_ticks: 0,
+          last_ruminated_at: null,
+        },
+      });
+      expect(repository.recordRuminationAttemptForRun(input)).toMatchObject({
+        recorded: false,
+        question: { consecutive_refusals: 1 },
+      });
+      expect(
+        repository.recordRuminationAttemptForRun({
+          ...input,
+          source_run_id: createMaintenanceRunId(),
+          outcome: "completed",
+        }),
+      ).toMatchObject({
+        recorded: true,
+        question: { consecutive_refusals: 0, refusal_backoff_until: null },
+      });
+    } finally {
+      db.close();
+    }
+  });
+
   it("stamps reached runs but only increments ticks when it records a note", () => {
     const clock = new ManualClock(10_000);
     const db = openDatabase(":memory:", {

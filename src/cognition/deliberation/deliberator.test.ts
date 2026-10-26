@@ -339,6 +339,10 @@ function makeOpenQuestion(overrides: Partial<OpenQuestion> = {}): OpenQuestion {
     abandoned_at: null,
     unresolved_rumination_ticks: 0,
     last_ruminated_at: null,
+    consecutive_refusals: 0,
+    last_rumination_attempt_outcome: null,
+    last_rumination_attempt_at: null,
+    refusal_backoff_until: null,
     ...overrides,
   };
 }
@@ -3996,6 +4000,10 @@ describe("deliberator", () => {
           abandoned_at: null,
           unresolved_rumination_ticks: 0,
           last_ruminated_at: null,
+          consecutive_refusals: 0,
+          last_rumination_attempt_outcome: null,
+          last_rumination_attempt_at: null,
+          refusal_backoff_until: null,
         },
       ],
       workingMemory: {
@@ -4639,6 +4647,10 @@ describe("deliberator", () => {
             abandoned_at: null,
             unresolved_rumination_ticks: 0,
             last_ruminated_at: null,
+            consecutive_refusals: 0,
+            last_rumination_attempt_outcome: null,
+            last_rumination_attempt_at: null,
+            refusal_backoff_until: null,
           },
         ],
         entityRepository: entities,
@@ -4886,9 +4898,7 @@ describe("deliberator", () => {
     expect(finalSystem).toContain(
       "Values I hold: clarity (conf 0.85, from ep_aaaaaaaaaaaaaaaa) -- Prefer explicit state.",
     );
-    expect(finalSystem).toContain(
-      "Traits I express: introspective:0.78 (conf 0.82)",
-    );
+    expect(finalSystem).toContain("Traits I express: introspective:0.78 (conf 0.82)");
     expect(finalSystem).toContain(
       "Self snapshot: exploring values playfulness (candidate, conf 0.50) (manual)",
     );

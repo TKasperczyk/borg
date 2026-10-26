@@ -1221,6 +1221,32 @@ describe("demo server", () => {
     expect(session?.audience_entity_id).toBe(selfEntityId);
   });
 
+  it("exposes only maintenance activity metadata through the facade and endpoint", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-maintenance-status-"));
+    tempDirs.push(tempDir);
+    const { borg, live, clock } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const { app } = createDemoServerApp({ borgHandle: { current: borg }, live });
+    const { deps } = borg as unknown as { deps: BorgDependencies };
+    const idle = { active: false, cadence: null, started_at: null };
+    expect(borg.maintenance.status()).toEqual(idle);
+    expect(await (await app.request("/api/maintenance/status")).json()).toEqual(idle);
+    const gate = createDeferred<void>();
+    const running = deps.maintenanceOrchestrator.runMechanicalMaintenance(async () => {
+      await gate.promise;
+    }, "heavy");
+    await Promise.resolve();
+    try {
+      const active = { active: true, cadence: "heavy", started_at: clock.now() };
+      expect(borg.maintenance.status()).toEqual(active);
+      expect(await (await app.request("/api/maintenance/status")).json()).toEqual(active);
+    } finally {
+      gate.resolve();
+      await running;
+    }
+    expect(await (await app.request("/api/maintenance/status")).json()).toEqual(idle);
+  });
+
   it("serves the in-flight turn snapshot while a turn is running", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-server-"));
     tempDirs.push(tempDir);

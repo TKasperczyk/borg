@@ -41,6 +41,7 @@ import { readJsonFile } from "../util/atomic-write.js";
 import { ConfigError } from "../util/errors.js";
 import { isNodeError, isPlainRecord } from "../util/guards.js";
 import { expandPath } from "../util/path.js";
+import { positiveIntegerValue } from "../util/parse.js";
 
 const DEFAULT_DATA_DIR = "~/.borg";
 export const DEFAULT_ACTIVE_PARTICIPANT_LIMIT = 8;
@@ -344,6 +345,26 @@ const postGenerationGuardsConfigSchema = z
   .strict()
   .prefault({});
 const maintenanceProcessSchema = z.enum(OFFLINE_PROCESS_NAMES);
+const maintenanceProcessOverridesSchema = z
+  .partialRecord(
+    maintenanceProcessSchema,
+    z
+      .object({
+        budget: z.number().int().positive().optional(),
+        params: z.record(z.string(), z.unknown()).optional(),
+      })
+      .strict(),
+  )
+  .superRefine((overrides, context) => {
+    const maxItemsPerPass = overrides["review-resolver"]?.params?.maxItemsPerPass;
+    if (maxItemsPerPass !== undefined && positiveIntegerValue(maxItemsPerPass) === null) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Review resolver maxItemsPerPass must be a positive integer",
+        path: ["review-resolver", "params", "maxItemsPerPass"],
+      });
+    }
+  });
 
 export type PostGenerationGuardMode = z.infer<typeof postGenerationGuardModeSchema>;
 const anthropicModelsConfigSchema = z
@@ -670,6 +691,8 @@ const configBaseSchema = z.object({
           revisitPeriodMaxDays: z.number().positive().default(30),
           stalenessDays: z.number().positive().default(30),
           staleNoTractionTicks: z.number().int().positive().default(4),
+          maxConsecutiveRefusals: z.number().int().positive().default(3),
+          refusalBackoffDays: z.number().positive().default(7),
           // Aborted at 40k-48k against the old 40k cap on five of nine runs.
           // See the reflector budget comment for the sizing rationale.
           budget: z.number().int().positive().default(150_000),
@@ -750,11 +773,19 @@ const configBaseSchema = z.object({
       optimizeStorage: z.boolean().default(true),
       lightBudget: z.number().int().positive().nullable().default(null),
       heavyBudget: z.number().int().positive().nullable().default(null),
+      processOverrides: z
+        .object({
+          light: maintenanceProcessOverridesSchema.default({
+            "review-resolver": { params: { maxItemsPerPass: 3 } },
+          }),
+          heavy: maintenanceProcessOverridesSchema.default({}),
+        })
+        .prefault({}),
       // These cadence lists are the single authority for offline process
       // enablement. Remove a process from both lists to disable it.
       lightProcesses: z
         .array(maintenanceProcessSchema)
-        .default(["consolidator", "semantic-extractor", "curator"]),
+        .default(["consolidator", "semantic-extractor", "curator", "review-resolver"]),
       heavyProcesses: z
         .array(maintenanceProcessSchema)
         .default([
@@ -937,16 +968,6 @@ export const configSchema = configOutputSchema.superRefine((value, context) => {
         path: ["maintenance", `${cadence}Processes`],
       });
     }
-  }
-
-  const heavyProcesses = new Set(value.maintenance.heavyProcesses);
-  const overlap = value.maintenance.lightProcesses.filter((process) => heavyProcesses.has(process));
-  if (overlap.length > 0) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: `Maintenance light/heavy process lists must be disjoint: ${overlap.join(", ")}`,
-      path: ["maintenance", "heavyProcesses"],
-    });
   }
 
   if (value.offline.ruminator.revisitPeriodMinDays > value.offline.ruminator.revisitPeriodMaxDays) {
@@ -1831,6 +1852,16 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
   );
   setConfigOverride(
     overrides,
+    ["offline", "ruminator", "maxConsecutiveRefusals"],
+    readOptionalEnvNumber(env, "BORG_OFFLINE_RUMINATOR_MAX_CONSECUTIVE_REFUSALS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["offline", "ruminator", "refusalBackoffDays"],
+    readOptionalEnvFloat(env, "BORG_OFFLINE_RUMINATOR_REFUSAL_BACKOFF_DAYS"),
+  );
+  setConfigOverride(
+    overrides,
     ["offline", "ruminator", "resolveConfidenceThreshold"],
     readOptionalEnvFloat(env, "BORG_OFFLINE_RUMINATOR_RESOLVE_CONFIDENCE_THRESHOLD"),
   );
@@ -2334,7 +2365,10 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
   const lookupDataDir = expandPath(options.dataDir ?? envDataDir ?? DEFAULT_DATA_DIR);
   const fileOverrides = parseConfigFile(lookupDataDir);
   const envOverrides = loadEnvOverrides(env);
-  let candidate = mergeConfigOverrides(fileOverrides, envOverrides);
+  let candidate = mergeConfigOverrides(
+    { maintenance: { processOverrides: DEFAULT_CONFIG.maintenance.processOverrides } },
+    mergeConfigOverrides(fileOverrides, envOverrides),
+  );
   // Provider routing is opaque: the env object replaces the file object in full,
   // so migration and live requests do not inherit different routing options.
   setConfigOverride(candidate, ["embedding", "provider"], envOverrides.embedding?.provider);

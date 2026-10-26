@@ -439,6 +439,42 @@ async function enqueueTaintedSemanticMisattribution(
 }
 
 describe("review resolver process", () => {
+  it("uses a small light override while retaining the configured heavy cut and oldest-first ordering", async () => {
+    const clock = new ManualClock(1000);
+    const harness = await createOfflineTestHarness({
+      clock,
+      reviewOpenQuestionExtractor: null,
+      configOverrides: { offline: { reviewResolver: { maxItemsPerPass: 12 } } },
+    });
+    try {
+      const ids: number[] = [];
+      for (let index = 0; index < 13; index += 1) {
+        const item = harness.reviewQueueRepository.enqueue({
+          kind: "new_insight",
+          reason: "Awaiting review",
+          refs: pendingNewInsightInsertRefs({
+            episodeIds: [createEpisodeFixture().id],
+            clusterKey: `cluster:cadence-${index}`,
+          }),
+        });
+        ids.push(item.id);
+        clock.advance(1000);
+      }
+      const resolver = new ReviewResolverProcess({ db: harness.db });
+      const light = await resolver.plan(harness.createContext(), {
+        budget: 1200,
+        params: { maxItemsPerPass: 3 },
+      });
+      const heavy = await resolver.plan(harness.createContext(), { budget: 3400 });
+      expect(light.items.map((item) => item.review_id)).toEqual(ids.slice(0, 3));
+      expect(heavy.items.map((item) => item.review_id)).toEqual(ids.slice(0, 12));
+      expect(light.budget).toBe(1200);
+      expect(heavy.budget).toBe(3400);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
   const cleanup: Array<() => Promise<void>> = [];
 
   afterEach(async () => {

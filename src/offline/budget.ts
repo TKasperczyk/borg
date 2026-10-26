@@ -69,7 +69,13 @@ export function wrapLlmClientWithSink(client: LLMClient, sink: TokenUsageSink): 
     try {
       result = await call();
     } catch (error) {
-      await reportLlmErrorUsage(error, sink, { budget: options.budget, model: options.model });
+      try {
+        await reportLlmErrorUsage(error, sink, { budget: options.budget, model: options.model });
+      } catch (accountingError) {
+        // Stop on exhaustion without losing the logical call's typed outcome.
+        if (accountingError instanceof BudgetExceededError) accountingError.cause = error;
+        throw accountingError;
+      }
       throw error;
     }
     // Keep the sink outside the catch: exceeding a cap has already counted this

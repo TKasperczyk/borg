@@ -146,6 +146,7 @@ describe("offline budget", () => {
     ).catch((error: unknown) => error);
 
     expect(exhausted).toBeInstanceOf(BudgetExceededError);
+    expect(exhausted).toHaveProperty("cause", cutOff);
     expect(getBudgetErrorTokens(exhausted)).toBe(20_000);
   });
 });

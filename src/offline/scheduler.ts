@@ -9,7 +9,7 @@ import type { StreamWatermark, StreamWatermarkRepository } from "../stream/index
 import type { TurnTracer } from "../tracing/tracer.js";
 import type { SessionId } from "../util/ids.js";
 
-import type { MaintenanceOrchestrator } from "./orchestrator.js";
+import type { MaintenanceOrchestrator, MaintenanceRunOptions } from "./orchestrator.js";
 import { runStorageOptimization } from "./storage-optimization.js";
 import type { OfflineProcess, OfflineProcessName, OrchestratorResult } from "./types.js";
 
@@ -44,6 +44,11 @@ export type MaintenanceSchedulerOptions = {
   heavyIntervalMs: number;
   lightProcesses: readonly OfflineProcessName[];
   heavyProcesses: readonly OfflineProcessName[];
+  lightBudget?: number | null;
+  heavyBudget?: number | null;
+  processOverrides?: Partial<
+    Record<MaintenanceCadence, NonNullable<MaintenanceRunOptions["opts"]>["processOverrides"]>
+  >;
   orchestrator: MaintenanceOrchestrator;
   processRegistry: Record<OfflineProcessName, OfflineProcess>;
   optimizeStorage?: boolean;
@@ -94,22 +99,14 @@ export class MaintenanceScheduler {
   private stopping = false;
 
   constructor(private readonly options: MaintenanceSchedulerOptions) {
-    // Defense in depth: the orchestrator serializes maintenance work because
-    // processes share stores. The cadence split should still avoid scheduling
-    // the same process through two interval groups.
-    const overlappingProcesses = options.lightProcesses.filter((process) =>
-      options.heavyProcesses.includes(process),
-    );
-
-    if (overlappingProcesses.length > 0) {
-      throw new ConfigError(
-        `Maintenance light/heavy process sets must be disjoint; overlapping processes: ${[
-          ...new Set(overlappingProcesses),
-        ].join(", ")}`,
-        {
-          code: "MAINTENANCE_PROCESS_CADENCE_OVERLAP",
-        },
-      );
+    // Cross-cadence overlap is intentional; the orchestrator serializes every pass.
+    for (const cadence of ["light", "heavy"] as const) {
+      const processes = options[`${cadence}Processes`];
+      if (new Set(processes).size !== processes.length) {
+        throw new ConfigError(`Maintenance ${cadence} process list must not contain duplicates`, {
+          code: "MAINTENANCE_PROCESS_CADENCE_DUPLICATE",
+        });
+      }
     }
 
     this.clock = options.clock ?? new SystemClock();
@@ -419,6 +416,11 @@ export class MaintenanceScheduler {
         .filter((process): process is OfflineProcess => process !== undefined);
       result = await this.options.orchestrator.run({
         processes: offlineProcesses,
+        cadence,
+        opts: {
+          budget: this.options[`${cadence}Budget`] ?? undefined,
+          processOverrides: this.options.processOverrides?.[cadence],
+        },
         ...(shouldOptimizeStorage
           ? {
               afterRun: async (runResult) => {
@@ -432,11 +434,13 @@ export class MaintenanceScheduler {
           : {}),
       });
     } else if (shouldOptimizeStorage) {
-      storageOptimization = await this.options.orchestrator.runMechanicalMaintenance(() =>
-        this.optimizeStorageAfterHeavy({
-          cadence,
-          ts,
-        }),
+      storageOptimization = await this.options.orchestrator.runMechanicalMaintenance(
+        () =>
+          this.optimizeStorageAfterHeavy({
+            cadence,
+            ts,
+          }),
+        cadence,
       );
     }
 

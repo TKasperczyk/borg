@@ -98,22 +98,57 @@ describe("maintenance orchestrator", () => {
       release = resolve;
     });
     expect(orchestrator.getActivePassStartedAt()).toBeNull();
+    expect(orchestrator.getActivePassCadence()).toBeNull();
     const first = orchestrator.runMechanicalMaintenance(async () => {
       expect(orchestrator.getActivePassStartedAt()).toBe(harness.clock.now());
+      expect(orchestrator.getActivePassCadence()).toBe("heavy");
       await gate;
       throw new Error("maintenance failed");
-    });
+    }, "heavy");
     const firstError = expect(first).rejects.toThrow("maintenance failed");
     const second = orchestrator.runMechanicalMaintenance(async () => {
       expect(orchestrator.getActivePassStartedAt()).toBe(harness.clock.now());
+      expect(orchestrator.getActivePassCadence()).toBe("light");
       return "done";
-    });
+    }, "light");
     await Promise.resolve();
     expect(orchestrator.getActivePassStartedAt()).not.toBeNull();
     release();
     await firstError;
     expect(await second).toBe("done");
     expect(orchestrator.getActivePassStartedAt()).toBeNull();
+    expect(orchestrator.getActivePassCadence()).toBeNull();
+  });
+
+  it("prioritizes process overrides over pass budgets and retains configured heavy params", async () => {
+    const harness = await createOfflineTestHarness();
+    cleanup.push(harness.cleanup);
+    const resolver = fakeProcess("review-resolver");
+    const plan = vi.spyOn(resolver, "plan");
+    const orchestrator = new MaintenanceOrchestrator({
+      baseContext: baseContextFrom(harness.createContext()),
+      auditLog: harness.auditLog,
+      createStreamWriter: () => harness.createContext().streamWriter,
+      processRegistry: createProcessRegistry({ "review-resolver": resolver }),
+    });
+    await orchestrator.run({
+      processes: [resolver],
+      cadence: "light",
+      opts: {
+        dryRun: true,
+        budget: 1200,
+        processOverrides: { "review-resolver": { budget: 900, params: { maxItemsPerPass: 3 } } },
+      },
+    });
+    await orchestrator.run({
+      processes: [resolver],
+      cadence: "heavy",
+      opts: { dryRun: true, budget: 3400 },
+    });
+    expect(plan.mock.calls).toMatchObject([
+      [expect.anything(), { budget: 900, params: { maxItemsPerPass: 3 } }],
+      [expect.anything(), { budget: 3400, params: undefined }],
+    ]);
   });
 
   it("rejects saved vectors without text before creating a stream writer or applying a plan", async () => {

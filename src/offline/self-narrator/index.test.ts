@@ -1426,6 +1426,11 @@ describe("SelfNarratorProcess", () => {
           observation,
           period_narrative: newerText,
         }),
+        createSelfNarratorResponse({
+          period_decision: "continue_current",
+          observation,
+          period_narrative: "This proposal will be stale before enqueue.",
+        }),
       ],
     });
     const harness = await createOfflineTestHarness({
@@ -1471,6 +1476,7 @@ describe("SelfNarratorProcess", () => {
         const plan = await process.plan(harness.createContext(), {});
         await process.apply(harness.createContext(), plan);
       }
+      const stalePlan = await process.plan(harness.createContext(), {});
 
       const proposalFor = (text: string) =>
         harness.reviewQueueRepository
@@ -1512,6 +1518,25 @@ describe("SelfNarratorProcess", () => {
       await expect(harness.reviewQueueRepository.resolve(future.id, "accept")).rejects.toThrow();
       expect(harness.reviewQueueRepository.get(older!.id)?.resolved_at).toBeNull();
       await harness.reviewQueueRepository.resolve(newer!.id, "accept");
+      const emit = vi.fn();
+      const staleResult = await process.apply(
+        {
+          ...harness.createContext(),
+          tracer: { enabled: true, includePayloads: false, emit },
+        },
+        stalePlan,
+      );
+      expect(proposalFor("This proposal will be stale before enqueue.")).toBeUndefined();
+      expect(emit).toHaveBeenCalledWith(
+        "offline_process.completed",
+        expect.objectContaining({
+          decision: "skipped_stale_proposal",
+          target_id: period.id,
+          planned_record_version: period.record_version,
+          current_record_version: period.record_version! + 1,
+        }),
+      );
+      expect(staleResult.errors).toEqual([]);
       expect(await harness.reviewQueueRepository.resolve(older!.id, "accept")).toMatchObject({
         resolution: "dismiss",
       });

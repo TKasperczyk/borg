@@ -1,4 +1,6 @@
 import { LLMError } from "../../util/errors.js";
+import { LLMRefusalError } from "../../llm/index.js";
+import { attachLlmErrorUsage } from "../../llm/usage.js";
 import { describe, expect, it, vi } from "vitest";
 
 import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../../tracing/tracer.js";
@@ -668,6 +670,111 @@ describe("RuminatorProcess", () => {
       expect(
         (await process.plan(harness.createContext(), {})).scheduling.selected_question_ids,
       ).toContain(question.id);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("backs off exhausted refusals per question/run without ticks or recall loss, then resets on completion", async () => {
+    const questionText = "この問いをどう理解するか";
+    const clock = new ManualClock(3_000_000);
+    const tracer = new CaptureTracer();
+    const llm = new FakeLLMClient();
+    const call = vi.spyOn(llm, "complete");
+    const harness = await createOfflineTestHarness({
+      clock,
+      llmClient: llm,
+      tracer,
+      configOverrides: { offline: { ruminator: { resolveConfidenceThreshold: 0 } } },
+      embeddingClient: new TestEmbeddingClient(new Map([[questionText, [1, 0, 0, 0]]])),
+    });
+    try {
+      await harness.episodicRepository.createEpisode(
+        createEpisodeFixture({ created_at: 2_000_000, significance: 0.95 }, [1, 0, 0, 0]),
+      );
+      const question = harness.openQuestionsRepository.add({
+        question: questionText,
+        urgency: 0.5,
+        source: "reflection",
+        created_at: 1_000_000,
+        last_touched: 1_000_000,
+        provenance: { kind: "manual" },
+      });
+      const process = new RuminatorProcess({
+        openQuestionsRepository: harness.openQuestionsRepository,
+        growthMarkersRepository: harness.growthMarkersRepository,
+        registry: harness.registry,
+      });
+      call.mockRejectedValue(new LLMRefusalError());
+      await process.run(harness.createContext(), { dryRun: true });
+      expect(harness.openQuestionsRepository.get(question.id)?.consecutive_refusals).toBe(0);
+      for (let streak = 1; streak <= 3; streak += 1) {
+        call.mockRejectedValue(new LLMRefusalError());
+        const ctx = harness.createContext();
+        const plan = await process.plan(ctx);
+        expect(plan.attempts).toEqual([
+          { question_id: question.id, outcome: "refused", attempted_at: clock.now() },
+        ]);
+        await process.apply(ctx, plan);
+        await process.apply(harness.createContext(), plan);
+        expect(harness.openQuestionsRepository.get(question.id)).toMatchObject({
+          consecutive_refusals: streak,
+          last_rumination_attempt_outcome: "refused",
+          last_rumination_attempt_at: clock.now(),
+          last_ruminated_at: null,
+          unresolved_rumination_ticks: 0,
+        });
+        if (streak === 1) {
+          call.mockRejectedValue(new LLMError("transport failed", { code: "LLM_FAILED" }));
+          await process.run(harness.createContext(), {});
+          expect(harness.openQuestionsRepository.get(question.id)?.consecutive_refusals).toBe(1);
+        }
+      }
+      const until = clock.now() + 7 * DAY_MS;
+      expect(harness.openQuestionsRepository.get(question.id)?.refusal_backoff_until).toBe(until);
+      expect(tracer.events).toContainEqual({
+        event: "open_question_resolution.transitioned",
+        data: expect.objectContaining({
+          oq_id: question.id,
+          consecutive_refusals: 3,
+          refusal_backoff_until: until,
+          backoff_applied: true,
+        }),
+      });
+      // Existing ticks cannot turn a refused, non-selected question into a stale-sweep dismissal.
+      harness.openQuestionsRepository.restore({
+        ...harness.openQuestionsRepository.get(question.id)!,
+        unresolved_rumination_ticks: 4,
+      });
+      const callsBefore = call.mock.calls.length;
+      const skipped = await process.plan(harness.createContext());
+      expect(skipped.scheduling.selected_question_ids).not.toContain(question.id);
+      expect(skipped.items).toEqual([]);
+      expect(call).toHaveBeenCalledTimes(callsBefore);
+      expect(harness.openQuestionsRepository.listAllOpen().map((row) => row.id)).toContain(
+        question.id,
+      );
+      clock.advance(7 * DAY_MS);
+      await harness.episodicRepository.createEpisode(
+        createEpisodeFixture({ created_at: clock.now() - 1, significance: 0.95 }, [1, 0, 0, 0]),
+      );
+      call.mockResolvedValue(
+        createStillOpenRuminatorResponse({ reasoning: "まだ考えています", tensions: [] }),
+      );
+      const completed = await process.plan(harness.createContext());
+      expect(completed.scheduling.selected_question_ids).toContain(question.id);
+      expect(completed.errors).toEqual([]);
+      expect(completed.attempts).toEqual([
+        { question_id: question.id, outcome: "completed", attempted_at: clock.now() },
+      ]);
+      await process.apply(harness.createContext(), completed);
+      expect(harness.openQuestionsRepository.get(question.id)).toMatchObject({
+        consecutive_refusals: 0,
+        last_rumination_attempt_outcome: "completed",
+        refusal_backoff_until: null,
+        unresolved_rumination_ticks: 5,
+        status: "open",
+      });
     } finally {
       await harness.cleanup();
     }
@@ -3456,108 +3563,143 @@ describe("RuminatorProcess", () => {
     }
   });
 
-  it("halts on budget exhaustion without making further LLM calls", async () => {
-    const llm = new FakeLLMClient({
-      responses: [
-        {
-          ...createRuminatorResponse({
-            resolution_note: "First answer",
-            growth_marker: null,
-          }),
-          input_tokens: 20,
-          output_tokens: 20,
-        },
-        createDuplicateJudgmentResponse([], { input_tokens: 1, output_tokens: 1 }),
-      ],
-    });
-    const harness = await createOfflineTestHarness({
-      llmClient: llm,
-      clock: new FixedClock(40 * 24 * 60 * 60 * 1_000),
-      embeddingClient: new TestEmbeddingClient(
-        new Map([
-          ["Why does Atlas deploy fail?", [1, 0, 0, 0]],
-          ["Why does Atlas deploy fail again?", [0, 1, 0, 0]],
-        ]),
-      ),
-    });
-    const process = new RuminatorProcess({
-      openQuestionsRepository: harness.openQuestionsRepository,
-      growthMarkersRepository: harness.growthMarkersRepository,
-      registry: harness.registry,
-    });
-
-    try {
-      const firstEpisode = createEpisodeFixture(
-        {
-          title: "Atlas deploy fix",
-          narrative: "Atlas deploy fix landed.",
-          tags: ["atlas", "deploy"],
-          created_at: harness.clock.now() - 1_000,
-          updated_at: harness.clock.now() - 1_000,
-        },
-        [1, 0, 0, 0],
-      );
-      const secondEpisode = createEpisodeFixture(
-        {
-          title: "Atlas retry plan",
-          narrative: "Atlas retry plan landed.",
-          tags: ["atlas", "deploy"],
-          created_at: harness.clock.now() - 500,
-          updated_at: harness.clock.now() - 500,
-        },
-        [1, 0, 0, 0],
-      );
-      await harness.episodicRepository.createEpisode(firstEpisode);
-      await harness.episodicRepository.createEpisode(secondEpisode);
-      const firstQuestion = harness.openQuestionsRepository.add({
-        question: "Why does Atlas deploy fail?",
-        urgency: 0.7,
-        source: "reflection",
-        created_at: 1_000_000,
-        last_touched: 1_000_000,
-        provenance: { kind: "manual" },
+  it.each(["response", "refusal"] as const)(
+    "halts on budget exhaustion after a %s without losing the outcome",
+    async (outcome) => {
+      const refusal = new LLMRefusalError();
+      attachLlmErrorUsage(refusal, { input_tokens: 20, output_tokens: 20 });
+      const llm = new FakeLLMClient({
+        responses: [
+          {
+            ...createRuminatorResponse({
+              resolution_note: "First answer",
+              growth_marker: null,
+            }),
+            input_tokens: 20,
+            output_tokens: 20,
+          },
+          createDuplicateJudgmentResponse([], { input_tokens: 1, output_tokens: 1 }),
+        ],
       });
-      const secondQuestion = harness.openQuestionsRepository.add({
-        question: "Why does Atlas deploy fail again?",
-        urgency: 0.65,
-        source: "reflection",
-        created_at: 1_000_000,
-        provenance: { kind: "manual" },
-        last_touched: 1_000_000,
+      if (outcome === "refusal") {
+        const complete = llm.complete.bind(llm);
+        vi.spyOn(llm, "complete").mockImplementation(async (options) => {
+          if (options.budget === "offline-ruminator") {
+            llm.requests.push(options);
+            throw refusal;
+          }
+          return complete(options);
+        });
+      }
+      const harness = await createOfflineTestHarness({
+        llmClient: llm,
+        clock: new FixedClock(40 * 24 * 60 * 60 * 1_000),
+        embeddingClient: new TestEmbeddingClient(
+          new Map([
+            ["Why does Atlas deploy fail?", [1, 0, 0, 0]],
+            ["Why does Atlas deploy fail again?", [0, 1, 0, 0]],
+          ]),
+        ),
       });
-      await harness.openQuestionsRepository.waitForPendingEmbeddings();
-
-      const plan = await process.plan(harness.createContext(), {
-        budget: 10,
+      const process = new RuminatorProcess({
+        openQuestionsRepository: harness.openQuestionsRepository,
+        growthMarkersRepository: harness.growthMarkersRepository,
+        registry: harness.registry,
       });
 
-      expect(plan.budget_exhausted).toBe(true);
-      expect(llm.requests).toHaveLength(1);
-      expect(plan.scheduling).toMatchObject({
-        due_question_ids: [firstQuestion.id, secondQuestion.id],
-        selected_question_ids: [firstQuestion.id, secondQuestion.id],
-        visited_question_ids: [firstQuestion.id],
-        model_called_question_ids: [firstQuestion.id],
-        budget_cut_question_ids: [secondQuestion.id],
-      });
-      const result = await process.apply(harness.createContext(), plan);
+      try {
+        const firstEpisode = createEpisodeFixture(
+          {
+            title: "Atlas deploy fix",
+            narrative: "Atlas deploy fix landed.",
+            tags: ["atlas", "deploy"],
+            created_at: harness.clock.now() - 1_000,
+            updated_at: harness.clock.now() - 1_000,
+          },
+          [1, 0, 0, 0],
+        );
+        const secondEpisode = createEpisodeFixture(
+          {
+            title: "Atlas retry plan",
+            narrative: "Atlas retry plan landed.",
+            tags: ["atlas", "deploy"],
+            created_at: harness.clock.now() - 500,
+            updated_at: harness.clock.now() - 500,
+          },
+          [1, 0, 0, 0],
+        );
+        await harness.episodicRepository.createEpisode(firstEpisode);
+        await harness.episodicRepository.createEpisode(secondEpisode);
+        const firstQuestion = harness.openQuestionsRepository.add({
+          question: "Why does Atlas deploy fail?",
+          urgency: 0.7,
+          source: "reflection",
+          created_at: 1_000_000,
+          last_touched: 1_000_000,
+          provenance: { kind: "manual" },
+        });
+        const secondQuestion = harness.openQuestionsRepository.add({
+          question: "Why does Atlas deploy fail again?",
+          urgency: 0.65,
+          source: "reflection",
+          created_at: 1_000_000,
+          provenance: { kind: "manual" },
+          last_touched: 1_000_000,
+        });
+        await harness.openQuestionsRepository.waitForPendingEmbeddings();
 
-      expect(harness.openQuestionsRepository.get(firstQuestion.id)).toMatchObject({
-        unresolved_rumination_ticks: 0,
-        last_ruminated_at: null,
-      });
-      expect(harness.openQuestionsRepository.get(secondQuestion.id)).toMatchObject({
-        unresolved_rumination_ticks: 0,
-        last_ruminated_at: null,
-      });
-      expect(result.notes).toEqual(
-        expect.arrayContaining([
-          expect.stringContaining("due=2; selected=2; visited=1; model_calls=1; budget_cut=1"),
-          expect.stringContaining(secondQuestion.id),
-        ]),
-      );
-    } finally {
-      await harness.cleanup();
-    }
-  });
+        const plan = await process.plan(harness.createContext(), {
+          budget: 10,
+        });
+
+        expect(plan.budget_exhausted).toBe(true);
+        expect(plan.tokens_used).toBe(40);
+        expect(plan.attempts).toEqual(
+          outcome === "refusal"
+            ? [
+                {
+                  question_id: firstQuestion.id,
+                  outcome: "refused",
+                  attempted_at: harness.clock.now(),
+                },
+              ]
+            : [],
+        );
+        expect(plan.errors).toContainEqual(
+          expect.objectContaining({ code: "OFFLINE_BUDGET_EXCEEDED" }),
+        );
+        expect(llm.requests).toHaveLength(1);
+        expect(plan.scheduling).toMatchObject({
+          due_question_ids: [firstQuestion.id, secondQuestion.id],
+          selected_question_ids: [firstQuestion.id, secondQuestion.id],
+          visited_question_ids: [firstQuestion.id],
+          model_called_question_ids: [firstQuestion.id],
+          budget_cut_question_ids: [secondQuestion.id],
+        });
+        const result = await process.apply(harness.createContext(), plan);
+        // A replay of the same run must not count the exhausted refusal twice.
+        await process.apply(harness.createContext(), plan);
+
+        expect(harness.openQuestionsRepository.get(firstQuestion.id)).toMatchObject({
+          consecutive_refusals: outcome === "refusal" ? 1 : 0,
+          last_rumination_attempt_outcome: outcome === "refusal" ? "refused" : null,
+          unresolved_rumination_ticks: 0,
+          last_ruminated_at: null,
+        });
+        expect(harness.openQuestionsRepository.get(secondQuestion.id)).toMatchObject({
+          consecutive_refusals: 0,
+          unresolved_rumination_ticks: 0,
+          last_ruminated_at: null,
+        });
+        expect(result.notes).toEqual(
+          expect.arrayContaining([
+            expect.stringContaining("due=2; selected=2; visited=1; model_calls=1; budget_cut=1"),
+            expect.stringContaining(secondQuestion.id),
+          ]),
+        );
+      } finally {
+        await harness.cleanup();
+      }
+    },
+  );
 });

@@ -1353,6 +1353,7 @@ export type BorgMaintenanceScheduler = {
 };
 
 export type BorgMaintenanceFacade = {
+  status(): { active: boolean; cadence: "light" | "heavy" | null; started_at: number | null };
   storageMemoryStats(): LanceDbMemoryStats;
   storageTableStats(): Promise<LanceDbTableStats[]>;
   scheduler: BorgMaintenanceScheduler;
