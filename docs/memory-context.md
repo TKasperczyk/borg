@@ -968,6 +968,9 @@ retrieval pass); the sidecar uses it in two ways:
   { since, until, label, source: "planner_temporal_cue" } }, evidence: [ { id, kind, group,
   occurred_at, relative_age, text, source_episode_ids, disclosure } ], hidden_count, truncated_count }`
   (`hidden_count` is always 0; `truncated_count` counts eligible rows omitted by the row cap).
+  Each row's `disclosure` is the same public projection the episodes and `venue_recent` rows carry
+  (`class`, `origin_audience_names`, `private_to_names`, `private_to_current_sender`,
+  `private_to_current_audience`), so a client renders every section's labels the same way.
   The outer window is always the last seven days. A cue extending earlier adds `additional_window`
   with its own range and label; overlap is covered by the recent window and gaps are not recalled.
   Recent rows retain priority within the same caps, and each row's `occurred_at` places it in its band.

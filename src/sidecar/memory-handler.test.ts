@@ -6472,6 +6472,16 @@ describe("memory sidecar handler", () => {
       groupLabel: "Open questions considered",
       text: "question=combined from two private sessions",
     };
+    const someoneElse = "ent_someoneelse0001" as EntityId;
+    rec.entities.push({
+      id: someoneElse,
+      canonical_name: "Bob",
+      aliases: [],
+      kind: "person",
+      borg_role: null,
+      name_provenance: "transport_sender",
+      created_at: 1,
+    });
     const someoneElsesRow: AutobiographicalRecallEvidenceItem = {
       ...publicRow,
       id: "activity:evt_private",
@@ -6481,8 +6491,8 @@ describe("memory sidecar handler", () => {
       text: "activity_kind=user_contact participant=Bob",
       disclosureLabel: {
         disclosureClass: "self_private",
-        originAudienceEntityIds: ["ent_someoneelse0001" as EntityId],
-        privateToEntityIds: ["ent_someoneelse0001" as EntityId],
+        originAudienceEntityIds: [someoneElse],
+        privateToEntityIds: [someoneElse],
         publicToEntityIds: [],
       },
       sourceEpisodeIds: [],
@@ -6576,10 +6586,13 @@ describe("memory sidecar handler", () => {
         }),
         expect.objectContaining({
           id: someoneElsesRow.id,
-          disclosure: expect.objectContaining({
+          disclosure: {
             class: "self_private",
-            private_to_entity_ids: someoneElsesRow.disclosureLabel.privateToEntityIds,
-          }),
+            origin_audience_names: ["Bob"],
+            private_to_names: ["Bob"],
+            private_to_current_sender: false,
+            private_to_current_audience: false,
+          },
         }),
       ],
       hidden_count: 0,

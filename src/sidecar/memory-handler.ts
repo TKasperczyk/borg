@@ -1002,6 +1002,7 @@ function temporalCueRange(
 
 function projectAutobiographicalRecallForResponse(
   recall: AutobiographicalRecallResult,
+  projectDisclosure: ReturnType<typeof createPublicDisclosureProjector>,
 ): Record<string, unknown> {
   const eligible = recall.evidence.filter((item) => SIDECAR_AUTOBIOGRAPHICAL_KINDS.has(item.kind));
   const included = eligible.slice(0, MAX_AUTOBIOGRAPHICAL_ROWS);
@@ -1028,12 +1029,7 @@ function projectAutobiographicalRecallForResponse(
       relative_age: item.relativeAge,
       text: item.text,
       source_episode_ids: [...item.sourceEpisodeIds],
-      disclosure: {
-        class: item.disclosureLabel.disclosureClass,
-        origin_audience_entity_ids: [...item.disclosureLabel.originAudienceEntityIds],
-        private_to_entity_ids: [...item.disclosureLabel.privateToEntityIds],
-        public_to_entity_ids: [...item.disclosureLabel.publicToEntityIds],
-      },
+      disclosure: projectDisclosure(item.disclosureLabel),
     })),
     hidden_count: 0,
     truncated_count: eligible.length - included.length,
@@ -3472,7 +3468,13 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
                     );
                     return recall === null
                       ? null
-                      : projectAutobiographicalRecallForResponse(recall);
+                      : projectAutobiographicalRecallForResponse(
+                          recall,
+                          createPublicDisclosureProjector(borg.entities, {
+                            senderEntityId: identity.senderEntityId,
+                            currentAudienceEntityId: identity.audienceEntity.id,
+                          }),
+                        );
                   }),
                 Math.min(requestDeadlineAt, Date.now() + remainingMs),
                 recallPhase("autobiographical"),
