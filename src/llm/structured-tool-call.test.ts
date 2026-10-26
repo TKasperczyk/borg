@@ -150,6 +150,7 @@ describe("callStructuredTool", () => {
         tracer: { enabled: true, includePayloads: false, emit },
         turnId: "turn_repair",
         label: "repair_test",
+        startedExtraForRequest: (request) => ({ message_count: request.messages.length }),
       },
     });
 
@@ -175,7 +176,16 @@ describe("callStructuredTool", () => {
     ]);
     expect(emit).toHaveBeenCalledWith(
       "llm_call.started",
-      expect.objectContaining({ attempt: 2, schema_repair: true, repair_of_attempt: 1 }),
+      expect.objectContaining({
+        attempt: 2,
+        schema_repair: true,
+        repair_of_attempt: 1,
+        message_count: 2,
+      }),
+    );
+    expect(emit).toHaveBeenCalledWith(
+      "llm_call.started",
+      expect.objectContaining({ attempt: 1, message_count: 1 }),
     );
     expect(emit).toHaveBeenCalledWith(
       "llm_call.completed",

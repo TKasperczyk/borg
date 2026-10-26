@@ -11,6 +11,7 @@ import {
   relationalSlotMemoryDisclosureLabel,
 } from "../../memory/common/disclosure-serializers.js";
 import type { ExistingStateKeyRegistryEntry, SharedStatePromptSummary } from "./summary.js";
+import { SHARED_STATE_PROMPT_WARNING_TOKEN_THRESHOLD } from "./constants.js";
 import type {
   SharedStateArtifactAudienceContext,
   SharedStateArtifactParticipantContext,
@@ -153,6 +154,7 @@ export function buildSharedStateArtifactMessages(input: {
 export type SharedStateArtifactPromptBudget = {
   inputTokenEstimate: number;
   breakdown: Record<string, number>;
+  decision: "within_warning_budget" | "warn_only_prompt_unchanged";
 };
 
 export function estimateSharedStateArtifactPromptBudget(input: {
@@ -196,6 +198,10 @@ export function estimateSharedStateArtifactPromptBudget(input: {
 
   return {
     inputTokenEstimate,
+    decision:
+      inputTokenEstimate <= SHARED_STATE_PROMPT_WARNING_TOKEN_THRESHOLD
+        ? "within_warning_budget"
+        : "warn_only_prompt_unchanged",
     breakdown: {
       system,
       tool_schema: toolSchema,

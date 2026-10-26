@@ -11,8 +11,10 @@ import type {
   SharedStateOperation,
 } from "../../memory/shared-state/index.js";
 import { dedupePreservingOrder } from "../../util/collections.js";
+import { utf16SafePrefix } from "../../util/utf16-boundary.js";
+import { toTraceJsonValue } from "../../tracing/tracer.js";
 import { SystemClock } from "../../util/clock.js";
-import type { StreamEntryId } from "../../util/ids.js";
+import type { SharedStateEntryId, StreamEntryId } from "../../util/ids.js";
 import {
   SHARED_STATE_SYSTEM_PROMPT,
   buildSharedStateSystemPrompt,
@@ -36,6 +38,7 @@ import {
   MAX_PATCH_OUTPUT_TOKENS,
   SHARED_STATE_ACCEPTED_TOOL_NAMES,
   SHARED_STATE_TOOL_NAME,
+  SHARED_STATE_PROMPT_WARNING_TOKEN_THRESHOLD,
 } from "./constants.js";
 import {
   type EmptyUpdateDrop,
@@ -73,13 +76,18 @@ import {
   type SharedStateLifecycleTransition,
 } from "./lifecycle-aging.js";
 import { buildSharedStateReconciliationWorkSet } from "./canonicalization-candidates.js";
-import { buildExistingStateKeyRegistry, buildSharedStateArtifactPromptSummary } from "./summary.js";
+import {
+  buildExistingStateKeyRegistry,
+  buildSharedStateArtifactPromptSummaryWithExposure,
+} from "./summary.js";
 import { SHARED_STATE_RECENT_TURN_THRESHOLD } from "./render.js";
 
 const SHARED_STATE_COMPILER_STATIC_PREFIX_CACHE_CONTROL = {
   type: "ephemeral",
   ttl: "5m",
 } as const;
+const MAX_COMPILE_TRACE_HEAD_CHARS = 2_000;
+const MAX_COMPILE_TRACE_MESSAGES = 2;
 
 function semanticBeliefRevisionDependencies(
   input: CompileSharedStateArtifactInput,
@@ -696,10 +704,11 @@ export async function compileSharedStateArtifact(
   const currentUserSourceStreamEntryIds = input.currentUserSourceStreamEntryIds ?? [
     input.currentUserStreamEntryId,
   ];
-  const previousArtifactSummary = buildSharedStateArtifactPromptSummary(
-    previousArtifact,
-    input.previousArtifactSummaryOptions,
-  );
+  const { summary: previousArtifactSummary, exposure: promptExposure } =
+    buildSharedStateArtifactPromptSummaryWithExposure(
+      previousArtifact,
+      input.previousArtifactSummaryOptions,
+    );
   const existingStateKeyRegistry = buildExistingStateKeyRegistry(
     previousArtifact,
     previousArtifactSummary,
@@ -759,13 +768,6 @@ export async function compileSharedStateArtifact(
     canonicalizationCandidates,
   });
 
-  traceCompileOverBudget({
-    tracer: input.tracer,
-    turnId: input.turnId,
-    audienceEntityId: input.audienceEntityId,
-    ledgerMode,
-    promptBudget,
-  });
   const compileCompletedTraceBase = {
     tracer: input.tracer,
     turnId: input.turnId,
@@ -776,6 +778,8 @@ export async function compileSharedStateArtifact(
     currentUserStreamEntryId: input.currentUserStreamEntryId,
     ledgerMode,
     promptBudget,
+    promptExposure,
+    model,
     compilePass,
     citationEligibleSourceStreamEntryIds: allowedSourceStreamEntryIdsForPrompt,
     offLimitsSourceStreamEntryIds: offLimitsSourceStreamEntryIdsForPrompt,
@@ -784,14 +788,30 @@ export async function compileSharedStateArtifact(
     emptyUpdateRepairedCount: 0,
     addRejectedCapExceededCount: 0,
   };
-  const recordEmptyUpdateValidation = (normalizedPatch: {
+  const recordPatchValidation = (normalizedPatch: {
     emptyUpdateAttemptedCount: number;
     emptyUpdateDrops: readonly EmptyUpdateDrop[];
+    rejected: readonly PatchRejection[];
   }): void => {
     compileCompletedTraceBase.emptyUpdateAttemptedCount +=
       normalizedPatch.emptyUpdateAttemptedCount;
     compileCompletedTraceBase.emptyUpdateDroppedCount += normalizedPatch.emptyUpdateDrops.length;
     traceEmptyUpdateDrops(input, normalizedPatch.emptyUpdateDrops);
+    const exposureRejections = normalizedPatch.rejected.filter(
+      (rejection) => rejection.reason === "locked_target_not_fully_rendered",
+    );
+    if (exposureRejections.length > 0) {
+      // Preserve these outcomes even if an unrelated rejection triggers a repair
+      // whose patch replaces this attempt's operation list.
+      traceCompileDegraded({
+        tracer: input.tracer,
+        turnId: input.turnId,
+        audienceEntityId: input.audienceEntityId,
+        reason: "locked_target_not_fully_rendered",
+        rejections: exposureRejections,
+        promptExposure,
+      });
+    }
   };
 
   const missingToolError = (): MissingSharedStateArtifactToolCallError =>
@@ -868,6 +888,58 @@ export async function compileSharedStateArtifact(
         messages: toolMessages,
         tools,
         responseShape: summarizeToolResponseShape,
+        startedExtraForRequest: (request) => {
+          // Both repair paths retain the original summary bodies. Re-estimate the
+          // actual attempt so repair instructions appear in the budget audit too.
+          const attemptBudget =
+            request.messages === messages
+              ? promptBudget
+              : estimateSharedStateArtifactPromptBudget({
+                  ...messageInput,
+                  systemPrompt,
+                  messages: request.messages,
+                  tools,
+                });
+          compileCompletedTraceBase.promptBudget = attemptBudget;
+          traceCompileOverBudget({
+            tracer: input.tracer,
+            turnId: input.turnId,
+            audienceEntityId: input.audienceEntityId,
+            ledgerMode,
+            promptBudget: attemptBudget,
+            promptExposure,
+            model,
+          });
+          return {
+            audienceEntityId: input.audienceEntityId,
+            compile_pass: compilePass,
+            previous_artifact_version: promptExposure?.artifact_version ?? null,
+            prompt_exposure: toTraceJsonValue(promptExposure),
+            budget_decision: attemptBudget.decision,
+            input_token_estimate: attemptBudget.inputTokenEstimate,
+            input_token_budget: SHARED_STATE_PROMPT_WARNING_TOKEN_THRESHOLD,
+            input_token_breakdown: toTraceJsonValue(attemptBudget.breakdown),
+            ...(input.tracer?.includePayloads === true
+              ? {
+                  // `prompt` is already payload-gated by each tracer sink.
+                  prompt: {
+                    system_head: utf16SafePrefix(systemPrompt, MAX_COMPILE_TRACE_HEAD_CHARS),
+                    messages: request.messages
+                      .slice(0, MAX_COMPILE_TRACE_MESSAGES)
+                      .map((message) => ({
+                        role: message.role,
+                        head: utf16SafePrefix(message.content, MAX_COMPILE_TRACE_HEAD_CHARS),
+                        original_chars: message.content.length,
+                      })),
+                    omitted_message_count: Math.max(
+                      0,
+                      request.messages.length - MAX_COMPILE_TRACE_MESSAGES,
+                    ),
+                  },
+                }
+              : {}),
+          };
+        },
       },
     });
 
@@ -929,9 +1001,11 @@ export async function compileSharedStateArtifact(
     allowedSourceStreamEntryIdsForPrompt === undefined
       ? null
       : new Set(allowedSourceStreamEntryIdsForPrompt);
-  let normalized = normalizePatch({
-    patch: parsed,
+  const clock = input.clock ?? new SystemClock();
+  const nowMs = clock.now();
+  const normalizationInput = {
     previousArtifact,
+    promptExposure,
     audienceEntityId: input.audienceEntityId,
     selfEntityId: input.selfEntityId,
     speakerEntityId,
@@ -942,8 +1016,77 @@ export async function compileSharedStateArtifact(
     relationshipEvidenceStreamEntryTrust: input.relationshipEvidenceStreamEntryTrust,
     allowedCanonicalizationIds: allowedCanonicalizationIds(input.canonicalizationCandidates),
     maxLiveEntriesPerKey: input.lifecycle?.maxLiveEntriesPerKey,
-  });
-  recordEmptyUpdateValidation(normalized);
+    nowMs,
+    materializePlan: (
+      operations: readonly SharedStateOperation[],
+      retainedEntryIds: ReadonlySet<SharedStateEntryId>,
+    ) => {
+      const compilerOperations = withOperationLastUpdatedTurns(
+        materializeSharedStateOperationIds(operations),
+        input,
+      );
+      const postCompilerEntries = materializeSharedStateEntriesAfterOperations({
+        previousArtifact,
+        operations: compilerOperations,
+        audienceEntityId: input.audienceEntityId,
+        nowMs,
+        lastUpdatedTurnGlobal: input.turnCounter ?? null,
+      });
+      const aging = applyLifecycleAging({
+        entries: postCompilerEntries,
+        currentTurnCounter: input.turnCounter,
+        currentUserStreamEntryId: input.currentUserStreamEntryId,
+        ledgerStreamEntryIds: input.renderOptions?.ledgerStreamEntryIds,
+        activeOpenQuestionIds: input.renderOptions?.activeOpenQuestionIds,
+        activeActionIds: input.renderOptions?.activeActionIds,
+        activeGoalIds: input.renderOptions?.activeGoalIds,
+        activeCriticalCommitmentIds: input.renderOptions?.activeCriticalCommitmentIds,
+        activeOperationalCommitmentIds: input.renderOptions?.activeOperationalCommitmentIds,
+        recentlyRetrievedEntryIds: input.renderOptions?.recentlyRetrievedEntryIds,
+        touchedEntryIds: touchedSharedStateEntryIds(compilerOperations),
+        lastUpdatedTurnByEntryId: lastUpdatedTurnByEntryId({
+          entries: postCompilerEntries,
+          currentUserStreamEntryId: input.currentUserStreamEntryId,
+          currentTurnCounter: input.turnCounter,
+          lastUpdatedTurnByStreamEntryId: input.renderOptions?.lastUpdatedTurnByStreamEntryId,
+        }),
+        recentTurnThreshold:
+          input.lifecycle?.recentTurnThreshold ??
+          input.renderOptions?.recentTurnThreshold ??
+          SHARED_STATE_RECENT_TURN_THRESHOLD,
+        dormantTurnThreshold: input.lifecycle?.dormantTurnThreshold,
+      });
+      const lifecycleTransitionOperations: SharedStateOperation[] = aging.transitions.map(
+        (transition) => ({
+          type: "transition_kind",
+          id: transition.entryId,
+          kind: transition.toKind,
+        }),
+      );
+      const lifecycle = applySharedStateArtifactLifecycleCap({
+        previousArtifact,
+        operations: [...compilerOperations, ...lifecycleTransitionOperations],
+        options: input.lifecycle,
+        retainedEntryIds,
+        nowMs,
+      });
+      const expandedOperations = expandPruneDependencies({
+        previousArtifact,
+        operations: lifecycle.operations,
+        nowMs,
+      });
+      const dedupedCanonicalizations = dedupeCanonicalizesAcrossOperations(expandedOperations);
+      return {
+        compilerOperations,
+        operations: dedupedCanonicalizations.operations,
+        aging,
+        lifecycle,
+        dedupedCanonicalizations,
+      };
+    },
+  };
+  let normalized = normalizePatch({ ...normalizationInput, patch: parsed });
+  recordPatchValidation(normalized);
 
   let repairableRejections = repairablePatchRejections(normalized.rejected);
   for (const rejection of repairableRejections) {
@@ -1029,21 +1172,8 @@ export async function compileSharedStateArtifact(
       return degraded(input, structuredToolDegradedReason(error), cause);
     }
 
-    normalized = normalizePatch({
-      patch: repairedParsed,
-      previousArtifact,
-      audienceEntityId: input.audienceEntityId,
-      selfEntityId: input.selfEntityId,
-      speakerEntityId,
-      participants: input.participants,
-      allowedSourceStreamEntryIds,
-      sourceTrustValidator: input.sourceTrustValidator,
-      participantRoster: input.participantRoster,
-      relationshipEvidenceStreamEntryTrust: input.relationshipEvidenceStreamEntryTrust,
-      allowedCanonicalizationIds: allowedCanonicalizationIds(input.canonicalizationCandidates),
-      maxLiveEntriesPerKey: input.lifecycle?.maxLiveEntriesPerKey,
-    });
-    recordEmptyUpdateValidation(normalized);
+    normalized = normalizePatch({ ...normalizationInput, patch: repairedParsed });
+    recordPatchValidation(normalized);
     repairableRejections = repairablePatchRejections(normalized.rejected);
     for (const rejection of repairableRejections) {
       if (rejection.reason === "live_entry_cap_exceeded_for_key") {
@@ -1100,56 +1230,7 @@ export async function compileSharedStateArtifact(
     );
   }
 
-  const clock = input.clock ?? new SystemClock();
-  const nowMs = clock.now();
-  const compilerOperations = withOperationLastUpdatedTurns(
-    materializeSharedStateOperationIds(normalized.operations),
-    input,
-  );
-  const postCompilerEntries = materializeSharedStateEntriesAfterOperations({
-    previousArtifact,
-    operations: compilerOperations,
-    audienceEntityId: input.audienceEntityId,
-    nowMs,
-    lastUpdatedTurnGlobal: input.turnCounter ?? null,
-  });
-  const aging = applyLifecycleAging({
-    entries: postCompilerEntries,
-    currentTurnCounter: input.turnCounter,
-    currentUserStreamEntryId: input.currentUserStreamEntryId,
-    ledgerStreamEntryIds: input.renderOptions?.ledgerStreamEntryIds,
-    activeOpenQuestionIds: input.renderOptions?.activeOpenQuestionIds,
-    activeActionIds: input.renderOptions?.activeActionIds,
-    activeGoalIds: input.renderOptions?.activeGoalIds,
-    activeCriticalCommitmentIds: input.renderOptions?.activeCriticalCommitmentIds,
-    activeOperationalCommitmentIds: input.renderOptions?.activeOperationalCommitmentIds,
-    recentlyRetrievedEntryIds: input.renderOptions?.recentlyRetrievedEntryIds,
-    touchedEntryIds: touchedSharedStateEntryIds(compilerOperations),
-    lastUpdatedTurnByEntryId: lastUpdatedTurnByEntryId({
-      entries: postCompilerEntries,
-      currentUserStreamEntryId: input.currentUserStreamEntryId,
-      currentTurnCounter: input.turnCounter,
-      lastUpdatedTurnByStreamEntryId: input.renderOptions?.lastUpdatedTurnByStreamEntryId,
-    }),
-    recentTurnThreshold:
-      input.lifecycle?.recentTurnThreshold ??
-      input.renderOptions?.recentTurnThreshold ??
-      SHARED_STATE_RECENT_TURN_THRESHOLD,
-    dormantTurnThreshold: input.lifecycle?.dormantTurnThreshold,
-  });
-  const lifecycleTransitionOperations: SharedStateOperation[] = aging.transitions.map(
-    (transition) => ({
-      type: "transition_kind",
-      id: transition.entryId,
-      kind: transition.toKind,
-    }),
-  );
-  const lifecycle = applySharedStateArtifactLifecycleCap({
-    previousArtifact,
-    operations: [...compilerOperations, ...lifecycleTransitionOperations],
-    options: input.lifecycle,
-    nowMs,
-  });
+  const { aging, lifecycle, dedupedCanonicalizations, operations } = normalized.plan;
   if (lifecycle.overCapDelta > 0 && input.tracer?.enabled === true && input.turnId !== undefined) {
     input.tracer.emit("shared_state.lifecycle.degraded", {
       turnId: input.turnId,
@@ -1172,13 +1253,6 @@ export async function compileSharedStateArtifact(
     lifecycleAgingBlockedSample: aging.blockedSample,
     lifecycleAgingUnknownAgeSample: aging.unknownAgeSample,
   };
-  const expandedOperations = expandPruneDependencies({
-    previousArtifact,
-    operations: lifecycle.operations,
-    nowMs,
-  });
-  const dedupedCanonicalizations = dedupeCanonicalizesAcrossOperations(expandedOperations);
-  const operations = dedupedCanonicalizations.operations;
   const publicOperations = publicSharedStateOperations(operations);
   const operationCounts = operationCountsByKind(publicOperations);
   const operationCountsByStateKeyForTrace = operationCountsByStateKey(

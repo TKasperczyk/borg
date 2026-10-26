@@ -92,6 +92,8 @@ export type StructuredToolCallTraceOptions = {
   includeToolSchemas?: boolean;
   responseShape?: (response: LLMCompleteResult) => JsonValue;
   startedExtra?: TracePayloadExtension;
+  // Describes the actual attempt, including appended schema-repair messages.
+  startedExtraForRequest?: (request: LLMCompleteOptions) => TracePayloadExtension;
   responseExtra?: TracePayloadExtension;
   errorExtra?: TracePayloadExtension;
 };
@@ -226,7 +228,11 @@ function traceStarted<T>(
     systemPrompt: trace.systemPrompt ?? (typeof request.system === "string" ? request.system : ""),
     messages: schemaRepair ? request.messages : (trace.messages ?? request.messages),
     ...(trace.includeToolSchemas === false ? {} : { tools: trace.tools ?? request.tools }),
-    extra: attemptTraceExtra(trace.startedExtra, attempt, schemaRepair),
+    extra: attemptTraceExtra(
+      { ...trace.startedExtra, ...trace.startedExtraForRequest?.(request) },
+      attempt,
+      schemaRepair,
+    ),
   });
 }
 

@@ -235,6 +235,7 @@ export type PatchRejection = {
     | "empty_update"
     | "live_entry_cap_exceeded_for_key"
     | "locked_state_key_collision"
+    | "locked_target_not_fully_rendered"
     | "near_duplicate_state_key"
     | "missing_new_key_reason"
     | "relationship_claim_ungrounded";
@@ -251,6 +252,7 @@ export type PatchRejection = {
   proposedCount?: number;
   maxLiveEntriesPerKey?: number;
   targetEntryId?: string;
+  targetExposure?: "truncated" | "omitted" | "unavailable";
   lockedEntryIds?: string[];
   similarStateKeys?: string[];
   sharedStateKeyTokens?: string[];

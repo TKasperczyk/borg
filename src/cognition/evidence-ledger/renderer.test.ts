@@ -8,6 +8,7 @@ import type {
 import { createSharedStateEntryId, createEntityId, createStreamEntryId } from "../../util/ids.js";
 import { estimatePromptTokens } from "../../util/token-estimate.js";
 import { OPEN_QUESTION_STATUSES } from "../../memory/self/index.js";
+import { buildSharedStateArtifactPromptSummaryWithExposure } from "../shared-state/summary.js";
 import { LIFECYCLE_OPEN_QUESTION_STATUSES } from "./open-question-handles.js";
 import { EVIDENCE_LEDGER_SECTION_DEFINITIONS, type EvidenceLedger } from "./types.js";
 import {
@@ -418,18 +419,22 @@ describe("buildSharedStateArtifactPromptSummary", () => {
         sharedStateEntry({ audience, source, kind: "live", index: 1_000 + index }),
       ),
     ];
-    const summary = buildSharedStateArtifactPromptSummary(sharedStateWithEntries(entries, source), {
-      maxEntries: {
-        locked: 12,
-        live: 6,
-        invalidated: 0,
-        tentative: 0,
+    const { summary, exposure } = buildSharedStateArtifactPromptSummaryWithExposure(
+      sharedStateWithEntries(entries, source),
+      {
+        maxEntries: {
+          locked: 12,
+          live: 6,
+          invalidated: 0,
+          tentative: 0,
+        },
+        // Keep the count cap dominant with completeness metadata in both summary views.
+        summaryTokenBudget: 7_000,
       },
-      summaryTokenBudget: 6_000,
-    });
+    );
 
     expect(summary).not.toBeNull();
-    expect(estimatePromptTokens(JSON.stringify(summary))).toBeLessThanOrEqual(6_000);
+    expect(estimatePromptTokens(JSON.stringify(summary))).toBeLessThanOrEqual(7_000);
     expect(summary?.active_counts_by_kind).toMatchObject({
       locked: 200,
       live: 50,
@@ -449,6 +454,19 @@ describe("buildSharedStateArtifactPromptSummary", () => {
       locked: 188,
       live: 44,
     });
+    expect(exposure?.rows).toHaveLength(entries.length);
+    expect(exposure?.omitted_entry_ids).toHaveLength(232);
+    expect(exposure?.rows.filter((row) => row.completeness === "full")).toHaveLength(18);
+    expect(
+      exposure?.rows
+        .filter((row) => row.completeness === "omitted")
+        .every((row) => row.rendered_chars === 0),
+    ).toBe(true);
+    expect(exposure?.budget).toMatchObject({
+      decision: "within_budget",
+      active_rows_dropped: 0,
+      summary_token_estimate: estimatePromptTokens(JSON.stringify(summary)),
+    });
   });
 
   it("enforces the token budget after count-capping many short locked entries", () => {
@@ -462,22 +480,38 @@ describe("buildSharedStateArtifactPromptSummary", () => {
         sharedStateEntry({ audience, source, kind: "live", index: 1_000 + index }),
       ),
     ];
-    const summary = buildSharedStateArtifactPromptSummary(sharedStateWithEntries(entries, source), {
-      maxEntries: {
-        locked: 100,
-        live: 3,
-        invalidated: 0,
-        tentative: 0,
+    const { summary, exposure } = buildSharedStateArtifactPromptSummaryWithExposure(
+      sharedStateWithEntries(entries, source),
+      {
+        maxEntries: {
+          locked: 100,
+          live: 3,
+          invalidated: 0,
+          tentative: 0,
+        },
+        // Leave room for each selected row's explicit kind in both summary views.
+        summaryTokenBudget: 2_200,
       },
-      // Leave room for each selected row's explicit kind in both summary views.
-      summaryTokenBudget: 2_200,
-    });
+    );
 
     expect(summary).not.toBeNull();
     expect(estimatePromptTokens(JSON.stringify(summary))).toBeLessThanOrEqual(2_200);
     expect(summary?.active_entries.locked.length).toBeLessThanOrEqual(100);
     expect(summary?.active_entries.live).toHaveLength(3);
     expect(summary?.omitted_counts_by_kind.locked).toBeGreaterThan(100);
+    const renderedIds = Object.values(summary!.active_entries)
+      .flat()
+      .map((entry) => entry.id);
+    expect(
+      exposure?.rows
+        .filter((row) => row.completeness !== "omitted")
+        .map((row) => row.id)
+        .sort(),
+    ).toEqual(renderedIds.sort());
+    expect(exposure?.budget.active_rows_dropped).toBeGreaterThan(0);
+    expect(exposure?.budget.summary_token_estimate).toBe(
+      estimatePromptTokens(JSON.stringify(summary)),
+    );
   });
 
   it("trims recent superseded context before dropping a small live state", () => {
@@ -500,7 +534,7 @@ describe("buildSharedStateArtifactPromptSummary", () => {
       }),
       superseded_by_id: live.id,
     };
-    const summary = buildSharedStateArtifactPromptSummary(
+    const { summary, exposure } = buildSharedStateArtifactPromptSummaryWithExposure(
       sharedStateWithEntries([superseded, live], source),
       {
         maxEntries: {
@@ -518,6 +552,26 @@ describe("buildSharedStateArtifactPromptSummary", () => {
     expect(summary?.active_entries.live[0]?.text).toBe(live.text);
     expect(summary?.recent_superseded).toHaveLength(0);
     expect(estimatePromptTokens(JSON.stringify(summary))).toBeLessThanOrEqual(600);
+    expect(exposure?.rows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: superseded.id, completeness: "omitted", rendered_chars: 0 }),
+        expect.objectContaining({
+          id: live.id,
+          completeness: "full",
+          rendered_chars: live.text.length,
+        }),
+      ]),
+    );
+    expect(exposure?.budget.superseded_rows_dropped).toBe(1);
+    const unbounded = buildSharedStateArtifactPromptSummaryWithExposure(
+      sharedStateWithEntries([superseded, live], source),
+      { summaryTokenBudget: 100_000 },
+    );
+    expect(unbounded.exposure?.rows.find((row) => row.id === superseded.id)).toMatchObject({
+      completeness: "full",
+      original_chars: superseded.text.length,
+      rendered_chars: superseded.text.length,
+    });
   });
 
   it("truncates a single oversized active entry instead of dropping it", () => {
@@ -530,20 +584,47 @@ describe("buildSharedStateArtifactPromptSummary", () => {
       index: 0,
       text: "oversized locked decision ".repeat(2_000),
     });
-    const summary = buildSharedStateArtifactPromptSummary(sharedStateWithEntries([entry], source), {
-      maxEntries: {
-        locked: 1,
-        live: 0,
-        invalidated: 0,
-        tentative: 0,
+    const { summary, exposure } = buildSharedStateArtifactPromptSummaryWithExposure(
+      sharedStateWithEntries([entry], source),
+      {
+        maxEntries: {
+          locked: 1,
+          live: 0,
+          invalidated: 0,
+          tentative: 0,
+        },
+        summaryTokenBudget: 700,
+        maxEntryTextTokens: 80,
       },
-      summaryTokenBudget: 700,
-      maxEntryTextTokens: 80,
-    });
+    );
 
     expect(summary?.active_entries.locked).toHaveLength(1);
     expect(summary?.active_entries.locked[0]?.text).toContain(" ... [text truncated]");
     expect(estimatePromptTokens(JSON.stringify(summary))).toBeLessThanOrEqual(700);
+    expect(exposure?.rows).toEqual([
+      {
+        id: entry.id,
+        state_key: entry.state_key,
+        kind: "locked",
+        original_chars: entry.text.length,
+        rendered_chars: summary!.active_entries.locked[0]!.text.length,
+        completeness: "truncated",
+      },
+    ]);
+    const floor = buildSharedStateArtifactPromptSummaryWithExposure(
+      sharedStateWithEntries([entry], source),
+      { summaryTokenBudget: 1 },
+    );
+    expect(floor.exposure?.budget.decision).toBe("selection_floor_exceeded");
+    expect(floor.exposure?.budget.summary_token_estimate).toBeGreaterThan(1);
+    expect(floor.exposure?.rows[0]?.completeness).toBe("truncated");
+  });
+
+  it("has no exposure without a previous artifact", () => {
+    expect(buildSharedStateArtifactPromptSummaryWithExposure(null)).toEqual({
+      summary: null,
+      exposure: null,
+    });
   });
 });
 
@@ -1634,7 +1715,9 @@ describe("compactEvidenceLedger", () => {
     );
     // The admission sentence describes the section, not this cut, so an empty tally carries it too:
     // a reader with zero statuses in the tally is exactly the one about to over-read an absence.
-    expect(rendered).toContain("A status-bearing row reaches this section by one of two admissions");
+    expect(rendered).toContain(
+      "A status-bearing row reaches this section by one of two admissions",
+    );
   });
 
   it("trims recent lived experience before core retrieved evidence sections", () => {

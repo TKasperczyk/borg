@@ -351,6 +351,7 @@ function nextLifecyclePruneCandidate(input: {
   kind: SharedStateEntryKind;
   prunedIds: ReadonlySet<SharedStateEntryId>;
   reservedIds?: ReadonlySet<SharedStateEntryId>;
+  retainedEntryIds?: ReadonlySet<SharedStateEntryId>;
   allowReserved?: boolean;
 }): LifecycleEntry | null {
   return (
@@ -359,6 +360,7 @@ function nextLifecyclePruneCandidate(input: {
         (entry) =>
           entry.kind === input.kind &&
           !input.prunedIds.has(entry.id) &&
+          input.retainedEntryIds?.has(entry.id) !== true &&
           (input.allowReserved === true || input.reservedIds?.has(entry.id) !== true),
       )
       .sort(compareLifecyclePrunePriority)[0] ?? null
@@ -502,6 +504,7 @@ export function applySharedStateArtifactLifecycleCap(input: {
   previousArtifact: SharedStateArtifact | null;
   operations: readonly SharedStateOperation[];
   options?: SharedStateLifecycleOptions;
+  retainedEntryIds?: ReadonlySet<SharedStateEntryId>;
   nowMs: number;
 }): {
   operations: SharedStateOperation[];
@@ -518,6 +521,14 @@ export function applySharedStateArtifactLifecycleCap(input: {
     nowMs: input.nowMs,
   });
   const maxActiveEntries = lifecycleMaxActiveEntries(input.options);
+  // A refused replacement must not lose its target to the subsequent cap replan.
+  // Retain successors too: deleting one would cascade through its retained history.
+  const retainedEntryIds = new Set(input.retainedEntryIds);
+  const entriesById = lifecycleEntriesById(entries);
+  for (const id of retainedEntryIds) {
+    const successor = entriesById.get(id)?.superseded_by_id;
+    if (successor != null) retainedEntryIds.add(successor);
+  }
   const kindSoftCaps = normalizeLifecycleKindSoftCaps(input.options);
   const reservedIds = newestStateChangeReservedIds(
     entries,
@@ -540,6 +551,7 @@ export function applySharedStateArtifactLifecycleCap(input: {
       kind,
       prunedIds,
       reservedIds,
+      retainedEntryIds,
       allowReserved,
     });
 

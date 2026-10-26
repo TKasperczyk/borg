@@ -42,7 +42,8 @@ import type {
 import { parseSourceStreamEntryIds } from "./source-trust.js";
 import { sharedStateKeyTokens, stateKeysAreNearDuplicate } from "./state-key.js";
 import type { SyncRelationshipEvidenceStreamEntryTrustValidator } from "../../memory/source-trust.js";
-import { buildExistingStateKeyRegistry } from "./summary.js";
+import { buildExistingStateKeyRegistry, type SharedStatePromptExposure } from "./summary.js";
+import { materializeSharedStateEntriesAfterOperations } from "./lifecycle-aging.js";
 
 const DEFAULT_MAX_LIVE_ENTRIES_PER_KEY = 2;
 const relationshipClaimsInputSchema = relationshipClaimSchema.array().default([]);
@@ -451,6 +452,7 @@ function rejection(
     | "proposedCount"
     | "maxLiveEntriesPerKey"
     | "targetEntryId"
+    | "targetExposure"
     | "lockedEntryIds"
     | "similarStateKeys"
     | "sharedStateKeyTokens"
@@ -471,9 +473,15 @@ function rejection(
   };
 }
 
-export function normalizePatch(input: {
+export function normalizePatch<
+  TPlan extends {
+    operations: SharedStateOperation[];
+    compilerOperations: SharedStateOperation[];
+  },
+>(input: {
   patch: EmitSharedStatePatch;
   previousArtifact: SharedStateArtifact | null;
+  promptExposure: SharedStatePromptExposure | null;
   audienceEntityId: EntityId;
   selfEntityId: EntityId;
   speakerEntityId: EntityId | null;
@@ -484,8 +492,14 @@ export function normalizePatch(input: {
   relationshipEvidenceStreamEntryTrust?: SyncRelationshipEvidenceStreamEntryTrustValidator;
   allowedCanonicalizationIds: AllowedCanonicalizationIds;
   maxLiveEntriesPerKey?: number;
+  nowMs: number;
+  materializePlan: (
+    operations: readonly SharedStateOperation[],
+    retainedEntryIds: ReadonlySet<SharedStateEntryId>,
+  ) => TPlan;
 }): {
   operations: SharedStateOperation[];
+  plan: TPlan;
   rejected: PatchRejection[];
   droppedCanonicalizeIds: DroppedCanonicalizeId[];
   nonLockedCanonicalizesDrops: NonLockedCanonicalizesDrop[];
@@ -506,8 +520,15 @@ export function normalizePatch(input: {
   const previousEntries = new Map<SharedStateEntryId, SharedStateEntry>(
     (input.previousArtifact?.entries ?? []).map((entry) => [entry.id, entry]),
   );
+  const exposureById = new Map(
+    input.promptExposure?.artifact_version === input.previousArtifact?.record_version &&
+      input.promptExposure?.audience_entity_id === input.previousArtifact?.audience_entity_id
+      ? (input.promptExposure?.rows ?? []).map((row) => [row.id, row] as const)
+      : [],
+  );
   const activeEntriesByStateKey = activePreviousEntriesByStateKey(input.previousArtifact);
   const operations: SharedStateOperation[] = [];
+  const operationIndices: number[] = [];
   const rejected: PatchRejection[] = [];
   const droppedCanonicalizeIds: DroppedCanonicalizeId[] = [];
   const nonLockedCanonicalizesDrops: NonLockedCanonicalizesDrop[] = [];
@@ -716,6 +737,7 @@ export function normalizePatch(input: {
           rank,
           ...(canonicalizes === undefined ? {} : { canonicalizes }),
         });
+        operationIndices.push(operationIndex);
         addTrackedEntry(operationIndex, {
           state_key: operation.state_key,
           kind: operation.kind,
@@ -818,6 +840,7 @@ export function normalizePatch(input: {
           last_updated_stream_entry_ids: citations.streamEntryIds,
           ...(canonicalizes === undefined ? {} : { canonicalizes }),
         });
+        operationIndices.push(operationIndex);
         const tracked = activeEntriesByStateKey.get(id);
         if (tracked !== undefined) {
           activeEntriesByStateKey.set(id, {
@@ -927,6 +950,7 @@ export function normalizePatch(input: {
           },
           last_updated_stream_entry_ids: updateCitations.streamEntryIds,
         });
+        operationIndices.push(operationIndex);
         activeEntriesByStateKey.delete(id);
         addTrackedEntry(operationIndex, {
           state_key: operation.replacement.state_key,
@@ -963,19 +987,140 @@ export function normalizePatch(input: {
           type: "prune",
           id,
         });
+        operationIndices.push(operationIndex);
         activeEntriesByStateKey.delete(id);
       }
     }
   });
 
+  let remainingOperations = operations;
+  let remainingIndices = operationIndices;
+  const retainedEntryIds = new Set<SharedStateEntryId>();
+  let plan = input.materializePlan(remainingOperations, retainedEntryIds);
+  // Inspect the actual apply plan, including aging, cap evictions, dependency prunes
+  // and canonicalization. No exposure rejection may remove a paired write first.
+  for (let pass = 0; pass < 2; pass += 1) {
+    const finalEntries = new Map(
+      materializeSharedStateEntriesAfterOperations({
+        previousArtifact: input.previousArtifact,
+        operations: plan.operations,
+        audienceEntityId: input.audienceEntityId,
+        nowMs: input.nowMs,
+      }).map((entry) => [entry.id, entry]),
+    );
+    const landingKeys = new Set(
+      [...finalEntries.values()]
+        .filter((entry) => {
+          const previous = previousEntries.get(entry.id);
+          return (
+            (entry.superseded_by_id === null &&
+              (previous === undefined ||
+                previous.superseded_by_id !== null ||
+                previous.state_key !== entry.state_key)) ||
+            plan.compilerOperations.some((operation, index) => {
+              // Normalized updates inherit kind. Read the original field presence
+              // so owner/canonicalizes-only writes do not count as kind writes.
+              const proposed = input.patch.operations[remainingIndices[index]!]!;
+              return (
+                operation.type === "update" &&
+                operation.id === entry.id &&
+                proposed.type === "update" &&
+                (proposed.text !== undefined ||
+                  proposed.kind !== undefined ||
+                  proposed.state_key !== previous?.state_key)
+              );
+            })
+          );
+        })
+        .map((entry) => entry.state_key),
+    );
+    const rejectedIndices = new Set<number>();
+    let hasViolation = false;
+    for (const entry of previousEntries.values()) {
+      const targetExposure = exposureById.get(entry.id)?.completeness ?? "unavailable";
+      if (entry.kind !== "locked" || targetExposure === "full") continue;
+      const finalEntry = finalEntries.get(entry.id);
+      // Intact historical rows were already inactive; they have not been removed
+      // merely because another row is now written under their old key.
+      const removedOrDeactivated =
+        finalEntry === undefined ||
+        (entry.superseded_by_id === null && finalEntry.superseded_by_id !== null);
+      // Keep direct text-write eligibility, but group its rejection with the entire
+      // plan. Supersede replaces a body even when its replacement uses another key.
+      const directTextWrite = plan.compilerOperations.some(
+        (operation) =>
+          (operation.type === "supersede" ||
+            (operation.type === "update" && operation.text !== undefined)) &&
+          operation.id === entry.id,
+      );
+      if (
+        !directTextWrite &&
+        !(finalEntry !== undefined && finalEntry.text !== entry.text) &&
+        !(removedOrDeactivated && entry.state_key !== null && landingKeys.has(entry.state_key))
+      ) {
+        continue;
+      }
+      hasViolation = true;
+      retainedEntryIds.add(entry.id);
+      plan.compilerOperations.forEach((operation, index) => {
+        const operationIndex = remainingIndices[index]!;
+        const targetsEntry = operation.type !== "add" && operation.id === entry.id;
+        const writtenId = operation.type === "supersede" ? operation.replacement.id : operation.id;
+        const writtenKey =
+          operation.type === "prune" || operation.type === "transition_kind"
+            ? undefined
+            : (finalEntries.get(writtenId!)?.state_key ??
+              (operation.type === "supersede"
+                ? operation.replacement.state_key
+                : operation.state_key));
+        if (
+          pass === 0 &&
+          !targetsEntry &&
+          (entry.state_key === null || writtenKey !== entry.state_key)
+        )
+          return;
+        rejectedIndices.add(operationIndex);
+        rejected.push(
+          rejection(
+            input.patch.operations[operationIndex]!,
+            operationIndex,
+            "locked_target_not_fully_rendered",
+            {
+              targetEntryId: entry.id,
+              stateKey: entry.state_key ?? undefined,
+              targetExposure,
+            },
+          ),
+        );
+      });
+      // A second violation rejects the entire remaining patch, with the same typed
+      // outcome. The caller's all_operations_rejected path also discards lifecycle work.
+      if (pass === 1) {
+        remainingOperations = [];
+        remainingIndices = [];
+        plan = { ...plan, operations: [], compilerOperations: [] };
+        break;
+      }
+    }
+    if (!hasViolation || pass === 1) break;
+    remainingOperations = remainingOperations.filter(
+      (_, index) => !rejectedIndices.has(remainingIndices[index]!),
+    );
+    remainingIndices = remainingIndices.filter((index) => !rejectedIndices.has(index));
+    plan = input.materializePlan(remainingOperations, retainedEntryIds);
+  }
+
   return {
-    operations,
+    operations: remainingOperations,
+    plan,
     rejected,
     droppedCanonicalizeIds,
     nonLockedCanonicalizesDrops,
     emptyUpdateDrops,
     emptyUpdateAttemptedCount,
-    modelPruneRequests,
+    modelPruneRequests: modelPruneRequests.filter((request) =>
+      remainingIndices.includes(request.operationIndex),
+    ),
   };
 }
 

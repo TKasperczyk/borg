@@ -56,6 +56,7 @@ export type SharedStatePromptSummaryEntry = {
   state_key: SharedStateEntry["state_key"];
   kind: SharedStateEntryKind;
   text: string;
+  body_completeness: "full" | "truncated";
   disclosure: MemoryDisclosurePromptFields["disclosure"];
   disclosure_label: MemoryDisclosurePromptFields["disclosure_label"];
   owner_entity_id?: NonNullable<SharedStateEntry["owner_entity_id"]>;
@@ -66,6 +67,7 @@ export type SharedStatePromptSummaryEntry = {
 export type SharedStatePromptSummarySupersededEntry = {
   id: SharedStateEntry["id"];
   text: string;
+  body_completeness: "full";
   disclosure: MemoryDisclosurePromptFields["disclosure"];
   disclosure_label: MemoryDisclosurePromptFields["disclosure_label"];
   superseded_by_id: NonNullable<SharedStateEntry["superseded_by_id"]>;
@@ -81,25 +83,35 @@ export type SharedStatePromptSummary = {
   recent_superseded: SharedStatePromptSummarySupersededEntry[];
 };
 
-// The registry names every active key; it carries no text, and that asymmetry decides how well
-// informed each operation can be -- not which are permitted. Validation resolves `update` and
-// `supersede` targets from the full previous artifact (see patch-validation.ts), never from this
-// summary, so every active id is a legal target of every operation. What the summary decides is
-// whether the model can see the text it is replacing: bodies come from the per-kind recency slice
-// in DEFAULT_SHARED_STATE_PROMPT_SUMMARY_MAX_ENTRIES, and rows below that slice can still be
-// rewritten, but only blind.
-//
-// The aging ladder walks a row across that line: 8 body slots at `live`, 2 at `low_salience_live`,
-// 0 at `dormant_live`. Demotion therefore does not remove a row from the writable set; it removes
-// the old wording from view, so a correction aimed at an aged row is a wholesale replacement
-// composed without the claim it is correcting in front of you. Nothing marks the crossing, and
-// `kinds` only implies it for a reader who already knows the body-slot table, which the prompt
-// does not carry.
-//
-// So name the informed set directly -- which of this key's ids the summary actually gave a body
-// to. A row absent from it is still correctable; its current text simply is not on this surface.
-// This is a structural fact about what this prompt carries, not a permission and not a judgment
-// about the entries.
+/** Mechanical render facts for this artifact version, never inferred from model output. */
+export type SharedStatePromptExposure = {
+  audience_entity_id: SharedStateArtifact["audience_entity_id"];
+  artifact_version: SharedStateArtifact["record_version"];
+  rows: Array<{
+    id: SharedStateEntry["id"];
+    state_key: SharedStateEntry["state_key"];
+    kind: SharedStateEntryKind;
+    // Lengths use JavaScript UTF-16 code units, like the existing token estimator.
+    original_chars: number;
+    rendered_chars: number;
+    completeness: "full" | "truncated" | "omitted";
+  }>;
+  omitted_entry_ids: SharedStateEntry["id"][];
+  budget: {
+    max_entries: Record<SharedStateEntryKind, number>;
+    max_entry_text_tokens: number;
+    summary_token_budget: number;
+    initial_summary_token_estimate: number;
+    summary_token_estimate: number;
+    active_rows_dropped: number;
+    superseded_rows_dropped: number;
+    decision: "within_budget" | "selection_floor_exceeded";
+  };
+};
+
+// The registry names every active key, including ids whose bodies the summary omits.
+// text_visible_entry_ids records body presence, not completeness. Replacing locked text
+// additionally requires a full body in this compile's SharedStatePromptExposure.
 export type ExistingStateKeyRegistryEntry = {
   state_key: string;
   bucket: string;
@@ -109,8 +121,8 @@ export type ExistingStateKeyRegistryEntry = {
   most_recent_update_at: number;
   most_recent_stream_entry_id: SharedStateEntry["last_updated_stream_entry_ids"][number] | null;
   // Null when no summary was supplied to compare against: absent evidence, not "nothing here is
-  // visible". Empty means the summary was built and gave this key no body at all -- the key's
-  // entries remain writable, they are just being written without their current text in view.
+  // visible". Empty means the summary gave this key no body. Locked entries then permit
+  // non-text updates only; a visible but truncated body also does not permit replacement.
   text_visible_entry_ids: SharedStateEntry["id"][] | null;
 };
 
@@ -236,10 +248,8 @@ function toSharedStatePromptSummaryEntry(
   entry: SharedStateEntry,
   maxEntryTextTokens: number,
 ): SharedStatePromptSummaryEntry {
-  const text =
-    estimatePromptTokens(entry.text) <= maxEntryTextTokens
-      ? entry.text
-      : truncateSharedStateArtifactText(entry.text, maxEntryTextTokens);
+  const full = estimatePromptTokens(entry.text) <= maxEntryTextTokens;
+  const text = full ? entry.text : truncateSharedStateArtifactText(entry.text, maxEntryTextTokens);
 
   return {
     id: entry.id,
@@ -247,6 +257,7 @@ function toSharedStatePromptSummaryEntry(
     // Carry the lock/salience state on the row itself, including in the by-key view.
     kind: entry.kind,
     text,
+    body_completeness: full ? "full" : "truncated",
     ...memoryDisclosurePayloadFields(sharedStateMemoryDisclosureLabel(entry)),
     ...(entry.owner_entity_id === null ? {} : { owner_entity_id: entry.owner_entity_id }),
     last_updated_stream_entry_id: lastUpdatedStreamEntryId(entry),
@@ -264,6 +275,7 @@ function toSharedStatePromptSummarySupersededEntry(
   return {
     id: entry.id,
     text: entry.text,
+    body_completeness: "full",
     ...memoryDisclosurePayloadFields(sharedStateMemoryDisclosureLabel(entry)),
     superseded_by_id: entry.superseded_by_id,
   };
@@ -377,8 +389,15 @@ export function buildSharedStateArtifactPromptSummary(
   artifact: SharedStateArtifact | null | undefined,
   options?: SharedStatePromptSummaryOptions,
 ): SharedStatePromptSummary | null {
+  return buildSharedStateArtifactPromptSummaryWithExposure(artifact, options).summary;
+}
+
+export function buildSharedStateArtifactPromptSummaryWithExposure(
+  artifact: SharedStateArtifact | null | undefined,
+  options?: SharedStatePromptSummaryOptions,
+): { summary: SharedStatePromptSummary | null; exposure: SharedStatePromptExposure | null } {
   if (artifact === null || artifact === undefined) {
-    return null;
+    return { summary: null, exposure: null };
   }
 
   const normalizedOptions = sharedStatePromptSummaryOptions(options);
@@ -403,6 +422,9 @@ export function buildSharedStateArtifactPromptSummary(
     recentSuperseded,
     maxEntryTextTokens: normalizedOptions.maxEntryTextTokens,
   });
+  const initialTokenEstimate = sharedStatePromptSummaryTokenEstimate(summary);
+  const initialActiveCount = selectedEntries.length;
+  const initialSupersededCount = recentSuperseded.length;
 
   while (
     sharedStatePromptSummaryTokenEstimate(summary) > normalizedOptions.summaryTokenBudget &&
@@ -444,5 +466,46 @@ export function buildSharedStateArtifactPromptSummary(
     });
   }
 
-  return summary;
+  // Read the final render, after both count caps and token-budget drops. The two active
+  // summary views contain the same bodies; recent_superseded also carries full bodies.
+  const renderedById = new Map(
+    [...Object.values(summary.active_entries).flat(), ...summary.recent_superseded].map(
+      (entry) => [entry.id, entry] as const,
+    ),
+  );
+  const rows: SharedStatePromptExposure["rows"] = artifact.entries.map((entry) => {
+    const rendered = renderedById.get(entry.id);
+    return {
+      id: entry.id,
+      state_key: entry.state_key,
+      kind: entry.kind,
+      original_chars: entry.text.length,
+      rendered_chars: rendered?.text.length ?? 0,
+      completeness: rendered?.body_completeness ?? "omitted",
+    };
+  });
+  const finalTokenEstimate = sharedStatePromptSummaryTokenEstimate(summary);
+
+  return {
+    summary,
+    exposure: {
+      audience_entity_id: artifact.audience_entity_id,
+      artifact_version: artifact.record_version,
+      rows,
+      omitted_entry_ids: rows.filter((row) => row.completeness === "omitted").map((row) => row.id),
+      budget: {
+        max_entries: normalizedOptions.maxEntries,
+        max_entry_text_tokens: normalizedOptions.maxEntryTextTokens,
+        summary_token_budget: normalizedOptions.summaryTokenBudget,
+        initial_summary_token_estimate: initialTokenEstimate,
+        summary_token_estimate: finalTokenEstimate,
+        active_rows_dropped: initialActiveCount - selectedEntries.length,
+        superseded_rows_dropped: initialSupersededCount - recentSuperseded.length,
+        decision:
+          finalTokenEstimate <= normalizedOptions.summaryTokenBudget
+            ? "within_budget"
+            : "selection_floor_exceeded",
+      },
+    },
+  };
 }

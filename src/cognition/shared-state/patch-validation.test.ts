@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type {
-  SharedStateArtifact,
-  SharedStateEntry,
-} from "../../memory/shared-state/index.js";
+import type { SharedStateArtifact, SharedStateEntry } from "../../memory/shared-state/index.js";
 import {
   createEntityId,
   createGoalId,
@@ -17,8 +14,22 @@ import { unknownMemoryDisclosureLabel } from "../../memory/common/disclosure-lab
 import type { RelationshipClaim } from "../../memory/common/relationship-claims.js";
 import { memoryDisclosurePayloadFields } from "../../memory/common/disclosure-serializers.js";
 import type { EmitSharedStatePatch, SharedStateCanonicalizationCandidates } from "./types.js";
-import { allowedCanonicalizationIds, normalizePatch } from "./patch-validation.js";
+import {
+  allowedCanonicalizationIds,
+  dedupeCanonicalizesAcrossOperations,
+  normalizePatch,
+} from "./patch-validation.js";
+import {
+  applySharedStateArtifactLifecycleCap,
+  expandPruneDependencies,
+  materializeSharedStateOperationIds,
+} from "./lifecycle-cap.js";
 import { stateKeysAreNearDuplicate } from "./state-key.js";
+import {
+  buildSharedStateArtifactPromptSummaryWithExposure,
+  type SharedStatePromptExposure,
+  type SharedStatePromptSummaryOptions,
+} from "./summary.js";
 
 const EMPTY_CANONICALIZES = {
   goal_ids: [],
@@ -96,18 +107,26 @@ function normalizeKeyedPatch(input: {
     typeof normalizePatch
   >[0]["relationshipEvidenceStreamEntryTrust"];
   canonicalizationCandidates?: SharedStateCanonicalizationCandidates;
+  summaryOptions?: SharedStatePromptSummaryOptions;
+  promptExposure?: SharedStatePromptExposure | null;
 }) {
   const selfEntityId = createEntityId();
   const speakerEntityId = createEntityId();
+  const previousArtifact = makeArtifact({
+    audienceEntityId: input.audienceEntityId,
+    entries: input.previousEntries,
+  });
 
   return normalizePatch({
     patch: {
       operations: input.operations,
     },
-    previousArtifact: makeArtifact({
-      audienceEntityId: input.audienceEntityId,
-      entries: input.previousEntries,
-    }),
+    previousArtifact,
+    promptExposure:
+      input.promptExposure === undefined
+        ? buildSharedStateArtifactPromptSummaryWithExposure(previousArtifact, input.summaryOptions)
+            .exposure
+        : input.promptExposure,
     audienceEntityId: input.audienceEntityId,
     selfEntityId,
     speakerEntityId,
@@ -119,6 +138,26 @@ function normalizeKeyedPatch(input: {
     ),
     allowedCanonicalizationIds: allowedCanonicalizationIds(input.canonicalizationCandidates),
     maxLiveEntriesPerKey: 2,
+    nowMs: 2_000,
+    materializePlan: (operations, retainedEntryIds) => {
+      const compilerOperations = materializeSharedStateOperationIds(operations);
+      const lifecycle = applySharedStateArtifactLifecycleCap({
+        previousArtifact,
+        operations: compilerOperations,
+        retainedEntryIds,
+        nowMs: 2_000,
+      });
+      return {
+        compilerOperations,
+        ...dedupeCanonicalizesAcrossOperations(
+          expandPruneDependencies({
+            previousArtifact,
+            operations: lifecycle.operations,
+            nowMs: 2_000,
+          }),
+        ),
+      };
+    },
   });
 }
 
@@ -148,6 +187,437 @@ function addOperation(input: {
     source_stream_entry_ids: [input.sourceStreamEntryId],
   };
 }
+
+describe("normalizePatch locked text exposure", () => {
+  it.each(
+    (["omitted", "truncated", "full"] as const).flatMap((exposure) =>
+      (["prune", "rekey", "demote", "supersede"] as const).flatMap((displacement) =>
+        (["add", "update", "supersede"] as const).flatMap((write) =>
+          [false, true].map((reverse) => ({ exposure, displacement, write, reverse })),
+        ),
+      ),
+    ),
+  )(
+    "checks the post-state of $displacement + $write ($exposure, reverse=$reverse)",
+    ({ exposure, displacement, write, reverse }) => {
+      const audienceEntityId = createEntityId();
+      const sourceStreamEntryId = createStreamEntryId();
+      const goalId = createGoalId();
+      const entry = makeEntry({
+        audienceEntityId,
+        sourceStreamEntryId,
+        stateKey: "decision.rule",
+        kind: "locked",
+        text: "規則の条件と例。".repeat(100),
+        canonicalizes: { ...EMPTY_CANONICALIZES, goal_ids: [goalId] },
+      });
+      const other = makeEntry({
+        audienceEntityId,
+        sourceStreamEntryId,
+        stateKey: "observation.reference",
+      });
+      const displacementOperation: EmitSharedStatePatch["operations"][number] =
+        displacement === "prune"
+          ? { type: "prune", id: entry.id }
+          : displacement === "supersede"
+            ? {
+                type: "supersede",
+                id: entry.id,
+                replacement: {
+                  state_key: "archive.retired",
+                  kind: "live",
+                  text: "Replacement",
+                  source_stream_entry_ids: [sourceStreamEntryId],
+                },
+              }
+            : {
+                type: "update",
+                id: entry.id,
+                state_key: displacement === "rekey" ? "archive.retired" : "decision.rule",
+                ...(displacement === "demote" ? { kind: "live" as const } : {}),
+                source_stream_entry_ids: [sourceStreamEntryId],
+              };
+      const canonicalizes = { goal_ids: [goalId] };
+      const writeOperation: EmitSharedStatePatch["operations"][number] =
+        write === "add"
+          ? {
+              ...addOperation({ stateKey: "decision.rule", kind: "locked", sourceStreamEntryId }),
+              canonicalizes,
+            }
+          : write === "supersede"
+            ? {
+                type: "supersede",
+                id: other.id,
+                canonicalizes,
+                replacement: {
+                  state_key: "decision.rule",
+                  kind: "locked",
+                  text: "Replacement",
+                  source_stream_entry_ids: [sourceStreamEntryId],
+                },
+              }
+            : {
+                type: "update",
+                id: other.id,
+                state_key: "decision.rule",
+                kind: "locked",
+                canonicalizes,
+                source_stream_entry_ids: [sourceStreamEntryId],
+              };
+      const paired = [displacementOperation, writeOperation];
+      const result = normalizeKeyedPatch({
+        audienceEntityId,
+        sourceStreamEntryId,
+        previousEntries: [entry, other],
+        canonicalizationCandidates: {
+          goals: [canonicalizationCandidate({ id: goalId, text: "Goal handle" })],
+        },
+        summaryOptions: {
+          maxEntries: { locked: exposure === "omitted" ? 0 : 1 },
+          maxEntryTextTokens: exposure === "full" ? 1_000 : 20,
+        },
+        operations: [
+          ...(reverse ? paired.reverse() : paired),
+          addOperation({ stateKey: "plan.meeting", sourceStreamEntryId }),
+        ],
+      });
+
+      const keyCollision = write === "add" && reverse;
+      const exposureViolation =
+        exposure !== "full" &&
+        (displacement === "supersede" || (displacement === "prune" && !keyCollision));
+      const exposureIndices = exposureViolation ? (keyCollision ? [1] : [0, 1]) : [];
+      expect(result.operations).toHaveLength(3 - exposureIndices.length - Number(keyCollision));
+      expect(result.operations.at(-1)).toMatchObject({ type: "add", state_key: "plan.meeting" });
+      expect(result.rejected).toEqual([
+        ...(keyCollision
+          ? [expect.objectContaining({ reason: "locked_state_key_collision", operationIndex: 0 })]
+          : []),
+        ...exposureIndices.map((operationIndex) =>
+          expect.objectContaining({
+            reason: "locked_target_not_fully_rendered",
+            operationIndex,
+            targetEntryId: entry.id,
+            stateKey: "decision.rule",
+            targetExposure: exposure,
+          }),
+        ),
+      ]);
+      expect(result.modelPruneRequests).toHaveLength(
+        displacement === "prune" && !exposureViolation ? 1 : 0,
+      );
+    },
+  );
+
+  it.each(["decision.rule", null])(
+    "compares only the original exact key %s after re-keying before prune + add",
+    (stateKey) => {
+      const audienceEntityId = createEntityId();
+      const sourceStreamEntryId = createStreamEntryId();
+      const entry = makeEntry({ audienceEntityId, sourceStreamEntryId, stateKey, kind: "locked" });
+      const result = normalizeKeyedPatch({
+        audienceEntityId,
+        sourceStreamEntryId,
+        previousEntries: [entry],
+        summaryOptions: { maxEntries: { locked: 0 } },
+        operations: [
+          {
+            type: "update",
+            id: entry.id,
+            state_key: "archive.retired",
+            source_stream_entry_ids: [sourceStreamEntryId],
+          },
+          { type: "prune", id: entry.id },
+          addOperation({ stateKey: "archive.retired", sourceStreamEntryId }),
+          addOperation({ stateKey: "plan.meeting", sourceStreamEntryId }),
+        ],
+      });
+      expect(result.operations).toHaveLength(4);
+      expect(result.rejected).toEqual([]);
+    },
+  );
+
+  it("checks locked history removed by a prune dependency before adding under its key", () => {
+    const audienceEntityId = createEntityId();
+    const sourceStreamEntryId = createStreamEntryId();
+    const other = makeEntry({
+      audienceEntityId,
+      sourceStreamEntryId,
+      stateKey: "observation.reference",
+    });
+    const historical = {
+      ...makeEntry({
+        audienceEntityId,
+        sourceStreamEntryId,
+        stateKey: "decision.rule",
+        kind: "locked",
+      }),
+      superseded_by_id: other.id,
+    };
+    const result = normalizeKeyedPatch({
+      audienceEntityId,
+      sourceStreamEntryId,
+      previousEntries: [historical, other],
+      summaryOptions: { summaryTokenBudget: 1, maxEntries: { locked: 0, live: 0 } },
+      operations: [
+        { type: "prune", id: other.id },
+        addOperation({ stateKey: "decision.rule", sourceStreamEntryId }),
+      ],
+    });
+    // Removing the same-key writer leaves a bare dependency prune, which remains allowed.
+    expect(result.operations).toEqual([{ type: "prune", id: other.id }]);
+    expect(result.plan.operations).toEqual([
+      { type: "prune", id: historical.id },
+      { type: "prune", id: other.id },
+    ]);
+    expect(result.rejected).toEqual([
+      expect.objectContaining({
+        reason: "locked_target_not_fully_rendered",
+        operationIndex: 1,
+        targetEntryId: historical.id,
+        stateKey: "decision.rule",
+        targetExposure: "omitted",
+      }),
+    ]);
+  });
+
+  it("allows canonicalization-only updates and tentative same-key additions without displacement", () => {
+    const audienceEntityId = createEntityId();
+    const sourceStreamEntryId = createStreamEntryId();
+    const goalId = createGoalId();
+    const entry = makeEntry({
+      audienceEntityId,
+      sourceStreamEntryId,
+      stateKey: "decision.rule",
+      kind: "locked",
+    });
+    const result = normalizeKeyedPatch({
+      audienceEntityId,
+      sourceStreamEntryId,
+      previousEntries: [entry],
+      canonicalizationCandidates: {
+        goals: [canonicalizationCandidate({ id: goalId, text: "Goal handle" })],
+      },
+      summaryOptions: { maxEntries: { locked: 0 } },
+      operations: [
+        {
+          type: "update",
+          id: entry.id,
+          state_key: "decision.rule",
+          canonicalizes: { goal_ids: [goalId] },
+          source_stream_entry_ids: [sourceStreamEntryId],
+        },
+        addOperation({ stateKey: "decision.rule", kind: "tentative", sourceStreamEntryId }),
+      ],
+    });
+    expect(result.rejected).toEqual([]);
+    expect(result.operations).toEqual([
+      expect.objectContaining({
+        type: "update",
+        id: entry.id,
+        canonicalizes: { ...EMPTY_CANONICALIZES, goal_ids: [goalId] },
+      }),
+      expect.objectContaining({ type: "add", kind: "tentative", state_key: "decision.rule" }),
+    ]);
+  });
+
+  it.each(
+    ["Rule with constraints and examples. ", "規則には制約、例、条件があります。"].flatMap((text) =>
+      (["full", "truncated", "omitted"] as const).flatMap((completeness) =>
+        (["update", "supersede"] as const).map((type) => ({ text, completeness, type })),
+      ),
+    ),
+  )("requires full exposure for $type ($completeness): $text", ({ text, completeness, type }) => {
+    const audienceEntityId = createEntityId();
+    const sourceStreamEntryId = createStreamEntryId();
+    const entry = makeEntry({
+      audienceEntityId,
+      sourceStreamEntryId,
+      stateKey: "decision.rule",
+      kind: "locked",
+      text: text.repeat(30),
+    });
+    const replacement = {
+      state_key: "decision.rule",
+      kind: "locked" as const,
+      text: "全く別の本文。",
+      source_stream_entry_ids: [sourceStreamEntryId],
+    };
+    const result = normalizeKeyedPatch({
+      audienceEntityId,
+      sourceStreamEntryId,
+      previousEntries: [entry],
+      summaryOptions: {
+        maxEntries: { locked: completeness === "omitted" ? 0 : 1 },
+        maxEntryTextTokens: completeness === "truncated" ? 20 : 1_000,
+      },
+      operations: [
+        type === "update"
+          ? { type, id: entry.id, ...replacement }
+          : { type, id: entry.id, replacement },
+        {
+          type: "update",
+          id: entry.id,
+          state_key: "decision.rule",
+          owner_entity_id: audienceEntityId,
+          source_stream_entry_ids: [sourceStreamEntryId],
+        },
+        addOperation({ stateKey: "plan.meeting", sourceStreamEntryId }),
+      ],
+    });
+
+    expect(result.operations).toHaveLength(completeness === "full" ? 3 : 1);
+    if (completeness === "full")
+      expect(result.operations.at(-2)).toMatchObject({
+        type: "update",
+        owner_entity_id: audienceEntityId,
+      });
+    expect(result.operations.at(-1)).toMatchObject({ type: "add", state_key: "plan.meeting" });
+    expect(result.rejected).toEqual(
+      completeness === "full"
+        ? []
+        : [0, 1].map((operationIndex) =>
+            expect.objectContaining({
+              reason: "locked_target_not_fully_rendered",
+              operationType: operationIndex === 0 ? type : "update",
+              operationIndex,
+              targetEntryId: entry.id,
+              targetExposure: completeness,
+            }),
+          ),
+    );
+  });
+
+  it.each(["missing", "stale_version", "wrong_artifact"] as const)(
+    "fails closed with %s exposure, even after a non-text demotion",
+    (exposureCase) => {
+      const audienceEntityId = createEntityId();
+      const sourceStreamEntryId = createStreamEntryId();
+      const entry = makeEntry({
+        audienceEntityId,
+        sourceStreamEntryId,
+        stateKey: "decision.rule",
+        kind: "locked",
+      });
+      const artifact = makeArtifact({ audienceEntityId, entries: [entry] });
+      const { exposure } = buildSharedStateArtifactPromptSummaryWithExposure(artifact);
+      const result = normalizeKeyedPatch({
+        audienceEntityId,
+        sourceStreamEntryId,
+        previousEntries: [entry],
+        promptExposure:
+          exposureCase === "missing"
+            ? null
+            : {
+                ...exposure!,
+                ...(exposureCase === "stale_version"
+                  ? { artifact_version: 2 }
+                  : { audience_entity_id: createEntityId() }),
+              },
+        operations: [
+          {
+            type: "update",
+            id: entry.id,
+            state_key: "decision.rule",
+            kind: "live",
+            source_stream_entry_ids: [sourceStreamEntryId],
+          },
+          {
+            type: "update",
+            id: entry.id,
+            state_key: "decision.rule",
+            text: "Replacement",
+            source_stream_entry_ids: [sourceStreamEntryId],
+          },
+        ],
+      });
+      expect(result.operations).toEqual([]);
+      expect(result.rejected).toEqual(
+        [0, 1].map((operationIndex) =>
+          expect.objectContaining({
+            reason: "locked_target_not_fully_rendered",
+            targetExposure: "unavailable",
+            operationIndex,
+          }),
+        ),
+      );
+    },
+  );
+});
+
+describe("normalizePatch exposure recheck", () => {
+  it("rejects the whole remaining patch when removing a write reconnects a prune dependency", () => {
+    const audienceEntityId = createEntityId();
+    const sourceStreamEntryId = createStreamEntryId();
+    const successor = makeEntry({
+      audienceEntityId,
+      sourceStreamEntryId,
+      stateKey: "observation.successor",
+    });
+    const middle = {
+      ...makeEntry({ audienceEntityId, sourceStreamEntryId, stateKey: "observation.middle" }),
+      superseded_by_id: successor.id,
+    };
+    const historical = {
+      ...makeEntry({
+        audienceEntityId,
+        sourceStreamEntryId,
+        stateKey: "decision.history",
+        kind: "locked",
+      }),
+      superseded_by_id: middle.id,
+    };
+    const locked = makeEntry({
+      audienceEntityId,
+      sourceStreamEntryId,
+      stateKey: "boundary.access",
+      kind: "locked",
+    });
+    const result = normalizeKeyedPatch({
+      audienceEntityId,
+      sourceStreamEntryId,
+      previousEntries: [historical, middle, successor, locked],
+      summaryOptions: { summaryTokenBudget: 1, maxEntries: { locked: 0, live: 0 } },
+      operations: [
+        {
+          type: "update",
+          id: locked.id,
+          state_key: "boundary.access",
+          text: "Replacement",
+          source_stream_entry_ids: [sourceStreamEntryId],
+        },
+        {
+          type: "supersede",
+          id: middle.id,
+          replacement: {
+            state_key: "boundary.access",
+            kind: "tentative",
+            text: "New middle",
+            source_stream_entry_ids: [sourceStreamEntryId],
+          },
+        },
+        { type: "prune", id: successor.id },
+        addOperation({ stateKey: "decision.history", sourceStreamEntryId }),
+        addOperation({ stateKey: "plan.meeting", sourceStreamEntryId }),
+      ],
+    });
+    // Initially H remains linked to M, whose replacement disconnected it from S.
+    // Rejecting the writes to L reconnects H -> M -> S; pruning S would now remove H.
+    expect(result.operations).toEqual([]);
+    expect(result.plan.operations).toEqual([]);
+    expect(result.rejected).toEqual(
+      [0, 1, 2, 3, 4].map((operationIndex) =>
+        expect.objectContaining({
+          reason: "locked_target_not_fully_rendered",
+          operationIndex,
+          targetExposure: "omitted",
+          targetEntryId: operationIndex < 2 ? locked.id : historical.id,
+          stateKey: operationIndex < 2 ? "boundary.access" : "decision.history",
+        }),
+      ),
+    );
+  });
+});
 
 describe("normalizePatch empty update no-op handling", () => {
   it("drops an update with no material fields", () => {

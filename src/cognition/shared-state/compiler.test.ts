@@ -33,6 +33,7 @@ import {
   createOpenQuestionId,
   createRelationalSlotId,
   createStreamEntryId,
+  createSharedStateEntryId,
   type EntityId,
   type StreamEntryId,
 } from "../../util/ids.js";
@@ -46,7 +47,12 @@ import {
   advanceSharedStateCompileSkipAnchor,
   buildSharedStateLedgerPromptContext,
 } from "../lifecycle/turn-phase-coordinator.js";
-import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../../tracing/tracer.js";
+import {
+  CompositeTracer,
+  type TurnTraceData,
+  type TurnTraceEventName,
+  type TurnTracer,
+} from "../../tracing/tracer.js";
 import {
   compileSharedStateArtifact,
   DECISION_ARTIFACT_TOOL_NAME,
@@ -151,7 +157,10 @@ function emitRawSharedStateArtifactPatchResponse(
 
 function emitSemanticRevisionResponse(
   input: {
-    verdicts: Array<{ node_id: string; verdict: "supersede" | "contradict" | "keep" | "uncertain" }>;
+    verdicts: Array<{
+      node_id: string;
+      verdict: "supersede" | "contradict" | "keep" | "uncertain";
+    }>;
   },
   toolName = "EmitSharedStateSemanticRevision",
 ) {
@@ -451,8 +460,19 @@ describe("compileSharedStateArtifact", () => {
         "rather than appending commentary that leaves its false assertion in place",
       );
       expect(prompt).toContain(
-        "kind=locked marks a durable decision or constraint; it is not a write lock",
+        "kind=locked marks a durable decision or constraint; correction by update or supersede requires the text exposure described below",
       );
+      expect(prompt).toContain("only when that target id has body_completeness=full");
+      expect(prompt).toContain(
+        "Any combination of operations in one patch that replaces a locked row's text, or removes it and writes another row under its exact state_key, needs full exposure of that row; otherwise the participating operations are refused.",
+      );
+      expect(prompt).toContain(
+        "A truncated body or an id shown only in existing_state_key_registry is not eligible",
+      );
+      expect(prompt).toContain(
+        "carry forward its substantive constraints, examples, and qualifiers",
+      );
+      expect(prompt).toContain("There is no append-text operation");
       expect(prompt).toContain("preserving its stated timing and conditions");
       expect(prompt).toContain("Deciding to act does not establish that the act occurred");
       expect(prompt).toContain("a tool result, an identity event, or a delivered message");
@@ -1819,6 +1839,7 @@ describe("compileSharedStateArtifact", () => {
           state_key: stateKey,
           kind: "locked",
           text: originalText,
+          body_completeness: "full",
           disclosure_label: expect.objectContaining({ disclosure_class: "relationship_private" }),
         }),
       ]);
@@ -1867,6 +1888,734 @@ describe("compileSharedStateArtifact", () => {
       );
     },
   );
+
+  it.each(
+    (["omitted", "truncated", "full"] as const).flatMap((exposure) =>
+      [false, true].map((sameKeyWrite) => ({ exposure, sameKeyWrite })),
+    ),
+  )(
+    "checks cap evictions against exposure ($exposure, same-key write=$sameKeyWrite)",
+    async ({ exposure, sameKeyWrite }) => {
+      const previous = repository.upsert(
+        audience,
+        Array.from({ length: 40 }, (_, index) => ({
+          type: "add" as const,
+          state_key: `decision.lifecycle_${index}`,
+          kind: "locked" as const,
+          text: "規則の条件と例。".repeat(100),
+          provenance_stream_entry_ids: [priorAllowedStreamEntryId],
+          created_at: 1_000 + index,
+          last_updated_at: 1_000 + index,
+          rank: index,
+        })),
+      )!;
+      const original = previous.entries.find(
+        (entry) => entry.state_key === "decision.lifecycle_0",
+      )!;
+      const trace = createTraceRecorder();
+      const llmClient = new FakeLLMClient({
+        responses: [
+          emitRawSharedStateArtifactPatchResponse({
+            operations: [
+              ...(sameKeyWrite
+                ? [
+                    {
+                      type: "add",
+                      state_key: original.state_key,
+                      kind: "tentative",
+                      text: "Replacement",
+                      new_key_reason: "Same key",
+                      source_stream_entry_ids: [priorAllowedStreamEntryId],
+                    },
+                  ]
+                : []),
+              {
+                type: "add",
+                state_key: "boundary.access",
+                kind: "locked",
+                text: "Independent operation",
+                new_key_reason: "Separate boundary",
+                source_stream_entry_ids: [priorAllowedStreamEntryId],
+              },
+            ],
+          }),
+        ],
+      });
+      await compileSharedStateArtifact({
+        ...baseInput(llmClient),
+        tracer: trace,
+        previousArtifactSummaryOptions: {
+          maxEntries: { locked: exposure === "omitted" ? 0 : 40 },
+          maxEntryTextTokens: exposure === "truncated" ? 20 : 1_000,
+          summaryTokenBudget: 100_000,
+        },
+      });
+      const refused = exposure !== "full" && sameKeyWrite;
+      const stored = repository.get(audience)!.entries;
+      expect(stored.find((entry) => entry.id === original.id)).toEqual(
+        refused ? original : undefined,
+      );
+      expect(activeEntries()).toHaveLength(40);
+      expect(activeEntries()).toContainEqual(
+        expect.objectContaining({ state_key: "boundary.access", text: "Independent operation" }),
+      );
+      expect(stored.some((entry) => entry.text === "Replacement")).toBe(sameKeyWrite && !refused);
+      expect(llmClient.requests).toHaveLength(1);
+      const completed = trace.events.find(
+        ({ event }) => event === "shared_state.compile.completed",
+      )!.data;
+      expect(completed.rejections).toEqual(
+        refused
+          ? [
+              expect.objectContaining({
+                operation_index: 0,
+                reason: "locked_target_not_fully_rendered",
+                target_entry_id: original.id,
+                state_key: original.state_key,
+                target_exposure: exposure,
+              }),
+            ]
+          : [],
+      );
+      expect(completed.prompt_exposure).toMatchObject({
+        rows: expect.arrayContaining([
+          expect.objectContaining({ id: original.id, completeness: exposure }),
+        ]),
+      });
+    },
+  );
+
+  it.each(
+    (["prune", "cap", "none"] as const).flatMap((removal) =>
+      (["text_kind", "text", "kind", "owner", "canonicalizes", "none"] as const).map((write) => ({
+        removal,
+        write,
+      })),
+    ),
+  )(
+    "checks surviving same-key sibling writes (removal=$removal, write=$write)",
+    async ({ removal, write }) => {
+      const goalId = createGoalId();
+      const previous = repository.upsert(audience, [
+        ...Array.from({ length: removal === "cap" ? 39 : 1 }, (_, index) => ({
+          type: "add" as const,
+          state_key: `decision.lifecycle_${index}`,
+          kind: "locked" as const,
+          text: `Original rule ${index}`,
+          provenance_stream_entry_ids: [priorAllowedStreamEntryId],
+          created_at: 1_000 + index,
+          last_updated_at: 1_000 + index,
+          rank: index,
+        })),
+        {
+          type: "add",
+          state_key: "decision.lifecycle_0",
+          kind: write === "canonicalizes" ? "locked" : "tentative",
+          text: "Existing sibling",
+          provenance_stream_entry_ids: [priorAllowedStreamEntryId],
+          created_at: 1_500,
+          last_updated_at: 1_500,
+          rank: 39,
+        },
+      ])!;
+      const original = previous.entries.find((entry) => entry.text === "Original rule 0")!;
+      const sibling = previous.entries.find((entry) => entry.text === "Existing sibling")!;
+      const textWrite = write === "text" || write === "text_kind";
+      const kindWrite = write === "kind" || write === "text_kind";
+      const refused = removal !== "none" && (textWrite || kindWrite);
+      const trace = createTraceRecorder();
+      const llmClient = new FakeLLMClient({
+        responses: [
+          emitRawSharedStateArtifactPatchResponse({
+            operations: [
+              ...(removal === "prune" ? [{ type: "prune", id: original.id }] : []),
+              ...(write === "none"
+                ? []
+                : [
+                    {
+                      type: "update",
+                      id: sibling.id,
+                      state_key: original.state_key,
+                      ...(textWrite ? { text: "Updated sibling" } : {}),
+                      ...(kindWrite ? { kind: "locked" } : {}),
+                      ...(write === "owner" ? { owner_entity_id: audience } : {}),
+                      ...(write === "canonicalizes"
+                        ? { canonicalizes: { goal_ids: [goalId] } }
+                        : {}),
+                      source_stream_entry_ids: [priorAllowedStreamEntryId],
+                    },
+                  ]),
+              {
+                type: "add",
+                state_key: "boundary.access",
+                kind: "locked",
+                text: "Independent operation",
+                new_key_reason: "Separate boundary",
+                source_stream_entry_ids: [priorAllowedStreamEntryId],
+              },
+            ],
+          }),
+        ],
+      });
+      await compileSharedStateArtifact({
+        ...baseInput(llmClient),
+        tracer: trace,
+        previousArtifactSummaryOptions: { maxEntries: { locked: 0 } },
+        canonicalizationCandidates: {
+          goals: [canonicalizationCandidate({ id: goalId, text: "Goal handle" })],
+        },
+      });
+      const stored = repository.get(audience)!.entries;
+      expect(stored.find((entry) => entry.id === original.id)).toEqual(
+        refused || removal === "none" ? original : undefined,
+      );
+      const storedSibling = stored.find((entry) => entry.id === sibling.id)!;
+      if (refused || write === "none") expect(storedSibling).toEqual(sibling);
+      expect(storedSibling).toMatchObject({
+        text: textWrite && !refused ? "Updated sibling" : sibling.text,
+        kind: kindWrite && !refused ? "locked" : sibling.kind,
+        owner_entity_id: write === "owner" ? audience : null,
+        canonicalizes: { goal_ids: write === "canonicalizes" ? [goalId] : [] },
+      });
+      expect(activeEntries()).toContainEqual(
+        expect.objectContaining({ state_key: "boundary.access", text: "Independent operation" }),
+      );
+      if (removal === "cap") expect(activeEntries()).toHaveLength(40);
+      expect(llmClient.requests).toHaveLength(1);
+      const completed = trace.events.find(
+        ({ event }) => event === "shared_state.compile.completed",
+      )!.data;
+      expect(completed.applied).toBe(true);
+      expect(completed.rejections).toEqual(
+        refused
+          ? (removal === "prune" ? [0, 1] : [0]).map((operation_index) =>
+              expect.objectContaining({
+                operation_index,
+                operation_type: removal === "prune" && operation_index === 0 ? "prune" : "update",
+                reason: "locked_target_not_fully_rendered",
+                target_entry_id: original.id,
+                state_key: original.state_key,
+                target_exposure: "omitted",
+              }),
+            )
+          : [],
+      );
+    },
+  );
+
+  it.each(
+    (["omitted", "truncated", "full"] as const).flatMap((exposure) =>
+      ["decision.rule", "archive.retired"].map((replacementKey) => ({ exposure, replacementKey })),
+    ),
+  )(
+    "checks supersede + prune together ($exposure, replacement key=$replacementKey)",
+    async ({ exposure, replacementKey }) => {
+      const original = repository.upsert(audience, [
+        {
+          type: "add",
+          state_key: "decision.rule",
+          kind: "locked",
+          text: "規則の条件と例。".repeat(100),
+          provenance_stream_entry_ids: [priorAllowedStreamEntryId],
+        },
+      ])!.entries[0]!;
+      const trace = createTraceRecorder();
+      const llmClient = new FakeLLMClient({
+        responses: [
+          emitRawSharedStateArtifactPatchResponse({
+            operations: [
+              {
+                type: "supersede",
+                id: original.id,
+                replacement: {
+                  state_key: replacementKey,
+                  kind: "locked",
+                  text: "Replacement",
+                  source_stream_entry_ids: [priorAllowedStreamEntryId],
+                },
+              },
+              { type: "prune", id: original.id },
+              {
+                type: "add",
+                state_key: "plan.meeting",
+                kind: "live",
+                text: "Independent operation",
+                new_key_reason: "Separate plan",
+                source_stream_entry_ids: [priorAllowedStreamEntryId],
+              },
+            ],
+          }),
+        ],
+      });
+      const result = await compileSharedStateArtifact({
+        ...baseInput(llmClient),
+        tracer: trace,
+        previousArtifactSummaryOptions: {
+          maxEntries: { locked: exposure === "omitted" ? 0 : 1 },
+          maxEntryTextTokens: exposure === "truncated" ? 20 : 1_000,
+        },
+      });
+      const refused = exposure !== "full";
+      expect(result.operations).toHaveLength(refused ? 1 : 3);
+      expect(repository.get(audience)!.entries.find((entry) => entry.id === original.id)).toEqual(
+        refused ? original : undefined,
+      );
+      expect(activeEntries()).toContainEqual(
+        expect.objectContaining({ state_key: "plan.meeting" }),
+      );
+      expect(
+        trace.events.find(({ event }) => event === "shared_state.compile.completed")!.data
+          .rejections,
+      ).toEqual(
+        refused
+          ? [0, 1].map((operation_index) =>
+              expect.objectContaining({
+                operation_index,
+                reason: "locked_target_not_fully_rendered",
+                target_entry_id: original.id,
+                state_key: "decision.rule",
+                target_exposure: exposure,
+              }),
+            )
+          : [],
+      );
+    },
+  );
+
+  it.each(["omitted", "full"] as const)(
+    "uses the changed H → M → S graph with %s history",
+    async (exposure) => {
+      const historicalId = repository.upsert(audience, [
+        {
+          type: "add",
+          state_key: "decision.history",
+          kind: "locked",
+          text: "Historical rule",
+          provenance_stream_entry_ids: [priorAllowedStreamEntryId],
+        },
+      ])!.entries[0]!.id;
+      const middleId = createSharedStateEntryId();
+      repository.upsert(audience, [
+        {
+          type: "supersede",
+          id: historicalId,
+          replacement: {
+            id: middleId,
+            state_key: "observation.middle",
+            kind: "live",
+            text: "Middle",
+            provenance_stream_entry_ids: [priorAllowedStreamEntryId],
+          },
+          last_updated_stream_entry_ids: [priorAllowedStreamEntryId],
+        },
+      ]);
+      const successorId = createSharedStateEntryId();
+      const previous = repository.upsert(audience, [
+        {
+          type: "supersede",
+          id: middleId,
+          replacement: {
+            id: successorId,
+            state_key: "observation.successor",
+            kind: "live",
+            text: "Successor",
+            provenance_stream_entry_ids: [priorAllowedStreamEntryId],
+          },
+          last_updated_stream_entry_ids: [priorAllowedStreamEntryId],
+        },
+      ])!;
+      const trace = createTraceRecorder();
+      const llmClient = new FakeLLMClient({
+        responses: [
+          emitRawSharedStateArtifactPatchResponse({
+            operations: [
+              {
+                type: "supersede",
+                id: middleId,
+                replacement: {
+                  state_key: "observation.middle",
+                  kind: "live",
+                  text: "Revised middle",
+                  source_stream_entry_ids: [priorAllowedStreamEntryId],
+                },
+              },
+              { type: "prune", id: successorId },
+              {
+                type: "add",
+                state_key: "decision.history",
+                kind: "locked",
+                text: "New active rule",
+                new_key_reason: "New active record",
+                source_stream_entry_ids: [priorAllowedStreamEntryId],
+              },
+            ],
+          }),
+        ],
+      });
+      const result = await compileSharedStateArtifact({
+        ...baseInput(llmClient),
+        tracer: trace,
+        previousArtifactSummaryOptions:
+          exposure === "omitted"
+            ? { summaryTokenBudget: 1, maxEntries: { locked: 0, live: 0 } }
+            : undefined,
+      });
+      expect(result.operations).toHaveLength(3);
+      expect(repository.get(audience)!.entries.find((entry) => entry.id === historicalId)).toEqual(
+        previous.entries.find((entry) => entry.id === historicalId),
+      );
+      expect(repository.get(audience)!.entries.some((entry) => entry.id === successorId)).toBe(
+        false,
+      );
+      expect(activeEntries()).toContainEqual(
+        expect.objectContaining({ state_key: "decision.history", text: "New active rule" }),
+      );
+      expect(llmClient.requests).toHaveLength(1);
+      const completed = trace.events.find(
+        ({ event }) => event === "shared_state.compile.completed",
+      )!.data;
+      expect(completed.rejections).toEqual([]);
+      expect(completed.prompt_exposure).toMatchObject({
+        rows: expect.arrayContaining([
+          expect.objectContaining({ id: historicalId, completeness: exposure }),
+        ]),
+      });
+    },
+  );
+
+  it.each([
+    { exposure: "omitted", addKey: "decision.rule", refused: true },
+    { exposure: "truncated", addKey: "decision.rule", refused: true },
+    { exposure: "full", addKey: "decision.rule", refused: false },
+    { exposure: "omitted", addKey: null, refused: false },
+    { exposure: "omitted", addKey: "boundary.access", refused: false },
+  ] as const)(
+    "checks prune + add exposure ($exposure, key=$addKey)",
+    async ({ exposure, addKey, refused }) => {
+      const original = repository.upsert(audience, [
+        {
+          type: "add",
+          state_key: "decision.rule",
+          kind: "locked",
+          text: "規則の条件と例。".repeat(100),
+          provenance_stream_entry_ids: [priorAllowedStreamEntryId],
+        },
+      ])!.entries[0]!;
+      const trace = createTraceRecorder();
+      const llmClient = new FakeLLMClient({
+        responses: [
+          emitRawSharedStateArtifactPatchResponse({
+            operations: [
+              { type: "prune", id: original.id },
+              ...(addKey === null
+                ? []
+                : [
+                    {
+                      type: "add",
+                      state_key: addKey,
+                      kind: "locked",
+                      text: "Replacement",
+                      new_key_reason: "Recreated record",
+                      source_stream_entry_ids: [priorAllowedStreamEntryId],
+                    },
+                  ]),
+              {
+                type: "add",
+                state_key: "plan.meeting",
+                kind: "live",
+                text: "Independent operation",
+                new_key_reason: "Separate plan",
+                source_stream_entry_ids: [priorAllowedStreamEntryId],
+              },
+            ],
+          }),
+        ],
+      });
+      const result = await compileSharedStateArtifact({
+        ...baseInput(llmClient),
+        tracer: trace,
+        previousArtifactSummaryOptions: {
+          maxEntries: { locked: exposure === "omitted" ? 0 : 1 },
+          maxEntryTextTokens: exposure === "truncated" ? 20 : 1_000,
+        },
+      });
+
+      expect(llmClient.requests).toHaveLength(1);
+      expect(result.operations).toHaveLength(refused ? 1 : addKey === null ? 2 : 3);
+      const stored = repository.get(audience)!.entries;
+      expect(stored.find((entry) => entry.id === original.id)).toEqual(
+        refused ? original : undefined,
+      );
+      expect(stored).toContainEqual(
+        expect.objectContaining({ state_key: "plan.meeting", text: "Independent operation" }),
+      );
+      if (!refused && addKey !== null)
+        expect(stored).toContainEqual(
+          expect.objectContaining({ state_key: addKey, text: "Replacement" }),
+        );
+      const completed = trace.events.find(
+        ({ event }) => event === "shared_state.compile.completed",
+      )!.data;
+      expect(completed.applied).toBe(true);
+      expect(completed.rejections).toEqual(
+        refused
+          ? [0, 1].map((operationIndex) =>
+              expect.objectContaining({
+                operation_index: operationIndex,
+                reason: "locked_target_not_fully_rendered",
+                target_entry_id: original.id,
+                state_key: "decision.rule",
+                target_exposure: exposure,
+              }),
+            )
+          : [],
+      );
+    },
+  );
+
+  it.each(
+    (["direct", "schema_repair", "patch_repair"] as const).flatMap((path) =>
+      (["full", "truncated", "omitted"] as const).flatMap((completeness) =>
+        (["update", "supersede"] as const).map((type) => ({ path, completeness, type })),
+      ),
+    ),
+  )(
+    "enforces and traces $completeness locked exposure for $type through $path",
+    async ({ path, completeness, type }) => {
+      const originalText = "規則：条件と例を引き継いでください。".repeat(70);
+      const previous = repository.upsert(audience, [
+        {
+          type: "add",
+          state_key: "decision.rule",
+          kind: "locked",
+          text: originalText,
+          provenance_stream_entry_ids: [priorAllowedStreamEntryId],
+        },
+      ])!;
+      const original = previous.entries[0]!;
+      const replacement = {
+        state_key: "decision.rule",
+        kind: "locked",
+        text: "別の本文。",
+        source_stream_entry_ids: [priorAllowedStreamEntryId],
+      };
+      const replacingOperation =
+        type === "update"
+          ? { type, id: original.id, ...replacement }
+          : { type, id: original.id, replacement };
+      const validAdd = {
+        type: "add",
+        state_key: "plan.followup",
+        kind: "live",
+        text: "Independent operation",
+        new_key_reason: "A separate planning record",
+        source_stream_entry_ids: [priorAllowedStreamEntryId],
+      };
+      const trace = createTraceRecorder();
+      const llmClient = new FakeLLMClient({
+        responses: [
+          ...(path === "schema_repair"
+            ? [emitRawSharedStateArtifactPatchResponse({ operations: [{ type: "replace" }] })]
+            : path === "patch_repair"
+              ? [
+                  emitRawSharedStateArtifactPatchResponse({
+                    operations: [replacingOperation, { ...validAdd, new_key_reason: undefined }],
+                  }),
+                ]
+              : []),
+          emitRawSharedStateArtifactPatchResponse({
+            operations: [replacingOperation, validAdd],
+          }),
+        ],
+      });
+
+      const result = await compileSharedStateArtifact({
+        ...baseInput(llmClient),
+        tracer: trace,
+        compilePass: "post_response",
+        previousArtifactSummaryOptions: {
+          maxEntries: { locked: completeness === "omitted" ? 0 : 1 },
+          maxEntryTextTokens: completeness === "truncated" ? 20 : 1_000,
+        },
+      });
+
+      expect(result.operations).toHaveLength(completeness === "full" ? 2 : 1);
+      expect(activeEntries()).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            state_key: "decision.rule",
+            text: completeness === "full" ? replacement.text : originalText,
+          }),
+          expect.objectContaining({ state_key: "plan.followup", text: validAdd.text }),
+        ]),
+      );
+      expect(llmClient.requests).toHaveLength(path === "direct" ? 1 : 2);
+      if (path !== "direct") expectSingleSuccessfulRepair(trace);
+
+      const calls = trace.events.filter(({ event }) => event === "llm_call.started");
+      const prompt = JSON.parse(llmClient.requests.at(-1)!.messages[0]!.content) as {
+        previous_artifact_summary: SharedStatePromptSummary;
+      };
+      const rendered = prompt.previous_artifact_summary.active_entries.locked[0];
+      expect(rendered?.body_completeness).toBe(
+        completeness === "omitted" ? undefined : completeness,
+      );
+      const expectedExposure = {
+        artifact_version: previous.record_version,
+        rows: [
+          {
+            id: original.id,
+            state_key: "decision.rule",
+            kind: "locked",
+            original_chars: originalText.length,
+            rendered_chars: rendered?.text.length ?? 0,
+            completeness,
+          },
+        ],
+        omitted_entry_ids: completeness === "omitted" ? [original.id] : [],
+        budget: expect.objectContaining({
+          decision: "within_budget",
+          max_entry_text_tokens: completeness === "truncated" ? 20 : 1_000,
+        }),
+      };
+      for (const call of calls) {
+        expect(call.data).toMatchObject({
+          model: baseInput(llmClient).model,
+          previous_artifact_version: previous.record_version,
+          prompt_exposure: expectedExposure,
+          budget_decision: "within_warning_budget",
+        });
+      }
+      const completed = trace.events.find(
+        ({ event }) => event === "shared_state.compile.completed",
+      )!;
+      expect(completed.data).toMatchObject({
+        model: baseInput(llmClient).model,
+        previous_artifact_version: previous.record_version,
+        prompt_exposure: expectedExposure,
+        input_token_estimate: calls.at(-1)!.data.input_token_estimate,
+        applied: true,
+        rejectedCount: completeness === "full" ? 0 : 1,
+      });
+      if (completeness !== "full") {
+        expect(completed.data.rejections).toEqual([
+          expect.objectContaining({
+            reason: "locked_target_not_fully_rendered",
+            operation_type: type,
+            target_entry_id: original.id,
+            target_exposure: completeness,
+          }),
+        ]);
+        const refusals = trace.events.filter(
+          ({ event, data }) =>
+            event === "shared_state.compile.degraded" &&
+            data.reason === "locked_target_not_fully_rendered",
+        );
+        expect(refusals).toHaveLength(path === "patch_repair" ? 2 : 1);
+        for (const refusal of refusals) {
+          expect(refusal.data.prompt_exposure).toMatchObject(expectedExposure);
+          expect(refusal.data.rejections).toEqual([
+            expect.objectContaining({ targetEntryId: original.id, targetExposure: completeness }),
+          ]);
+        }
+      }
+      if (path === "schema_repair") {
+        const heads = calls.at(-1)!.data.prompt as { messages: Array<{ head: string }> };
+        expect(heads.messages).toHaveLength(2);
+        expect(heads.messages[1]!.head).toContain("failed client-side schema validation");
+        expect(calls[1]!.data.input_token_estimate as number).toBeGreaterThan(
+          calls[0]!.data.input_token_estimate as number,
+        );
+      }
+    },
+  );
+
+  it.each([false, true])(
+    "gates bounded compile prompt heads per tracer sink (payloads=%s)",
+    async (includePayloads) => {
+      const payloadTrace = { ...createTraceRecorder(), includePayloads };
+      const redactedTrace = { ...createTraceRecorder(), includePayloads: false };
+      const llmClient = new FakeLLMClient({
+        responses: [emitRawSharedStateArtifactPatchResponse({ operations: [] })],
+      });
+      await compileSharedStateArtifact({
+        ...baseInput(llmClient),
+        currentUserMessage: "😀".repeat(5_000),
+        tracer: new CompositeTracer([payloadTrace, redactedTrace]),
+      });
+      const data = payloadTrace.events.find(({ event }) => event === "llm_call.started")!.data;
+      const redacted = redactedTrace.events.find(({ event }) => event === "llm_call.started")!.data;
+      expect(redacted.prompt).toBeUndefined();
+      expect(redacted.budget_decision).toBe("within_warning_budget");
+      if (includePayloads) {
+        const prompt = data.prompt as {
+          system_head: string;
+          messages: Array<{ head: string; original_chars: number }>;
+          omitted_message_count: number;
+        };
+        expect(prompt.system_head).toHaveLength(2_000);
+        expect(prompt.messages).toHaveLength(1);
+        expect(prompt.messages[0]!.head.length).toBeLessThanOrEqual(2_000);
+        const head = prompt.messages[0]!.head;
+        expect(new TextDecoder().decode(new TextEncoder().encode(head))).toBe(head);
+        expect(prompt.messages[0]!.original_chars).toBeGreaterThan(2_000);
+        expect(prompt.omitted_message_count).toBe(0);
+      } else {
+        expect(data.prompt).toBeUndefined();
+      }
+    },
+  );
+
+  it("returns a traced validation outcome when every operation targets an omitted locked body", async () => {
+    const previous = repository.upsert(audience, [
+      {
+        type: "add",
+        state_key: "decision.rule",
+        kind: "locked",
+        text: "Original rule",
+        provenance_stream_entry_ids: [priorAllowedStreamEntryId],
+      },
+    ])!;
+    const trace = createTraceRecorder();
+    const llmClient = new FakeLLMClient({
+      responses: [
+        emitRawSharedStateArtifactPatchResponse({
+          operations: [
+            {
+              type: "update",
+              id: previous.entries[0]!.id,
+              state_key: "decision.rule",
+              text: "Replacement",
+              source_stream_entry_ids: [priorAllowedStreamEntryId],
+            },
+          ],
+        }),
+      ],
+    });
+    const result = await compileSharedStateArtifact({
+      ...baseInput(llmClient),
+      tracer: trace,
+      previousArtifactSummaryOptions: { maxEntries: { locked: 0 } },
+    });
+    expect(result.operations).toEqual([]);
+    expect(repository.get(audience)).toEqual(previous);
+    expect(llmClient.requests).toHaveLength(1);
+    expect(trace.events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          event: "shared_state.compile.completed",
+          data: expect.objectContaining({
+            applied: false,
+            rejectionReasons: ["locked_target_not_fully_rendered"],
+          }),
+        }),
+        expect.objectContaining({
+          event: "shared_state.compile.degraded",
+          data: expect.objectContaining({ reason: "all_operations_rejected" }),
+        }),
+      ]),
+    );
+  });
 
   it("skips gracefully when the LLM call fails", async () => {
     const onDegraded = vi.fn();
@@ -2838,10 +3587,8 @@ describe("compileSharedStateArtifact", () => {
       return prompt.existing_state_key_registry?.[0]!;
     };
 
-    // Every active id stays a legal target of every operation -- validation resolves `update` and
-    // `supersede` against the full previous artifact, not against this summary. What aging removes
-    // is the old wording, so a row walked out of the body slice is still writable and merely no
-    // longer shows the text a correction would be replacing.
+    // Registry visibility describes body presence. Locked text replacement additionally
+    // requires full exposure; this live row retains the existing write behavior.
     const withBody = await registryFor();
     expect(withBody.text_visible_entry_ids).toEqual(withBody.active_entry_ids);
 
@@ -2870,6 +3617,13 @@ describe("compileSharedStateArtifact", () => {
 
     expect(warning).toBeDefined();
     expect(warning?.data.ledger_mode).toBe("delta");
+    expect(warning?.data.model).toBe(baseInput(llmClient).model);
+    expect(warning?.data.budget_decision).toBe("warn_only_prompt_unchanged");
+    expect(warning?.data.previous_artifact_version).toBeNull();
+    expect(warning?.data.prompt_exposure).toBeNull();
+    expect(JSON.parse(llmClient.requests[0]!.messages[0]!.content).prompt_visible_ledger).toBe(
+      "large ledger entry ".repeat(180_000),
+    );
     expect(typeof warning?.data.input_token_estimate).toBe("number");
     expect(warning?.data.input_token_estimate as number).toBeGreaterThan(35_000);
     expect(warning?.data.breakdown).toEqual(

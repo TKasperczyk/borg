@@ -1,7 +1,4 @@
-import type {
-  SharedStateArtifact,
-  SharedStateOperation,
-} from "../../memory/shared-state/index.js";
+import type { SharedStateArtifact, SharedStateOperation } from "../../memory/shared-state/index.js";
 import type { EntityId, StreamEntryId } from "../../util/ids.js";
 import { toTraceJsonValue, type TurnTracer } from "../../tracing/tracer.js";
 import { summarizeSharedStateArtifactRender, type SharedStateRenderOptions } from "./render.js";
@@ -33,6 +30,7 @@ import type {
   SharedStateLifecycleTransition,
 } from "./lifecycle-aging.js";
 import type { SharedStateLifecycleCapEviction } from "./lifecycle-cap.js";
+import type { SharedStatePromptExposure } from "./summary.js";
 
 type PublicSharedStateOperation = Exclude<SharedStateOperation, { type: "transition_kind" }>;
 
@@ -66,6 +64,8 @@ export function traceCompileCompleted(options: {
   newStateKeys?: readonly string[];
   ledgerMode: SharedStateLedgerMode;
   promptBudget: SharedStateArtifactPromptBudget;
+  promptExposure: SharedStatePromptExposure | null;
+  model: string;
   compilePass?: SharedStateCompilePass;
   citationEligibleSourceStreamEntryIds?: readonly StreamEntryId[];
   offLimitsSourceStreamEntryIds?: readonly StreamEntryId[];
@@ -159,6 +159,7 @@ export function traceCompileCompleted(options: {
           reason: rejection.reason,
           state_key: rejection.stateKey ?? null,
           target_entry_id: rejection.targetEntryId ?? null,
+          target_exposure: rejection.targetExposure ?? null,
           source_stream_entry_id: rejection.sourceStreamEntryId ?? null,
           disallowed_citation_barrier: disallowedCitationBarrier(rejection),
         })),
@@ -167,8 +168,8 @@ export function traceCompileCompleted(options: {
       // was permitted to reach for, so `disallowed_source_stream_entry_id` reads
       // the same whether the eligible set held a usable id or was empty -- the
       // difference between the compiler ignoring the allowlist and the allowlist
-      // being impossible to satisfy. The prompt is not captured anywhere, so name
-      // both sets it offered here, alongside which of the turn's two passes this is.
+      // being impossible to satisfy. Prompt heads are bounded and payload-gated, so
+      // name both sets here, alongside which of the turn's two passes this is.
       compile_pass: options.compilePass ?? null,
       citation_eligible_source_stream_entry_id_count:
         options.citationEligibleSourceStreamEntryIds?.length ?? null,
@@ -269,6 +270,11 @@ export function traceCompileCompleted(options: {
       shared_state_entries_by_key: toTraceJsonValue(artifactSummary.activeEntriesByKey),
       shared_state_top_keys_by_entry_count: toTraceJsonValue(artifactSummary.topKeysByEntryCount),
       ledger_mode: options.ledgerMode,
+      model: options.model,
+      previous_artifact_version: options.promptExposure?.artifact_version ?? null,
+      prompt_exposure: toTraceJsonValue(options.promptExposure),
+      budget_decision: options.promptBudget.decision,
+      input_token_budget: SHARED_STATE_PROMPT_WARNING_TOKEN_THRESHOLD,
       input_token_estimate: options.promptBudget.inputTokenEstimate,
       input_token_breakdown: toTraceJsonValue(options.promptBudget.breakdown),
       canonicalizes_rejected_non_locked: toTraceJsonValue(
@@ -434,6 +440,8 @@ export function traceCompileDegraded(options: {
   audienceEntityId: EntityId;
   reason: string;
   error?: unknown;
+  rejections?: readonly PatchRejection[];
+  promptExposure?: SharedStatePromptExposure | null;
 }): void {
   if (options.tracer?.enabled !== true || options.turnId === undefined) {
     return;
@@ -443,6 +451,15 @@ export function traceCompileDegraded(options: {
     turnId: options.turnId,
     audienceEntityId: options.audienceEntityId,
     reason: options.reason,
+    ...(options.rejections === undefined
+      ? {}
+      : { rejections: toTraceJsonValue(options.rejections) }),
+    ...(options.promptExposure === undefined
+      ? {}
+      : {
+          previous_artifact_version: options.promptExposure?.artifact_version ?? null,
+          prompt_exposure: toTraceJsonValue(options.promptExposure),
+        }),
     ...(options.error === undefined
       ? {}
       : { error: options.error instanceof Error ? options.error.message : String(options.error) }),
@@ -506,6 +523,8 @@ export function traceCompileOverBudget(options: {
   audienceEntityId: EntityId;
   ledgerMode: SharedStateLedgerMode;
   promptBudget: SharedStateArtifactPromptBudget;
+  promptExposure: SharedStatePromptExposure | null;
+  model: string;
 }): void {
   if (
     options.promptBudget.inputTokenEstimate <= SHARED_STATE_PROMPT_WARNING_TOKEN_THRESHOLD ||
@@ -519,6 +538,10 @@ export function traceCompileOverBudget(options: {
     turnId: options.turnId,
     audienceEntityId: options.audienceEntityId,
     reason: "prompt_over_budget",
+    model: options.model,
+    previous_artifact_version: options.promptExposure?.artifact_version ?? null,
+    prompt_exposure: toTraceJsonValue(options.promptExposure),
+    budget_decision: options.promptBudget.decision,
     ledger_mode: options.ledgerMode,
     input_token_estimate: options.promptBudget.inputTokenEstimate,
     input_token_budget: SHARED_STATE_PROMPT_WARNING_TOKEN_THRESHOLD,
