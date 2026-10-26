@@ -1676,6 +1676,7 @@ describe("deliberator", () => {
         tool_name: "none",
         reason: "expected exactly one emission tool call, got 0",
         attempt: "regenerate",
+        text_chars: "I forgot the retry tool too.".length,
       },
       undelivered_draft: {
         text: "I forgot the retry tool too.",
@@ -1705,6 +1706,58 @@ describe("deliberator", () => {
         reason: "expected exactly one emission tool call, got 0",
       },
     ]);
+  });
+
+  // The reason code and the reason string are identical whether the attempt wrote prose
+  // and dropped the tool call or halted before writing anything, and only the second
+  // leaves nothing to recover. `undelivered_draft` is gated on the same length, so when it
+  // is absent the diagnostic has to carry the count -- otherwise the entry cannot say
+  // whether the draft is gone or never existed.
+  it("records text_chars=0 and captures no draft when both attempts produce no text", async () => {
+    const llm = new FakeLLMClient({ responses: ["", ""] });
+    const deliberator = createDeliberator(llm, tempDirs);
+
+    const result = await deliberator.run(
+      simpleDeliberationContext({ turnId: "turn-invalid-tool-no-text" }),
+    );
+
+    expect(result.emitted).toBe(false);
+    expect(result.emission).toEqual({
+      kind: "suppressed",
+      reason: "invalid_tool_after_regenerate",
+      finalizer_invalid_tool: {
+        tool_name: "none",
+        reason: "expected exactly one emission tool call, got 0",
+        attempt: "regenerate",
+        text_chars: 0,
+      },
+    });
+  });
+
+  // A regenerate that stops at refusal writes nothing. The initial attempt's prose is
+  // the only draft the turn has, and keeping only the last attempt's text dropped it.
+  it("keeps the initial attempt's draft when the regenerate writes nothing", async () => {
+    const draft = "Odpowiedź napisana, ale bez wywołania narzędzia.";
+    const llm = new FakeLLMClient({ responses: [draft, ""] });
+    const deliberator = createDeliberator(llm, tempDirs);
+
+    const result = await deliberator.run(
+      simpleDeliberationContext({ turnId: "turn-invalid-tool-regenerate-empty" }),
+    );
+
+    expect(result.emitted).toBe(false);
+    expect(result.emission).toEqual({
+      kind: "suppressed",
+      reason: "invalid_tool_after_regenerate",
+      finalizer_invalid_tool: {
+        tool_name: "none",
+        reason: "expected exactly one emission tool call, got 0",
+        attempt: "regenerate",
+        text_chars: 0,
+      },
+      undelivered_draft: { text: draft },
+    });
+    expect(llm.requests).toHaveLength(2);
   });
 
   it.each([
@@ -4691,7 +4744,7 @@ describe("deliberator", () => {
         "goals Ship Sprint 6 status=active counterparty_entity_id=none (participant the responsibility runs toward; not owner or audience) (manual) disclosure_class=self_private",
       );
       expect(system).toContain("<borg_held_preferences>");
-      expect(system).toContain("Traits I express: engaged:0.80 (conf 0.82, offline: reflector)");
+      expect(system).toContain("Traits I express: engaged:0.80 (conf 0.82)");
       expect(system).toContain("Current period: 2026-Q2 (offline: self-narrator)");
       expect(system).toContain(
         "- Why does Atlas fail after rollback? (urgency=0.80, source=reflection, disclosure_class=self_private private-to=unknown; I can use this internally; I do not disclose it to the current audience unless authorized) (from ep_aaaaaaaaaaaaaaaa)",
@@ -4834,7 +4887,7 @@ describe("deliberator", () => {
       "Values I hold: clarity (conf 0.85, from ep_aaaaaaaaaaaaaaaa) -- Prefer explicit state.",
     );
     expect(finalSystem).toContain(
-      "Traits I express: introspective:0.78 (conf 0.82, from ep_aaaaaaaaaaaaaaaa)",
+      "Traits I express: introspective:0.78 (conf 0.82)",
     );
     expect(finalSystem).toContain(
       "Self snapshot: exploring values playfulness (candidate, conf 0.50) (manual)",

@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { GoalRecord } from "../memory/self/index.js";
 import { type GoalId } from "../util/ids.js";
 
-import { selectExecutiveFocus } from "./goal-competition.js";
+import { expandedExecutiveCandidateGoalIds, selectExecutiveFocus } from "./goal-competition.js";
 
 const nowMs = 1_000_000;
 const dayMs = 24 * 60 * 60 * 1_000;
@@ -317,5 +317,64 @@ describe("selectExecutiveFocus", () => {
     expect(targetTie.selected_goal?.description).toBe("Earlier target");
     expect(createdAtTie.selected_goal?.description).toBe("Older same score");
     expect(idTie.selected_goal?.description).toBe("Alpha id");
+  });
+});
+
+describe("expandedExecutiveCandidateGoalIds", () => {
+  const candidates = ["a", "b", "c", "d", "e"].map((letter, index) => ({
+    goal_id: `goal_${letter.repeat(16)}` as GoalId,
+    goal: goal({ id: `goal_${letter.repeat(16)}`, description: letter }),
+    score: 1 - index / 10,
+    components: { priority: 1, deadline_pressure: 1, context_fit: 1, progress_debt: 1 },
+    reason: letter,
+  }));
+  const eligibleGoalIds = new Set(candidates.map((candidate) => candidate.goal_id));
+
+  it("appends a selected goal the ranking left out, without reordering the rank prefix", () => {
+    expect(
+      expandedExecutiveCandidateGoalIds({
+        candidates,
+        eligibleGoalIds,
+        limit: 3,
+        selectedGoalId: candidates[4]!.goal_id,
+      }),
+    ).toEqual([
+      candidates[0]!.goal_id,
+      candidates[1]!.goal_id,
+      candidates[2]!.goal_id,
+      candidates[4]!.goal_id,
+    ]);
+  });
+
+  it("returns the rank prefix unchanged when nothing is selected or the selection already ranked in", () => {
+    const ranked = [candidates[0]!.goal_id, candidates[1]!.goal_id, candidates[2]!.goal_id];
+
+    expect(
+      expandedExecutiveCandidateGoalIds({
+        candidates,
+        eligibleGoalIds,
+        limit: 3,
+        selectedGoalId: null,
+      }),
+    ).toEqual(ranked);
+    expect(
+      expandedExecutiveCandidateGoalIds({
+        candidates,
+        eligibleGoalIds,
+        limit: 3,
+        selectedGoalId: candidates[1]!.goal_id,
+      }),
+    ).toEqual(ranked);
+  });
+
+  it("does not append a selection the caller declared ineligible", () => {
+    expect(
+      expandedExecutiveCandidateGoalIds({
+        candidates,
+        eligibleGoalIds: new Set(candidates.slice(0, 3).map((candidate) => candidate.goal_id)),
+        limit: 3,
+        selectedGoalId: candidates[4]!.goal_id,
+      }),
+    ).toEqual([candidates[0]!.goal_id, candidates[1]!.goal_id, candidates[2]!.goal_id]);
   });
 });

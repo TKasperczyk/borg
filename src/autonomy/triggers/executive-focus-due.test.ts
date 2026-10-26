@@ -380,6 +380,49 @@ describe("executive focus due trigger", () => {
     expect(events[0]?.payload).not.toHaveProperty("score_basis");
   });
 
+  it("carries the selected goal's terminal condition whole, and null when none is stored", async () => {
+    const terminalCondition = `The criterion runs past every excerpt budget on the page. ${"x".repeat(400)}`;
+    const harness = await createHarness();
+    const stated = harness.goalsRepository.add({
+      description: "Ship executive focus",
+      terminalCondition,
+      priority: 10,
+      provenance: { kind: "manual" },
+    });
+    harness.executiveStepsRepository.add({
+      goalId: stated.id,
+      description: "Act on the overdue step",
+      kind: "act",
+      dueAt: harness.clock.now(),
+      provenance: { kind: "manual" },
+    });
+    const trigger = createTrigger(harness);
+
+    const statedEvents = await trigger.scan();
+
+    expect(statedEvents).toHaveLength(1);
+    expect(statedEvents[0]?.payload.selected_goal.terminal_condition).toBe(terminalCondition);
+
+    const unstatedHarness = await createHarness();
+    const unstated = unstatedHarness.goalsRepository.add({
+      description: "Ship executive focus",
+      priority: 10,
+      provenance: { kind: "manual" },
+    });
+    unstatedHarness.executiveStepsRepository.add({
+      goalId: unstated.id,
+      description: "Act on the overdue step",
+      kind: "act",
+      dueAt: unstatedHarness.clock.now(),
+      provenance: { kind: "manual" },
+    });
+
+    const unstatedEvents = await createTrigger(unstatedHarness).scan();
+
+    expect(unstatedEvents).toHaveLength(1);
+    expect(unstatedEvents[0]?.payload.selected_goal.terminal_condition).toBeNull();
+  });
+
   it("describes the next due executive step boundary without scoring", async () => {
     const harness = await createHarness();
     const goal = harness.goalsRepository.add({
@@ -958,7 +1001,7 @@ describe("executive focus due trigger", () => {
     });
   });
 
-  it("stops firing once a stale goal reaches the empty-wake dormancy count", async () => {
+  it("pauses a stale goal for fourteen days after the empty-wake dormancy count", async () => {
     const harness = await createHarness(5_000_000);
     const goal = harness.goalsRepository.add({
       description: "Perpetually empty stale goal",
@@ -981,11 +1024,14 @@ describe("executive focus due trigger", () => {
     harness.clock.advance(60_000);
     expect(await trigger.scan()).toHaveLength(1);
 
-    // At the dormancy count it exits selection entirely, regardless of how much
-    // time elapses -- no timer brings it back.
+    // Dormancy expires at fourteen days even without progress.
     setGoalStaleBackoff({ harness, goalId: goal.id, emptyCount: 2 });
-    harness.clock.advance(10 * 86_400_000);
+    harness.clock.advance(14 * 86_400_000 - 1);
     expect(await trigger.scan()).toHaveLength(0);
+    expect(trigger.dormantGoalIds?.()).toEqual([goal.id]);
+    harness.clock.advance(1);
+    expect(await trigger.scan()).toHaveLength(1);
+    expect(trigger.dormantGoalIds?.()).toEqual([]);
   });
 
   it("re-enters selection when a dormant stale goal makes progress", async () => {
@@ -1009,7 +1055,7 @@ describe("executive focus due trigger", () => {
     expect(await trigger.scan()).toHaveLength(0);
 
     // Headway after the backoff stamp clears dormancy; once it is stale again
-    // it is eligible -- the only way back is real progress, never a timer.
+    // it is eligible before the fourteen-day timer expires.
     harness.clock.advance(1_000);
     harness.goalsRepository.updateProgress(goal.id, "External report advanced the goal.", {
       kind: "manual",
@@ -1045,7 +1091,7 @@ describe("executive focus due trigger", () => {
     expect(released[0]?.goalStaleBackoffActionAvailabilityKey).toBe(actionAvailabilityKey);
 
     // Once an empty wake has stamped the same structural key, ordinary
-    // infinite dormancy resumes rather than retrying every scan.
+    // fourteen-day dormancy resumes rather than retrying every scan.
     setGoalStaleBackoff({
       harness,
       goalId: goal.id,

@@ -1017,6 +1017,11 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
       privateToEntityIds: [alice],
       publicToEntityIds: [],
     });
+    // The entry's own kind and instant survive the hop from stream to evidence:
+    // the payload is verbatim stream content, so without them a recalled entry
+    // that quotes a rendered surface arrives indistinguishable from it.
+    expect(rawStreamEvidence?.streamEntryKind).toBeDefined();
+    expect(Number.isFinite(rawStreamEvidence?.streamEntryAtMs)).toBe(true);
     const rendered = summarizeRetrievedEvidence(
       "Retrieved context",
       { evidence: rawStreamEvidence === undefined ? [] : [rawStreamEvidence] },

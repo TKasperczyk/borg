@@ -61,10 +61,20 @@ export type FinalizerNoOutputStructuralCategory =
 export type FinalizerNoOutputStructuralFlag = (typeof FINALIZER_NO_OUTPUT_STRUCTURAL_FLAGS)[number];
 export type FinalizerNoOutputCategory = (typeof FINALIZER_NO_OUTPUT_CATEGORIES)[number];
 
+// `tool_name: none` collapses two different endings. The attempt that stopped at
+// end_turn wrote prose and omitted the tool call, so a draft existed and -- when
+// non-empty -- was captured as `undelivered_draft` below. The attempt that stopped
+// at refusal produced nothing itself, but when it was a regenerate the initial
+// attempt's draft may exist, and that draft is the one captured. Both endings render
+// identically as "expected exactly one emission tool call, got 0". `text_chars` is
+// the character count of what this attempt produced -- a length, not its content --
+// which is exactly the discriminator. Absent on diagnostics written before the
+// field existed; absence means unrecorded, never zero.
 export type FinalizerInvalidToolDiagnostic = {
   tool_name: string;
   reason: string;
   attempt: "initial" | "regenerate";
+  text_chars?: number;
 };
 
 export type UndeliveredDraft = {

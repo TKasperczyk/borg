@@ -90,17 +90,19 @@ export type HydratedRecentRegeneration = {
 // block cannot offer at any number of reads.
 //
 // `intervalMs` and `droppedIntervalFires` are the fourth and fifth, and both were dropped at the
-// same call site as the three above. The interval length is what turns a series of
-// `scheduledTickAt` stamps into a grid: the stamp is the last tick entry plus the interval, so
-// consecutive reads differ by a multiple of it while one handle stays armed, and a delta that is
-// not a multiple means it was re-armed. Without the period a reader holding two stamps can see
-// that they differ and nothing more. The refused-fire counts answer the question `tickInFlight`
+// same call site as the three above. The interval length is what a series of `scheduledTickAt`
+// stamps is read against: the stamp is the last tick entry plus the interval, so consecutive reads
+// differ by a multiple of it plus whatever lateness each entry kept -- an off-grid residue is that
+// lateness and a re-arm alike, which is what `intervalArmedAt` is for. Without the period a reader
+// holding two stamps can see that they differ and nothing more. The refused-fire counts answer the question `tickInFlight`
 // raises and cannot close -- a tick holding the anchor is refusing an interval fire every period,
 // and the early return that refuses it is the only event in the scheduler that writes nothing
 // anywhere. A frozen hour and a quiet hour therefore leave the same trace in the budget and
 // outcome counts, which is none; these are that difference, and unlike `tickInFlight` the
 // per-tick count still carries information on an autonomous turn.
 export type AutonomySchedulerMechanismEvidence = {
+  /** Absent in historical captures. */
+  dormantGoals?: number;
   observedAt: number;
   enabled: boolean;
   tickInFlight: boolean;
@@ -148,6 +150,7 @@ export const AUTONOMY_SCHEDULER_DESCRIPTION_FIELD_DISPOSITION: Record<
   keyof AutonomySchedulerDescription,
   AutonomySchedulerFieldDisposition
 > = {
+  dormant_goals: "carried",
   observed_at: "carried",
   enabled: "carried",
   tick_in_flight: "carried",
@@ -208,6 +211,14 @@ function finalizerInvalidToolDiagnostic(
     return undefined;
   }
 
+  // Rows written before `text_chars` existed carry no such field, and a default of 0
+  // there would assert the one thing the old row cannot support -- that the attempt
+  // produced nothing. Carry it only when the stored value is a real count.
+  const textChars =
+    typeof value.text_chars === "number" && Number.isFinite(value.text_chars)
+      ? Math.max(0, Math.trunc(value.text_chars))
+      : undefined;
+
   return typeof value.tool_name === "string" &&
     typeof value.reason === "string" &&
     (value.attempt === "initial" || value.attempt === "regenerate")
@@ -215,6 +226,7 @@ function finalizerInvalidToolDiagnostic(
         tool_name: value.tool_name,
         reason: value.reason,
         attempt: value.attempt,
+        ...(textChars === undefined ? {} : { text_chars: textChars }),
       }
     : undefined;
 }

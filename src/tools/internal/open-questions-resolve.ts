@@ -8,8 +8,11 @@ import {
   type MemoryDisclosureLabel,
 } from "../../memory/common/index.js";
 import { memoryDisclosureLabelMetadataSchema } from "../../memory/common/disclosure-label.js";
-import { episodeIdSchema } from "../../memory/episodic/index.js";
-import type { ResolveOpenQuestionIdentityService } from "../../memory/lifecycle-ops/index.js";
+import { episodeIdSchema, type EpisodicRepository } from "../../memory/episodic/index.js";
+import type {
+  LifecycleTracer,
+  ResolveOpenQuestionIdentityService,
+} from "../../memory/lifecycle-ops/index.js";
 import { resolveOpenQuestionThroughIdentityService } from "../../memory/lifecycle-ops/index.js";
 import {
   openQuestionIdSchema,
@@ -17,6 +20,8 @@ import {
   type OpenQuestion,
 } from "../../memory/self/index.js";
 import { streamEntryIdSchema } from "../../util/id-schemas.js";
+import { ToolError } from "../../util/errors.js";
+import type { StreamEntryIndexRepository } from "../../stream/index.js";
 import type { ToolDefinition } from "../dispatcher.js";
 
 const openQuestionsResolveInputSchema = z
@@ -32,10 +37,13 @@ const openQuestionsResolveInputSchema = z
       (value.resolution_evidence_episode_ids?.length ?? 0) === 0 &&
       (value.resolution_evidence_stream_entry_ids?.length ?? 0) === 0
     ) {
+      // An "at least one of" constraint holds over the record, not over either arm.
+      // A path naming one arm reads as that arm being required, which is the opposite
+      // of what the disjunction permits, so address the record and name both fields.
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "Open question resolution requires episode or stream evidence",
-        path: ["resolution_evidence_episode_ids"],
+        message:
+          "Open question resolution requires episode or stream evidence: set resolution_evidence_episode_ids or resolution_evidence_stream_entry_ids, either one alone",
       });
     }
   });
@@ -59,10 +67,15 @@ const openQuestionsResolveOutputSchema = z.discriminatedUnion("status", [
 
 export type OpenQuestionsResolveToolOptions = {
   identityService: ResolveOpenQuestionIdentityService;
+  episodicRepository: Pick<EpisodicRepository, "getMany">;
+  entryIndex: Pick<StreamEntryIndexRepository, "lookupEntriesById">;
   disclosureLabelForEvidence: (
     episodeIds: readonly z.infer<typeof episodeIdSchema>[],
     streamEntryIds: readonly z.infer<typeof streamEntryIdSchema>[],
   ) => Promise<MemoryDisclosureLabel>;
+  // The stored provenance is online_reflector either way, so this trace is the only record
+  // that tells a resolution made by this tool from one made by the post-turn reflector.
+  tracer?: LifecycleTracer;
 };
 
 function disclosureLabelForQuestion(question: OpenQuestion): MemoryDisclosureLabel {
@@ -93,7 +106,7 @@ export function createOpenQuestionsResolveTool(
   return {
     name: "tool.openQuestions.resolve",
     description:
-      "Resolve an open question from prompt-visible evidence during autonomous reflection. If identity governance requires review, I report that status honestly instead of treating it as a tool failure. The openQuestion I get back is the record as this write left it, not as it stood before: an applied resolution clears the whole active-open rumination lifecycle on the record, so unresolved_rumination_ticks reads 0 and last_ruminated_at reads null because this write set them there. Neither reports how much the question was turned over first, and a null there is never evidence that nothing ever ruminated on it. The rumination notes are that record and they outlive the resolution.",
+      "Resolve an open question from prompt-visible evidence during autonomous reflection. If identity governance requires review, I report that status honestly instead of treating it as a tool failure. The openQuestion I get back is the record as this write left it, not as it stood before: an applied resolution clears the whole active-open rumination lifecycle on the record, so unresolved_rumination_ticks reads 0 and last_ruminated_at reads null because this write set them there. Neither reports how much the question was turned over first, and a null there is never evidence that nothing ever ruminated on it. The rumination notes are that record and they outlive the resolution. Citations must name stored episode or stream records, including archived records. An unresolvable id returns a structural error so I can re-cite or remove that citation. Existence does not establish relevance or whether I read the record; a citation is never a second witness to what I concluded. Stream citations retain an unknown disclosure label: checking existence does not derive disclosure permission.",
     menuSummary: "Resolve an open question with evidence, or surface identity review.",
     allowedOrigins: ["autonomous"],
     writeScope: "write",
@@ -102,6 +115,21 @@ export function createOpenQuestionsResolveTool(
     async invoke(input, context) {
       const evidenceEpisodeIds = input.resolution_evidence_episode_ids ?? [];
       const evidenceStreamEntryIds = input.resolution_evidence_stream_entry_ids ?? [];
+      // Reference integrity is structural. getMany deliberately includes archived
+      // and otherwise non-visible episodes; existence is not a disclosure gate.
+      const episodes = await options.episodicRepository.getMany(evidenceEpisodeIds);
+      const episodeIds = new Set(episodes.map((episode) => episode.id));
+      const streamEntries = options.entryIndex.lookupEntriesById(evidenceStreamEntryIds);
+      const missingIds = [
+        ...evidenceEpisodeIds.filter((id) => !episodeIds.has(id)),
+        ...evidenceStreamEntryIds.filter((id) => !streamEntries.has(id)),
+      ];
+      if (missingIds.length > 0) {
+        throw new ToolError(
+          `Citation ids do not name stored records: ${missingIds.join(", ")}. Re-cite or remove these citations.`,
+          { code: "OPEN_QUESTION_CITATION_NOT_FOUND" },
+        );
+      }
       const resolutionDisclosureLabel = await options.disclosureLabelForEvidence(
         evidenceEpisodeIds,
         evidenceStreamEntryIds,
@@ -120,6 +148,7 @@ export function createOpenQuestionsResolveTool(
           evidence_episode_ids: evidenceEpisodeIds,
           evidence_stream_entry_ids: evidenceStreamEntryIds,
         },
+        tracer: options.tracer,
         turnId: context.turnId,
         traceSourcePath: "tool.openQuestions.resolve",
         traceDecisionReason: "autonomous_tool",

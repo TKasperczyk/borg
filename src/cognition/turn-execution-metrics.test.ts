@@ -74,6 +74,7 @@ describe("turn execution metrics", () => {
           kind: "connection",
           retry_transport: "unary",
         });
+        options.onTransportRetry?.({ attempt: 4, kind: "refusal", retry_transport: "unary" });
         return {
           messageBlocks: [],
           input_tokens: 1,
@@ -113,6 +114,6 @@ describe("turn execution metrics", () => {
     });
 
     expect(metrics).toEqual({ finalizer_rounds: 3, stall_retries: 2 });
-    expect(priorRetryObserver).toHaveBeenCalledTimes(3);
+    expect(priorRetryObserver).toHaveBeenCalledTimes(4);
   });
 });

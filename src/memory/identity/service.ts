@@ -7,7 +7,7 @@ import {
   type OpenQuestionId,
 } from "../../util/ids.js";
 import { type Provenance } from "../common/provenance.js";
-import { expectedRecordVersion } from "../common/cas.js";
+import { expectedRecordVersion, type IdentityCasOptions } from "../common/cas.js";
 import {
   CommitmentRepository,
   commitmentPatchSchema,
@@ -197,6 +197,12 @@ export class IdentityService {
     return this.options.identityEventRepository
       .list(options)
       .filter((event) => isIdentityEventVisible(event, audienceEntityId ?? null));
+  }
+
+  listGoalDispositionsInRange(
+    input: Parameters<IdentityEventRepository["listGoalDispositionsInRange"]>[0],
+  ): ReturnType<IdentityEventRepository["listGoalDispositionsInRange"]> {
+    return this.options.identityEventRepository.listGoalDispositionsInRange(input);
   }
 
   addValue(input: Parameters<ValuesRepository["add"]>[0]): ValueRecord {
@@ -1008,7 +1014,7 @@ export class IdentityService {
     periodId: AutobiographicalPeriodId,
     patch: unknown,
     provenance: Provenance,
-    options: IdentityUpdateOptions = {},
+    options: IdentityUpdateOptions & IdentityCasOptions = {},
   ): IdentityUpdateResult<AutobiographicalPeriod> {
     const current = this.options.autobiographicalRepository.getPeriod(periodId);
 
@@ -1054,7 +1060,7 @@ export class IdentityService {
           provenance,
         },
         {
-          expectedVersion: expectedRecordVersion(current),
+          expectedVersion: expectedRecordVersion(current, options),
         },
       );
 

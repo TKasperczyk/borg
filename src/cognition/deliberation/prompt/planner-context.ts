@@ -24,7 +24,10 @@ import {
   type MemoryDisclosureLabel,
 } from "../../../retrieval/index.js";
 import type { LLMSystemBlock } from "../../../llm/index.js";
-import { topExecutiveCandidateGoalIds } from "../../../executive/index.js";
+import {
+  expandedExecutiveCandidateGoalIds,
+  topExecutiveCandidateGoalIds,
+} from "../../../executive/index.js";
 import { escapeXmlText } from "../../../util/prompt-tags.js";
 import { formatRelativeAge, formatRelativeUntil } from "../../../util/relative-time.js";
 import { estimatePromptTokens } from "../../../util/token-estimate.js";
@@ -493,15 +496,26 @@ function renderExpandedGoalRows(
   scoreById: ReadonlyMap<string, number>,
   candidateById: ReturnType<typeof goalCandidateById>,
   nowMs: number | undefined,
-): RenderedPlannerRows & { omissionCount: number; goalIds: SelfSnapshotGoal["id"][] } {
+): RenderedPlannerRows & {
+  omissionCount: number;
+  goalIds: SelfSnapshotGoal["id"][];
+  selectedGoalExpanded: boolean | null;
+} {
   const goalsById = new Map(goals.map((goal) => [goal.id, goal]));
   const candidates = context.executiveFocus?.candidates ?? [];
+  const eligibleGoalIds = new Set(goalsById.keys());
   const rankedCandidateIds = topExecutiveCandidateGoalIds({
     candidates,
-    eligibleGoalIds: new Set(goalsById.keys()),
+    eligibleGoalIds,
     limit: candidates.length,
   });
-  const expandedGoalIds = rankedCandidateIds.slice(0, PLANNER_GOAL_EXPANSION_LIMIT);
+  const selectedGoalId = context.executiveFocus?.selected_goal?.id ?? null;
+  const expandedGoalIds = expandedExecutiveCandidateGoalIds({
+    candidates,
+    eligibleGoalIds,
+    limit: PLANNER_GOAL_EXPANSION_LIMIT,
+    selectedGoalId,
+  });
   const rows: string[] = [];
   let truncationCount = 0;
 
@@ -520,6 +534,7 @@ function renderExpandedGoalRows(
     truncationCount,
     omissionCount: Math.max(0, rankedCandidateIds.length - rows.length),
     goalIds: expandedGoalIds,
+    selectedGoalExpanded: selectedGoalId === null ? null : expandedGoalIds.includes(selectedGoalId),
   };
 }
 
@@ -600,9 +615,9 @@ export function renderGoalDigest(context: DeliberationContext): RenderedPlannerS
     return {
       text: [
         `<borg_planner_goal_digest complete_membership="${indexOmissionCount === 0}" rows_total="${goals.length}" goal_index_rows_rendered="${includedGoals.length}" membership_order="${PLANNER_GOAL_MEMBERSHIP_ORDER}" target_tokens="${PLANNER_GOAL_TARGET_TOKENS}" focus_threshold="${context.executiveFocus === undefined || context.executiveFocus === null ? "none" : context.executiveFocus.threshold.toFixed(4)}" progress_debt_stale_ms="${context.executiveFocus?.score_basis?.progress_debt_stale_ms ?? "none"}"${membershipBudgetAttribute}>`,
-        `  <interpretation>Budgeted global goal snapshot. Membership fields say whether all rows_total index members appear and identify any exact ranked suffix omitted. The upstream snapshot is status-scoped; statuses_present names retained statuses, so absence may originate upstream or at this budget. Status and ages compare across rows. Expanded rows are the highest-scored retained members; disclosure never filters membership.</interpretation>`,
+        `  <interpretation>Budgeted global goal snapshot. Membership fields say whether all rows_total index members appear and identify any exact ranked suffix omitted. The upstream snapshot is status-scoped; statuses_present names retained statuses, so absence may originate upstream or at this budget. Status and ages compare across rows. Expanded rows are the highest-scored retained members plus the selected goal at any rank; disclosure never filters membership.</interpretation>`,
         "  <score_basis>x = 0.35*sp + 0.30*sd + 0.20*sc + 0.15*sdebt, clamped to [0,1]. sel=true means top x at or above focus_threshold, or that an autonomy trigger named the goal outright, in which case x did not decide it. sp is priority over the highest active priority. sd is 0 without a target, ramps as ta nears, and pins at 1.00 once ta is past. sdebt is the age at pa (or ca where no progress note exists) divided by the staleness window printed as progress_debt_stale_ms on this tag, clamped to 1.00 once the age exceeds that window: it rises with unblocked clock time and falls when a progress note is written, so a row already past the window reads 1.00 and stays there whatever its real age. sc is a cosine between the goal's stored vector and one embedding of this turn's context text - cognition input, perception entities, plus the autonomy payload on a triggered turn - recomputed from scratch each turn with nothing carried forward, so it tracks the wording in front of you and not accumulated attention. These are turn-selection scores. Inside an autonomy trigger payload sc is embedded against that payload alone, while sdebt uses this same progress_debt_stale_ms denominator. The separate executive-focus staleness cadence controls when the stale lane is eligible to wake; it does not rescale progress debt. Thus sc can differ across score_context values, while sdebt for the same goal and instant has one denominator.</score_basis>",
-        "  <field_legend>goal: i=id, s=status, ca=created_age, pa=last_progress_age, ta=target_rel, p=priority, x=global_executive_score, cp=counterparty_entity_id (absent means no counterparty recorded: either none was named, or the row was written before the field existed (compare cat with 2026-09-04T16:32Z)), dc=disclosure_class, oa=origin_audience, pt=private_to, pub=public_to, d=description. cp is the participant the responsibility runs toward, not an owner or audience. goal_detail adds sel=selected, rv=record_version, cat=created_at, tc=terminal_condition, pn=progress_notes, sp/sd/sc/sdebt=score priority/deadline_pressure/context_fit/progress_debt, er=executive_reason, owner=owner_entity_id, audience=audience_entity_id. rv counts writes to the row rather than edits to one field, and is a count, not a time: goals carry no last-written stamp, so no attribute here reports when the row last changed. rv-1 exceeding the row's non-create identity events marks a write that left no audit event, which is what a direct repair looks like from here. That comparison's other term is not on this page: no attribute here counts a row's identity events, and no reader offered to me inside a turn returns them, so rv can raise the question and never settle it alone. Those events carry the whole prior row, so a pn entry a later write replaced survives in them, out of reach from this page rather than gone. pn is an append-ordered log, not a current note: oldest entry first, so pa dates its tail and never its head. It is also an excerpt and not the log - a head slice and a tail slice of one text column that on an established goal runs to thousands of characters - so a long log has no middle here at all, and an entry missing from pn is not evidence it was never written. Appending is a habit of the writers that reach this field rather than a property the field enforces: every write replaces the whole column, the online turn reflector on user and autonomous turns and the retire verb replace it with the old text plus one line, and the operator progress writer replaces it with the single note it was handed. The reflector appends only when its own structured judgment says the turn made concrete movement; an emission alone does not write progress. So an entry can be rewritten or dropped by a write from outside a turn, nothing in the row marks that this happened, and rv counts such a write exactly as it counts an append. The excerpt is sized by a character budget, printed as field_excerpt_budget_chars on top_global_candidates_expanded and covering d, tc, pn and er alike, and that budget is spent on the whole excerpt including the marker that announces the cut. So the rendered= figure inside the marker is the budget less the marker's own length and never reaches it, and because the marker carries three numbers whose digit widths differ between rows, two rows can print different rendered= values under one unchanged budget: rendered= cannot be read back as the budget. The budget is a fixed size rather than a share, so a longer log earns no more of this page than a short one and the fraction of it reaching you falls as it grows. The one-line index rows carry a d of their own, sized against a separate, smaller, dynamically selected budget printed as description_excerpt_budget_chars on goal_index. A cut there uses a mechanical head+tail [ELIDED] marker with no rendered= figure, so its width cannot be read or compared through the expanded row marker. A budget printed on one container governs that container alone, so a number matching it elsewhere is a different budget that happens to agree. next_step: i=id, g=goal_id, sel=selected, k=kind, s=status, due=due_rel, attempt=last_attempt_age, dc/oa/pt/pub=disclosure label, d=description. The lane follows top_global_candidates_expanded membership and order: one top open step per expanded candidate that has one, doing before queued then by due date; sel=true marks the selected goal if present. executive_next_step_omitted_count at scope=expanded_candidates_top_open counts open steps beyond those per-goal tops. Steps of goals outside the expansion are not queried and remain uncounted. membership_order declares global executive score descending, then priority descending, created_at ascending, and id ascending. target_tokens prices the whole block: prose, rows, steps, counts, and markers. complete_membership=true means every rows_total goal has an index row. Otherwise goal_index_not_enumerated_budget=N, the marker total=N, and goal_index omitted_count=N all name the exact rank-ordered suffix excluded by the whole-block token budget. The status draw that decides which goals reach the snapshot runs before this index, so these fields report nothing about goals that draw left out.</field_legend>",
+        "  <field_legend>goal: i=id, s=status, ca=created_age, pa=last_progress_age, ta=target_rel, p=priority, x=global_executive_score, cp=counterparty_entity_id (absent means no counterparty recorded: either none was named, or the row was written before the field existed (compare cat with 2026-09-04T16:32Z)), dc=disclosure_class, oa=origin_audience, pt=private_to, pub=public_to, d=description. cp is the participant the responsibility runs toward, not an owner or audience. goal_detail adds sel=selected, rv=record_version, cat=created_at, tc=terminal_condition, pn=progress_notes, sp/sd/sc/sdebt=score priority/deadline_pressure/context_fit/progress_debt, er=executive_reason, owner=owner_entity_id, audience=audience_entity_id. rv counts writes to the row rather than edits to one field, though some writes leave it unchanged, and is a count, not a time: goals carry no last-written stamp, so no attribute here reports when the row last changed. rv-1 exceeding the row's non-create identity events marks a write that left no audit event. That comparison's other term is not on this page: no attribute here counts a row's identity events, and no reader offered to me inside a turn returns them, so rv can raise the question and never settle it alone. Those events carry the whole prior row, so a pn entry a later write replaced survives in them, out of reach from this page rather than gone. pn is an append-ordered log, not a current note: oldest entry first, so pa dates its tail and never its head. It is also an excerpt and not the log - a head slice and a tail slice of one text column that on an established goal runs to thousands of characters - so a long log has no middle here at all, and an entry missing from pn is not evidence it was never written. Appending is a habit of the writers that reach this field rather than a property the field enforces: every write replaces the whole column, the online turn reflector on user and autonomous turns and the retire verb replace it with the old text plus one line, and the operator progress writer replaces it with the single note it was handed. The reflector appends only when its own structured judgment says the turn made concrete movement; an emission alone does not write progress. So an entry can be rewritten or dropped by a write from outside a turn, nothing in the row marks that this happened, and rv counts such a write exactly as it counts an append. The excerpt is sized by a character budget, printed as field_excerpt_budget_chars on top_global_candidates_expanded and covering d, tc, pn and er alike, and that budget is spent on the whole excerpt including the marker that announces the cut. So the rendered= figure inside the marker is the budget less the marker's own length and never reaches it, and because the marker carries three numbers whose digit widths differ between rows, two rows can print different rendered= values under one unchanged budget: rendered= cannot be read back as the budget. The budget is a fixed size rather than a share, so a longer log earns no more of this page than a short one and the fraction of it reaching you falls as it grows. The one-line index rows carry a d of their own, sized against a separate, smaller, dynamically selected budget printed as description_excerpt_budget_chars on goal_index. A cut there uses a mechanical head+tail [ELIDED] marker with no rendered= figure, so its width cannot be read or compared through the expanded row marker. A budget printed on one container governs that container alone, so a number matching it elsewhere is a different budget that happens to agree. next_step: i=id, g=goal_id, sel=selected, k=kind, s=status, due=due_rel, attempt=last_attempt_age, dc/oa/pt/pub=disclosure label, d=description. The lane follows top_global_candidates_expanded membership and order: one top open step per expanded candidate that has one, doing before queued then by due date; sel=true marks the selected goal if present. executive_next_step_omitted_count at scope=expanded_candidates_top_open counts open steps beyond those per-goal tops. Steps of goals outside the expansion are not queried and remain uncounted. membership_order declares global executive score descending, then priority descending, created_at ascending, and id ascending. target_tokens prices the whole block: prose, rows, steps, counts, and markers. complete_membership=true means every rows_total goal has an index row. Otherwise goal_index_not_enumerated_budget=N, the marker total=N, and goal_index omitted_count=N all name the exact rank-ordered suffix excluded by the whole-block token budget. The status draw that decides which goals reach the snapshot runs before this index, so these fields report nothing about goals that draw left out.</field_legend>",
         ...(goals.some((goal) => goal.status === "blocked" || (goal.block_history?.length ?? 0) > 0)
           ? [
               "  <block_state_legend>block_state carries the blocker, attempt declaration, blocked_at, reason, optional artifact handle, and intervals with unblock bases and their own disclosure labels. legacy_unknown means the blocker, attempt and start were not recorded; it remains blocked until a manual release. Absent means no history recorded. Blocked goals remain recalled and unscored, without scheduling pressure. Known intervals pause sdebt after real progress and sd only after target_assigned_at; null assignment is unknown, never guessed. Actual progress and target dates stay unchanged.</block_state_legend>",
@@ -617,7 +632,7 @@ export function renderGoalDigest(context: DeliberationContext): RenderedPlannerS
             ]),
         `    <omitted_count>${indexOmissionCount}</omitted_count>`,
         "  </goal_index>",
-        `  <top_global_candidates_expanded limit="${PLANNER_GOAL_EXPANSION_LIMIT}" field_excerpt_budget_chars="${PLANNER_GOAL_EXPANDED_FIELD_CHARS}">`,
+        `  <top_global_candidates_expanded limit="${PLANNER_GOAL_EXPANSION_LIMIT}" rows="${expandedGoals.rows.length}" selected_goal_expanded="${expandedGoals.selectedGoalExpanded ?? "none"}" field_excerpt_budget_chars="${PLANNER_GOAL_EXPANDED_FIELD_CHARS}">`,
         ...expandedGoals.rows.map((row) => `    ${row}`),
         `    <omitted_count>${expandedGoals.omissionCount}</omitted_count>`,
         "  </top_global_candidates_expanded>",
@@ -1797,7 +1812,7 @@ function renderPlannerAuthorityDirectiveIndexText(input: {
 }): string {
   return [
     `<creator_directive_index rows_total_for_current_audience="${input.rows.length}" rows_omitted_after_current_audience_scope="0" payload_excerpt_budget_chars="${input.excerptBudget}" complete_for_current_audience="true">`,
-    "  <interpretation>This index is complete for the current audience: it lists every active directive this audience's disclosure policy admits. Directives scoped away from this audience are omitted, so absence here is not evidence one does not exist. Excerpts are mechanical head+tail cuts, never summaries. dh=pk facts guide orientation but are not proactively disclosed; do not deny or feign ignorance, and follow mp if raised. dh=po rules govern behavior but are never quoted, revealed, confirmed, or implied as creator instructions unless separately authorized. dh=b enforces confidentiality without revealing, confirming, denying, or implying the private matter.</interpretation>",
+    "  <interpretation>This index is complete for the current audience: it lists every active directive this audience's disclosure policy admits. Directives scoped away from this audience are omitted, so absence here is not evidence one does not exist. rows_omitted_after_current_audience_scope counts only rows dropped after that scoping, by truncation or budget; no path here drops rows, so it reads zero on every turn. It is never a count of the directives the scope removed, and that count is deliberately not disclosed to this audience; a zero there says nothing about how many exist outside it. Excerpts are mechanical head+tail cuts, never summaries. dh=pk facts guide orientation but are not proactively disclosed; do not deny or feign ignorance, and follow mp if raised. dh=po rules govern behavior but are never quoted, revealed, confirmed, or implied as creator instructions unless separately authorized. dh=b enforces confidentiality without revealing, confirming, denying, or implying the private matter.</interpretation>",
     "  <field_legend>d: i=alias; sc c=content, pk=private_knowledge, po=private_operation, b=boundary; k si=self_identity, sf=subject_fact, db=disclosure_boundary, rp=response_policy, ri=routing_instruction; dh a=current-audience content, pk/po/b=the disclosure handling above; sps=scope policy status; when sps=exact, di=directive id, cb=created-by entity, os=origin session, cs=content scope, ae/xe=allowed/excluded entity ids, smk=subject-may-know, dab=denied-audience behavior, as=activation scope, aae/axe=activation allowed/excluded ids; sk/sl/sx=subject kind/label/excerpt shape; ss=semantic_slot; mp=exact mention_policy; pk sv=semantic_value, cf=canonical_fact, op=operational_directive, bp=boundary_prompt; px f|h|m:included/total; v=payload; [ELIDED]=visible cut.</field_legend>",
     ...input.rows.map((row) => `  ${row}`),
     "</creator_directive_index>",
@@ -1965,23 +1980,28 @@ function renderTurnStateSkill(context: DeliberationContext): RenderedTurnStateFr
   };
 }
 
+const PLANNER_AUTONOMY_TRIGGER_MAX_CHARS = 4_000;
+
 function renderTurnStateAutonomyTrigger(
   context: DeliberationContext,
   disclosureAttribute: string,
 ): RenderedTurnStateFragment {
-  const autonomyTrigger =
-    context.autonomyTrigger === null || context.autonomyTrigger === undefined
-      ? null
-      : headTailPlannerExcerpt(formatAutonomyTriggerContext(context.autonomyTrigger), 4_000);
+  const trigger = context.autonomyTrigger;
+  if (trigger === null || trigger === undefined) {
+    return { lines: [], rowCount: 0, truncationCount: 0, omissionCount: 0 };
+  }
+  // Bound the payload structurally at the planner's cap, so a presented question's id and text
+  // outlast its evidence; a head+tail crop of the shared rendering cut whole questions out of the
+  // middle. The crop remains for structure that stays whole and still exceeds the cap.
+  const formatted = formatAutonomyTriggerContext(trigger, PLANNER_AUTONOMY_TRIGGER_MAX_CHARS);
+  const autonomyTrigger = headTailPlannerExcerpt(formatted, PLANNER_AUTONOMY_TRIGGER_MAX_CHARS);
   return {
-    lines:
-      autonomyTrigger === null
-        ? []
-        : [
-            `  <autonomy_trigger disclosure="${disclosureAttribute}">${escapeXmlText(autonomyTrigger.text)}</autonomy_trigger>`,
-          ],
-    rowCount: autonomyTrigger === null ? 0 : 1,
-    truncationCount: autonomyTrigger?.truncated === true ? 1 : 0,
+    lines: [
+      `  <autonomy_trigger disclosure="${disclosureAttribute}">${escapeXmlText(autonomyTrigger.text)}</autonomy_trigger>`,
+    ],
+    rowCount: 1,
+    truncationCount:
+      autonomyTrigger.truncated || formatted !== formatAutonomyTriggerContext(trigger) ? 1 : 0,
     omissionCount: 0,
   };
 }

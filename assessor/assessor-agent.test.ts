@@ -110,6 +110,7 @@ describe("AssessorAgent", () => {
     expect(result.turns[0]?.traceSummary).toBeUndefined();
     expect(result.usage.llmCalls).toBe(3);
     expect(calls).toHaveLength(3);
+    for (const call of calls) expect(call).toMatchObject({ output_config: { effort: "high" } });
     expect(JSON.stringify(calls[0])).toContain("untrusted evidence");
     expect(JSON.stringify(calls[1])).toContain("<borg_response");
     expect(JSON.stringify(calls[1])).toContain("Otto is the dog.");

@@ -75,7 +75,7 @@ function normalizeActivationPolicy(policy: ActivationPolicy): ActivationPolicy {
   });
 }
 
-function mapCreatorDirectiveRow(row: Record<string, unknown>): CreatorDirective {
+export function mapCreatorDirectiveRow(row: Record<string, unknown>): CreatorDirective {
   const disclosurePolicy = disclosurePolicySchema.parse({
     content_scope: row.content_scope,
     allowed_entity_ids: parseStoredArray<EntityId>(row.allowed_entity_ids, "allowed_entity_ids"),

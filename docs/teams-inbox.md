@@ -559,6 +559,12 @@ must already exist with `source_type: "teams_inbox"`; otherwise 404. The route a
 occurred_at, outcome, origin }`. `(tenant, sidecar_session_id, event_id)` is the idempotency
 key: repeat submissions return the original entry id, preserve its original payload, and
 append nothing. Both new and duplicate submissions notify the session's task-event lane.
+When a context caller needs to exclude a known protocol event from episodic recall, it can pass
+that returned `entry_id` in `exclude.source_stream_ids` (or list known `exclude.episode_ids`).
+Episodes retain these source IDs, but have no task-event producer field of their own. The sidecar
+does not infer protocol provenance from titles or narrative strings such as `decision=`. Legacy
+`title_prefixes` / `narrative_markers` exclusions are rejected with HTTP 400; clients must send
+structural IDs instead. See [memory context exclusions](memory-context.md#time-scoping-and-exclusions-on-episodes-post-memorycontext-and-post-memoryrecall).
 A poisoned stream index is repaired before checking for duplicates. If repair is unavailable,
 the request fails without another append; a retry returns the original committed event after
 repair succeeds.
@@ -901,7 +907,7 @@ bridge claim/ack polling. End-to-end delivery requires that separate rollout.
 
 ## Rollout order
 
-### Migration band remap for banks created before the 2026-09-08 upstream merge
+### Automatic migration name reconciliation (supersedes the manual band remap)
 
 The migration runner reconciles applied migrations by name at startup, updating
 their recorded ids in one transaction while preserving `applied_at`. Band moves
@@ -909,6 +915,14 @@ and source-id renumbering need no operator action. If a target id is occupied by
 a different migration name absent from the current build, startup fails closed
 with a `StorageError` naming both migrations. That error indicates an ambiguous
 migration history that needs investigation before the bank can be opened.
+
+Do not run the old manual `_migrations` ID-update recipe before this build. Its purpose is
+superseded by name reconciliation. Migration names must never be renamed. The Sol demo
+bank's 73-row ledger already uses the composed IDs: no row moves; the four pending IDs
+are 16000006, 16000007, 28000001 and 28000002. Existing timestamps are preserved, and a
+second run changes nothing. The separate embedding-profile preflight must succeed before
+startup reaches SQLite migration; an unlabeled legacy bank must first be stopped, backed
+up and explicitly labeled with its known source model/dimensions.
 
 1. borg (sidecar): routes and runner ship inert; no session has `source_type: "teams_inbox"`
    until something enqueues.

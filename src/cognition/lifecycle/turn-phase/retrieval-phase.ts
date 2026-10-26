@@ -814,6 +814,7 @@ export async function runRetrievalPhase(input: {
           // after that, so using it dated every count in the block by the
           // whole retrieval span rather than by the ledger/compile gap the
           // surface says it is naming.
+          dormantGoals: description.dormant_goals,
           observedAt: description.observed_at,
           enabled: description.enabled,
           tickInFlight: description.tick_in_flight,
@@ -1163,6 +1164,41 @@ export async function runRetrievalPhase(input: {
   };
 }
 
+// Each shared-state row cites the stream entries it was written from, and the artifact stores those
+// as bare ids. Only the entry index knows what any of them was, so an id that has fallen out of the
+// rendered transcript carries no source at all -- the rows whose provenance is oldest are exactly
+// the ones that read as anonymous. Resolve the cited entries' wire kinds here, at the one place the
+// ledger's render options are finalized, rather than inside the compile: the compile can return
+// before it builds render options, and a label that came and went with whether a turn had
+// shared-state work to do would say nothing about the rows being rendered.
+function withSharedStateCitationSourceKinds(input: {
+  options: ReturnType<typeof sharedStateRenderOptions>;
+  artifact: SharedStateArtifact | null;
+  entryIndex?: Pick<NonNullable<TurnPhaseCoordinatorOptions["entryIndex"]>, "lookupMany">;
+}): ReturnType<typeof sharedStateRenderOptions> {
+  if (input.entryIndex === undefined || input.artifact === null) {
+    return input.options;
+  }
+
+  const citedStreamEntryIds = [
+    ...new Set(input.artifact.entries.flatMap((entry) => entry.provenance_stream_entry_ids)),
+  ];
+
+  if (citedStreamEntryIds.length === 0) {
+    return input.options;
+  }
+
+  const sourceKindByStreamEntryId: Record<string, string> = {};
+
+  for (const [streamEntryId, record] of input.entryIndex.lookupMany(citedStreamEntryIds)) {
+    if (record.kind !== null) {
+      sourceKindByStreamEntryId[streamEntryId] = record.kind;
+    }
+  }
+
+  return { ...input.options, sourceKindByStreamEntryId };
+}
+
 async function buildEvidenceLedgerFinalizerContext(input: {
   options: TurnPhaseCoordinatorOptions;
   input: EvidenceLedgerFinalizerBuildInput;
@@ -1241,8 +1277,11 @@ async function buildEvidenceLedgerFinalizerContextInternal(input: {
     ledger: ledgerWithoutSharedState,
     promptVisibleLedger: renderedWithoutSharedState ?? "",
   });
-  const renderOptions =
-    sharedStateResult.renderOptions ?? sharedStateRenderOptions(input.options.config);
+  const renderOptions = withSharedStateCitationSourceKinds({
+    options: sharedStateResult.renderOptions ?? sharedStateRenderOptions(input.options.config),
+    artifact: previousSharedState,
+    entryIndex: input.options.entryIndex,
+  });
   const ledger = withSharedStateArtifact(
     ledgerWithoutSharedState,
     previousSharedState,
@@ -1336,6 +1375,8 @@ export async function buildCompactedEvidenceLedgerWithoutSharedState(input: {
     sourceStreamAudienceDisclosureResolver: input.options.sourceStreamAudienceDisclosureResolver,
     goalsRepository: input.options.goalsRepository,
     openQuestionsRepository: input.options.openQuestionsRepository,
+    semanticNodeRepository: input.options.semanticNodeRepository,
+    episodicRepository: input.options.episodicRepository,
     currentSessionTranscriptTokenBudget: config.currentSessionTranscriptTokenBudget,
     actionThreadRenderLimit: config.actionThreadRenderLimit,
     actionThreadSimilarityThreshold: similarityThresholds(input.options.config).actionThread,

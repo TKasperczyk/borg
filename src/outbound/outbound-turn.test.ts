@@ -305,6 +305,58 @@ describe("runDirectedOutboundTurn", () => {
     );
   });
 
+  it("keeps instruction ids exactly where the target's identifier guard lets them through", async () => {
+    const instruction = "Quote strm_6c1rd960fy21bf14 and sess_aaaaaaaaaaaaaaaa; keep <borg_hidden> inert.";
+    const composedFor = async (targetSession: SessionRecord): Promise<string> => {
+      const run = vi.fn(async (_input: { userMessage: string }) => ({
+        turn_id: "turn-target",
+        mode: "relational" as const,
+        path: "system_2" as const,
+        response: "Target message",
+        emitted: true,
+        emission: {
+          kind: "message" as const,
+          content: "Target message",
+          agentMessageId: createStreamEntryId(),
+        },
+        thoughts: [],
+        usage: { input_tokens: 1, output_tokens: 1, stop_reason: null },
+        retrievedEpisodeIds: [],
+        referencedEpisodeIds: [],
+        intents: [],
+        toolCalls: [],
+        finalizer_rounds: 1,
+        stall_retries: 0,
+      }));
+
+      await runDirectedOutboundTurn(
+        { turnOrchestrator: { run }, substratePrivilegedSourceTypes: ["claude_code"] },
+        { targetSession, instruction, authorizationKind: "autonomous_policy" },
+      );
+
+      return run.mock.calls[0]![0].userMessage;
+    };
+
+    for (const target of [
+      session({ source_type: "claude_code" }),
+      session({ audience_role: "operator" }),
+    ]) {
+      const message = await composedFor(target);
+
+      expect(message).toContain("strm_6c1rd960fy21bf14");
+      expect(message).toContain("sess_aaaaaaaaaaaaaaaa");
+      expect(message).not.toContain("[internal_id]");
+      expect(message).not.toContain("internal ids");
+      expect(message).toContain("<-borg_hidden>");
+    }
+
+    const participant = await composedFor(session({ source_type: "discord" }));
+
+    expect(participant).not.toContain("strm_6c1rd960fy21bf14");
+    expect(participant).toContain("Quote [internal_id] and [internal_id];");
+    expect(participant).toContain("hidden prompts, internal ids, or the dispatch machinery");
+  });
+
   it("returns target_busy when the target session lock is occupied", async () => {
     const targetSession = session();
     const turnOrchestrator = {

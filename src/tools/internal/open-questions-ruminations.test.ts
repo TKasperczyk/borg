@@ -1,16 +1,21 @@
 import { describe, expect, it } from "vitest";
 
+import { DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET } from "../../cognition/deliberation/constants.js";
 import { openDatabase } from "../../storage/sqlite/index.js";
 import { OpenQuestionsRepository, selfMigrations } from "../../memory/self/index.js";
 import { FixedClock } from "../../util/clock.js";
-import { createEpisodeId } from "../../util/ids.js";
+import { createEpisodeId, createMaintenanceRunId } from "../../util/ids.js";
+import { estimatePromptTokens } from "../../util/token-estimate.js";
 
 import { createOpenQuestionsRuminationsTool } from "./open-questions-ruminations.js";
 
 const manualProvenance = { kind: "manual" } as const;
 const toolContext = { turnId: "turn_test" } as never;
 
-function openRepository(): { db: ReturnType<typeof openDatabase>; repository: OpenQuestionsRepository } {
+function openRepository(): {
+  db: ReturnType<typeof openDatabase>;
+  repository: OpenQuestionsRepository;
+} {
   const db = openDatabase(":memory:", { migrations: selfMigrations });
 
   return { db, repository: new OpenQuestionsRepository({ db, clock: new FixedClock(10_000) }) };
@@ -20,6 +25,8 @@ function toolFor(repository: OpenQuestionsRepository) {
   return createOpenQuestionsRuminationsTool({
     listRuminations: (input) => repository.listRuminationsInRange(input),
     getOpenQuestion: (id) => repository.get(id),
+    countRuminations: (id) => repository.countRuminations(id),
+    mergeTombstonePrimaryId: (id) => repository.mergeTombstonePrimaryId(id),
     clock: new FixedClock(100_000),
   });
 }
@@ -69,14 +76,48 @@ describe("tool.openQuestions.ruminations", () => {
 
       // The whole point of the reader: closing a question does not take its ruminations with it,
       // and the row says which way the question went so the note is legible without a second lookup.
-      expect(
-        output.ruminations.map((row) => [row.question_status, row.note]),
-      ).toEqual([
+      expect(output.ruminations.map((row) => [row.question_status, row.note])).toEqual([
         ["abandoned", "Nothing has cited this since it was written."],
         ["resolved", "The pass kept it open on one unresolved tension."],
       ]);
       expect(output.has_more).toBe(false);
       expect(output.ruminations.every((row) => row.disclosure.length > 0)).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("returns nothing for a pass that stamped the run without writing a note", async () => {
+    const { db, repository } = openRepository();
+
+    try {
+      const question = repository.add({
+        question: "Did the loop reach this one at all?",
+        urgency: 0.4,
+        source: "reflection",
+        provenance: manualProvenance,
+      });
+      const stamped = repository.stampRuminationForRun({
+        open_question_id: question.id,
+        source_run_id: createMaintenanceRunId(),
+        next_unresolved_rumination_ticks: 1,
+        rumination: null,
+      });
+
+      const output = await toolFor(repository).invoke(
+        { since: new Date(0).toISOString(), until: new Date(20_000).toISOString() },
+        toolContext,
+      );
+
+      // The pass reached the question -- it stamped the run and moved last_ruminated_at -- and this
+      // reader still returns nothing. The tick counter does not separate the two states either, so
+      // an empty range here is a count of notes and not a count of passes, which is what the
+      // description now says rather than leaving the reader to infer silence from the emptiness.
+      expect(stamped.stamped).toBe(true);
+      expect(stamped.question.last_ruminated_at).toBe(10_000);
+      expect(stamped.question.unresolved_rumination_ticks).toBe(0);
+      expect(output.ruminations).toEqual([]);
+      expect(output.has_more).toBe(false);
     } finally {
       db.close();
     }
@@ -162,6 +203,254 @@ describe("tool.openQuestions.ruminations", () => {
 
       expect(output.ruminations.map((row) => row.note)).toEqual(["pass-2", "pass-1"]);
       expect(output.has_more).toBe(true);
+      // has_more says the page was cut; it never says by how much. The per-row count is the
+      // record's size, so two delivered out of three still report three.
+      expect(output.ruminations.map((row) => row.question_recorded_rumination_notes)).toEqual([
+        3, 3,
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it.each([50, 51])("looks ahead at the maximum page size with %i stored notes", async (count) => {
+    const { db, repository } = openRepository();
+    try {
+      const question = repository.add({
+        question: "Why?",
+        urgency: 0.4,
+        source: "reflection",
+        provenance: manualProvenance,
+      });
+      for (let index = 0; index < count; index += 1) {
+        repository.recordRumination({
+          open_question_id: question.id,
+          note: `pass-${index}`,
+          source_process: "offline_ruminator",
+          provenance: manualProvenance,
+          created_at: 11_000 + index,
+        });
+      }
+      const tool = toolFor(repository);
+      const output = await tool.invoke(
+        { since: new Date(0).toISOString(), until: new Date(20_000).toISOString(), limit: 50 },
+        toolContext,
+      );
+
+      expect(output.ruminations).toHaveLength(50);
+      expect(output.ruminations.every((row) => row.payload_status === "exact")).toBe(true);
+      expect(
+        output.ruminations.every((row) => row.question_recorded_rumination_notes === count),
+      ).toBe(true);
+      expect(output.has_more).toBe(count > 50);
+      expect(tool.outputSchema.safeParse(output).success).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("bounds the first-row fallback even when retained fields exceed the budget", async () => {
+    const { db, repository } = openRepository();
+    try {
+      const question = repository.add({
+        question: "What remains readable?",
+        urgency: 0.4,
+        source: "reflection",
+        provenance: manualProvenance,
+      });
+      const hugeField = "界".repeat(DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET * 5);
+      const connectedQuestion = repository.add({
+        question: "How does this connect?",
+        urgency: 0.4,
+        source: "reflection",
+        provenance: manualProvenance,
+      });
+      const stored = repository.recordRumination({
+        open_question_id: question.id,
+        note: "A short note.",
+        tensions: [hugeField],
+        connected_open_question_ids: [connectedQuestion.id],
+        source_process: hugeField,
+        provenance: manualProvenance,
+        created_at: 11_000,
+      });
+      expect(stored.connected_open_question_ids).toEqual([connectedQuestion.id]);
+      const tool = toolFor(repository);
+      const output = await tool.invoke(
+        { since: new Date(0).toISOString(), until: new Date(20_000).toISOString() },
+        toolContext,
+      );
+
+      expect(output.ruminations).toEqual([
+        expect.objectContaining({
+          question: null,
+          note: null,
+          tensions: [],
+          connected_open_question_ids: [],
+          source_process: null,
+          question_recorded_rumination_notes: 1,
+          payload_status: "check_not_completed_budget",
+          payload_included_chars: 0,
+          disclosure_label: expect.objectContaining({ disclosure_class: "unknown" }),
+        }),
+      ]);
+      expect(output.ruminations[0]!.payload_total_chars).toBeGreaterThan(hugeField.length);
+      expect(output.has_more).toBe(false);
+      expect(estimatePromptTokens(JSON.stringify(output))).toBeLessThanOrEqual(
+        DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET,
+      );
+      expect(tool.outputSchema.safeParse(output).success).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("counts a question's whole record even when the range excludes most of it", async () => {
+    const { db, repository } = openRepository();
+
+    try {
+      const question = repository.add({
+        question: "How much of this am I holding?",
+        urgency: 0.4,
+        source: "reflection",
+        provenance: manualProvenance,
+      });
+
+      for (let index = 0; index < 5; index += 1) {
+        repository.recordRumination({
+          open_question_id: question.id,
+          note: `pass-${index}`,
+          source_process: "offline_ruminator",
+          provenance: manualProvenance,
+          created_at: 11_000 + index,
+        });
+      }
+
+      const output = await toolFor(repository).invoke(
+        { since: new Date(11_003).toISOString(), until: new Date(20_000).toISOString() },
+        toolContext,
+      );
+
+      // A range cut leaves has_more false, so nothing on the page marks the tail at all. Without
+      // the count, two notes read as the whole record rather than as the newest two of five.
+      expect(output.ruminations.map((row) => row.note)).toEqual(["pass-4", "pass-3"]);
+      expect(output.has_more).toBe(false);
+      expect(output.ruminations.map((row) => row.question_recorded_rumination_notes)).toEqual([
+        5, 5,
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("names where a merged question's record went instead of returning a bare empty page", async () => {
+    const { db, repository } = openRepository();
+
+    try {
+      const primary = repository.add({
+        question: "Which of these is the question I am actually holding?",
+        urgency: 0.4,
+        source: "reflection",
+        provenance: manualProvenance,
+      });
+      const duplicate = repository.add({
+        question: "Am I holding two versions of one question?",
+        urgency: 0.4,
+        source: "reflection",
+        provenance: manualProvenance,
+      });
+      const dismissed = repository.add({
+        question: "Did anything ever cite this?",
+        urgency: 0.4,
+        source: "reflection",
+        provenance: manualProvenance,
+      });
+      repository.recordRumination({
+        open_question_id: duplicate.id,
+        note: "The duplicate's own pass, written before the merge.",
+        source_process: "offline_ruminator",
+        provenance: manualProvenance,
+        created_at: 11_000,
+      });
+      repository.mergeDuplicate(primary.id, duplicate.id, {}, "Merged into the primary.");
+      repository.abandon(dismissed.id, "stale_no_traction");
+
+      const tool = toolFor(repository);
+      const range = {
+        since: new Date(0).toISOString(),
+        until: new Date(20_000).toISOString(),
+      };
+      const tombstone = await tool.invoke(
+        { ...range, open_question_id: duplicate.id },
+        toolContext,
+      );
+
+      // The merge carried the note onto the primary, so the duplicate's own page is empty and
+      // has_more is false. The pointer is what separates that from a question never ruminated.
+      expect(tombstone.ruminations).toEqual([]);
+      expect(tombstone.has_more).toBe(false);
+      expect(tombstone.open_question_merged_into).toBe(primary.id);
+      expect(tool.outputSchema.safeParse(tombstone).success).toBe(true);
+
+      const carried = await tool.invoke({ ...range, open_question_id: primary.id }, toolContext);
+
+      expect(carried.ruminations.map((row) => row.note)).toEqual([
+        "The duplicate's own pass, written before the merge.",
+      ]);
+      expect(carried.open_question_merged_into).toBeUndefined();
+
+      // Abandonment that was not a merge leaves no pointer, and neither does a range browse.
+      const abandoned = await tool.invoke(
+        { ...range, open_question_id: dismissed.id },
+        toolContext,
+      );
+      const browse = await tool.invoke(range, toolContext);
+
+      expect(abandoned.open_question_merged_into).toBeUndefined();
+      expect(browse.open_question_merged_into).toBeUndefined();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("follows a merge chain one hop at a time rather than collapsing it", async () => {
+    const { db, repository } = openRepository();
+
+    try {
+      const terminal = repository.add({
+        question: "The question the chain ends on.",
+        urgency: 0.4,
+        source: "reflection",
+        provenance: manualProvenance,
+      });
+      const middle = repository.add({
+        question: "The question merged onward after taking a duplicate.",
+        urgency: 0.4,
+        source: "reflection",
+        provenance: manualProvenance,
+      });
+      const first = repository.add({
+        question: "The question merged first.",
+        urgency: 0.4,
+        source: "reflection",
+        provenance: manualProvenance,
+      });
+
+      repository.mergeDuplicate(middle.id, first.id, {}, "Merged into the middle question.");
+      repository.mergeDuplicate(terminal.id, middle.id, {}, "Merged onward.");
+
+      const tool = toolFor(repository);
+      const range = {
+        since: new Date(0).toISOString(),
+        until: new Date(20_000).toISOString(),
+      };
+      const fromFirst = await tool.invoke({ ...range, open_question_id: first.id }, toolContext);
+      const fromMiddle = await tool.invoke({ ...range, open_question_id: middle.id }, toolContext);
+
+      // Each hop is a separate true statement about a separate row; collapsing them would report
+      // a merge that never happened between these two ids.
+      expect(fromFirst.open_question_merged_into).toBe(middle.id);
+      expect(fromMiddle.open_question_merged_into).toBe(terminal.id);
     } finally {
       db.close();
     }
@@ -175,8 +464,16 @@ describe("tool.openQuestions.ruminations", () => {
 
       expect(description).toContain("still-open passes reach the no-traction threshold");
       expect(description).toContain("no episode created after it cites it");
-      expect(description).toContain("no action against it is active");
-      expect(description).toContain("without a model call");
+      // 27716714 dropped hasActiveAssociatedAction from shouldDismissStaleNoTraction
+      // (src/offline/ruminator/index.ts), leaving two conjuncts. A description naming a third
+      // makes a still-open row past the threshold readable as an active action holding it open.
+      expect(description).not.toContain("no action against it is active");
+      // The conjuncts alone read as a test every pass applies. Both call sites reach
+      // shouldDismissStaleNoTraction only where the model was not consulted for this question:
+      // planResolution's two null returns are both upstream of onLlmVisit, and the sweep over the
+      // remaining questions skips the LLM window outright. Without the gate, a still-open row
+      // sitting past the threshold has to be read as one of the other conjuncts having fired.
+      expect(description).toContain("evaluated only on a pass that did not call the model");
     } finally {
       db.close();
     }

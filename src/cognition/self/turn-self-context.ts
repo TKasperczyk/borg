@@ -1,7 +1,7 @@
 import {
   computeExecutiveContextFits,
+  expandedExecutiveCandidateGoalIds,
   selectExecutiveFocus,
-  topExecutiveCandidateGoalIds,
 } from "../../executive/index.js";
 import type { ExecutiveFocus, ExecutiveStepsRepository } from "../../executive/index.js";
 import type { EmbeddingClient } from "../../embeddings/index.js";
@@ -37,11 +37,11 @@ import { PLANNER_GOAL_EXPANSION_LIMIT } from "../deliberation/constants.js";
 
 export type TurnSelfContextOptions = {
   embeddingClient: EmbeddingClient;
-  valuesRepository: Pick<ValuesRepository, "list"> & Partial<Pick<ValuesRepository, "count">>;
+  valuesRepository: Pick<ValuesRepository, "list">;
   goalsRepository: Pick<GoalsRepository, "list"> &
     Partial<Pick<GoalsRepository, "reconcileBlocks">>;
   sourceStreamAudienceDisclosureResolver?: SourceStreamAudienceDisclosureResolver;
-  traitsRepository: Pick<TraitsRepository, "list"> & Partial<Pick<TraitsRepository, "count">>;
+  traitsRepository: Pick<TraitsRepository, "list">;
   autobiographicalRepository?: Pick<AutobiographicalRepository, "currentPeriod">;
   growthMarkersRepository?: Pick<GrowthMarkersRepository, "list">;
   executiveStepsRepository: Pick<ExecutiveStepsRepository, "topOpenForGoals">;
@@ -173,13 +173,9 @@ export class TurnSelfContextBuilder {
     const goals =
       this.options.sourceStreamAudienceDisclosureResolver?.resolve({ goals: rawGoals }).goals ??
       rawGoals;
+    // Values and traits must remain global, uncapped draws.
     const values = this.options.valuesRepository.list();
     const traits = this.options.traitsRepository.list();
-    // Counted by their own statements, not by measuring the draws above, so a
-    // renderer can check "I printed all of them" against a number the draw did
-    // not produce.
-    const valuesStoredTotal = this.options.valuesRepository.count?.();
-    const traitsStoredTotal = this.options.traitsRepository.count?.();
     const currentPeriod = this.options.autobiographicalRepository?.currentPeriod() ?? null;
     const recentGrowthMarkers = this.options.growthMarkersRepository?.list({ limit: 3 }) ?? [];
 
@@ -187,8 +183,6 @@ export class TurnSelfContextBuilder {
       values,
       goals,
       traits,
-      valuesStoredTotal,
-      traitsStoredTotal,
       currentPeriod,
       recentGrowthMarkers,
     };
@@ -278,19 +272,16 @@ export class TurnSelfContextBuilder {
       selfFeatures: selfScoringFeatures,
       primaryGoalId: executiveFocus.selected_goal?.id ?? null,
     });
-    const expandedCandidateGoalIds = topExecutiveCandidateGoalIds({
+    const selectedGoalId = executiveFocus.selected_goal?.id ?? null;
+    const expandedCandidateGoalIds = expandedExecutiveCandidateGoalIds({
       candidates: executiveFocus.candidates,
       eligibleGoalIds: new Set(selfSnapshot.goals.map((goal) => goal.id)),
       limit: PLANNER_GOAL_EXPANSION_LIMIT,
+      selectedGoalId,
     });
-    const selectedGoalId = executiveFocus.selected_goal?.id ?? null;
-    const queriedGoalIds =
-      selectedGoalId === null || expandedCandidateGoalIds.includes(selectedGoalId)
-        ? expandedCandidateGoalIds
-        : [...expandedCandidateGoalIds, selectedGoalId];
     const topOpenByGoalId = new Map(
       this.options.executiveStepsRepository
-        .topOpenForGoals(queriedGoalIds)
+        .topOpenForGoals(expandedCandidateGoalIds)
         .map((result) => [result.goal_id, result]),
     );
     const annotateStep = (goalId: GoalId) => {

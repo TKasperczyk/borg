@@ -22,6 +22,7 @@ import {
   type EntityId,
 } from "../../../util/ids.js";
 import type { DeliberationContext, SelfSnapshotGoal } from "../types.js";
+import { formatAutonomyTriggerContext } from "../../autonomy-trigger.js";
 import { OUTBOUND_POST_TOOL_NAME } from "../../../tools/internal/outbound-post-name.js";
 import { buildBaseSystemPrompt } from "./system-prompt.js";
 import {
@@ -552,6 +553,9 @@ describe("compact planner context", () => {
     expect(text).toContain('directives_rendered="18"');
     expect(text).toContain('<creator_directive_index rows_total_for_current_audience="18"');
     expect(text).toContain('rows_omitted_after_current_audience_scope="0"');
+    expect(text).toContain(
+      "rows_omitted_after_current_audience_scope counts only rows dropped after that scoping, by truncation or budget; no path here drops rows, so it reads zero on every turn. It is never a count of the directives the scope removed, and that count is deliberately not disclosed to this audience; a zero there says nothing about how many exist outside it.",
+    );
     expect(rows).toHaveLength(18);
     expect(rows.map((row) => row.match(/i="([^"]+)"/)?.[1])).toEqual(
       Array.from({ length: 18 }, (_, index) => `cd_${index + 1}`),
@@ -1306,6 +1310,73 @@ describe("compact planner context", () => {
     expect(planner.traceSummary.sections.goal_index?.estimatedTokens).toBeLessThanOrEqual(
       PLANNER_GOAL_TARGET_TOKENS,
     );
+  });
+
+  it("expands the selected goal whatever its rank, and says which case the render is", () => {
+    const goals = Array.from({ length: 6 }, (_, index) =>
+      goal(`GOAL_${index}`, { terminal_condition: `CLOSES_WHEN_${index}` }),
+    );
+    const candidates = goals.map((candidate, index) => ({
+      goal_id: candidate.id,
+      goal: candidate,
+      score: 1 - index / 10,
+      components: {
+        priority: 1,
+        deadline_pressure: 1,
+        context_fit: 1,
+        progress_debt: 1,
+      },
+      reason: `REASON_${index}`,
+    }));
+    const focus = (selectedIndex: number | null) => ({
+      selected_goal: selectedIndex === null ? null : goals[selectedIndex]!,
+      selected_score: selectedIndex === null ? null : candidates[selectedIndex]!,
+      candidates,
+      threshold: 0.45,
+      score_basis: {
+        score_context: "turn_selection" as const,
+        deadline_lookahead_ms: 1,
+        progress_debt_stale_ms: 1,
+      },
+    });
+    const expandedBlockFor = (selectedIndex: number | null) =>
+      taggedBlock(
+        allSystemText(
+          build(
+            context({
+              selfSnapshot: { values: [], goals, traits: [] },
+              executiveFocus: focus(selectedIndex),
+            }),
+          ),
+        ),
+        "top_global_candidates_expanded",
+      );
+    // A trigger that names a goal outright forces the selection past the score
+    // sort, so the goal the turn is about can rank below every goal the limit
+    // admits. Expanding by rank alone would print four goals the turn is not
+    // about in full and leave this one with no closing condition at all.
+    const forced = expandedBlockFor(5);
+    const forcedIds = [...forced.matchAll(/<goal_detail i="([^"]+)"/g)].map((match) => match[1]);
+
+    expect(forcedIds).toEqual([...goals.slice(0, 4), goals[5]!].map((entry) => entry.id));
+    expect(forced).toContain('rows="5"');
+    expect(forced).toContain('selected_goal_expanded="true"');
+    expect(forced).toContain('tc="CLOSES_WHEN_5"');
+    expect(forced).toContain(`<goal_detail i="${goals[5]!.id}" s="active" sel="true"`);
+    expect(forced).toContain("<omitted_count>1</omitted_count>");
+
+    const ranked = expandedBlockFor(0);
+    const rankedIds = [...ranked.matchAll(/<goal_detail i="([^"]+)"/g)].map((match) => match[1]);
+
+    expect(rankedIds).toEqual(goals.slice(0, 4).map((entry) => entry.id));
+    expect(ranked).toContain('rows="4"');
+    expect(ranked).toContain('selected_goal_expanded="true"');
+    expect(ranked).toContain("<omitted_count>2</omitted_count>");
+
+    const unselected = expandedBlockFor(null);
+
+    expect(unselected).toContain('rows="4"');
+    expect(unselected).toContain('selected_goal_expanded="none"');
   });
 
   it("reports retained statuses and scopes complete membership to the supplied snapshot", () => {
@@ -2144,13 +2215,84 @@ describe("compact planner context", () => {
       );
       const surface = taggedBlock(allSystemText(planner), "autonomy_trigger");
       expect(surface).toMatch(/^<autonomy_trigger[^>]*>excerpt_notice:/);
-      expect(surface).toContain("mechanically bounded to 32000 chars");
+      expect(surface).toContain("mechanically bounded to 4000 chars");
       expect(surface).toContain("old-to-new change excerpt is bounded to 1500 chars");
       expect(surface).toContain("recent_identity_events_omitted: 0");
       expect(surface.match(/excerpt_notice:/g)).toHaveLength(1);
-      expect(surface).toContain("HEAD+TAIL EXCERPT");
+      expect(surface).toContain("[ELIDED]");
     },
   );
+
+  it("keeps every presented dormant question's id and opening on the planner surface", () => {
+    const audience = ["ent_aaaaaaaaaaaaaaaa", "ent_bbbbbbbbbbbbbbbb", "ent_cccccccccccccccc"];
+    const label = {
+      disclosure: `disclosure_class=relationship_private origin_audience=${audience.join(",")} private-to=${audience.join(",")}; I can use this internally; I do not disclose it to the current audience unless authorized`,
+      disclosure_label: {
+        disclosure_class: "relationship_private",
+        origin_audience_entity_ids: audience,
+        private_to_entity_ids: audience,
+        public_to_entity_ids: [],
+      },
+    };
+    const episodes = (offset: number) =>
+      Array.from({ length: 5 }, (_, index) => ({
+        id: `ep_${String(offset + index).padStart(16, "d")}`,
+        title: `Wątek ${offset + index}`,
+        narrative: "narracja epizodu ".repeat(100),
+        ...label,
+        citation_chain: Array.from({ length: 2 }, (_, entry) => ({
+          id: `strm_${String((offset + index) * 2 + entry).padStart(16, "e")}`,
+          content: "wpis strumienia ".repeat(30),
+          ...label,
+        })),
+      }));
+    const trigger = {
+      source_name: "open_question_dormant",
+      source_type: "trigger" as const,
+      event_id: "oq_ffffffffffffffff:1786492800000",
+      sort_ts: NOW_MS - 86_400_000,
+      payload: {
+        open_question_id: "oq_ffffffffffffffff",
+        question: `Czy wczesna flaga była diagnozą? ${"Które pole by to rozstrzygnęło? ".repeat(20)}Koniec.`,
+        urgency: 0.41,
+        last_touched: NOW_MS - 86_400_000,
+        unresolved_rumination_ticks: 4,
+        last_ruminated_at: NOW_MS - 86_000_000,
+        ...label,
+        additional_questions: [
+          {
+            open_question_id: "oq_gggggggggggggggg",
+            question: `この問いは計画の頁に届くか。${"どの欄が決めるのか。".repeat(40)}終わり`,
+            urgency: 0.34,
+            last_touched: NOW_MS - 86_300_000,
+            unresolved_rumination_ticks: 1,
+            last_ruminated_at: null,
+            ...label,
+            related_episodes: episodes(5),
+          },
+        ],
+        related_episodes: episodes(0),
+      },
+    };
+    // A head+tail crop of the shared rendering, the planner's former bound, cut the second
+    // question out of the middle while the wake still latched it.
+    expect(headTailPlannerExcerpt(formatAutonomyTriggerContext(trigger), 4_000).text).not.toContain(
+      "oq_gggggggggggggggg",
+    );
+
+    const surface = taggedBlock(
+      allSystemText(build(context({ turnOrigin: "autonomous", autonomyTrigger: trigger }))),
+      "autonomy_trigger",
+    );
+    expect(surface).toContain('"open_question_id": "oq_ffffffffffffffff"');
+    expect(surface).toContain('"open_question_id": "oq_gggggggggggggggg"');
+    expect(surface).toContain("Czy wczesna flaga była diagnozą?");
+    expect(surface).toContain("この問いは計画の頁に届くか。");
+    expect(surface).toContain("mechanically bounded to 4000 chars");
+    expect(surface).toContain("related_episodes_omitted: 10.");
+    expect(surface).not.toContain("payload_fields_omitted");
+    expect(surface).not.toContain("HEAD+TAIL EXCERPT");
+  });
 
   it("keeps the generic excerpt shape mechanical and announces every cut", () => {
     const source = `HEAD_${"x".repeat(500)}_TAIL`;

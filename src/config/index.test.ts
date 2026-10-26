@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import solDemoConfigKeys from "./fixtures/sol-demo-config-keys.json";
+
 import { DEFAULT_PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_TOKEN_BUDGET } from "../cognition/deliberation/constants.js";
 import { OFFLINE_PROCESS_NAMES } from "../contracts/offline-process.js";
 import { writeJsonFileAtomic } from "../util/atomic-write.js";
@@ -25,6 +27,26 @@ describe("config", () => {
     }
   });
 
+  it("accepts the documented Sol demo config keys without sidecar embedding environment variables", () => {
+    // Hand-authored from the accepted merge plan; never read the live bank/config.
+    const config = configSchema.parse(solDemoConfigKeys);
+    expect(config.anthropic.models.preTurnExtraction).toBe("claude-sonnet-5");
+    expect(config.frameAnomaly).toEqual(solDemoConfigKeys.frameAnomaly);
+    expect(config.internalIdentifierGuard).toEqual(solDemoConfigKeys.internalIdentifierGuard);
+    expect(config.embedding.model).toBe(solDemoConfigKeys.embedding.model);
+    expect(config.embedding.dims).toBe(4096);
+    expect(config.offline.selfNarrator).toMatchObject({
+      maxEpisodesPerRun: 150,
+      maxInputTokensPerRun: 60_000,
+      maxPromptTokens: 250_000,
+    });
+    expect(config.offline.reflector).toMatchObject({
+      maxEpisodesPerCluster: 120,
+      maxClusterInputTokens: 40_000,
+    });
+    expect(similarityThresholds(config)).toEqual(similarityThresholds(DEFAULT_CONFIG));
+  });
+
   it("loads defaults without requiring API keys", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
@@ -40,9 +62,9 @@ describe("config", () => {
     expect(config.anthropic.auth).toBe("auto");
     expect(config.anthropic.apiKey).toBeUndefined();
     expect(config.anthropic.models).toEqual({
-      cognition: "claude-opus-5",
-      background: "claude-opus-5",
-      extraction: "claude-opus-5",
+      cognition: "claude-opus-5-5",
+      background: "claude-opus-5-5",
+      extraction: "claude-opus-5-5",
       recallExpansion: "claude-haiku-4-5-20251001",
       correctivePreference: "claude-sonnet-5",
       sharedStateCompiler: "claude-sonnet-5",
@@ -71,6 +93,7 @@ describe("config", () => {
     expect(config.offline.curator.episodeHeatHalfLifeDays).toBe(7);
     expect(config.offline.curator.traitHalfLifeDays).toBe(30);
     expect(config.offline.curator.retrievalLogRetentionDays).toBe(90);
+    expect(config.offline.selfNarrator.maxPromptTokens).toBe(250_000);
     expect(config.offline.semanticExtractor).toEqual({
       maxEpisodesPerRun: 8,
       maxInputTokensPerRun: 150_000,
@@ -133,7 +156,7 @@ describe("config", () => {
     ).toBe(OFFLINE_PROCESS_NAMES.length);
     expect(config.executive.goalFocusThreshold).toBe(0.45);
     expect(config.autonomy.maxWakesPerWindow).toBe(6);
-    expect(config.autonomy.prepToolTimeoutMs).toBe(30_000);
+    expect(config.autonomy.prepToolTimeoutMs).toBe(90_000);
     expect(config.autonomy.goalWakeBatchMax).toBe(5);
     expect(config.autonomy.budgetWindowMs).toBe(24 * 60 * 60 * 1_000);
     expect(config.autonomy.reservedContemplativeWakesPerWindow).toBe(1);
@@ -778,6 +801,25 @@ describe("config", () => {
     expect(() => loadConfig({ dataDir: tempDir, env: { [name]: value } })).toThrow(ConfigError);
   });
 
+  it("loads and validates the self-narrator prompt cap", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    expect(
+      loadConfig({
+        dataDir: tempDir,
+        env: { BORG_OFFLINE_SELF_NARRATOR_MAX_PROMPT_TOKENS: "120000" },
+      }).offline.selfNarrator.maxPromptTokens,
+    ).toBe(120_000);
+    for (const value of ["0", "-1", "1.5"]) {
+      expect(() =>
+        loadConfig({
+          dataDir: tempDir,
+          env: { BORG_OFFLINE_SELF_NARRATOR_MAX_PROMPT_TOKENS: value },
+        }),
+      ).toThrow(ConfigError);
+    }
+  });
+
   it("loads the trait decay interval from the environment", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
@@ -1218,9 +1260,9 @@ describe("config", () => {
 
   it("defaults recall expansion to the dedicated Haiku slot", () => {
     expect(DEFAULT_CONFIG.anthropic.models).toEqual({
-      cognition: "claude-opus-5",
-      background: "claude-opus-5",
-      extraction: "claude-opus-5",
+      cognition: "claude-opus-5-5",
+      background: "claude-opus-5-5",
+      extraction: "claude-opus-5-5",
       recallExpansion: "claude-haiku-4-5-20251001",
       correctivePreference: "claude-sonnet-5",
       sharedStateCompiler: "claude-sonnet-5",
@@ -1240,6 +1282,30 @@ describe("config", () => {
 
     expect(config.anthropic.models.correctivePreference).toBe("claude-sonnet-5");
     expect(config.anthropic.models.recallExpansion).toBe("custom-recall");
+  });
+
+  it("keeps pre-turn extraction optional and loads its file and environment overrides", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const omitted = loadConfig({
+      dataDir: tempDir,
+      env: { BORG_MODEL_RECALL_EXPANSION: "custom-recall" },
+    });
+    expect(omitted.anthropic.models.preTurnExtraction).toBeUndefined();
+    expect(omitted.anthropic.models.recallExpansion).toBe("custom-recall");
+    writeJsonFileAtomic(join(tempDir, "config.json"), {
+      anthropic: { models: { preTurnExtraction: "file-pre-turn" } },
+    });
+    expect(loadConfig({ dataDir: tempDir, env: {} }).anthropic.models.preTurnExtraction).toBe(
+      "file-pre-turn",
+    );
+    expect(
+      loadConfig({ dataDir: tempDir, env: { BORG_MODEL_PRE_TURN_EXTRACTION: "env-pre-turn" } })
+        .anthropic.models.preTurnExtraction,
+    ).toBe("env-pre-turn");
+    expect(() =>
+      configSchema.parse({ anthropic: { models: { preTurnExtraction: "" } } }),
+    ).toThrow();
   });
 
   it("defaults shared-state compilation to Sonnet independently of recall expansion overrides", () => {

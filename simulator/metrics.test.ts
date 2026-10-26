@@ -2481,12 +2481,11 @@ describe("MetricsCapture", () => {
         event: "action_archive_scan.completed",
         turnId: "turn-archive-visibility",
         scanned_count: 6,
-        eligible_count: 1,
-        archived_count: 1,
+        eligible_count: 2,
+        archived_count: 2,
         skipped_by_reason: {
           below_inactive_threshold: 3,
           borg_owned: 1,
-          scheduled_or_due: 1,
         },
         oldest_inactive_turns: 35,
         oldest_eligible_inactive_turns: 35,
@@ -2506,10 +2505,11 @@ describe("MetricsCapture", () => {
     );
 
     expect(row.dormant_not_archive_eligible_count).toBe(3);
-    expect(row.dormant_archive_eligible_count).toBe(1);
-    expect(row.archive_archivable_count).toBe(1);
+    // Scheduled rows use the same inactive-turn threshold as commitments.
+    expect(row.dormant_archive_eligible_count).toBe(2);
+    expect(row.archive_archivable_count).toBe(2);
     expect(row.archive_skipped_borg_owned).toBe(1);
-    expect(row.archive_skipped_due_date).toBe(1);
+    expect(row.archive_skipped_due_date).toBe(0);
     expect(row.archive_skipped_below_threshold).toBe(3);
     expect(row.archive_skipped_other).toBe(0);
     expect(row.archive_oldest_inactive_turns).toBe(35);
@@ -2518,7 +2518,7 @@ describe("MetricsCapture", () => {
       "0-15": 1,
       "15-20": 2,
       "20-30": 0,
-      "30+": 1,
+      "30+": 2,
     });
   });
 

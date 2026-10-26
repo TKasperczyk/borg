@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { projectMachineReferences } from "../common/reference-projection.js";
 
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { CommitmentError, ProvenanceError } from "../../util/errors.js";
@@ -6,6 +7,7 @@ import { serializeJsonValue } from "../../util/json-value.js";
 import {
   createCommitmentId,
   createEntityId,
+  entityIdHelpers,
   parseCommitmentId,
   parseEntityId,
   type CommitmentId,
@@ -92,7 +94,7 @@ const COMMITMENT_JSON_ARRAY_CODEC = {
   createError: (message, options) => new CommitmentError(message, options),
 } satisfies JsonArrayCodecOptions;
 
-function mapEntityRow(row: Record<string, unknown>): EntityRecord {
+export function mapEntityRow(row: Record<string, unknown>): EntityRecord {
   return entityRecordSchema.parse({
     id: row.id,
     canonical_name: row.canonical_name,
@@ -105,11 +107,12 @@ function mapEntityRow(row: Record<string, unknown>): EntityRecord {
         ? null
         : borgRoleSchema.parse(row.borg_role),
     name_provenance: nameProvenanceSchema.parse(row.name_provenance ?? "unknown"),
+    merged_into: row.merged_into ?? null,
     created_at: Number(row.created_at),
   });
 }
 
-function mapCommitmentRow(row: Record<string, unknown>): CommitmentRecord {
+export function mapCommitmentRow(row: Record<string, unknown>): CommitmentRecord {
   const kind = commitmentKindSchema.parse(row.kind ?? "assistant_commitment");
   const enforcementClass =
     row.enforcement_class === null || row.enforcement_class === undefined
@@ -217,6 +220,11 @@ function nextCommitmentUpdatedAt(current: CommitmentRecord, timestamp: number): 
 export type EntityRepositoryOptions = {
   db: SqliteDatabase;
   clock?: Clock;
+  onAudienceMismatch?: (mismatch: {
+    label: string;
+    boundEntityId: EntityId;
+    labelEntityId: EntityId;
+  }) => void;
 };
 
 export type EntityListOptions = {
@@ -319,6 +327,7 @@ export class EntityRepository {
               `
                 SELECT id, canonical_name, aliases, kind, borg_role, name_provenance, created_at
                 FROM entities
+                WHERE merged_into IS NULL
                 ORDER BY created_at ASC
               `,
             )
@@ -328,7 +337,7 @@ export class EntityRepository {
               `
                 SELECT id, canonical_name, aliases, kind, borg_role, name_provenance, created_at
                 FROM entities
-                WHERE kind = ?
+                WHERE kind = ? AND merged_into IS NULL
                 ORDER BY created_at ASC
               `,
             )
@@ -371,6 +380,11 @@ export class EntityRepository {
     );
 
     const insertEntity = () => {
+      if (entity.kind === "self" && this.getSelf() !== null) {
+        throw new CommitmentError("The store already has a self entity", {
+          code: "ENTITY_SELF_EXISTS",
+        });
+      }
       insert.run(
         entity.id,
         entity.canonical_name,
@@ -395,6 +409,12 @@ export class EntityRepository {
   }
 
   findAllByName(name: string, options: EntityListOptions = {}): EntityId[] {
+    if (entityIdHelpers.is(name)) {
+      const entity = this.get(name);
+      return entity !== null && (options.kind === undefined || entity.kind === options.kind)
+        ? [entity.id]
+        : [];
+    }
     const normalized = normalizeName(name);
 
     if (normalized.length === 0) {
@@ -427,6 +447,10 @@ export class EntityRepository {
     const results = new Map<string, EntityId | null>(uniqueNames.map((name) => [name, null]));
 
     for (const name of uniqueNames) {
+      if (entityIdHelpers.is(name)) {
+        results.set(name, this.findByName(name, options));
+        continue;
+      }
       const normalized = normalizeName(name);
 
       if (normalized.length === 0) {
@@ -481,10 +505,10 @@ export class EntityRepository {
       });
     }
 
-    const existing = this.findByName(
-      name,
-      options.kind === undefined ? {} : { kind: options.kind },
-    );
+    const existing =
+      options.kind === "self"
+        ? (this.getSelf()?.id ?? null)
+        : this.findByName(name, options.kind === undefined ? {} : { kind: options.kind });
 
     if (existing !== null) {
       const current = this.get(existing);
@@ -508,6 +532,38 @@ export class EntityRepository {
     return entity.id;
   }
 
+  /** Transport labels are already-known handles, regardless of entity kind. */
+  resolveAudienceLabel(label: string, boundEntityId?: EntityId): EntityId {
+    const name = label.trim();
+    if (name.length === 0) {
+      throw new CommitmentError("Entity name is required", { code: "ENTITY_NAME_REQUIRED" });
+    }
+    const byId = entityIdHelpers.is(name) ? this.get(name) : null;
+    const existing = byId?.id ?? this.findByName(name);
+    if (boundEntityId !== undefined) {
+      const bound = this.get(boundEntityId);
+      if (bound === null) {
+        throw new CommitmentError("Audience binding points to a missing entity", {
+          code: "ENTITY_AUDIENCE_MISSING",
+        });
+      }
+      if (existing !== null && existing !== bound.id) {
+        const mismatch = { label: name, boundEntityId: bound.id, labelEntityId: existing };
+        if (this.options.onAudienceMismatch) this.options.onAudienceMismatch(mismatch);
+        else console.warn("entity.audience_binding_mismatch", mismatch);
+      }
+      if (existing === null && !entityIdHelpers.is(name)) this.addAlias(bound.id, name);
+      return bound.id;
+    }
+    if (entityIdHelpers.is(name) && byId === null) {
+      throw new CommitmentError(`Unknown audience entity ${name}`, {
+        code: "ENTITY_AUDIENCE_MISSING",
+      });
+    }
+    // Do not upgrade a canonical name's provenance merely by seeing a transport alias.
+    return existing ?? this.resolve(name, { provenance: "transport_audience_label" });
+  }
+
   findByExternalId(source: string, externalId: string): EntityId | null {
     const normalizedSource = source.trim();
     const normalizedExternalId = externalId.trim();
@@ -526,7 +582,7 @@ export class EntityRepository {
       )
       .get(normalizedSource, normalizedExternalId) as { entity_id: string } | undefined;
 
-    return row === undefined ? null : parseEntityId(row.entity_id);
+    return row === undefined ? null : (this.get(parseEntityId(row.entity_id))?.id ?? null);
   }
 
   resolveExternal(input: EntityResolveExternalInput): EntityId {
@@ -567,6 +623,13 @@ export class EntityRepository {
           });
         }
 
+        const self = kind === "self" ? this.getSelf() : null;
+        if (self !== null && self.id !== current.id) {
+          throw new CommitmentError("The store already has a self entity", {
+            code: "ENTITY_SELF_EXISTS",
+          });
+        }
+
         const nextProvenance = strongerNameProvenance(current.name_provenance, provenance);
         const canonicalChanged =
           normalizeName(current.canonical_name) !== normalizeName(canonicalName);
@@ -579,7 +642,7 @@ export class EntityRepository {
           ...current,
           canonical_name: canonicalName,
           aliases,
-          kind,
+          kind: current.kind === "self" ? "self" : kind,
           name_provenance: nextProvenance,
         });
 
@@ -635,11 +698,87 @@ export class EntityRepository {
   }
 
   get(id: EntityId): EntityRecord | null {
-    const row = this.db.prepare("SELECT * FROM entities WHERE id = ?").get(id) as
-      | Record<string, unknown>
-      | undefined;
+    const visited = new Set<EntityId>();
+    let current = parseEntityId(id);
+    for (;;) {
+      if (visited.has(current)) {
+        throw new CommitmentError("Entity redirect cycle", { code: "ENTITY_REDIRECT_INVALID" });
+      }
+      visited.add(current);
+      const row = this.db.prepare("SELECT * FROM entities WHERE id = ?").get(current);
+      if (row === undefined) {
+        if (visited.size === 1) return null;
+        throw new CommitmentError("Dangling entity redirect", { code: "ENTITY_REDIRECT_INVALID" });
+      }
+      const entity = mapEntityRow(row);
+      if (entity.merged_into == null) return entity;
+      current = entity.merged_into;
+    }
+  }
 
-    return row === undefined ? null : mapEntityRow(row);
+  /** Project structured historical handles at read time; source bytes stay immutable. */
+  resolveReferences<T>(value: T): T {
+    return projectMachineReferences(value, (id) =>
+      entityIdHelpers.is(id) ? (this.get(id)?.id ?? id) : id,
+    );
+  }
+
+  /** An identity merge retains the old handle so append-only provenance stays readable. */
+  merge(from: EntityId, into: EntityId, options: { renameInto?: string } = {}): EntityRecord {
+    return this.db
+      .transaction(() => {
+        const source = this.get(from);
+        const target = this.get(into);
+        if (source === null || target === null)
+          throw new CommitmentError("Missing merge entity", { code: "ENTITY_REDIRECT_INVALID" });
+        if (target.id !== into)
+          throw new CommitmentError("Merge survivor must be a live handle", {
+            code: "ENTITY_REDIRECT_INVALID",
+          });
+        if (source.id === target.id) return target;
+        if (source.id !== from || (source.kind === "self" && target.kind !== "self"))
+          throw new CommitmentError("Merge requires live handles and must retain the self entity", {
+            code: "ENTITY_REDIRECT_INVALID",
+          });
+        const canonical = options.renameInto?.trim() ?? target.canonical_name;
+        if (options.renameInto !== undefined && canonical !== source.canonical_name)
+          throw new CommitmentError("Rename must adopt the source canonical name", {
+            code: "ENTITY_REDIRECT_INVALID",
+          });
+        const next = entityRecordSchema.parse({
+          ...target,
+          canonical_name: canonical,
+          aliases: uniqueStrings([
+            ...target.aliases,
+            target.canonical_name,
+            source.canonical_name,
+            ...source.aliases,
+          ]).filter((name) => normalizeName(name) !== normalizeName(canonical)),
+          name_provenance:
+            options.renameInto === undefined ? target.name_provenance : source.name_provenance,
+          borg_role: target.borg_role ?? source.borg_role,
+        });
+        const updated = this.db
+          .prepare(
+            "UPDATE entities SET canonical_name = ?, aliases = ?, name_provenance = ?, borg_role = ? WHERE id = ? AND merged_into IS NULL",
+          )
+          .run(
+            next.canonical_name,
+            serializeJsonValue(next.aliases),
+            next.name_provenance,
+            next.borg_role,
+            into,
+          );
+        const redirected = this.db
+          .prepare("UPDATE entities SET merged_into = ? WHERE id = ? AND merged_into IS NULL")
+          .run(into, from);
+        if (updated.changes !== 1 || redirected.changes !== 1)
+          throw new CommitmentError("Entity merge changed unexpectedly", {
+            code: "ENTITY_REDIRECT_INVALID",
+          });
+        return next;
+      })
+      .immediate();
   }
 
   getCreator(): EntityRecord | null {
@@ -648,7 +787,7 @@ export class EntityRepository {
         `
           SELECT *
           FROM entities
-          WHERE borg_role = 'creator'
+          WHERE borg_role = 'creator' AND merged_into IS NULL
           ORDER BY created_at ASC
           LIMIT 1
         `,
@@ -659,19 +798,13 @@ export class EntityRepository {
   }
 
   getSelf(): EntityRecord | null {
-    const row = this.db
-      .prepare(
-        `
-          SELECT *
-          FROM entities
-          WHERE kind = 'self'
-          ORDER BY created_at ASC
-          LIMIT 1
-        `,
-      )
-      .get() as Record<string, unknown> | undefined;
-
-    return row === undefined ? null : mapEntityRow(row);
+    const selves = this.listEntities({ kind: "self" });
+    if (selves.length > 1) {
+      throw new CommitmentError("Multiple self entities require offline repair", {
+        code: "ENTITY_SELF_AMBIGUOUS",
+      });
+    }
+    return selves[0] ?? null;
   }
 
   ensureSelf(canonicalName: string, options: EntityEnsureSelfOptions = {}): EntityRecord {
@@ -685,31 +818,24 @@ export class EntityRepository {
 
     const provenance = options.provenance ?? "config_default_user";
     const ensure = this.db.transaction(() => {
-      const current = this.getSelf();
-
-      if (current === null) {
-        return this.add({
-          canonicalName: name,
-          aliases: ["self"],
+      const current =
+        this.getSelf() ??
+        this.add({
+          canonicalName: "self",
           kind: "self",
-          provenance,
+          provenance: "assistant_seeded",
         });
-      }
 
       const canonical = normalizeName(name);
       const aliases: string[] = [];
       const seen = new Set<string>();
-      for (const candidate of [...current.aliases, current.canonical_name, "self"]) {
+      for (const candidate of [...current.aliases, current.canonical_name]) {
         const normalized = normalizeName(candidate);
-        if (
-          normalized.length === 0 ||
-          (normalized === canonical && normalized !== "self") ||
-          seen.has(normalized)
-        ) {
+        if (normalized.length === 0 || normalized === canonical || seen.has(normalized)) {
           continue;
         }
         seen.add(normalized);
-        aliases.push(normalized === "self" ? "self" : candidate.trim());
+        aliases.push(candidate.trim());
       }
 
       const next = entityRecordSchema.parse({
@@ -748,10 +874,10 @@ export class EntityRepository {
       if (parsedRole === "creator") {
         this.db
           .prepare("UPDATE entities SET borg_role = NULL WHERE borg_role = 'creator' AND id != ?")
-          .run(parsedId);
+          .run(current.id);
       }
 
-      this.db.prepare("UPDATE entities SET borg_role = ? WHERE id = ?").run(parsedRole, parsedId);
+      this.db.prepare("UPDATE entities SET borg_role = ? WHERE id = ?").run(parsedRole, current.id);
 
       return this.get(parsedId);
     });
@@ -769,11 +895,14 @@ export class EntityRepository {
     const next = entityRecordSchema.parse({
       ...current,
       canonical_name: canonicalName.trim(),
+      aliases: uniqueStrings([...current.aliases, current.canonical_name]).filter(
+        (name) => normalizeName(name) !== normalizeName(canonicalName),
+      ),
     });
 
     this.db
       .prepare("UPDATE entities SET canonical_name = ?, aliases = ? WHERE id = ?")
-      .run(next.canonical_name, serializeJsonValue(next.aliases), id);
+      .run(next.canonical_name, serializeJsonValue(next.aliases), current.id);
 
     return next;
   }
@@ -792,7 +921,7 @@ export class EntityRepository {
 
     this.db
       .prepare("UPDATE entities SET aliases = ? WHERE id = ?")
-      .run(serializeJsonValue(next.aliases), id);
+      .run(serializeJsonValue(next.aliases), current.id);
 
     return next;
   }
@@ -1395,6 +1524,53 @@ export class CommitmentRepository {
       | undefined;
 
     return row === undefined ? null : mapCommitmentRow(row);
+  }
+
+  /** Offline audited backfill: change only the NULL source-sender column.
+   * The caller journals and preflights raw rows with writers stopped. Do not use
+   * the normal decoder/update path: it normalizes legacy NULLs and JSON text.
+   * Timestamps and record_version are deliberately preserved by this repair.
+   */
+  backfillCommitter(
+    id: CommitmentId,
+    sender: EntityId,
+    reason: string,
+  ): Record<string, string | number | null> {
+    const parsedId = parseCommitmentId(id);
+    const parsedSender = parseEntityId(sender);
+    return runIdentityWrite(this.identityEventRepository, () => {
+      const read = () =>
+        this.db.prepare("SELECT * FROM commitments WHERE id = ?").get(parsedId) as
+          | Record<string, string | number | null>
+          | undefined;
+      const before = read();
+      if (before === undefined || before.committed_by_entity_id !== null) {
+        throw new CommitmentError(`Expected a NULL committer for ${parsedId}`, {
+          code: "COMMITMENT_BACKFILL_STALE",
+        });
+      }
+      const result = this.db
+        .prepare(
+          "UPDATE commitments SET committed_by_entity_id = ? WHERE id = ? AND committed_by_entity_id IS NULL",
+        )
+        .run(parsedSender, parsedId);
+      if (result.changes !== 1) {
+        throw new CommitmentError(`Committer changed during backfill for ${parsedId}`, {
+          code: "COMMITMENT_BACKFILL_STALE",
+        });
+      }
+      const after = read()!;
+      this.identityEventRepository?.record({
+        record_type: "commitment",
+        record_id: parsedId,
+        action: "update",
+        old_value: before,
+        new_value: after,
+        reason,
+        provenance: { kind: "manual" },
+      });
+      return after;
+    });
   }
 
   list(options: CommitmentListOptions = {}): CommitmentRecord[] {

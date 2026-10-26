@@ -233,7 +233,8 @@ export type AutonomyWakeRecord = {
   wake_source_type: "trigger" | "condition";
   source_category: "contemplative" | "operational";
   selected_goal_id: string | null;
-  outcome: "headway" | "silent" | "error" | "busy" | null;
+  outcome: "headway" | "silent" | "error" | "busy" | "interrupted" | null;
+  preparation_failed: boolean;
   outcome_detail: string | null;
   headway_bases: string[] | null;
   finalizer_rounds: number | null;

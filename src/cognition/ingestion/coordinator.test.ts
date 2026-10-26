@@ -30,7 +30,13 @@ import {
 } from "../../stream/index.js";
 import { ManualClock } from "../../util/clock.js";
 import { EmbeddingError } from "../../util/errors.js";
-import { DEFAULT_SESSION_ID, type EntityId, type StreamEntryId } from "../../util/ids.js";
+import {
+  createEntityId,
+  createStreamEntryId,
+  DEFAULT_SESSION_ID,
+  type EntityId,
+  type StreamEntryId,
+} from "../../util/ids.js";
 
 import { ChatResponseWatermarkCoordinator } from "./chat-response-watermark.js";
 import { StreamIngestionCoordinator } from "./coordinator.js";
@@ -421,6 +427,62 @@ describe("StreamIngestionCoordinator", () => {
       close();
     }
   });
+
+  it.each(["synchronous", "asynchronous"])(
+    "retains a %s ingestion reporter failure and drains the other report before rejecting close",
+    async (mode) => {
+      const dataDir = createTempDir();
+      await seedStream(dataDir, [{ kind: "user_msg", content: "Source", ts: 100 }]);
+      const { repo, close } = openRepo();
+      const failure = new Error("ingestion reporter unavailable");
+      const original = new Error("extraction failed");
+      let finish!: () => void;
+      const delayed = new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+      let reports = 0;
+      const log = vi.spyOn(console, "error").mockImplementation(() => {});
+      const coordinator = new StreamIngestionCoordinator({
+        extractor: { extractFromStream: vi.fn().mockRejectedValue(original) } as unknown as never,
+        watermarkRepository: repo,
+        dataDir,
+        minEntriesThreshold: 1,
+        onError: () => {
+          if (++reports > 1) return delayed;
+          if (mode === "synchronous") throw failure;
+          return Promise.reject(failure);
+        },
+      });
+      await expect(coordinator.ingest(DEFAULT_SESSION_ID)).resolves.toMatchObject({
+        error: original,
+      });
+      const next = coordinator.ingest(DEFAULT_SESSION_ID);
+      await vi.waitFor(() => expect(reports).toBe(2));
+      let settled = false;
+      const closing = coordinator
+        .close()
+        .catch((error: unknown) => error)
+        .finally(() => {
+          settled = true;
+        });
+      try {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(settled).toBe(false);
+        finish();
+        await next;
+        expect(await closing).toMatchObject({
+          errors: [expect.objectContaining({ errors: [failure] })],
+        });
+        expect(log).toHaveBeenCalled();
+      } finally {
+        finish();
+        await next;
+        await closing;
+        log.mockRestore();
+        close();
+      }
+    },
+  );
 
   it("keeps the watermark unchanged on extractor failure", async () => {
     const dataDir = createTempDir();
@@ -891,7 +953,117 @@ describe("StreamIngestionCoordinator", () => {
     }
   });
 
-  it("ingests an explicit answered window without sweeping interleaved unanswered entries", async () => {
+  it.each([false, true])(
+    "includes third-party entries before and inside an answered window (watermarked=%s)",
+    async (watermarked) => {
+      const dataDir = createTempDir();
+      const { watermarkRepository, entryIndex, close } = openIndexedRepos(dataDir);
+      const calls: ExtractCall[] = [];
+      const processed: StreamEntry[][] = [];
+      const previous = await appendIndexedEntry(dataDir, entryIndex, {
+        kind: "agent_msg",
+        content: "previous reply",
+        ts: 90,
+      });
+      if (watermarked) {
+        watermarkRepository.set("episodic-extractor", DEFAULT_SESSION_ID, {
+          lastTs: previous.timestamp,
+          lastEntryId: previous.id,
+        });
+      }
+      const thirdParty = createEntityId();
+      const before = await appendIndexedEntry(dataDir, entryIndex, {
+        kind: "user_msg",
+        content: "别人的消息",
+        ts: 100,
+        senderEntityId: thirdParty,
+      });
+      const answered = await appendIndexedEntry(dataDir, entryIndex, {
+        kind: "user_msg",
+        content: "answered message",
+        ts: 110,
+      });
+      const during = await appendIndexedEntry(dataDir, entryIndex, {
+        kind: "user_msg",
+        content: "wiadomość innej osoby",
+        ts: 120,
+        senderEntityId: thirdParty,
+      });
+      const terminal = await appendIndexedEntry(dataDir, entryIndex, {
+        kind: "agent_msg",
+        content: "answer",
+        ts: 130,
+      });
+      const after = await appendIndexedEntry(dataDir, entryIndex, {
+        kind: "user_msg",
+        content: "next window",
+        ts: 140,
+      });
+      const coordinator = new StreamIngestionCoordinator({
+        extractor: createFakeExtractor(calls),
+        watermarkRepository,
+        dataDir,
+        entryProcessor: {
+          async process({ entries }) {
+            processed.push([...entries]);
+          },
+        },
+      });
+      const answeredWindow = {
+        responseTo: {
+          kind: "stream_backlog" as const,
+          from_cursor_exclusive: null,
+          through_cursor_inclusive: { ts: answered.timestamp, entryId: answered.id },
+          source_entry_ids: [answered.id],
+          count: 1,
+        },
+        terminalCursor: { ts: terminal.timestamp, entryId: terminal.id },
+      };
+      try {
+        const result = await coordinator.ingest(DEFAULT_SESSION_ID, { answeredWindow });
+        const expected = [...(watermarked ? [] : [previous]), before, answered, during, terminal];
+        expect(result.ran).toBe(true);
+        expect(calls[0]?.entryIds).toEqual(expected.map((entry) => entry.id));
+        expect(processed[0]?.map((entry) => entry.id)).toEqual(expected.map((entry) => entry.id));
+        expect(calls[0]?.entryIds).not.toContain(after.id);
+        expect(watermarkRepository.get("episodic-extractor", DEFAULT_SESSION_ID)).toMatchObject({
+          lastTs: terminal.timestamp,
+          lastEntryId: terminal.id,
+        });
+        expect(await coordinator.ingest(DEFAULT_SESSION_ID, { answeredWindow })).toEqual({
+          ran: false,
+          processedEntries: 0,
+        });
+        expect(calls).toHaveLength(1);
+        // The next answer may cite the interleaved message already consumed above.
+        const laterTerminal = await appendIndexedEntry(dataDir, entryIndex, {
+          kind: "agent_msg",
+          content: "later answer",
+          ts: 150,
+        });
+        const later = await coordinator.ingest(DEFAULT_SESSION_ID, {
+          answeredWindow: {
+            responseTo: {
+              ...answeredWindow.responseTo,
+              source_entry_ids: [during.id, after.id],
+              count: 2,
+              through_cursor_inclusive: { ts: after.timestamp, entryId: after.id },
+            },
+            terminalCursor: { ts: laterTerminal.timestamp, entryId: laterTerminal.id },
+          },
+        });
+        expect(later.ran).toBe(true);
+        expect(calls[1]?.entryIds).toEqual([after.id, laterTerminal.id]);
+        expect(processed.flat().map((entry) => entry.id)).toEqual(
+          [...expected, after, laterTerminal].map((entry) => entry.id),
+        );
+      } finally {
+        close();
+      }
+    },
+  );
+
+  it("ingests every entry through an explicit answered window terminal", async () => {
     const dataDir = createTempDir();
     const { watermarkRepository, entryIndex, close } = openIndexedRepos(dataDir);
     const calls: ExtractCall[] = [];
@@ -945,10 +1117,15 @@ describe("StreamIngestionCoordinator", () => {
       });
 
       expect(result.ran).toBe(true);
-      expect(result.processedEntries).toBe(3);
+      expect(result.processedEntries).toBe(4);
       expect(calls).toHaveLength(1);
-      expect(calls[0]?.entryIds).toEqual([firstUser.id, secondUser.id, terminal.id]);
-      expect(calls[0]?.entryIds).not.toContain(interleavedUser.id);
+      expect(calls[0]?.entryIds).toEqual([
+        firstUser.id,
+        secondUser.id,
+        interleavedUser.id,
+        terminal.id,
+      ]);
+      expect(calls[0]?.entryIds).toContain(interleavedUser.id);
       expect(watermarkRepository.get("episodic-extractor", DEFAULT_SESSION_ID)).toMatchObject({
         lastTs: terminal.timestamp,
         lastEntryId: terminal.id,
@@ -1040,6 +1217,119 @@ describe("StreamIngestionCoordinator", () => {
     }
   });
 
+  it("names the terminal entry when the answered window points outside the stream", async () => {
+    const dataDir = createTempDir();
+    const { watermarkRepository, entryIndex, close } = openIndexedRepos(dataDir);
+    const calls: ExtractCall[] = [];
+    const answeredUser = await appendIndexedEntry(dataDir, entryIndex, {
+      kind: "user_msg",
+      content: "peer reply to prior outbound",
+      ts: 110,
+    });
+    const unwrittenTerminalId = createStreamEntryId();
+    const answeredWindow = {
+      responseTo: {
+        kind: "stream_backlog" as const,
+        from_cursor_exclusive: null,
+        through_cursor_inclusive: {
+          ts: answeredUser.timestamp,
+          entryId: answeredUser.id,
+        },
+        source_entry_ids: [answeredUser.id],
+        count: 1,
+      },
+      terminalCursor: {
+        ts: 120,
+        entryId: unwrittenTerminalId,
+      },
+    };
+    const coordinator = new StreamIngestionCoordinator({
+      extractor: createFakeExtractor(calls),
+      watermarkRepository,
+      dataDir,
+      minEntriesThreshold: 1,
+    });
+
+    try {
+      await expect(coordinator.ingest(DEFAULT_SESSION_ID, { answeredWindow })).rejects.toThrow(
+        `Answered ingestion window references a missing stream entry: terminal ${unwrittenTerminalId} is not readable from the stream`,
+      );
+      expect(calls).toHaveLength(0);
+    } finally {
+      close();
+    }
+  });
+
+  it("ingests a later terminal when its source is already below the ingestion watermark", async () => {
+    const dataDir = createTempDir();
+    const { watermarkRepository, entryIndex, close } = openIndexedRepos(dataDir);
+    const calls: ExtractCall[] = [];
+    const answeredUser = await appendIndexedEntry(dataDir, entryIndex, {
+      kind: "user_msg",
+      content: "peer reply the pass will start after",
+      ts: 100,
+    });
+    const terminal = await appendIndexedEntry(dataDir, entryIndex, {
+      kind: "agent_msg",
+      content: "reply to that peer message",
+      ts: 110,
+      responseTo: {
+        kind: "stream_backlog",
+        from_cursor_exclusive: null,
+        through_cursor_inclusive: {
+          ts: answeredUser.timestamp,
+          entryId: answeredUser.id,
+        },
+        source_entry_ids: [answeredUser.id],
+        count: 1,
+      },
+    });
+    watermarkRepository.set("episodic-extractor", DEFAULT_SESSION_ID, {
+      lastTs: answeredUser.timestamp,
+      lastEntryId: answeredUser.id,
+    });
+    const answeredWindow = {
+      responseTo: {
+        kind: "stream_backlog" as const,
+        from_cursor_exclusive: null,
+        through_cursor_inclusive: {
+          ts: answeredUser.timestamp,
+          entryId: answeredUser.id,
+        },
+        source_entry_ids: [answeredUser.id],
+        count: 1,
+      },
+      terminalCursor: {
+        ts: terminal.timestamp,
+        entryId: terminal.id,
+      },
+    };
+    const reportedErrors: unknown[] = [];
+    const coordinator = new StreamIngestionCoordinator({
+      extractor: createFakeExtractor(calls),
+      watermarkRepository,
+      dataDir,
+      minEntriesThreshold: 1,
+      onError: (error) => {
+        reportedErrors.push(error);
+      },
+    });
+
+    try {
+      const result = await coordinator.ingest(DEFAULT_SESSION_ID, { answeredWindow });
+
+      expect(result.ran).toBe(true);
+      expect(calls[0]?.entryIds).toEqual([terminal.id]);
+      expect(reportedErrors).toEqual([]);
+      expect(watermarkRepository.get("episodic-extractor", DEFAULT_SESSION_ID)).toMatchObject({
+        lastTs: terminal.timestamp,
+        lastEntryId: terminal.id,
+      });
+    } finally {
+      close();
+    }
+  });
+
   it("does not jump the watermark over older user history on a fresh answered window", async () => {
     const dataDir = createTempDir();
     const { watermarkRepository, entryIndex, close } = openIndexedRepos(dataDir);
@@ -1115,16 +1405,17 @@ describe("StreamIngestionCoordinator", () => {
       });
 
       expect(result.ran).toBe(true);
-      expect(result.processedEntries).toBe(5);
+      expect(result.processedEntries).toBe(6);
       expect(calls).toHaveLength(1);
       expect(calls[0]?.entryIds).toEqual([
         olderUser.id,
         olderAgent.id,
         priorAgent.id,
         answeredUser.id,
+        interleavedUser.id,
         terminal.id,
       ]);
-      expect(calls[0]?.entryIds).not.toContain(interleavedUser.id);
+      expect(calls[0]?.entryIds).toContain(interleavedUser.id);
       expect(watermarkRepository.get("episodic-extractor", DEFAULT_SESSION_ID)).toMatchObject({
         lastTs: terminal.timestamp,
         lastEntryId: terminal.id,
@@ -1138,6 +1429,7 @@ describe("StreamIngestionCoordinator", () => {
     const dataDir = createTempDir();
     const { watermarkRepository, entryIndex, close } = openIndexedRepos(dataDir);
     const calls: ExtractCall[] = [];
+    const entryProcessor = { process: vi.fn(async () => {}) };
     const olderUser = await appendIndexedEntry(dataDir, entryIndex, {
       kind: "user_msg",
       content: "older unwatermarked user message",
@@ -1198,6 +1490,7 @@ describe("StreamIngestionCoordinator", () => {
     };
     const coordinator = new StreamIngestionCoordinator({
       extractor: createFakeExtractor(calls),
+      entryProcessor,
       watermarkRepository,
       dataDir,
       minEntriesThreshold: 1,
@@ -1211,6 +1504,10 @@ describe("StreamIngestionCoordinator", () => {
 
       expect(first.ran).toBe(true);
       expect(first.processedEntries).toBe(2);
+      expect(entryProcessor.process).toHaveBeenNthCalledWith(1, {
+        sessionId: DEFAULT_SESSION_ID,
+        entries: [olderUser, olderAgent],
+      });
       expect(calls).toHaveLength(1);
       expect(calls[0]).toMatchObject({
         session: DEFAULT_SESSION_ID,
@@ -1231,12 +1528,17 @@ describe("StreamIngestionCoordinator", () => {
       });
 
       expect(second.ran).toBe(true);
-      expect(second.processedEntries).toBe(3);
+      expect(second.processedEntries).toBe(4);
       expect(calls).toHaveLength(2);
-      expect(calls[1]?.entryIds).toEqual([priorAgent.id, answeredUser.id, terminal.id]);
+      expect(calls[1]?.entryIds).toEqual([
+        priorAgent.id,
+        answeredUser.id,
+        interleavedUser.id,
+        terminal.id,
+      ]);
       expect(calls[1]?.entryIds).not.toContain(olderUser.id);
       expect(calls[1]?.entryIds).not.toContain(olderAgent.id);
-      expect(calls[1]?.entryIds).not.toContain(interleavedUser.id);
+      expect(calls[1]?.entryIds).toContain(interleavedUser.id);
       expect(watermarkRepository.get("episodic-extractor", DEFAULT_SESSION_ID)).toMatchObject({
         lastTs: terminal.timestamp,
         lastEntryId: terminal.id,

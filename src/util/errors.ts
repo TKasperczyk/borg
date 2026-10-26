@@ -265,6 +265,46 @@ export function describeError(error: unknown): string {
   return String(error);
 }
 
+const ERROR_CAUSE_CHAIN_MAX_LINKS = 4;
+const ERROR_CAUSE_CHAIN_SEPARATOR = "; caused by ";
+
+/**
+ * `describeError` over the whole cause chain, outermost link first.
+ *
+ * A wrapper names the stage that failed; its cause names what failed there. The
+ * two are not interchangeable, and a wrapper's own text is usually a constant --
+ * the same sentence for every failure of that stage -- so a description that
+ * drops the cause leaves a reader with the stage as the only thing it can tell
+ * apart. Use this wherever the string is the durable record of the failure
+ * rather than a line beside an error object someone can still inspect; use
+ * `describeError` where the object survives alongside it.
+ *
+ * Bounded at {@link ERROR_CAUSE_CHAIN_MAX_LINKS} links and cycle-guarded, so a
+ * self-referential or deeply nested chain cannot make the string unbounded.
+ */
+export function describeErrorWithCauses(error: unknown): string {
+  const links: string[] = [];
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+
+  while (
+    current !== undefined &&
+    current !== null &&
+    !seen.has(current) &&
+    links.length < ERROR_CAUSE_CHAIN_MAX_LINKS
+  ) {
+    seen.add(current);
+    links.push(describeError(current));
+
+    current =
+      typeof current === "object" || typeof current === "function"
+        ? (current as { cause?: unknown }).cause
+        : undefined;
+  }
+
+  return links.join(ERROR_CAUSE_CHAIN_SEPARATOR);
+}
+
 export function findInErrorCauseChain<T>(
   error: unknown,
   matches: (candidate: unknown) => candidate is T,

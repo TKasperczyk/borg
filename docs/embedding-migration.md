@@ -18,6 +18,16 @@ node --import tsx scripts/migrate-embeddings.ts label-source-profile \
 
 This subcommand takes the bank access lease, honors migration fences, verifies every stored vector table has the asserted float32 FixedSizeList dimension, and atomically writes a generation-zero profile. It requires at least one verifiable vector schema and refuses to replace an existing profile. It does not infer the model from vectors, embed text, or change bank data. After labelling, open with the matching client or run the normal migration below. There is no runtime adoption setting.
 
+The same rules apply to a single-tenant demo bank. For Sol's existing bank, the source
+identity is `text-embedding-qwen3-8b-text-embedding` with 4096 dimensions; assert that
+identity only against the operator-verified backup/source. Labeling does not re-embed.
+A migration fence blocks all openers of that directory, including demo/server, and does
+not silently migrate or relabel it. Normal access holds an exclusive bank lease until
+admitted work, startup/embedding tasks and stores have drained/closed. A timed-out drain
+or failed store cleanup retains ownership until process exit; stale ownership is reaped
+by the file-lock protocol, not by deleting a live process's lock.
+
+
 The pod app directory is `/workspace/workspace/repos/app` and is read-only. Node is at `/layers/paketo-buildpacks_node-engine/node/bin/node` and is not initially on PATH. Only `/data` is writable. Run this setup in each new pod shell; the writable `TMPDIR` is required by the tsx cache. All migration commands use `nice -n 19` because the live sidecar shares the pod.
 
 ```sh

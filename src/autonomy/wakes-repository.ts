@@ -24,7 +24,6 @@ import {
   type AutonomyConditionName,
   type AutonomyWakeOutcome,
   type AutonomyWakeOutcomeDetailTally,
-  type AutonomyWakeOutcomeSpan,
   type AutonomyWakeSourceCategory,
   type AutonomyWakeSourceName,
   type AutonomyWakeSourceType,
@@ -84,6 +83,8 @@ const autonomyWakeRowSchema = z.object({
   wake_source_type: autonomyWakeSourceTypeSchema,
   source_category: autonomyWakeSourceCategorySchema,
   outcome: autonomyWakeOutcomeSchema.nullable(),
+  preparation_failed: z.boolean(),
+  turn_provider_failed: z.boolean(),
   outcome_detail: z.string().nullable(),
   headway_bases: autonomyWakeHeadwayBasesSchema.nullable(),
   finalizer_rounds: z.number().int().nonnegative().nullable(),
@@ -103,8 +104,19 @@ const autonomyWakeRowSchema = z.object({
  */
 export const AUTONOMY_WAKE_OUTCOME_DETAIL_MAX_LENGTH = 300;
 export const AUTONOMY_WAKE_STARTUP_INTERRUPTED_GRACE_MS = 60 * 60 * 1_000;
+/**
+ * What the sweep's predicate establishes, and nothing beyond it. `outcome IS
+ * NULL AND ts < now - grace` has no lower bound, so it stamps every row any
+ * earlier process left unrecorded, not only a run that was live when this one
+ * started. Two things follow that the old wording asserted away. The stamp dates
+ * the start that noticed the row, not the failure that orphaned it -- those can
+ * be days and several restarts apart. And it does not say whether the turn ran:
+ * a row is left NULL both by a turn that never began and by one that finished
+ * and failed to record. A detail is read as the account of the ending, so one
+ * that names an ending it cannot witness is an ending the reader will adopt.
+ */
 export const AUTONOMY_WAKE_STARTUP_INTERRUPTED_DETAIL =
-  "Wake was still in flight when Borg started; recorded as interrupted.";
+  "No outcome had been recorded when a later process started; one writer per data directory, so no live run could still own the row and it was reconciled as interrupted. Dates the start that swept it, not the failure.";
 
 function clampOutcomeDetail(detail: string | null | undefined): string | null {
   if (detail === null || detail === undefined) {
@@ -131,6 +143,10 @@ export type AutonomyWakeRecord = {
   wake_source_type: AutonomyWakeSourceType;
   source_category: AutonomyWakeSourceCategory;
   outcome: AutonomyWakeOutcome | null;
+  /** True only for a recorded preparation failure before invoking the turn. */
+  preparation_failed: boolean;
+  /** True only when a turn failed with a typed provider/transport error. */
+  turn_provider_failed: boolean;
   /**
    * Why this wake ended the way it did, when the outcome had a reason to carry.
    * Null means either the outcome had no detail or the row predates the column.
@@ -186,6 +202,8 @@ function mapWakeRow(row: Record<string, unknown>): AutonomyWakeRecord {
     wake_source_type: row.wake_source_type,
     source_category: row.source_category ?? "operational",
     outcome: row.outcome ?? null,
+    preparation_failed: row.preparation_failed === 1,
+    turn_provider_failed: row.turn_provider_failed === 1,
     outcome_detail: row.outcome_detail === undefined ? null : (row.outcome_detail ?? null),
     headway_bases: headwayBases,
     finalizer_rounds:
@@ -231,6 +249,8 @@ export class AutonomyWakesRepository {
       wake_source_type: parsed.wake_source_type,
       source_category: parsed.source_category,
       outcome: null,
+      preparation_failed: false,
+      turn_provider_failed: false,
       outcome_detail: null,
       headway_bases: null,
       finalizer_rounds: null,
@@ -266,12 +286,22 @@ export class AutonomyWakesRepository {
     options: {
       sourceCategory?: AutonomyWakeSourceCategory;
       outcome?: AutonomyWakeOutcome;
+      excludePreparationFailures?: boolean;
+      excludeTurnProviderFailures?: boolean;
     } = {},
   ): number {
     const categoryFilter = options.sourceCategory;
     const outcomeFilter = options.outcome;
     const conditions = ["ts >= ?"];
     const values: unknown[] = [ts];
+
+    if (options.excludePreparationFailures === true) {
+      conditions.push("preparation_failed = 0");
+    }
+
+    if (options.excludeTurnProviderFailures === true) {
+      conditions.push("turn_provider_failed = 0");
+    }
 
     if (categoryFilter !== undefined) {
       conditions.push("source_category = ?");
@@ -296,7 +326,7 @@ export class AutonomyWakesRepository {
       .prepare(
         `
           SELECT id, ts, trigger_name, condition_name, session_id, wake_source_type, source_category,
-                 outcome, outcome_detail, headway_bases_json, finalizer_rounds, stall_retries,
+                 outcome, preparation_failed, turn_provider_failed, outcome_detail, headway_bases_json, finalizer_rounds, stall_retries,
                  selected_goal_id
           FROM autonomy_wakes
           WHERE ts >= ?
@@ -315,6 +345,7 @@ export class AutonomyWakesRepository {
     detail?: string | null,
     headwayBases?: readonly string[] | null,
     executionCounts?: AutonomyWakeExecutionCounts,
+    options: { preparationFailed?: boolean; turnProviderFailed?: boolean } = {},
   ): void {
     const storedHeadwayBases =
       outcome === "headway" && headwayBases !== null && headwayBases !== undefined
@@ -331,7 +362,7 @@ export class AutonomyWakesRepository {
       .prepare(
         `UPDATE autonomy_wakes
          SET outcome = ?, outcome_detail = ?, headway_bases_json = ?,
-             finalizer_rounds = ?, stall_retries = ?
+             finalizer_rounds = ?, stall_retries = ?, preparation_failed = ?, turn_provider_failed = ?
          WHERE id = ? AND outcome IS NULL`,
       )
       .run(
@@ -340,6 +371,8 @@ export class AutonomyWakesRepository {
         storedHeadwayBases === null ? null : JSON.stringify(storedHeadwayBases),
         storedExecutionCounts?.finalizer_rounds ?? null,
         storedExecutionCounts?.stall_retries ?? null,
+        outcome === "error" && options.preparationFailed === true ? 1 : 0,
+        outcome === "error" && options.turnProviderFailed === true ? 1 : 0,
         id,
       );
   }
@@ -418,63 +451,6 @@ export class AutonomyWakesRepository {
     reasons.sort((a, b) => b.count - a.count || a.detail.localeCompare(b.detail));
 
     return { total, without_detail: withoutDetail, reasons };
-  }
-
-  /**
-   * Where one outcome's rows sit among the window's other wakes: how many wakes
-   * that did not land in the bucket fall strictly between its first and last row,
-   * and whether the wake immediately before its first row carries the same
-   * outcome. The second read deliberately ignores the window -- the table retains
-   * more than the window covers, and a run clipped by the window edge is exactly
-   * the case a count inside the window cannot distinguish from a run that began
-   * there.
-   */
-  describeOutcomeSpanSince(
-    ts: number,
-    outcome: AutonomyWakeOutcome,
-  ): AutonomyWakeOutcomeSpan | null {
-    const bounds = this.db
-      .prepare(
-        `
-          SELECT MIN(ts) AS first_ts, MAX(ts) AS last_ts, COUNT(*) AS count
-          FROM autonomy_wakes
-          WHERE ts >= ? AND outcome = ?
-        `,
-      )
-      .get(ts, outcome) as { first_ts: unknown; last_ts: unknown; count: unknown } | undefined;
-
-    const count = Number(bounds?.count ?? 0);
-
-    if (count === 0 || typeof bounds?.first_ts !== "number" || typeof bounds.last_ts !== "number") {
-      return null;
-    }
-
-    const between = this.db
-      .prepare(
-        `
-          SELECT COUNT(*) AS count
-          FROM autonomy_wakes
-          WHERE ts > ? AND ts < ? AND (outcome IS NULL OR outcome != ?)
-        `,
-      )
-      .get(bounds.first_ts, bounds.last_ts, outcome) as { count: unknown } | undefined;
-
-    const previous = this.db
-      .prepare(
-        `
-          SELECT outcome
-          FROM autonomy_wakes
-          WHERE ts < ?
-          ORDER BY ts DESC
-          LIMIT 1
-        `,
-      )
-      .get(bounds.first_ts) as { outcome: unknown } | undefined;
-
-    return {
-      other_outcomes_between: Number(between?.count ?? 0),
-      extends_before_window: previous === undefined ? null : previous.outcome === outcome,
-    };
   }
 
   prune(olderThan: number): number {

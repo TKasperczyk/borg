@@ -114,7 +114,7 @@ function strongerNameProvenance(
   return NAME_PROVENANCE_RANK[next] > NAME_PROVENANCE_RANK[currentValue] ? next : currentValue;
 }
 
-function mapRelationalSlotRow(row: Record<string, unknown>): RelationalSlot {
+export function mapRelationalSlotRow(row: Record<string, unknown>): RelationalSlot {
   const parsed = relationalSlotSchema.safeParse({
     id: row.id,
     subject_entity_id: row.subject_entity_id,

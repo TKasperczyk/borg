@@ -1,3 +1,4 @@
+import { FailureReportTracker } from "../../util/failure-reports.js";
 import type { SerializedEmbeddingPreparer } from "../../embeddings/serialized.js";
 import { z } from "zod";
 
@@ -173,6 +174,7 @@ export type ReviewTransactionScope = "sqlite" | "cross_store_applying_state" | "
 export type ReviewApplyOutcome = {
   finalResolution?: ReviewApplyDecision;
   refs?: Record<string, unknown>;
+  supersededPeriodVersion?: { targetId: string; recordVersion: number };
 };
 
 export type ReviewHandlerContext = {
@@ -267,6 +269,13 @@ export function stripReviewResolverRefs(refs: Record<string, unknown>): Record<s
 
   return next;
 }
+
+// The base version a proposal was composed against only fences its apply step;
+// it is not part of what a model judges or extracts, so model renderings omit it.
+export function reviewRefsForModel(refs: Record<string, unknown>): Record<string, unknown> {
+  const { expected_record_version: _applyFence, ...rest } = refs;
+  return rest;
+}
 type BeliefRevisionRefs = z.infer<typeof beliefRevisionRefsSchema>;
 export type BeliefRevisionReasonCode =
   | "evidence_invalidated"
@@ -356,7 +365,7 @@ export function commitmentReconciliationReviewDisclosureLabel(
   return combineMemoryDisclosureLabels(labels);
 }
 
-function mapReviewRow(row: Record<string, unknown>): ReviewQueueItem {
+export function mapReviewRow(row: Record<string, unknown>): ReviewQueueItem {
   const parsed = reviewQueueItemSchema.safeParse({
     id: Number(row.id),
     kind: row.kind,
@@ -383,6 +392,7 @@ export class ReviewQueueRepository {
   private readonly clock: Clock;
   private readonly handlers: ReviewQueueHandlerRegistry;
   private readonly pendingEnqueueHooks = new Set<Promise<void>>();
+  private readonly failureReports = new FailureReportTracker("review queue hook failure");
   private readonly tracer: TurnTracer;
 
   constructor(private readonly options: ReviewQueueRepositoryOptions) {
@@ -413,18 +423,12 @@ export class ReviewQueueRepository {
     };
   }
 
-  private reportEnqueueHookError(
+  private async reportEnqueueHookError(
     error: unknown,
     item: ReviewQueueItem,
     input: ReviewQueueInsertInput,
-  ): void {
-    try {
-      void Promise.resolve(this.options.onEnqueueError?.(error, item, input)).catch(() => {
-        // Best-effort hook error reporting only.
-      });
-    } catch {
-      // Best-effort hook error reporting only.
-    }
+  ): Promise<void> {
+    await this.failureReports.report(() => this.options.onEnqueueError?.(error, item, input));
   }
 
   private trackEnqueueHook(task: Promise<void>): void {
@@ -441,6 +445,7 @@ export class ReviewQueueRepository {
     while (this.pendingEnqueueHooks.size > 0) {
       await Promise.all([...this.pendingEnqueueHooks]);
     }
+    await this.failureReports.flush();
   }
 
   registerHandler<K extends ReviewKind, TRefs, TState>(
@@ -589,12 +594,12 @@ export class ReviewQueueRepository {
       if (hookResult !== undefined) {
         this.trackEnqueueHook(
           Promise.resolve(hookResult).catch((error) => {
-            this.reportEnqueueHookError(error, item, input);
+            return this.reportEnqueueHookError(error, item, input);
           }),
         );
       }
     } catch (error) {
-      this.reportEnqueueHookError(error, item, input);
+      this.trackEnqueueHook(this.reportEnqueueHookError(error, item, input));
     }
 
     return item;
@@ -1129,6 +1134,41 @@ export class ReviewQueueRepository {
         item.refs,
         applyingStateKey,
       );
+      if (outcome?.supersededPeriodVersion !== undefined) {
+        const { targetId, recordVersion } = outcome.supersededPeriodVersion;
+        // Full narrative replacements carry a version fence. Unfenced patches and
+        // rollover proposals have independent intent and must remain open.
+        const siblings = this.db
+          .prepare(
+            `
+          SELECT * FROM review_queue
+          WHERE id != ? AND resolved_at IS NULL AND kind = 'identity_inconsistency'
+            AND json_extract(refs, '$.target_type') = 'autobiographical_period'
+            AND json_extract(refs, '$.target_id') = ?
+            AND json_extract(refs, '$.repair_op') = 'patch'
+            AND json_type(refs, '$.expected_record_version') = 'integer'
+            AND json_extract(refs, '$.expected_record_version') < ?
+            AND json_type(refs, '$.patch.narrative') = 'text'
+            AND json_type(refs, '$.next_period_open_payload') IS NULL
+        `,
+          )
+          .all(item.id, targetId, recordVersion) as Record<string, unknown>[];
+        for (const row of siblings) {
+          const sibling = mapReviewRow(row);
+          const reason = `Superseded by applied review proposal ${item.id}`;
+          this.markResolved(
+            sibling.id,
+            { decision: "dismiss", reason },
+            resolvedAt,
+            {
+              ...sibling.refs,
+              superseded_by_review_id: item.id,
+              superseded_reason: reason,
+            },
+            sibling.refs,
+          );
+        }
+      }
       this.db.exec("COMMIT");
 
       return {
@@ -1272,10 +1312,13 @@ export class ReviewQueueRepository {
           });
         }
 
-        throw new SemanticError(`Review item ${item.id} refs changed before its vectors could be refreshed`, {
-          code: "REVIEW_QUEUE_RESOLUTION_RACE",
-          cause: { itemId: item.id },
-        });
+        throw new SemanticError(
+          `Review item ${item.id} refs changed before its vectors could be refreshed`,
+          {
+            code: "REVIEW_QUEUE_RESOLUTION_RACE",
+            cause: { itemId: item.id },
+          },
+        );
       }
 
       item = { ...item, refs: refreshedRefs };

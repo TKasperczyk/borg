@@ -123,7 +123,8 @@ export type TurnPhaseCoordinatorOptions = {
   semanticNodeRepository?: Pick<
     SemanticNodeRepository,
     "searchByVector" | "markSuperseded" | "markContradicted"
-  >;
+  > &
+    Partial<Pick<SemanticNodeRepository, "getMany">>;
   workingMemoryStore: WorkingMemoryStore;
   entityRepository: EntityRepository;
   socialRepository: SocialRepository;
@@ -166,7 +167,7 @@ export type TurnPhaseCoordinatorOptions = {
   autobiographicalRepository?: Pick<AutobiographicalRepository, "listPeriods">;
   openQuestionsRepository: Pick<
     OpenQuestionsRepository,
-    "findByHandles" | "get" | "list" | "resolve"
+    "findByHandles" | "get" | "list" | "resolve" | "countRuminations" | "countByStatus"
   >;
   toolDispatcher: ToolDispatcher;
   createStreamReader: (sessionId: SessionId) => StreamReader;

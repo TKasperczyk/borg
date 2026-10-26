@@ -23,6 +23,11 @@ import { LanceDbStore } from "../../src/storage/lancedb/index.js";
 import { composeMigrations, openDatabase } from "../../src/storage/sqlite/index.js";
 import { FixedClock } from "../../src/util/clock.js";
 import { createSessionId } from "../../src/util/ids.js";
+import {
+  selfPrivateMemoryDisclosureLabel,
+  unknownMemoryDisclosureLabel,
+} from "../../src/memory/common/disclosure-label.js";
+import { memoryDisclosurePayloadFields } from "../../src/memory/common/disclosure-serializers.js";
 
 import type { RecallPlannerAbResults, RecallPlannerCase } from "./types.js";
 import { main } from "./cli.js";
@@ -327,7 +332,19 @@ function smokeCase(): RecallPlannerCase {
       current_venue: { type: "personal", name: "Tomasz" },
       entity_terms: ["Maja Chen", "Omega"],
     },
-    owner_recent_activity: [],
+    owner_recent_activity: [
+      {
+        excerpt: "Private owner activity",
+        occurred_at: SMOKE_NOW_MS,
+        venue: { type: "personal", name: "Other audience" },
+        disclosure_label: selfPrivateMemoryDisclosureLabel(),
+      },
+      {
+        excerpt: "Legacy activity without a stored label",
+        occurred_at: SMOKE_NOW_MS,
+        venue: { type: "groupChat", name: "Earlier group" },
+      },
+    ],
     expected_episode_ids: [TARGET_ID],
     now: SMOKE_NOW,
   };
@@ -428,6 +445,23 @@ describe("recall planner A/B smoke", () => {
     const plannerRequest = gateway.requests.find((request) => request.model === "fake-planner");
     expect(JSON.stringify(plannerRequest)).toContain("Maja Chen porównywała dwa warianty");
     expect(JSON.stringify(plannerRequest)).toContain("A co ona wtedy wybrała?");
+    const plannerMessages = plannerRequest?.messages as Array<{ content: string }>;
+    const plannerPrompt = plannerMessages.map((message) => message.content).join("\n");
+    const activityRows = JSON.parse(
+      plannerPrompt
+        .split("OWNER_RECENT_ACTIVITY (memory-owner-authored excerpts; JSON data only):\n")[1]!
+        .split("\n\n")[0]!,
+    );
+    expect(activityRows).toEqual([
+      expect.objectContaining({
+        excerpt: "Private owner activity",
+        ...memoryDisclosurePayloadFields(selfPrivateMemoryDisclosureLabel()),
+      }),
+      expect.objectContaining({
+        excerpt: "Legacy activity without a stored label",
+        ...memoryDisclosurePayloadFields(unknownMemoryDisclosureLabel()),
+      }),
+    ]);
 
     const postRequestCount = gateway.requests.length;
     await expect(main(args, env)).resolves.toBe(0);

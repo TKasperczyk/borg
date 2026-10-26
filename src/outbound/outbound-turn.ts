@@ -1,5 +1,5 @@
 import type { TurnOrchestrator } from "../cognition/index.js";
-import type { SessionRecord } from "../sessions/index.js";
+import type { SessionRecord, SessionSourceType } from "../sessions/index.js";
 import { SessionBusyError } from "../util/errors.js";
 import type {
   FinalizerNoOutputCategory,
@@ -31,6 +31,7 @@ export type DirectedOutboundTurnResult = {
 
 export type DirectedOutboundTurnRunnerOptions = {
   turnOrchestrator: Pick<TurnOrchestrator, "run">;
+  substratePrivilegedSourceTypes?: readonly SessionSourceType[];
 };
 
 export type DirectedOutboundDeliveryOutcome =
@@ -78,6 +79,7 @@ export type DirectedOutboundDeliveryOutcome =
 export function formatDirectedOutboundInstruction(input: {
   instruction: string;
   authorizationKind: DirectedOutboundTurnInput["authorizationKind"];
+  targetAcceptsInternalIds?: boolean;
 }): string {
   return renderDirectedOutboundInstructionSurface(input);
 }
@@ -166,6 +168,10 @@ export async function runDirectedOutboundTurn(
       userMessage: formatDirectedOutboundInstruction({
         instruction: input.instruction,
         authorizationKind: input.authorizationKind,
+        // The same two exemptions the post-generation internal-identifier guard applies.
+        targetAcceptsInternalIds:
+          session.audience_role === "operator" ||
+          (options.substratePrivilegedSourceTypes ?? []).includes(session.source_type),
       }),
       stakes: "medium",
       origin: "directed_outbound",

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { ManualClock } from "../../util/clock.js";
 import type { LLMCompleteResult } from "../../llm/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../../tracing/tracer.js";
@@ -2503,6 +2504,132 @@ describe("review resolver autonomous mode", () => {
     expect(llm.requests[0]?.tools?.[0]?.inputSchema.properties?.reason).toMatchObject({
       description: expect.stringContaining("audit rationale"),
     });
+  });
+
+  it("dismisses superseded revisions before spending another resolver judgment", async () => {
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      reviewOpenQuestionExtractor: null,
+      configOverrides: AUTONOMOUS_OVERRIDES,
+    });
+    cleanup.push(harness.cleanup);
+    const period = harness.autobiographicalRepository.upsertPeriod({
+      label: "2026-Q3",
+      start_ts: Date.UTC(2026, 6, 1),
+      narrative: "Base text.",
+      provenance: { kind: "offline", process: "self-narrator" },
+    });
+    const enqueueRevision = (narrative: string) =>
+      harness.reviewQueueRepository.enqueue({
+        kind: "identity_inconsistency",
+        reason: `self-narrator proposed revising autobiographical period ${period.id}`,
+        refs: {
+          target_type: "autobiographical_period",
+          target_id: period.id,
+          repair_op: "patch",
+          patch: { narrative },
+          proposed_provenance: { kind: "offline", process: "self-narrator" },
+          evidence_episode_ids: [createEpisodeFixture().id],
+          expected_record_version: period.record_version,
+        },
+      });
+    const revisions = [enqueueRevision("First revision."), enqueueRevision("Second revision.")];
+    llm.pushResponse(identityResolverResponse({ verdict: "accept_repair" }));
+    llm.pushResponse(identityResolverResponse({ verdict: "accept_repair" }));
+
+    await runResolver(harness);
+
+    const landed = harness.autobiographicalRepository.getPeriod(period.id);
+    const items = revisions.map((item) => harness.reviewQueueRepository.get(item.id));
+    const stale = items.find((item) => item?.resolution === "dismiss");
+
+    expect(llm.requests).toHaveLength(1);
+    for (const request of llm.requests) {
+      expect(String(request.messages[0]?.content)).not.toContain("expected_record_version");
+    }
+    expect(landed?.record_version).toBe(period.record_version! + 1);
+    expect(items.filter((item) => item?.resolution === "accept")).toHaveLength(1);
+    expect(stale?.refs).toMatchObject({
+      superseded_by_review_id: items.find((item) => item?.resolution === "accept")!.id,
+    });
+    expect(stale?.refs).not.toHaveProperty("__borg_review_resolver_diagnostic");
+    await runResolver(harness);
+    expect(llm.requests).toHaveLength(1);
+    expect(["First revision.", "Second revision."]).toContain(landed?.narrative);
+    expect((stale?.refs.patch as { narrative: string }).narrative).not.toBe(landed?.narrative);
+  });
+
+  it("selects an older identity review ahead of newer kinds at the pass cap", async () => {
+    const clock = new ManualClock(1_000_000);
+    const llm = new FakeLLMClient();
+    const tracer = new ArrayTracer();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      clock,
+      tracer,
+      reviewOpenQuestionExtractor: null,
+      configOverrides: AUTONOMOUS_OVERRIDES,
+    });
+    cleanup.push(harness.cleanup);
+    const value = harness.valuesRepository.add({
+      label: "groundedness",
+      description: "Stay grounded in cited evidence.",
+      priority: 5,
+      provenance: {
+        kind: "manual",
+      },
+    });
+    const item = harness.reviewQueueRepository.enqueue({
+      kind: "identity_inconsistency",
+      reason: "The value has new supporting evidence.",
+      refs: {
+        target_type: "value",
+        target_id: value.id,
+        repair_op: "reinforce",
+        evidence_episode_ids: [createEpisodeFixture().id],
+        proposed_provenance: {
+          kind: "offline",
+          process: "overseer",
+        },
+      },
+    });
+    clock.advance(1_000);
+    const { item: newerMisattribution } = await enqueueSemanticMisattribution(harness, {
+      descriptionPatch: "Ben wrote the deployment script.",
+    });
+    const newerInsights = Array.from({ length: 12 }, (_, index) =>
+      harness.reviewQueueRepository.enqueue({
+        kind: "new_insight",
+        reason: "New evidence awaits review.",
+        refs: pendingNewInsightInsertRefs({
+          episodeIds: [createEpisodeFixture().id],
+          clusterKey: `cluster:newer-${index}`,
+        }),
+      }),
+    );
+    llm.pushResponse(
+      identityResolverResponse({
+        verdict: "accept_repair",
+      }),
+    );
+
+    const result = await runResolver(harness, 1);
+    const resolved = harness.reviewQueueRepository.get(item.id);
+
+    expect(result.changes).toHaveLength(1);
+    expect(resolved?.resolved_at).not.toBeNull();
+    expect(resolved?.resolution).toBe("accept");
+    expect(llm.requests).toHaveLength(1);
+    expect(
+      tracer.events.find((event) => event.event === "review_resolver.decision.completed"),
+    ).toMatchObject({
+      review_id: item.id,
+      reason: REVIEW_RESOLVER_REASON_SENTINEL,
+    });
+    for (const newer of [newerMisattribution, ...newerInsights]) {
+      expect(harness.reviewQueueRepository.get(newer.id)?.resolved_at).toBeNull();
+    }
   });
 
   it("retries needs_manual items and terminally dismisses at the attempt cap", async () => {

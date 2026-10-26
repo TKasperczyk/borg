@@ -178,13 +178,16 @@ function makeHarness(
     setReceiptPending: vi.fn(),
   };
   const repairSessionStreamEntryIndex = vi.fn(async () => ({ inserted: 0 }));
+  const getEntity = vi.fn((id: EntityId) =>
+    id === senderEntityId || id === audienceEntityId ? makeEntity(id) : null,
+  );
   const enqueuer = new MessageEnqueuer({
     sessionsRepository: {
       ensure,
       touch,
     },
     entityRepository: {
-      get: vi.fn((id: EntityId) => (id === senderEntityId ? makeEntity(id) : null)),
+      get: getEntity,
     },
     activityRepository: {
       record: vi.fn((event: ActivityEventRecordInput) => {
@@ -221,6 +224,7 @@ function makeHarness(
 
   return {
     enqueuer,
+    getEntity,
     session,
     sessionId,
     senderEntityId,
@@ -248,6 +252,36 @@ describe("MessageEnqueuer", () => {
     while (tempDirs.length > 0) {
       rmSync(tempDirs.pop() as string, { recursive: true, force: true });
     }
+  });
+
+  it("persists canonical sender and audience keys for explicit redirected inputs", async () => {
+    const harness = makeHarness();
+    const oldSender = createEntityId(),
+      oldAudience = createEntityId();
+    harness.getEntity.mockImplementation((id) =>
+      makeEntity(
+        id === oldSender
+          ? harness.senderEntityId
+          : id === oldAudience
+            ? harness.audienceEntityId
+            : id,
+      ),
+    );
+    await harness.enqueuer.enqueueMessage({
+      session: { ...harness.session, source_external_id: "conversation-1" },
+      userMessage: oldSender,
+      senderEntityId: oldSender,
+      audienceEntityId: oldAudience,
+      sourceMessageKey: harness.sourceMessageKey,
+    });
+    expect(harness.appended[0]).toMatchObject({
+      sender_entity_id: harness.senderEntityId,
+      content: oldSender,
+    });
+    expect(harness.activityEvents[0]).toMatchObject({
+      speakerEntityId: harness.senderEntityId,
+      audienceEntityId: harness.audienceEntityId,
+    });
   });
 
   it("appends a source-keyed user message and records one active pre-turn contact", async () => {

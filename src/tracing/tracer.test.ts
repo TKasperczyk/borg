@@ -284,6 +284,62 @@ describe("TurnTracer", () => {
     expect(event).not.toHaveProperty("query");
   });
 
+  it.each(["autonomy.tick", "autonomy.tick_error"] as const)(
+    "redacts nested %s errors in standalone tracers according to payload tracing",
+    (event) => {
+      const data: TurnTraceData = {
+        turnId: "autonomy_errors",
+        errorCount: 2,
+        errors: [
+          { sourceName: "scheduled_wake", errorName: "TypeError", error: "private cause text" },
+        ],
+        sourceErrors: [
+          {
+            sourceName: "scheduled_reflection",
+            errorName: "AutonomySourcePreparationError",
+            error: "private source text",
+          },
+        ],
+      };
+      for (const includePayloads of [false, true]) {
+        const entries: CallbackTraceEntry[] = [];
+        const callback = new CallbackTracer({
+          includePayloads,
+          sink: (entry) => entries.push(entry),
+        });
+        const tracePath = join(createTempDir(), "errors.jsonl");
+        const jsonl = new JsonlTracer({ path: tracePath, includePayloads });
+        callback.emit(event, data);
+        jsonl.emit(event, data);
+        const expected = {
+          errors: [
+            {
+              sourceName: "scheduled_wake",
+              errorName: "TypeError",
+              error: includePayloads ? "private cause text" : "TypeError",
+            },
+          ],
+          sourceErrors: [
+            {
+              sourceName: "scheduled_reflection",
+              errorName: "AutonomySourcePreparationError",
+              error: includePayloads ? "private source text" : "AutonomySourcePreparationError",
+            },
+          ],
+        };
+        expect(entries[0]).toMatchObject(expected);
+        expect(readTraceEvents(tracePath)[0]).toMatchObject(expected);
+        if (!includePayloads) {
+          expect(JSON.stringify(entries)).not.toContain("private");
+          expect(readFileSync(tracePath, "utf8")).not.toContain("private");
+        }
+      }
+      expect(data.errors).toEqual([
+        { sourceName: "scheduled_wake", errorName: "TypeError", error: "private cause text" },
+      ]);
+    },
+  );
+
   it("strips payload-gated keys for a lone JsonlTracer without payloads", () => {
     const tempDir = createTempDir();
     const tracePath = join(tempDir, "jsonl-no-payloads.jsonl");
@@ -678,6 +734,8 @@ describe("TurnTracer", () => {
       "turn_phase.started",
       "turn_phase.completed",
       "turn_phase.started",
+      "llm_call.started",
+      "llm_call.completed",
       "reflection.completed",
       "turn_phase.completed",
       "action_archive_scan.completed",

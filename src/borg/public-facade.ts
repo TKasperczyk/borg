@@ -2,6 +2,7 @@
 // repository/service/scheduler classes so generated declarations stay light.
 
 import type { BorgOperatorAttentionFacade } from "../memory/operator-attention/types.js";
+import type { LanceDbMemoryStats, LanceDbTableStats } from "../storage/lancedb/diagnostics.js";
 
 import type {
   AutonomyConditionName,
@@ -283,6 +284,11 @@ export type BorgEpisodicFacade = {
     audienceEntityId?: EntityId | null;
     visibleAudienceEntityIds?: readonly EntityId[];
     crossAudience?: boolean;
+  }): Promise<EpisodeSearchCandidate[]>;
+  listRecentForSessionForCognition(options: {
+    sessionId: SessionId;
+    sinceMs: number;
+    limit?: number;
   }): Promise<EpisodeSearchCandidate[]>;
   getStats(id: Episode["id"]): EpisodeStats | null;
 };
@@ -708,6 +714,7 @@ export type BorgEntityResolveExternalInput = Pick<
 };
 
 export type BorgEntitiesFacade = {
+  resolveAudienceLabel(label: string, boundEntityId?: EntityId): EntityId;
   resolve(name: string, options?: BorgEntityResolveOptions): EntityId;
   resolveExternal(input: BorgEntityResolveExternalInput): EntityId;
   findByExternalId(source: string, externalId: string): EntityId | null;
@@ -1156,7 +1163,7 @@ export type BorgOfflineProcessError = {
   process: string;
   message: string;
   code?: string;
-  target_type?: "episode" | "semantic_node" | "semantic_edge";
+  target_type?: "episode" | "semantic_node" | "semantic_edge" | "open_question";
   target_id?: string;
 };
 
@@ -1254,6 +1261,8 @@ export type BorgAutonomyWakeRecord = {
   source_category: AutonomyWakeSourceCategory;
   selected_goal_id: GoalId | null;
   outcome: AutonomyWakeOutcome | null;
+  preparation_failed: boolean;
+  turn_provider_failed: boolean;
   outcome_detail: string | null;
   headway_bases: string[] | null;
   finalizer_rounds: number | null;
@@ -1271,7 +1280,14 @@ export type BorgAutonomyWakeRecordInput = {
 
 export type BorgAutonomyWakesFacade = {
   record(input: BorgAutonomyWakeRecordInput): BorgAutonomyWakeRecord;
-  countSince(ts: number, options?: { sourceCategory?: AutonomyWakeSourceCategory }): number;
+  countSince(
+    ts: number,
+    options?: {
+      sourceCategory?: AutonomyWakeSourceCategory;
+      excludePreparationFailures?: boolean;
+      excludeTurnProviderFailures?: boolean;
+    },
+  ): number;
   listSince(ts: number, limit: number): BorgAutonomyWakeRecord[];
   prune(olderThan: number): number;
 };
@@ -1337,6 +1353,8 @@ export type BorgMaintenanceScheduler = {
 };
 
 export type BorgMaintenanceFacade = {
+  storageMemoryStats(): LanceDbMemoryStats;
+  storageTableStats(): Promise<LanceDbTableStats[]>;
   scheduler: BorgMaintenanceScheduler;
   optimizeStorage(options?: { runId?: MaintenanceRunId }): Promise<BorgStorageOptimizationResult>;
   countPendingSemanticExtractionEpisodes(): Promise<number>;

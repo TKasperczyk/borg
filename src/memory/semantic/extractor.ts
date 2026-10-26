@@ -29,7 +29,12 @@ import {
 } from "../../util/self-memory-voice.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { LLMError, SemanticError, StorageError } from "../../util/errors.js";
-import { createSemanticNodeId, type EntityId, type StreamEntryId } from "../../util/ids.js";
+import {
+  createSemanticNodeId,
+  entityIdHelpers,
+  type EntityId,
+  type StreamEntryId,
+} from "../../util/ids.js";
 import { cosineSimilarity } from "../../retrieval/embedding-similarity.js";
 import { memoryDisclosureLabelFromEpisodeAccess } from "../common/disclosure-label.js";
 import {
@@ -40,9 +45,7 @@ import {
   type EpisodicRepository,
 } from "../episodic/index.js";
 import type { EntityRecord, EntityRepository } from "../commitments/index.js";
-import type {
-  RelationshipEvidenceStreamEntryTrustValidator,
-} from "../source-trust.js";
+import type { RelationshipEvidenceStreamEntryTrustValidator } from "../source-trust.js";
 import { SemanticEdgeRepository, SemanticNodeRepository } from "./repository.js";
 import type { SemanticReviewService } from "./review-service.js";
 import type { ReviewQueueInsertInput } from "../review-queue/review-queue.js";
@@ -542,6 +545,37 @@ function identityAnchorNames(anchor: SemanticIdentityAnchor): string[] {
   return [anchor.canonical_name, ...anchor.aliases].map((name) => name.trim());
 }
 
+// The extraction prompt carries raw entity ids, so the model sometimes writes an
+// id where a name belongs. An id denotes its entity as surely as a name does, so
+// both forms resolve to the anchor here -- and the id is never kept as a name.
+// Same invariant as episodeParticipantEntityId, one layer over.
+function identityAnchorDenotations(anchor: SemanticIdentityAnchor): string[] {
+  return [...identityAnchorNames(anchor), anchor.id];
+}
+
+function withoutEntityIdNames(values: readonly string[]): string[] {
+  return values.filter((value) => !entityIdHelpers.is(value.trim()));
+}
+
+// The label is a name slot too, and anchors only cover the roster plus self, so
+// an id naming anyone else falls straight through into storage as a name. The
+// repository is the harness's own id-to-name lookup; the model cannot perform
+// it, and an id that denotes nobody is not a name we can invent.
+function resolveNameSlotLabel(
+  label: string,
+  entityRepository: Pick<EntityRepository, "get"> | undefined,
+): string | null {
+  const trimmed = label.trim();
+
+  if (!entityIdHelpers.is(trimmed)) {
+    return trimmed;
+  }
+
+  const canonicalName = entityRepository?.get(trimmed)?.canonical_name.trim();
+
+  return canonicalName === undefined || canonicalName.length === 0 ? null : canonicalName;
+}
+
 function identityAnchorForCandidate(
   candidate: ExtractorNode,
   anchors: readonly SemanticIdentityAnchor[],
@@ -552,7 +586,7 @@ function identityAnchorForCandidate(
 } {
   const label = candidate.label.trim();
   const labelMatches = anchors.filter((anchor) =>
-    identityAnchorNames(anchor).some((name) => name === label),
+    identityAnchorDenotations(anchor).some((denotation) => denotation === label),
   );
   const labelAnchor = labelMatches.length === 1 ? (labelMatches[0] ?? null) : null;
 
@@ -562,7 +596,9 @@ function identityAnchorForCandidate(
     return {
       anchor: anchor ?? null,
       invalidExplicitRef:
-        anchor === undefined || (labelAnchor !== null && labelAnchor.id !== anchor.id),
+        anchor === undefined ||
+        (entityIdHelpers.is(label) && label !== anchor.id) ||
+        (labelAnchor !== null && labelAnchor.id !== anchor.id),
       ambiguousKnownLabel: false,
     };
   }
@@ -575,7 +611,9 @@ function identityAnchorForCandidate(
   return {
     anchor:
       labelAnchor ??
-      (isStructurallySelfReferential && selfAnchors.length === 1 ? (selfAnchors[0] ?? null) : null),
+      (isStructurallySelfReferential && !entityIdHelpers.is(label) && selfAnchors.length === 1
+        ? (selfAnchors[0] ?? null)
+        : null),
     invalidExplicitRef: false,
     ambiguousKnownLabel: labelMatches.length > 1,
   };
@@ -587,7 +625,7 @@ function identityAnchorForNode(
 ): SemanticIdentityAnchor | null {
   const nodeNames = new Set([node.label.trim(), ...node.aliases.map((alias) => alias.trim())]);
   const matches = anchors.filter((anchor) =>
-    identityAnchorNames(anchor).some((name) => nodeNames.has(name)),
+    identityAnchorDenotations(anchor).some((denotation) => nodeNames.has(denotation)),
   );
 
   return matches.length === 1 ? (matches[0] ?? null) : null;
@@ -775,6 +813,13 @@ export class SemanticExtractor {
       };
     }
 
+    // A model-emitted entity handle must resolve on its own before any self
+    // normalization. An upsert through the self fallback is not reference proof.
+    const resolvedLabel = resolveNameSlotLabel(candidate.label, this.options.entityRepository);
+    if (resolvedLabel === null) {
+      return { status: "skipped", reason: "invalid_ref" };
+    }
+
     const identityResolution = identityAnchorForCandidate(candidate, identityAnchors);
 
     if (identityResolution.invalidExplicitRef) {
@@ -805,16 +850,19 @@ export class SemanticExtractor {
       };
     }
 
+    const candidateLabel = identityAnchor?.canonical_name ?? resolvedLabel;
+
     try {
-      const candidateLabel = identityAnchor?.canonical_name ?? candidate.label.trim();
       const candidateDescription = candidate.description.trim();
-      const candidateAliases = mergeAliases(
-        candidate.aliases,
-        identityAnchor === null
-          ? []
-          : [candidate.label, ...identityAnchor.aliases].filter(
-              (alias) => alias.trim() !== candidateLabel,
-            ),
+      const candidateAliases = withoutEntityIdNames(
+        mergeAliases(
+          candidate.aliases,
+          identityAnchor === null
+            ? []
+            : [candidate.label, ...identityAnchor.aliases].filter(
+                (alias) => alias.trim() !== candidateLabel,
+              ),
+        ),
       );
       const candidateKind =
         identityAnchor?.kind === "person"
@@ -913,7 +961,9 @@ export class SemanticExtractor {
 
       const nextDescription =
         candidate.confidence >= existing.confidence ? candidateDescription : existing.description;
-      const nextAliases = mergeAliases(existing.aliases, [candidateLabel, ...candidate.aliases]);
+      const nextAliases = withoutEntityIdNames(
+        mergeAliases(existing.aliases, [candidateLabel, ...candidate.aliases]),
+      );
       const updatedEmbedding = await this.options.embeddingClient.embed(
         buildNodeEmbeddingText({
           label: existing.label,
@@ -1000,9 +1050,10 @@ export class SemanticExtractor {
   private async resolveEdgeNode(
     label: string,
     batchNodes: ReadonlyMap<string, SemanticNode>,
+    originalHandles: ReadonlyMap<string, SemanticNode>,
   ): Promise<SemanticNode | undefined> {
     const key = label.toLowerCase();
-    const localNode = batchNodes.get(key);
+    const localNode = originalHandles.get(label.trim()) ?? batchNodes.get(key);
 
     if (localNode !== undefined && this.edgeNodeCanAcceptEvidence(localNode)) {
       return localNode;
@@ -1130,6 +1181,7 @@ export class SemanticExtractor {
     const allowedEpisodeIds = new Set(episodes.map((episode) => episode.id));
     const episodeById = new Map(episodes.map((episode) => [episode.id, episode]));
     const batchNodes = new Map<string, SemanticNode>();
+    const originalHandles = new Map<string, SemanticNode>();
     const skipReasons = new Set<string>();
     let insertedNodes = 0;
     let updatedNodes = 0;
@@ -1198,6 +1250,9 @@ export class SemanticExtractor {
         }
 
         if (outcome.node !== undefined) {
+          // Model-emitted endpoint handles survive normalization only for this
+          // batch. In particular, entity ids must never become persisted aliases.
+          originalHandles.set(candidate.label.trim(), outcome.node);
           const key = outcome.node.label.toLowerCase();
           batchNodes.set(key, outcome.node);
 
@@ -1237,8 +1292,12 @@ export class SemanticExtractor {
           throw error;
         }
 
-        const fromNode = await this.resolveEdgeNode(candidate.from_label, batchNodes);
-        const toNode = await this.resolveEdgeNode(candidate.to_label, batchNodes);
+        const fromNode = await this.resolveEdgeNode(
+          candidate.from_label,
+          batchNodes,
+          originalHandles,
+        );
+        const toNode = await this.resolveEdgeNode(candidate.to_label, batchNodes, originalHandles);
 
         if (fromNode === undefined || toNode === undefined) {
           skippedEdges += 1;

@@ -89,14 +89,13 @@ import type {
 } from "../cognition/autobiographical-recall.js";
 import type { TemporalCue } from "../contracts/cognitive-contracts.js";
 import {
-  isMemoryDisclosureLabelVisibleToAnyAudience,
+  commitmentMemoryDisclosureLabel,
   memoryDisclosureLabelFromEpisodeAccess,
   memoryDisclosureLabelMetadata,
   type MemoryDisclosureLabel,
 } from "../memory/common/index.js";
 import {
   episodeIdSchema,
-  isEpisodeAccessVisibleToAnyAudience,
   parseEpisodeParticipantEntityIdTerm,
   type Episode,
 } from "../memory/episodic/index.js";
@@ -105,7 +104,7 @@ import {
   clipRecalledEvidenceText,
   MAX_RECALLED_SOURCE_MESSAGES_PER_EPISODE,
 } from "../retrieval/evidence-bounds.js";
-import { MEMORY_DISCLOSURE_GUIDANCE_FOR_MODEL, SELF_RECALL_SCOPE } from "../retrieval/index.js";
+import { renderMemoryDisclosureGuidanceForModel, SELF_RECALL_SCOPE } from "../retrieval/index.js";
 import { ServedMemoryContextRegistry } from "./served-memory-context.js";
 import type {
   DisclosureContext,
@@ -252,11 +251,9 @@ const AUTOBIOGRAPHICAL_TOTAL_CAP = 24;
 const MIN_AUTOBIOGRAPHICAL_BUDGET_MS = 500;
 const MAX_AUTOBIOGRAPHICAL_BUDGET_MS = 1500;
 const MEMORY_RESPONSE_HEADROOM_MS = 700;
-// Kinds whose disclosure label comes from exactly one source record, so "one visible audience is
-// among the entities it is private to" is the whole story. Open questions, goals, actions and
-// autobiographical periods carry labels combined across several sources (one visible source would
-// admit text derived from another private one), and episodes are already served by the `episodes`
-// section with the request's exclusions applied; both are omitted here.
+// Compact source-kind contract for this section. Episodes have their own section;
+// every included source is cognition evidence with disclosure labels, never an
+// audience-filtered export.
 const SIDECAR_AUTOBIOGRAPHICAL_KINDS: ReadonlySet<AutobiographicalRecallSourceKind> = new Set([
   "activity",
   "observed_social_event",
@@ -418,10 +415,18 @@ const episodeTimeRangeSchema = z
     path: ["end"],
   });
 const episodeExclusionsSchema = z
-  .object({
-    title_prefixes: z.array(z.string().min(1)).max(8).optional().default([]),
-    narrative_markers: z.array(z.string().min(1)).max(8).optional().default([]),
-  })
+  .object(
+    {
+      episode_ids: z.array(episodeIdSchema).max(100).optional().default([]),
+      source_stream_ids: z.array(streamEntryIdSchema).max(100).optional().default([]),
+    },
+    {
+      error: (issue) =>
+        issue.code === "unrecognized_keys"
+          ? `Unsupported exclusion fields: ${issue.keys.join(", ")}. Use exclude.episode_ids or exclude.source_stream_ids; free-text exclusions are not supported.`
+          : undefined,
+    },
+  )
   .strict();
 
 const memoryContextSectionSchema = z.enum([
@@ -996,23 +1001,23 @@ function temporalCueRange(
 
 function projectAutobiographicalRecallForResponse(
   recall: AutobiographicalRecallResult,
-  visibleAudienceEntityIds: readonly EntityId[],
 ): Record<string, unknown> {
   const eligible = recall.evidence.filter((item) => SIDECAR_AUTOBIOGRAPHICAL_KINDS.has(item.kind));
-  const visible = eligible.filter((item) =>
-    isMemoryDisclosureLabelVisibleToAnyAudience(item.disclosureLabel, visibleAudienceEntityIds),
-  );
-  const included = visible.slice(0, MAX_AUTOBIOGRAPHICAL_ROWS);
+  const included = eligible.slice(0, MAX_AUTOBIOGRAPHICAL_ROWS);
+  const [window, additionalWindow] = [
+    recall.window,
+    ...(recall.window.additionalWindow === undefined ? [] : [recall.window.additionalWindow]),
+  ].map((band) => ({
+    since: band.startMs,
+    until: band.endMs,
+    label: band.label,
+    // The service names its cue source after Sol's perception; here the cue is the planner's.
+    source: band.source === "perception_temporal_cue" ? "planner_temporal_cue" : band.source,
+  }));
   return {
     window: {
-      since: recall.window.startMs,
-      until: recall.window.endMs,
-      label: recall.window.label,
-      // The service names its cue source after Sol's perception; here the cue is the planner's.
-      source:
-        recall.window.source === "perception_temporal_cue"
-          ? "planner_temporal_cue"
-          : recall.window.source,
+      ...window,
+      ...(additionalWindow === undefined ? {} : { additional_window: additionalWindow }),
     },
     evidence: included.map((item) => ({
       id: item.id,
@@ -1029,21 +1034,21 @@ function projectAutobiographicalRecallForResponse(
         public_to_entity_ids: [...item.disclosureLabel.publicToEntityIds],
       },
     })),
-    hidden_count: eligible.length - visible.length,
-    truncated_count: visible.length - included.length,
+    hidden_count: 0,
+    truncated_count: eligible.length - included.length,
   };
 }
 
-// These patterns are explicit protocol handles supplied by the caller. Matching them mechanically
-// does not interpret user-authored language or infer episode meaning.
+// Only stored record/provenance IDs may exclude a candidate. Titles and narratives
+// are evidence for the model, never deterministic recall predicates.
 function episodeMatchesExclusions(episode: Episode, exclusions?: EpisodeExclusions): boolean {
   if (exclusions === undefined) {
     return false;
   }
 
   return (
-    exclusions.title_prefixes.some((prefix) => episode.title.startsWith(prefix)) ||
-    exclusions.narrative_markers.some((marker) => episode.narrative.includes(marker))
+    exclusions.episode_ids.includes(episode.id) ||
+    episode.source_stream_ids.some((id) => exclusions.source_stream_ids.includes(id))
   );
 }
 
@@ -1088,7 +1093,7 @@ function projectEpisodeHitsForResponse(
     includeSourceMessages?: boolean;
     timeRange?: { start: number; end: number };
   } = {},
-): Array<Record<string, unknown>> {
+) {
   if (hits.length === 0) {
     return [];
   }
@@ -2891,7 +2896,10 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
             error: `invalid memory context body: ${parsed.error.issues
               .flatMap((issue) =>
                 issue.code === "unrecognized_keys"
-                  ? issue.keys.map((key) => `${[...issue.path, key].join(".")}: unrecognized field`)
+                  ? issue.keys.map(
+                      (key) =>
+                        `${[...issue.path, key].join(".")}: unrecognized field (${issue.message})`,
+                    )
                   : [`${issue.path.join(".") || "body"}: ${issue.message}`],
               )
               .join("; ")}`,
@@ -2974,17 +2982,6 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
         const context = await raceRecallDeadline(
           () =>
             pool.withTenant(tenant, async (borg) => {
-              const observedGroupAudienceEntityIds =
-                parsed.data.conversation.type === "personal" &&
-                requestedSections.has("autobiographical")
-                  ? borg.activity.listObservedGroupAudienceEntityIdsForSpeaker(
-                      identity.senderEntityId,
-                    )
-                  : [];
-              const visibleAudienceEntityIds = dedupePreservingOrder([
-                identity.audienceEntity.id,
-                ...observedGroupAudienceEntityIds,
-              ]);
               const activityCandidateLimit =
                 parsed.data.focus === undefined
                   ? recentActivityLimit
@@ -3116,6 +3113,10 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
                     occurredAt: event.occurredAt,
                     venue: projected.conversation,
                     counterpartyName: projected.participant_name,
+                    disclosureLabel: recentLivedExperienceDisclosureLabel({
+                      originAudienceEntityIds:
+                        event.audienceEntityId === null ? [] : [event.audienceEntityId],
+                    }),
                   },
                 ];
               });
@@ -3127,8 +3128,27 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
                         audienceEntityId: identity.audienceEntity.id,
                       })
                       .sort(compareCommitmentsForResponse)
-                      .slice(0, MAX_COMMITMENT_RESPONSE_ITEMS)
                   : [];
+              const applicableCommitmentIds = new Set(
+                applicableCommitments.map((commitment) => commitment.id),
+              );
+              const projectCommitmentDisclosure = createPublicDisclosureProjector(borg.entities, {
+                senderEntityId: identity.senderEntityId,
+                currentAudienceEntityId: identity.audienceEntity.id,
+              });
+              const commitments = requestedSections.has("commitments")
+                ? borg.commitments
+                    .list({ activeOnly: true })
+                    .sort(compareCommitmentsForResponse)
+                    .slice(0, MAX_COMMITMENT_RESPONSE_ITEMS)
+                    .map((commitment) => ({
+                      ...projectCommitment(commitment),
+                      disclosure: projectCommitmentDisclosure(
+                        commitmentMemoryDisclosureLabel(commitment),
+                      ),
+                      applicable_to_current_audience: applicableCommitmentIds.has(commitment.id),
+                    }))
+                : [];
               const participantEntityIds = dedupePreservingOrder([
                 identity.senderEntityId,
                 ...identity.participantEntityIds,
@@ -3150,20 +3170,14 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
                     .map(projectApplicableCreatorDirective)
                 : [];
               const venueCandidates = requestedSections.has("venue_recent")
-                ? await borg.episodic.listRecentForSession({
+                ? await borg.episodic.listRecentForSessionForCognition({
                     sessionId: session,
                     sinceMs: parsed.data.venue_since!,
-                    audienceEntityId: identity.audienceEntity.id,
                     limit: venueSearchLimit,
                   })
                 : [];
-              const visibleVenueCandidates = venueCandidates.filter((candidate) =>
-                isEpisodeAccessVisibleToAnyAudience(candidate.episode, [
-                  identity.audienceEntity.id,
-                ]),
-              );
               const venueRecent = projectEpisodeHitsForResponse(
-                visibleVenueCandidates
+                venueCandidates
                   .filter(
                     (candidate) =>
                       !episodeMatchesExclusions(candidate.episode, parsed.data.exclude),
@@ -3204,14 +3218,13 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
                 : [];
 
               return {
-                visibleAudienceEntityIds,
                 recentActivity,
                 activitySelection,
                 activityDegradation,
                 plannerOwnerActivity,
                 plannerOwnerLivedExperience,
                 memoryOwnerName: borg.entities.getSelf()?.canonical_name,
-                commitments: applicableCommitments.map(projectCommitment),
+                commitments,
                 applicableCommitments,
                 directives,
                 venueRecent,
@@ -3221,7 +3234,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
           recallPhase("context_sections"),
         );
         const degradations: RetrievalDegradation[] = [];
-        let episodes: Array<Record<string, unknown>> = [];
+        let episodes: ReturnType<typeof projectEpisodeHitsForResponse> = [];
         let servedEpisodes: readonly RetrievedEpisode[] = [];
         let degraded = false;
         let degradedReason = "";
@@ -3438,10 +3451,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
                     );
                     return recall === null
                       ? null
-                      : projectAutobiographicalRecallForResponse(
-                          recall,
-                          context.visibleAudienceEntityIds,
-                        );
+                      : projectAutobiographicalRecallForResponse(recall);
                   }),
                 Math.min(requestDeadlineAt, Date.now() + remainingMs),
                 recallPhase("autobiographical"),
@@ -3475,7 +3485,11 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
         if (requestedSections.has("episodes")) {
           response.episodes = episodes;
           response.hidden_episode_count = 0;
-          response.disclosure_guidance = MEMORY_DISCLOSURE_GUIDANCE_FOR_MODEL;
+          response.disclosure_guidance = renderMemoryDisclosureGuidanceForModel(
+            [...episodes, ...context.venueRecent].flatMap((episode) =>
+              (episode.sharing_authorizations ?? []).map((fact) => fact.disclosure),
+            ),
+          );
           // Store only after the deadline has resolved, so abandoned recall cannot publish later.
           response.context_id = servedContexts.put(tenant, {
             sessionId: session,
@@ -4057,7 +4071,9 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
       // /memory/recall
       const parsedRecall = memoryRecallBodySchema.safeParse(body);
       if (!parsedRecall.success) {
-        send(res, 400, { error: "invalid memory recall body" });
+        send(res, 400, {
+          error: `invalid memory recall body: ${parsedRecall.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("; ")}`,
+        });
         return;
       }
       const query = parsedRecall.data.query;

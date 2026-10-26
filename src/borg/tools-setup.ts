@@ -15,6 +15,7 @@ import {
 import type { CommitmentRepository } from "../memory/commitments/index.js";
 import type { EntityRepository } from "../memory/commitments/index.js";
 import type { EpisodicRepository } from "../memory/episodic/index.js";
+import type { LifecycleTracer } from "../memory/lifecycle-ops/index.js";
 import {
   parseIdentityEventDisclosureSources,
   type IdentityEvent,
@@ -82,6 +83,7 @@ export type BuildToolDispatcherOptions = {
   promptSurfaceHistoryRepository: PromptSurfaceHistoryRepository;
   createStreamWriter: BorgStreamWriterFactory;
   clock: Clock;
+  tracer?: LifecycleTracer;
 };
 
 async function identityEventDisclosureLabelsForCollection(
@@ -209,12 +211,22 @@ export function buildToolDispatcher(options: BuildToolDispatcherOptions): ToolDi
             ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
           }),
         readThoughtRecord: (record) =>
-          readStreamEntryAtOffset({
-            dataDir: options.dataDir,
-            sessionId: record.session_id,
-            byteOffset: record.byte_offset,
-          }),
+          options.entryIndex.resolveEntityReferences(
+            readStreamEntryAtOffset({
+              dataDir: options.dataDir,
+              sessionId: record.session_id,
+              byteOffset: record.byte_offset,
+            }),
+          ),
         listJournalRecords: (input) => options.trainOfThoughtRepository.listForRange(input),
+        listGoalDispositionRecords: (input) =>
+          options.identityService.listGoalDispositionsInRange(input),
+        disclosureLabelsForGoalDispositions: (events) =>
+          identityEventDisclosureLabelsForCollection(
+            events,
+            options.episodicRepository,
+            options.sourceStreamAudienceDisclosureResolver,
+          ),
         clock: options.clock,
       }),
     )
@@ -258,7 +270,10 @@ export function buildToolDispatcher(options: BuildToolDispatcherOptions): ToolDi
     )
     .register(
       createOpenQuestionsResolveTool({
+        tracer: options.tracer,
         identityService: options.identityService,
+        episodicRepository: options.episodicRepository,
+        entryIndex: options.entryIndex,
         disclosureLabelForEvidence: async (episodeIds, streamEntryIds) =>
           combineMemoryDisclosureLabels([
             ...(episodeIds.length === 0
@@ -269,6 +284,11 @@ export function buildToolDispatcher(options: BuildToolDispatcherOptions): ToolDi
                     episodeIds,
                   ),
                 ]),
+            // The episode arm resolves its label from the store; this one does not.
+            // Existence was checked separately; the stream arm contributes one unknown per
+            // cited entry by arity alone, and a stream-only resolution's
+            // resolution_disclosure_label is that constant rather than a reading of the
+            // entry it names. Failing closed is the point; it is not a derived label.
             ...streamEntryIds.map(() => unknownMemoryDisclosureLabel()),
           ]),
       }),
@@ -278,6 +298,9 @@ export function buildToolDispatcher(options: BuildToolDispatcherOptions): ToolDi
         listRuminations: (listOptions) =>
           options.openQuestionsRepository.listRuminationsInRange(listOptions),
         getOpenQuestion: (id) => options.openQuestionsRepository.get(id),
+        countRuminations: (id) => options.openQuestionsRepository.countRuminations(id),
+        mergeTombstonePrimaryId: (id) =>
+          options.openQuestionsRepository.mergeTombstonePrimaryId(id),
       }),
     )
     .register(
@@ -310,6 +333,7 @@ export function buildToolDispatcher(options: BuildToolDispatcherOptions): ToolDi
     .register(
       createJournalAppendTool({
         resolveSelfEntityId: () =>
+          options.entityRepository.getSelf()?.id ??
           options.entityRepository.resolve("self", {
             kind: "self",
             provenance: "assistant_seeded",

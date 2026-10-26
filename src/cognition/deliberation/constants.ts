@@ -33,8 +33,8 @@ export const PLANNER_GOAL_EXPANSION_LIMIT = 4;
 // boundary and reads this same constant -- two literals at one value are
 // indistinguishable from one boundary right up until they drift, and the
 // confidence line prints this number as the routing floor, which is only true
-// while they are the same number. Confidence is the fourth test in that ladder,
-// not the only one: reflective mode and high stakes take S2 above the floor,
-// idle mode takes S1 below it, and an operational-contradiction override
-// outranks all four.
+// while they are the same number. Confidence is not the only test in that
+// ladder: reflective mode and high stakes take S2 above the floor, idle mode
+// takes S1 below it, and an operational-contradiction override outranks all
+// four.
 export const DELIBERATION_S2_CONFIDENCE_FLOOR = 0.45;

@@ -4,6 +4,7 @@ import type { StreamWriter } from "../../stream/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { escapeXmlText } from "../../util/prompt-tags.js";
 import type { LLMCompleteOptions } from "../../llm/index.js";
+import { renderAutonomyTriggerPresentation } from "../autonomy-trigger.js";
 import {
   DEFAULT_DELIBERATION_PLAN_MAX_TOKENS,
   DEFAULT_DELIBERATION_RESPONSE_MAX_TOKENS,
@@ -184,7 +185,7 @@ type FinalizerCallVariableOptions = {
 };
 type FinalizerTriadResultInput = {
   finalized: FinalizerEmission;
-  responseForResult: FinalizerResult;
+  toolCalls: FinalizerResult["toolCallsMade"];
   usage: DeliberationUsage;
 };
 type RunFinalizerTriadInput = {
@@ -276,6 +277,8 @@ function buildFinalizerCallOptions(
     audienceEntityId: context.context.audienceEntityId,
     model: options.cognitionModel,
     baseSystemPrompt: context.baseSystemPrompt,
+    shownOpenQuestionIds:
+      context.effectiveContext.autonomyTriggerPresentation?.shownOpenQuestionIds,
     cacheableSystemPrompt: context.cacheableSystemPrompt,
     finalizerDynamicPromptCacheEnabled: options.finalizerDynamicPromptCacheEnabled ?? true,
     finalizerTransport: options.finalizerTransport ?? "unary",
@@ -385,14 +388,22 @@ function finalizerSuppressionReason(result: FinalizerResult): GenerationSuppress
   }
 }
 
+// The text length travels with the diagnostic because it separates an attempt that
+// wrote prose from one that never did. It counts only this attempt: when a regenerate
+// writes nothing, `buildFinalizerEmission` keeps the initial attempt's draft, so
+// text_chars=0 beside an `undelivered_draft` is not a contradiction. Without the count,
+// a silence with no draft beside it reads the same whether the draft rolled out of the
+// recency window or was never written -- and the reason code cannot tell them apart.
 function finalizerInvalidToolDiagnostic(
   decision: InvalidToolDecision,
   attempt: FinalizerInvalidToolDiagnostic["attempt"],
+  textChars: number,
 ): FinalizerInvalidToolDiagnostic {
   return {
     tool_name: decision.toolName,
     reason: decision.reason,
     attempt,
+    text_chars: textChars,
   };
 }
 
@@ -457,7 +468,11 @@ async function retryInvalidToolFinalizer(input: {
   return retry.decision.kind === "invalid_tool"
     ? {
         result: retry,
-        invalidToolAfterRegenerate: finalizerInvalidToolDiagnostic(retry.decision, "regenerate"),
+        invalidToolAfterRegenerate: finalizerInvalidToolDiagnostic(
+          retry.decision,
+          "regenerate",
+          retry.text.length,
+        ),
       }
     : { result: retry };
 }
@@ -520,6 +535,10 @@ function buildFinalizerEmission(
       "finalizer_failed" | "invalid_tool_after_regenerate"
     >;
     invalidToolDiagnosticAttempt?: FinalizerInvalidToolDiagnostic["attempt"];
+    // The initial attempt's prose, for a regenerate that ended invalid. A regenerate
+    // that stops at refusal writes nothing, and keeping only its text would drop the
+    // draft the initial attempt did write.
+    initialAttemptText?: string;
   } = {},
 ): FinalizerEmission {
   const suppressionReason =
@@ -528,10 +547,14 @@ function buildFinalizerEmission(
       : finalizerSuppressionReason(result);
 
   if (suppressionReason !== null) {
+    const draftText =
+      result.decision.kind !== "invalid_tool"
+        ? ""
+        : result.text.length > 0
+          ? result.text
+          : (options.initialAttemptText ?? "");
     const undeliveredDraft =
-      result.decision.kind === "invalid_tool" && result.text.length > 0
-        ? ({ text: result.text } satisfies UndeliveredDraft)
-        : undefined;
+      draftText.length > 0 ? ({ text: draftText } satisfies UndeliveredDraft) : undefined;
     const noOutputSemanticCategories =
       result.decision.kind === "no_output" ? result.decision.no_output_categories : undefined;
     const noOutputStructuralFlags =
@@ -579,6 +602,7 @@ function buildFinalizerEmission(
               finalizer_invalid_tool: finalizerInvalidToolDiagnostic(
                 result.decision,
                 options.invalidToolDiagnosticAttempt ?? "initial",
+                result.text.length,
               ),
             }),
         ...(undeliveredDraft === undefined ? {} : { undelivered_draft: undeliveredDraft }),
@@ -764,6 +788,12 @@ export class Deliberator {
         ),
     });
     const responseForResult = finalizerRetry.result;
+    // Replacing an emission does not undo calls already dispatched. Keep each
+    // attempt's capture local, but carry every call into the turn's action record.
+    let toolCalls = [
+      ...response.toolCallsMade,
+      ...(responseForResult === response ? [] : responseForResult.toolCallsMade),
+    ];
     let usage =
       input.priorUsage === undefined
         ? undefined
@@ -781,6 +811,7 @@ export class Deliberator {
           : {
               invalidToolSuppressionReason: "invalid_tool_after_regenerate",
               invalidToolDiagnosticAttempt: finalizerRetry.invalidToolAfterRegenerate.attempt,
+              initialAttemptText: response.text,
             }),
       },
     );
@@ -792,7 +823,7 @@ export class Deliberator {
       });
     const result = input.buildResult({
       finalized,
-      responseForResult,
+      toolCalls,
       usage,
     });
 
@@ -813,13 +844,14 @@ export class Deliberator {
         input.callContext.structuralNoOutputFlags,
         { invalidToolDiagnosticAttempt: "regenerate" },
       );
+      toolCalls = [...toolCalls, ...regeneratedResponse.toolCallsMade];
 
       return {
         ...result,
         response: regeneratedFinalized.response,
         emitted: regeneratedFinalized.emitted,
         emission: regeneratedFinalized.emission,
-        tool_calls: regeneratedResponse.toolCallsMade,
+        tool_calls: toolCalls,
         usage: mergeDeliberationUsage(result.usage, regeneratedResponse.usage),
       };
     });
@@ -888,6 +920,10 @@ export class Deliberator {
     );
     effectiveContext = {
       ...effectiveContext,
+      autonomyTriggerPresentation:
+        effectiveContext.autonomyTrigger == null
+          ? undefined
+          : renderAutonomyTriggerPresentation(effectiveContext.autonomyTrigger),
       contradictionRoutingTier: decision.contradiction_tier,
       deliberationPath: decision.path,
     };
@@ -1023,7 +1059,7 @@ export class Deliberator {
         additionalPromptSections:
           finalizerGroundingPromptSections.length === 0 ? null : finalizerGroundingPromptSections,
         availableEmissionNames,
-        buildResult: ({ finalized, responseForResult, usage }) => ({
+        buildResult: ({ finalized, toolCalls, usage }) => ({
           path: "system_1",
           response: finalized.response,
           emitted: finalized.emitted,
@@ -1031,7 +1067,7 @@ export class Deliberator {
           emissionRecommendation: "emit",
           thoughtStreamEntryIds: [],
           thoughts: [],
-          tool_calls: responseForResult.toolCallsMade,
+          tool_calls: toolCalls,
           usage,
           decision_reason: decision.reason,
           retrievedEpisodes: [...context.retrievalResult],
@@ -1314,7 +1350,7 @@ export class Deliberator {
       additionalPromptSections,
       availableEmissionNames,
       priorUsage: planner.usage,
-      buildResult: ({ finalized, responseForResult, usage }) => {
+      buildResult: ({ finalized, toolCalls, usage }) => {
         return {
           path: "system_2",
           response: finalized.response,
@@ -1323,7 +1359,7 @@ export class Deliberator {
           emissionRecommendation: "emit",
           thoughtStreamEntryIds: persistedThoughtEntries.map((entry) => entry.id),
           thoughts,
-          tool_calls: responseForResult.toolCallsMade,
+          tool_calls: toolCalls,
           usage,
           decision_reason: decision.reason,
           retrievedEpisodes: dedupeRetrievedEpisodes([

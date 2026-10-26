@@ -2775,6 +2775,7 @@ function actionArchiveVisibilityMetrics(
   for (const record of scanRecords) {
     archiveArchivableCount += traceNumber(record, "eligible_count");
     archiveSkippedBorgOwned += traceObjectNumber(record, "skipped_by_reason", "borg_owned");
+    // Preserve historical trace counts; current scheduled rows use ordinary inactivity.
     archiveSkippedDueDate += traceObjectNumber(record, "skipped_by_reason", "scheduled_or_due");
     archiveSkippedBelowThreshold += traceObjectNumber(
       record,
@@ -2819,9 +2820,6 @@ function actionArchiveVisibilityMetrics(
         switch (classification.reason) {
           case "borg_owned":
             archiveSkippedBorgOwned += 1;
-            break;
-          case "scheduled_or_due":
-            archiveSkippedDueDate += 1;
             break;
           case "below_inactive_threshold":
             archiveSkippedBelowThreshold += 1;

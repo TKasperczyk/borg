@@ -134,6 +134,8 @@ function minimalRetrievalPhaseOptions(
       list: () => [],
     },
     openQuestionsRepository: {
+      countByStatus: () => ({ open: 0, resolved: 0, abandoned: 0 }),
+      countRuminations: () => 0,
       list: () => [],
     },
     attachmentRepository: {
@@ -246,6 +248,7 @@ describe("autonomy scheduler mechanism-evidence provider", () => {
         ({ observed_at: 2_000, window_wakes: [] }) as never;
       const index = {
         total: 1,
+        subjectless: 1,
         records: [
           operatorAttentionPromptRow({
             record_key: "attention",
@@ -1097,7 +1100,7 @@ describe("creator directive retrieval briefing", () => {
     }
   });
 
-  it("surfaces temporal-cue autobiographical evidence across source types with disclosure labels", async () => {
+  it("keeps recent autobiographical evidence beyond a past cue across source types with disclosure labels", async () => {
     const db = openDatabase(":memory:", {
       migrations: creatorDirectiveMigrations,
     });
@@ -1129,7 +1132,7 @@ describe("creator directive retrieval briefing", () => {
     const episodeId = createEpisodeId();
     const temporalCue = {
       sinceTs: 1_000,
-      untilTs: 3_000,
+      untilTs: 2_000,
       label: "recent activity window",
     };
 
@@ -1319,7 +1322,7 @@ describe("creator directive retrieval briefing", () => {
             text: expect.stringContaining("recent arena outcomes"),
             state: expect.stringContaining("disclosure_class=self_private"),
             state_metadata: expect.objectContaining({
-              window_source: "perception_temporal_cue",
+              window_source: "recent_default",
               source_stream_ids: [thoughtEntry.id],
             }),
           }),
@@ -4668,6 +4671,8 @@ describe("compileSharedStateArtifactForEvidenceLedgerResult", () => {
         get: () => null,
         resolve: () => null,
         findByHandles: () => [],
+        countByStatus: () => ({ open: 0, resolved: 0, abandoned: 0 }),
+        countRuminations: () => 0,
       },
       attachmentRepository: {
         get: () => null,

@@ -313,25 +313,110 @@ function renderActionStateDisposition(state: ActionState): string {
 // disagreeing with itself. Nothing on the page distinguished that from a bad write. The origin stamp
 // is rendered only when the origin is not also the current record, matching the `current_intent`
 // line: on a single-record thread there is no second write for the reader to date it against.
+//
+// Dating the two writes made the gap legible and, on its own, made the link between them look
+// better sourced than it is. `buildActionThreads` has exactly one union road -- description-embedding
+// pairs at or above the similarity threshold, guarded on equal actor and equal non-null `goal_id` --
+// so every thread holding more than one record was grouped by resemblance and none by a stored link.
+// Neither guard narrows that much: `goal_id` is the turn's executive-focus selection, stamped
+// identically onto every record that turn mints rather than chosen per record, so equal `goal_id`
+// means "extracted while the same goal held focus". A fact that simply recurs -- phrased alike each
+// time because it is the same fact -- therefore threads exactly as readily as two records of one
+// undertaking, and `originating_intent` then states a causal claim the store never made. The clause
+// that dates the origin now also names how it was attached, so the inference is visible at the one
+// place a reader would otherwise read it as record.
+//
+// The two counts follow the same rule. `transitions` named the record count after the designed case,
+// where successive states of one undertaking merge; on a resemblance-grouped thread it asserts a
+// lifecycle nobody observed, and a record's own transitions are its state stamps, not its
+// thread-mates. It is the number of records, and says so. And on a single-record thread nothing was
+// attached and nothing originated: the description is the record's own, so it is rendered under a
+// name that does not claim otherwise.
+//
+// One state was printed for two descriptions. `current:` names the disposition of `thread.current`,
+// and on a merged thread the origin is a different record with its own independent state -- the
+// origin line sat above it carrying no disposition at all, so the only state on the page attached
+// itself to the nearest text. An action description states what was undertaken, not whether it
+// happened; the record's state is the field that settles that, and reading it off a thread-mate
+// makes an intent look discharged or a discharged act look pending, with nothing on the page to
+// catch it. So the origin's own state and disposition are rendered on the origin's own line, beside
+// the words they govern rather than beneath them: this section truncates from the tail, and a
+// disposition placed on the counts line can be cut while the description it qualifies survives.
+// A single-record thread keeps the bare `action:` name -- there is no second record for `current:`
+// to be mistaken for, so repeating the state there would only restate the line below it.
 export function renderActionThreadText(
   thread: ActionThread,
   entityRepository: Pick<EntityRepository, "get"> | undefined,
 ): string {
   const currentAt = new Date(actionTimestampForState(thread.current)).toISOString();
   const actor = actionActorDisplay(thread.current.actor, entityRepository);
+  const singleRecord = thread.records.length === 1;
   const originIsCurrent = thread.current.id === thread.origin.id;
-  const originAt = originIsCurrent
+  // One extraction pass writes every record it mints under a single stamp, so a thread assembled
+  // out of one pass has no earliest member: `selectThreadOrigin` falls through the `created_at`
+  // comparison to its id tie-break, and `originating_intent` then names whichever record id sorts
+  // first. The dated clause reads as precedence -- one write, then a later one -- and there is
+  // none. Stated as the observation that the two stamps are equal rather than as a claim about
+  // passes, since equal stamps are what the render can see.
+  // The origin's disposition arrived undated. `current:` carries a stamp and the origin line did
+  // not, so the page could say the originating record is closed and never when -- and whether it was
+  // still open when the current record was written is the one fact separating two writes about one
+  // undertaking from two records the writer never had the chance to fold. The extractor's duplicate
+  // check draws its pool with `states: ACTIVE_ACTION_STATES`, on the same actor/audience/goal/
+  // open-question axis this thread's guard uses and at the same similarity threshold, so a record
+  // that has already gone terminal is invisible to it and a later near-duplicate is minted rather
+  // than merged. This render then groups exactly the pairs the writer could not, and read without
+  // the origin's stamp that is indistinguishable from a fold the writer declined.
+  //
+  // The stamp is the origin's own state field, which is a different clock from the `created_at`
+  // beside it -- so the current record's creation is printed too, and the comparison a reader needs
+  // is between two values of the same kind rather than between a creation and a state change. It is
+  // omitted when the two creations are equal: the clause below already explains that case, and
+  // printing a repeated value there would only widen a line this section truncates from the tail.
+  const originStateAt = new Date(actionTimestampForState(thread.origin)).toISOString();
+  const createdAtDiffers = thread.origin.created_at !== thread.current.created_at;
+  const originCreation = originIsCurrent
     ? ""
-    : `; originating_intent recorded ${new Date(thread.origin.created_at).toISOString()}`;
+    : `originating_intent is a separate record created ${new Date(
+        thread.origin.created_at,
+      ).toISOString()}${
+        createdAtDiffers
+          ? `, this record created ${new Date(thread.current.created_at).toISOString()}`
+          : ""
+      }, `;
+  // Earliest creation and latest update can select the same member of a multi-record thread.
+  const originAt = singleRecord
+    ? ""
+    : `; ${originCreation}grouped with this one by description similarity rather than by any recorded link${
+        !originIsCurrent && !createdAtDiffers
+          ? ", and carrying the same created_at as it, so which of the two is named originating follows record-id order and not precedence"
+          : ""
+      }`;
   const lines = [
     `actor: ${actor}`,
-    `originating_intent: ${thread.origin.description}`,
-    `transitions: ${thread.records.length}, current: ${thread.current.state} (${renderActionStateDisposition(
+    `${
+      singleRecord
+        ? "action"
+        : `originating_intent (${thread.origin.state} since ${originStateAt}, ${renderActionStateDisposition(
+            thread.origin.state,
+          )})`
+    }: ${thread.origin.description}`,
+    // Both stamps on this entry are state-entry times from `actionTimestampForState`, but only the
+    // origin's said so: the current record's was printed as a bare `at`, and for `scheduled` that
+    // is the exact shape a due time takes -- the state's own definition is "arranged for a time",
+    // so a timestamp in that slot reads as the slot it is arranged for. No action record carries a
+    // due or appointment column at all (`scheduled_at` is the state-entry stamp, per
+    // ACTION_STATE_METADATA), so the page was offering the one quantity a reader would go looking
+    // for, spelled as a different one. `since` is the word the origin line already uses for this
+    // quantity; two values of one kind on adjacent lines now render alike. The absence of a due
+    // time is not named here: it holds for every state and every record, and a clause true on every
+    // row is a constant, not a distinction.
+    `records: ${thread.records.length}, current: ${thread.current.state} (${renderActionStateDisposition(
       thread.current.state,
-    )}) at ${currentAt}${originAt}`,
+    )}) since ${currentAt}${originAt}`,
   ];
 
-  if (!originIsCurrent) {
+  if (!singleRecord) {
     lines.push(`current_intent: ${thread.current.description}`);
   }
 
@@ -342,9 +427,15 @@ export function actionThreadStateMetadata(
   thread: ActionThread,
   entityRepository: Pick<EntityRepository, "get"> | undefined,
 ): Record<string, unknown> {
+  // `record_ids` lists the thread's members in update order and `current_action_id` names one of
+  // them; the record whose description is rendered as `originating_intent` was identified by
+  // neither, so the one row a reader is actually shown could not be looked up. Named alongside its
+  // state for the same reason the render carries it: origin and current are independent records.
   return {
     record_ids: thread.records.map((record) => record.id),
-    transitions: thread.records.length,
+    records: thread.records.length,
+    origin_action_id: thread.origin.id,
+    origin_state: thread.origin.state,
     current_action_id: thread.current.id,
     current_updated_at: thread.current.updated_at,
     current_actor: actionActorDisplay(thread.current.actor, entityRepository),

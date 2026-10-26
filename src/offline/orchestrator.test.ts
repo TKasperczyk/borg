@@ -84,6 +84,38 @@ describe("maintenance orchestrator", () => {
     }
   });
 
+  it("tracks only the acquired pass and clears it after errors and queued work", async () => {
+    const harness = await createOfflineTestHarness();
+    cleanup.push(harness.cleanup);
+    const orchestrator = new MaintenanceOrchestrator({
+      baseContext: baseContextFrom(harness.createContext()),
+      auditLog: harness.auditLog,
+      createStreamWriter: () => harness.createContext().streamWriter,
+      processRegistry: createProcessRegistry({}),
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    expect(orchestrator.getActivePassStartedAt()).toBeNull();
+    const first = orchestrator.runMechanicalMaintenance(async () => {
+      expect(orchestrator.getActivePassStartedAt()).toBe(harness.clock.now());
+      await gate;
+      throw new Error("maintenance failed");
+    });
+    const firstError = expect(first).rejects.toThrow("maintenance failed");
+    const second = orchestrator.runMechanicalMaintenance(async () => {
+      expect(orchestrator.getActivePassStartedAt()).toBe(harness.clock.now());
+      return "done";
+    });
+    await Promise.resolve();
+    expect(orchestrator.getActivePassStartedAt()).not.toBeNull();
+    release();
+    await firstError;
+    expect(await second).toBe("done");
+    expect(orchestrator.getActivePassStartedAt()).toBeNull();
+  });
+
   it("rejects saved vectors without text before creating a stream writer or applying a plan", async () => {
     const harness = await createOfflineTestHarness();
     cleanup.push(harness.cleanup);

@@ -15,6 +15,7 @@ import {
   type OpenQuestionRumination,
 } from "../../memory/self/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
+import { ToolError } from "../../util/errors.js";
 import type { OpenQuestionId } from "../../util/ids.js";
 import { formatRelativeAge } from "../../util/relative-time.js";
 import { estimatePromptTokens } from "../../util/token-estimate.js";
@@ -49,13 +50,19 @@ const ruminationForCognitionSchema = z
     question: z.string().nullable(),
     question_status: z.string().nullable(),
     question_unresolved_rumination_ticks: z.number().int().nonnegative().nullable(),
+    // How many notes this note's question holds in the store, not how many of them this page
+    // carries. `has_more` says a page was cut without saying by how much, and for a single-question
+    // read that leaves a tail indistinguishable from a whole record: twelve returned reads the same
+    // as twelve existing. The ledger already prints this count beside the question; printing it
+    // beside the note makes the two surfaces agree about the size of what is being held.
+    question_recorded_rumination_notes: z.number().int().nonnegative(),
     note: z.string().nullable(),
     payload_status: z.enum(RUMINATION_PAYLOAD_STATUSES),
     payload_included_chars: z.number().int().nonnegative(),
     payload_total_chars: z.number().int().nonnegative(),
     tensions: z.array(z.string()),
     connected_open_question_ids: z.array(openQuestionIdSchema),
-    source_process: z.string().min(1),
+    source_process: z.string().min(1).nullable(),
     created_at: z.number().int().finite(),
     created_at_iso: z.iso.datetime({ offset: true }),
     relative_age: z.string().min(1),
@@ -68,6 +75,11 @@ const openQuestionsRuminationsOutputSchema = z
   .object({
     ruminations: z.array(ruminationForCognitionSchema),
     has_more: z.boolean(),
+    // Present when the queried question is a merge tombstone. The merge moved its notes onto this
+    // id, so an empty page there is a record living under another handle rather than a question
+    // that was never worked -- a distinction nothing else in this result carries. One hop: the id
+    // named here may itself have been merged onward.
+    open_question_merged_into: openQuestionIdSchema.optional(),
   })
   .strict();
 
@@ -79,6 +91,10 @@ export type OpenQuestionsRuminationsToolOptions = {
     limit: number;
   }) => OpenQuestionRumination[] | Promise<OpenQuestionRumination[]>;
   getOpenQuestion: (id: OpenQuestionId) => OpenQuestion | null | Promise<OpenQuestion | null>;
+  countRuminations: (id: OpenQuestionId) => number | Promise<number>;
+  mergeTombstonePrimaryId: (
+    id: OpenQuestionId,
+  ) => OpenQuestionId | null | Promise<OpenQuestionId | null>;
   clock?: Clock;
 };
 
@@ -94,8 +110,14 @@ function withoutPayload(row: RuminationForCognition): RuminationForCognition {
     ...row,
     question: null,
     note: null,
+    tensions: [],
+    connected_open_question_ids: [],
+    source_process: null,
     payload_status: "check_not_completed_budget",
     payload_included_chars: 0,
+    // Source labels can themselves hold unbounded audience lists. Omitting them
+    // must fail closed, never imply that the omitted material became public.
+    ...memoryDisclosurePayloadFields(unknownMemoryDisclosureLabel()),
   };
 }
 
@@ -110,7 +132,7 @@ export function createOpenQuestionsRuminationsTool(
   return {
     name: "tool.openQuestions.ruminations",
     description:
-      "Browse the rumination notes my offline mind-maintenance wrote against my open questions, by inclusive created-at range and optionally one question id. Notes survive the question closing, so this reaches questions I later resolved and questions the loop abandoned for me. A question is abandoned that way when its still-open passes reach the no-traction threshold and no episode created after it cites it and no action against it is active: a deterministic dismissal taken without a model call, so for those rows these notes are the only record of the reasoning. question_unresolved_rumination_ticks is that counter as the store holds it now, for the question rather than for this note: a note that narrates which pass it is, is narrating, and the counter is what the dismissal actually reads. It has no text query: I choose the dates and the question.",
+      "Browse the rumination notes my offline mind-maintenance wrote against my open questions, by inclusive created-at range and optionally one question id. Notes survive the question closing, so this reaches questions I later resolved and questions the loop abandoned for me. A question is abandoned that way when its still-open passes reach the no-traction threshold and no episode created after it cites it: a deterministic dismissal, evaluated only on a pass that did not call the model for it, so for those rows these notes are the only record of the reasoning. question_unresolved_rumination_ticks is that counter as the store holds it now, for the question rather than for this note: a pass can end writing no note, moving neither it nor this list, so an empty range counts notes, not passes. It has no text query.",
     menuSummary:
       "Browse my offline rumination notes on open questions by created-at range, including questions that have since resolved or been abandoned.",
     allowedOrigins: ["autonomous", "deliberator"],
@@ -124,13 +146,19 @@ export function createOpenQuestionsRuminationsTool(
       const candidates = await options.listRuminations({
         sinceMs,
         untilMs,
-        ...(input.open_question_id === undefined
-          ? {}
-          : { openQuestionId: input.open_question_id }),
+        ...(input.open_question_id === undefined ? {} : { openQuestionId: input.open_question_id }),
         limit: limit + 1,
       });
       const pageCandidates = candidates.slice(0, limit);
       const moreInStore = candidates.length > pageCandidates.length;
+      // A read keyed on a merged-away question returns nothing, because the merge carried its
+      // notes onto the primary. Without this pointer that empty page is indistinguishable from a
+      // question the loop never wrote a note against.
+      const mergedInto =
+        input.open_question_id === undefined
+          ? null
+          : await options.mergeTombstonePrimaryId(input.open_question_id);
+      const mergePointer = mergedInto === null ? {} : { open_question_merged_into: mergedInto };
       const nowMs = clock.now();
       const ruminations: RuminationForCognition[] = [];
 
@@ -146,13 +174,20 @@ export function createOpenQuestionsRuminationsTool(
             ? unknownMemoryDisclosureLabel()
             : openQuestionMemoryDisclosureLabel(question),
         ]);
-        const payloadChars = candidate.note.length + (question?.question.length ?? 0);
+        const recordedRuminationNotes = await options.countRuminations(candidate.open_question_id);
+        const payloadChars =
+          candidate.note.length +
+          (question?.question.length ?? 0) +
+          candidate.tensions.reduce((total, tension) => total + tension.length, 0) +
+          candidate.connected_open_question_ids.reduce((total, id) => total + id.length, 0) +
+          candidate.source_process.length;
         const row: RuminationForCognition = {
           handle: `rumination:${candidate.id}`,
           open_question_id: candidate.open_question_id,
           question: question?.question ?? null,
           question_status: question?.status ?? null,
           question_unresolved_rumination_ticks: question?.unresolved_rumination_ticks ?? null,
+          question_recorded_rumination_notes: recordedRuminationNotes,
           note: candidate.note,
           payload_status: "exact",
           payload_included_chars: payloadChars,
@@ -169,6 +204,7 @@ export function createOpenQuestionsRuminationsTool(
         const exactOutput = {
           ruminations: [...ruminations, row],
           has_more: hasMoreAfterCandidate,
+          ...mergePointer,
         } satisfies OpenQuestionsRuminationsOutput;
 
         if (resultFitsBudget(exactOutput, DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET)) {
@@ -177,15 +213,26 @@ export function createOpenQuestionsRuminationsTool(
         }
 
         if (ruminations.length > 0) {
-          return { ruminations, has_more: true };
+          return { ruminations, has_more: true, ...mergePointer };
         }
 
-        return { ruminations: [withoutPayload(row)], has_more: hasMoreAfterCandidate };
+        const metadataOutput = {
+          ruminations: [withoutPayload(row)],
+          has_more: hasMoreAfterCandidate,
+          ...mergePointer,
+        };
+        if (!resultFitsBudget(metadataOutput, DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET)) {
+          throw new ToolError("Rumination metadata exceeds the result budget", {
+            code: "RUMINATION_METADATA_BUDGET_EXCEEDED",
+          });
+        }
+        return metadataOutput;
       }
 
       return {
         ruminations,
         has_more: ruminations.length < pageCandidates.length || moreInStore,
+        ...mergePointer,
       };
     },
   };

@@ -125,6 +125,18 @@ describe("episodic repository", () => {
     }
   });
 
+  it("hydrates scan embeddings without copying their detached float32 buffers", async () => {
+    const harness = await createHarness();
+    closers.push(harness.close);
+    await harness.repo.createEpisode(createEpisode("ep_aaaaaaaaaaaaaaaa", harness.clock.now()));
+    const rows = await harness.table.list();
+    expect(rows[0]!.embedding).toBeInstanceOf(Float32Array);
+    vi.spyOn(harness.table, "list").mockResolvedValueOnce(rows);
+    const episodes = await harness.repo.listAll();
+    expect(episodes).toHaveLength(1);
+    expect(episodes[0]!.embedding).toBe(rows[0]!.embedding);
+  });
+
   it("inserts, retrieves, updates, lists, searches, and deletes episodes", async () => {
     const harness = await createHarness();
     closers.push(harness.close);
@@ -1349,88 +1361,98 @@ describe("episodic repository", () => {
     expect(scopedToAlex.map((item) => item.episode.id)).toContain(multiOrigin.id);
   });
 
-  it("lists visible episodes sourced from one session since a lower bound in occurred-at order", async () => {
-    const harness = await createHarness();
-    closers.push(harness.close);
-    const nowMs = harness.clock.now();
-    const currentSession = "sess_venuecurrent001" as Parameters<
-      typeof harness.repo.listRecentForSessionForDisclosure
-    >[0]["sessionId"];
-    const otherSession = "sess_venueother0001" as typeof currentSession;
-    const currentAudience = createEntityId();
-    const otherAudience = createEntityId();
-    const sourceIds = Array.from({ length: 5 }, () => createStreamEntryId());
-    const insertStreamEntry = harness.db.prepare(
-      `INSERT INTO stream_entry_index (entry_id, session_id, byte_offset, timestamp)
+  it.each(["disclosure", "cognition"] as const)(
+    "lists %s episodes from one session since a lower bound without broadening provenance",
+    async (mode) => {
+      const harness = await createHarness();
+      closers.push(harness.close);
+      const nowMs = harness.clock.now();
+      const currentSession = "sess_venuecurrent001" as Parameters<
+        typeof harness.repo.listRecentForSessionForDisclosure
+      >[0]["sessionId"];
+      const otherSession = "sess_venueother0001" as typeof currentSession;
+      const currentAudience = createEntityId();
+      const otherAudience = createEntityId();
+      const sourceIds = Array.from({ length: 5 }, () => createStreamEntryId());
+      const insertStreamEntry = harness.db.prepare(
+        `INSERT INTO stream_entry_index (entry_id, session_id, byte_offset, timestamp)
        VALUES (?, ?, ?, ?)`,
-    );
-
-    sourceIds.forEach((sourceId, index) => {
-      insertStreamEntry.run(
-        sourceId,
-        index === sourceIds.length - 1 ? otherSession : currentSession,
-        index * 100,
-        nowMs + index,
       );
-    });
 
-    const oldCurrent = createEpisode(createEpisodeId(), nowMs - 1_000, {
-      source_stream_ids: [sourceIds[0]!],
-      start_time: nowMs - 1_000,
-      end_time: nowMs - 900,
-    });
-    const newestCurrent = createEpisode(createEpisodeId(), nowMs + 3_000, {
-      source_stream_ids: [sourceIds[1]!],
-      start_time: nowMs + 3_000,
-      end_time: nowMs + 3_100,
-      audience_entity_id: currentAudience,
-      origin_audience_entity_ids: [currentAudience],
-      shared: false,
-    });
-    const middleCurrent = createEpisode(createEpisodeId(), nowMs + 2_000, {
-      source_stream_ids: [sourceIds[2]!],
-      start_time: nowMs + 2_000,
-      end_time: nowMs + 2_100,
-    });
-    const hiddenCurrent = createEpisode(createEpisodeId(), nowMs + 4_000, {
-      source_stream_ids: [sourceIds[3]!],
-      start_time: nowMs + 4_000,
-      end_time: nowMs + 4_100,
-      audience_entity_id: otherAudience,
-      origin_audience_entity_ids: [otherAudience],
-      shared: false,
-    });
-    const otherVenue = createEpisode(createEpisodeId(), nowMs + 5_000, {
-      source_stream_ids: [sourceIds[4]!],
-      start_time: nowMs + 5_000,
-      end_time: nowMs + 5_100,
-    });
+      sourceIds.forEach((sourceId, index) => {
+        insertStreamEntry.run(
+          sourceId,
+          index === sourceIds.length - 1 ? otherSession : currentSession,
+          index * 100,
+          nowMs + index,
+        );
+      });
 
-    for (const episode of [oldCurrent, newestCurrent, middleCurrent, hiddenCurrent, otherVenue]) {
-      await harness.repo.createEpisode(episode);
-    }
+      const oldCurrent = createEpisode(createEpisodeId(), nowMs - 1_000, {
+        source_stream_ids: [sourceIds[0]!],
+        start_time: nowMs - 1_000,
+        end_time: nowMs - 900,
+      });
+      const newestCurrent = createEpisode(createEpisodeId(), nowMs + 3_000, {
+        source_stream_ids: [sourceIds[1]!],
+        start_time: nowMs + 3_000,
+        end_time: nowMs + 3_100,
+        audience_entity_id: currentAudience,
+        origin_audience_entity_ids: [currentAudience],
+        shared: false,
+      });
+      const middleCurrent = createEpisode(createEpisodeId(), nowMs + 2_000, {
+        source_stream_ids: [sourceIds[2]!],
+        start_time: nowMs + 2_000,
+        end_time: nowMs + 2_100,
+      });
+      const hiddenCurrent = createEpisode(createEpisodeId(), nowMs + 4_000, {
+        source_stream_ids: [sourceIds[3]!],
+        start_time: nowMs + 4_000,
+        end_time: nowMs + 4_100,
+        audience_entity_id: otherAudience,
+        origin_audience_entity_ids: [otherAudience],
+        shared: false,
+      });
+      const otherVenue = createEpisode(createEpisodeId(), nowMs + 5_000, {
+        source_stream_ids: [sourceIds[4]!],
+        start_time: nowMs + 5_000,
+        end_time: nowMs + 5_100,
+      });
 
-    const results = await harness.repo.listRecentForSessionForDisclosure({
-      sessionId: currentSession,
-      sinceMs: nowMs,
-      audienceEntityId: currentAudience,
-      limit: 10,
-    });
+      for (const episode of [oldCurrent, newestCurrent, middleCurrent, hiddenCurrent, otherVenue]) {
+        await harness.repo.createEpisode(episode);
+      }
 
-    expect(results.map((candidate) => candidate.episode.id)).toEqual([
-      newestCurrent.id,
-      middleCurrent.id,
-    ]);
-    expect(
-      harness.db
-        .prepare(
-          "SELECT COUNT(*) AS count FROM episode_index WHERE json_array_length(source_stream_ids) = 1",
-        )
-        .get() as {
-        count: number;
-      },
-    ).toEqual({ count: 5 });
-  });
+      const options = {
+        sessionId: currentSession,
+        sinceMs: nowMs,
+        limit: 10,
+      };
+      const results =
+        mode === "cognition"
+          ? await harness.repo.listRecentForSessionForCognition(options)
+          : await harness.repo.listRecentForSessionForDisclosure({
+              ...options,
+              audienceEntityId: currentAudience,
+            });
+
+      expect(results.map((candidate) => candidate.episode.id)).toEqual([
+        ...(mode === "cognition" ? [hiddenCurrent.id] : []),
+        newestCurrent.id,
+        middleCurrent.id,
+      ]);
+      expect(
+        harness.db
+          .prepare(
+            "SELECT COUNT(*) AS count FROM episode_index WHERE json_array_length(source_stream_ids) = 1",
+          )
+          .get() as {
+          count: number;
+        },
+      ).toEqual({ count: 5 });
+    },
+  );
 
   it("requires all consolidation provenance to be indexed in one venue session", async () => {
     const harness = await createHarness();
@@ -1509,6 +1531,12 @@ describe("episodic repository", () => {
 
     expect(currentVenue.map((candidate) => candidate.episode.id)).toEqual([singleVenue.id]);
     expect(otherVenue).toEqual([]);
+    const cognition = await harness.repo.listRecentForSessionForCognition({
+      sessionId: currentSession,
+      sinceMs: nowMs,
+      limit: 10,
+    });
+    expect(cognition.map((candidate) => candidate.episode.id)).toEqual([singleVenue.id]);
   });
 
   it("fails closed for unknown-origin records across indexed disclosure lanes", async () => {

@@ -11,7 +11,9 @@ export const ANSWERED_WINDOW_TERMINAL_KINDS = [
  * An exact set, not the contiguous stream prefix ending at a response. The
  * source IDs are authoritative even when unanswered arrivals interleave with
  * generation. terminalCursor identifies the response/terminal marker that set
- * the edge; through_cursor_inclusive identifies the last answered input.
+ * the edge. A stream_backlog response carries through_cursor_inclusive for its
+ * last answered input; a task_event response carries its separate task handle
+ * and does not advance the user backlog watermark.
  */
 export type AnsweredStreamWindow = {
   responseTo: StreamResponseTo;

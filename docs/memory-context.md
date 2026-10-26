@@ -66,9 +66,14 @@ window and a row limit, without an audience predicate. Sol's `recentLivedExperie
 labels each row `self_private`, with its origin audience in the private-to set. The sidecar reuses
 the episode disclosure projector, and team-agent reuses the episode annotation formatter. Old
 sidecars that omit activity disclosure fields still render normally.
-`venue_recent` means "what happened recently in this venue": it is venue-scoped by definition,
-not an audience-based privacy filter over cross-session recall. Its existing query and provenance
-checks are unchanged. Commitments and directives retain their existing applicability rules.
+The recall planner receives the same activity evidence with its canonical disclosure label beside
+each excerpt. Clipping an excerpt preserves the label; private activity from another audience may
+guide internal recall without becoming authorized for disclosure.
+`venue_recent` means "what happened recently in this venue": its cognition query retains the
+session provenance and time bounds, with no audience predicate in SQL or after retrieval. Private
+and multi-origin episodes from that venue remain available with disclosure labels, even when their
+origin audience differs from the current audience. Commitment applicability and directive
+authorization remain separate from global labeled awareness.
 
 Before emitting an inbox reply or a non-streaming completion, team-agent calls `/memory/guard-reply`
 with the returned `context_id`. The shared Borg runner checks internal identifiers without a closure
@@ -494,16 +499,22 @@ returns HTTP 400 and must be corrected by the caller.
 
 ### Time scoping and exclusions on episodes (POST /memory/context and POST /memory/recall)
 
-- `time_range: {"start": <epoch ms>, "end": <epoch ms>}` optional. Applies a strict filter on the
-  episode's occurred_at for the episodes section. If the strict search returns no hits, the sidecar
-  retries once WITHOUT the range and sets `episodes_time_range_fallback: true` in the response, so
-  the caller always makes one request. The venue_recent section ignores time_range (it has its own).
-- `exclude: {"title_prefixes": [..], "narrative_markers": [..]}` optional (each up to 8 strings,
-  case-sensitive substring/prefix match). Applied BEFORE `limit`: the sidecar over-fetches
-  (3x limit, bounded) and drops matching episodes so every returned slot is a real candidate.
-  Applies to both the episodes and venue_recent sections. team-agent sends
-  `{"title_prefixes": ["OUTCOME rollup"], "narrative_markers": ["OUTCOME fp=", "decision="]}` for
-  chat surfaces and keeps its client-side filter only as a safety net.
+- `time_range: {"start": <epoch ms>, "end": <epoch ms>}` optional. For `/memory/context`, the
+  episodes search uses `strictTimeRange: false`: candidates whose `occurred_at` matches the range
+  come first, with out-of-range evidence still available. For `/memory/recall`, the search first
+  filters strictly by `occurred_at`; if it returns no hits, the sidecar retries once without the
+  range and sets `episodes_time_range_fallback: true`. Each endpoint needs only one client request.
+  The `venue_recent` section ignores `time_range` (it uses its own `venue_since` constraint).
+- `exclude: {"episode_ids": ["ep_..."], "source_stream_ids": ["strm_..."]}` optional
+  (each array defaults to empty, at most 100 validated IDs). An episode is excluded only if its
+  own ID is listed or any of its stored `source_stream_ids` is listed. Applied before `limit`:
+  the sidecar over-fetches (3x limit, bounded), then removes these explicit records. This applies
+  to both `episodes` and `venue_recent`; an episode combining sources is excluded if any source
+  matches. For protocol events, callers can use the entry ID returned by the task-event endpoint.
+  No title, narrative, tag, or language interpretation is performed.
+  The strict schema rejects the former `title_prefixes` and `narrative_markers` fields with HTTP
+  400 naming the structural replacements. Clients using strings such as `decision=` must migrate
+  to stored IDs; they must not reproduce text-based recall gates client-side.
 
 ### New section `venue_recent` (POST /memory/context)
 
@@ -511,8 +522,9 @@ returns HTTP 400 and must be corrected by the caller.
   optional `venue_limit` (default 12, max 50). Returns the episodes extracted from the CURRENT
   session (same sidecar session id as the request) with occurred_at >= venue_since, newest first,
   same projection as the episodes section (incl. disclosure), exclusions applied, no semantic query
-  needed. Because the current session's own history is always visible to itself, no widening is
-  involved. team-agent sends venue_since = start of today in the tenant timezone and renders the
+  needed. All source entries must be indexed in that session, including for consolidation
+  episodes; missing or mixed-session provenance does not qualify. There is no audience filter.
+  team-agent sends venue_since = start of today in the tenant timezone and renders the
   block as "Earlier in this conversation today", deduplicated against recalled episodes by id.
 - Response key: `"venue_recent": [ ... ]`. Missing/invalid venue_since with the section requested
   -> 400.
@@ -935,7 +947,7 @@ retrieval pass); the sidecar uses it in two ways:
   inside the planner's cue are ordered first and flagged `in_time_range: true`, exactly as an explicit
   `time_range` did. This keeps a caller that stops sending `time_range` (team-agent, Extension 5) on
   the same footing as before: the cue is now the range.
-- **`autobiographical`**: the memory owner's own record for the cued period, assembled by the same
+- **`autobiographical`**: the memory owner's recent record plus the cued period, assembled by the same
   `AutobiographicalRecallService` Sol's evidence ledger reads, through `borg.self.autobiographical.recall`
   (session cap 8, total cap 24 here, below Sol's defaults). The gate is the cue alone: Teams audiences
   are never the owner and an operator role is not used to open it, so a turn without a time reference
@@ -943,14 +955,16 @@ retrieval pass); the sidecar uses it in two ways:
   one source record are returned: `activity`, `observed_social_event`, `stream_reflection`,
   `silence_decision`, `outbound_attempt`, `observed_presence`. Episodes are omitted because the
   `episodes` section already carries them with the request's exclusions applied; open questions, goals,
-  actions and autobiographical periods are omitted because their labels are combined across several
-  sources, so one visible source would admit text derived from another private one. The remaining rows
-  are filtered for the requesting audience with the record's disclosure label (public always, unknown
-  never, otherwise only when one of the visible audience entities is among the entities the row is
-  private to), capped at 12, and returned as
-  `{ window: { since, until, label, source: "planner_temporal_cue" }, evidence: [ { id, kind, group,
-occurred_at, relative_age, text, source_episode_ids, disclosure } ], hidden_count, truncated_count }`
-  (`hidden_count` counts rows of the returned kinds the audience may not see).
+  actions and autobiographical periods are outside this compact section's source-kind contract.
+  Remaining rows are global cognition evidence, including private and unknown-disclosure rows,
+  capped at 12 and returned with their complete disclosure labels. Audience never filters them:
+  `{ window: { since, until, label, source: "recent_default", additional_window?:
+  { since, until, label, source: "planner_temporal_cue" } }, evidence: [ { id, kind, group,
+  occurred_at, relative_age, text, source_episode_ids, disclosure } ], hidden_count, truncated_count }`
+  (`hidden_count` is always 0; `truncated_count` counts eligible rows omitted by the row cap).
+  The outer window is always the last seven days. A cue extending earlier adds `additional_window`
+  with its own range and label; overlap is covered by the recent window and gaps are not recalled.
+  Recent rows retain priority within the same caps, and each row's `occurred_at` places it in its band.
   The recall runs as a second pass after the episodes recall with a budget of at most 1.5 s and never
   more than what the earlier stages left of the one request budget, whose response headroom is
   reserved before any stage starts (500 ms at the default 5 s deadline). With less than 500 ms
@@ -969,3 +983,12 @@ a topical "wczoraj" episode outside the newest twenty is never fetched by any la
 `time_range` and under a planner cue alike. Making that lane topical (window filter plus similarity to
 the resolved query) is the next retrieval change; the ordering parity above cannot surface an episode
 no lane fetched.
+
+### Commitment awareness and enforcement
+
+The cognition `commitments` section lists active commitments globally, bounded only for
+presentation. Each row carries `disclosure` labels and `applicable_to_current_audience`.
+A commitment for another audience remains known to the entity, with applicability false.
+The separate scoped applicable list is retained for reply-guard snapshots and enforcement;
+global awareness does not authorize an action or enlarge enforcement scope. Admin/export
+commitment endpoints retain their explicit audience filtering contract.

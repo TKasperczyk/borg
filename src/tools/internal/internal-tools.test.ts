@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { Borg, DEFAULT_SESSION_ID } from "../../index.js";
 import { ScheduledWakesRepository } from "../../autonomy/index.js";
+import { DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET } from "../../cognition/deliberation/constants.js";
 import { PromptSurfaceHistoryRepository } from "../../cognition/prompts/prompt-surface-history.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { buildToolDispatcher } from "../../borg/tools-setup.js";
@@ -32,11 +33,15 @@ import {
   createSkillsListTool,
 } from "../../tools/index.js";
 import { ManualClock } from "../../util/clock.js";
+import { estimatePromptTokens } from "../../util/token-estimate.js";
 import {
+  createAttachmentId,
   createEntityId,
   createEpisodeId,
+  createScheduledWakeId,
   createSemanticNodeId,
   createSessionId,
+  createStreamEntryId,
 } from "../../util/ids.js";
 
 const TYPESCRIPT_DEBUG_CONTEXT_KEY = deriveProceduralContextKey({
@@ -420,7 +425,7 @@ describe("internal tools", () => {
     }
   });
 
-  it("omits corrected_by from semantic walk node output", async () => {
+  it("carries corrected_by on semantic walk node output", async () => {
     const rootId = createSemanticNodeId();
     const correctedBy = createSemanticNodeId();
     const node = createSemanticNodeFixture({
@@ -454,7 +459,7 @@ describe("internal tools", () => {
 
     expect(result.steps[0]?.node.status).toBe("superseded");
     expect(result.steps[0]?.node.superseded_at).toBe(1_250);
-    expect(result.steps[0]?.node).not.toHaveProperty("corrected_by");
+    expect(result.steps[0]?.node.corrected_by).toBe(correctedBy);
     expect(result.steps[0]?.node.disclosure_label).toEqual({
       disclosure_class: "unknown",
       origin_audience_entity_ids: [],
@@ -813,6 +818,495 @@ describe("internal tools", () => {
       ]);
     } finally {
       otherWriter.close();
+      await harness.cleanup();
+    }
+  });
+
+  // Replaces the old repository regression that accepted dangling citations.
+  // The composed tool owns reference validation before identity governance writes.
+  it.each(["episode", "stream"] as const)(
+    "returns an unresolvable %s citation as a structural tool error",
+    async (kind) => {
+      const harness = await createOfflineTestHarness();
+      try {
+        const question = harness.openQuestionsRepository.add({
+          question: "What does the record establish?",
+          urgency: 0.4,
+          source: "reflection",
+          provenance: { kind: "manual" },
+        });
+        const missingId = kind === "episode" ? createEpisodeId() : createStreamEntryId();
+        const evidence =
+          kind === "episode"
+            ? { resolution_evidence_episode_ids: [missingId] }
+            : { resolution_evidence_stream_entry_ids: [missingId] };
+        const dispatcher = createHarnessToolDispatcher(harness);
+        const result = await dispatcher.dispatch({
+          toolName: "tool.openQuestions.resolve",
+          input: { open_question_id: question.id, resolution_note: "My conclusion.", ...evidence },
+          origin: "autonomous",
+        });
+
+        expect(result).toMatchObject({ ok: false, error: expect.stringContaining(missingId) });
+        expect(result).toMatchObject({
+          error: expect.stringContaining("do not name stored records"),
+        });
+        expect(harness.openQuestionsRepository.get(question.id)).toEqual(question);
+      } finally {
+        await harness.cleanup();
+      }
+    },
+  );
+
+  it("accepts archived episodes and inactive stream references without treating existence as disclosure permission", async () => {
+    const harness = await createOfflineTestHarness();
+    try {
+      const audience = createEntityId();
+      const episode = createEpisodeFixture({
+        audience_entity_id: audience,
+        origin_audience_entity_ids: [audience],
+        shared: false,
+      });
+      await harness.episodicRepository.createEpisode(episode);
+      harness.episodicRepository.archiveEpisode(episode.id, {
+        caller: "internal-tools.test",
+        reason: "Archived references still exist.",
+        process: "curator",
+      });
+      expect(await harness.episodicRepository.get(episode.id)).toBeNull();
+      const entry = await harness.streamWriter.append({
+        kind: "thought",
+        content: "An earlier thought.",
+      });
+      harness.db
+        .prepare("UPDATE stream_entry_index SET active = 0 WHERE entry_id = ?")
+        .run(entry.id);
+      const dispatcher = createHarnessToolDispatcher(harness);
+
+      for (const [evidence, disclosureClass] of [
+        [{ resolution_evidence_episode_ids: [episode.id] }, "relationship_private"],
+        [{ resolution_evidence_stream_entry_ids: [entry.id] }, "unknown"],
+      ] as const) {
+        const question = harness.openQuestionsRepository.add({
+          question: `Can I cite the ${disclosureClass} record?`,
+          urgency: 0.4,
+          source: "reflection",
+          provenance: { kind: "manual" },
+        });
+        const missingId = createEpisodeId();
+        const rejected = await dispatcher.dispatch({
+          toolName: "tool.openQuestions.resolve",
+          input: {
+            open_question_id: question.id,
+            resolution_note: "A mixed set of references.",
+            ...evidence,
+            resolution_evidence_episode_ids: [episode.id, missingId],
+          },
+          origin: "autonomous",
+        });
+        expect(rejected).toMatchObject({ ok: false, error: expect.stringContaining(missingId) });
+        expect(harness.openQuestionsRepository.get(question.id)?.status).toBe("open");
+
+        const result = await dispatcher.dispatch({
+          toolName: "tool.openQuestions.resolve",
+          input: {
+            open_question_id: question.id,
+            resolution_note: "Re-cited from the stored record.",
+            ...evidence,
+          },
+          origin: "autonomous",
+          audienceEntityId: createEntityId(),
+        });
+        expect(result).toMatchObject({
+          ok: true,
+          output: {
+            status: "applied",
+            openQuestion: {
+              status: "resolved",
+              resolution_disclosure_label: { disclosureClass },
+            },
+          },
+        });
+      }
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("rereads goal dispositions in prose alongside thoughts and journal with stable tied-time pagination", async () => {
+    const clock = new ManualClock(1_000_100);
+    const harness = await createOfflineTestHarness({ clock });
+    try {
+      const dispatcher = createHarnessToolDispatcher(harness);
+      const goal = harness.goalsRepository.add({
+        description: "检查计划 — sprawdzić plan",
+        priority: 5,
+        audienceEntityId: createEntityId(),
+        provenance: { kind: "manual" },
+      });
+      await harness.streamWriter.append({ kind: "thought", content: "Earlier thought." });
+      expect(
+        await dispatcher.dispatch({
+          toolName: "tool.journal.append",
+          input: { text: "A separate journal entry." },
+          origin: "autonomous",
+        }),
+      ).toMatchObject({ ok: true });
+
+      const reasons = ["试过了，还不可用。", "Dostęp przywrócony.", `Zakończone: ${goal.id}`];
+      for (const [toolName, input] of [
+        [
+          "tool.goals.block",
+          {
+            goal_id: goal.id,
+            blocker: { kind: "until", until: clock.now() + 50_000 },
+            attempt_status: "attempted_unavailable",
+            reason: reasons[0],
+          },
+        ],
+        ["tool.goals.unblock", { goal_id: goal.id, reason: reasons[1] }],
+        ["tool.goals.retire", { goal_id: goal.id, reason: reasons[2] }],
+      ] as const) {
+        expect(await dispatcher.dispatch({ toolName, input, origin: "autonomous" })).toMatchObject({
+          ok: true,
+        });
+      }
+      // A no-op and unrelated same-status update must not masquerade as dispositions.
+      await dispatcher.dispatch({
+        toolName: "tool.goals.retire",
+        input: { goal_id: goal.id, reason: "No-op." },
+        origin: "autonomous",
+      });
+      harness.goalsRepository.update(
+        goal.id,
+        { description: "Later description" },
+        { kind: "manual" },
+      );
+      const range = {
+        since: new Date(clock.now()).toISOString(),
+        until: new Date(clock.now()).toISOString(),
+      };
+      const records: Array<{
+        kind: string;
+        content: string;
+        occurred_at: number;
+        origin_time_basis: string;
+        disclosure_label: { disclosure_class: string };
+      }> = [];
+      let cursor: string | undefined;
+      for (let pageNumber = 0; pageNumber < 6; pageNumber += 1) {
+        const page = await dispatcher.dispatch({
+          toolName: "tool.ownRecords.list",
+          input: { ...range, limit: 1, ...(cursor === undefined ? {} : { cursor }) },
+          origin: "deliberator",
+          audienceEntityId: createEntityId(),
+        });
+        if (!page.ok) throw new Error(page.error);
+        const output = page.output as {
+          records: typeof records;
+          has_more: boolean;
+          next_cursor: string | null;
+        };
+        records.push(...output.records);
+        cursor = output.next_cursor ?? undefined;
+        if (!output.has_more) break;
+      }
+      expect(cursor).toBeUndefined();
+      expect(records.map((record) => record.kind)).toEqual([
+        "thought",
+        "journal",
+        "goal_disposition",
+        "goal_disposition",
+        "goal_disposition",
+      ]);
+      const dispositions = records.filter((record) => record.kind === "goal_disposition");
+      expect(dispositions.map((record) => record.content)).toEqual([
+        `At ${range.since}, the goal “${goal.description}” was retired. Reason: Zakończone: [internal_id]`,
+        `At ${range.since}, the goal “${goal.description}” was unblocked. Reason: ${reasons[1]}`,
+        `At ${range.since}, the goal “${goal.description}” was blocked. Reason: ${reasons[0]}`,
+      ]);
+      expect(JSON.stringify(dispositions)).not.toContain(goal.id);
+      expect(
+        dispositions.every(
+          (record) =>
+            record.occurred_at === clock.now() &&
+            record.origin_time_basis === "identity_event_timestamp",
+        ),
+      ).toBe(true);
+      expect(
+        dispositions.every((record) => record.disclosure_label.disclosure_class !== "public"),
+      ).toBe(true);
+      expect(
+        harness.db.prepare("SELECT COUNT(*) AS count FROM train_of_thought_journal_entries").get(),
+      ).toMatchObject({ count: 1 });
+
+      const onlyDispositions = await dispatcher.dispatch({
+        toolName: "tool.ownRecords.list",
+        input: { ...range, kinds: ["goal_disposition"], session_id: createSessionId() },
+        origin: "deliberator",
+      });
+      expect(onlyDispositions).toMatchObject({
+        ok: true,
+        output: { records: dispositions, has_more: false },
+      });
+      const outsideRange = await dispatcher.dispatch({
+        toolName: "tool.ownRecords.list",
+        input: {
+          since: new Date(clock.now() + 1).toISOString(),
+          until: new Date(clock.now() + 10).toISOString(),
+          kinds: ["goal_disposition"],
+        },
+        origin: "deliberator",
+      });
+      expect(outsideRange).toMatchObject({ ok: true, output: { records: [], has_more: false } });
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("rereads an automatic unblock with both its effective and recorded time", async () => {
+    const clock = new ManualClock(1_000_000);
+    const harness = await createOfflineTestHarness({ clock });
+    try {
+      const goal = harness.goalsRepository.add({
+        description: "Wait for the scheduled opening",
+        priority: 5,
+        provenance: { kind: "manual" },
+      });
+      const dispatcher = createHarnessToolDispatcher(harness);
+      const effectiveAt = clock.now() + 50;
+      expect(
+        await dispatcher.dispatch({
+          toolName: "tool.goals.block",
+          input: {
+            goal_id: goal.id,
+            blocker: { kind: "until", until: effectiveAt },
+            attempt_status: "attempted_unavailable",
+            reason: "Not available yet.",
+          },
+          origin: "autonomous",
+        }),
+      ).toMatchObject({ ok: true });
+      clock.advance(100);
+      harness.goalsRepository.reconcileBlocks();
+
+      const result = await dispatcher.dispatch({
+        toolName: "tool.ownRecords.list",
+        input: {
+          since: new Date(clock.now()).toISOString(),
+          until: new Date(clock.now()).toISOString(),
+          kinds: ["goal_disposition"],
+        },
+        origin: "deliberator",
+      });
+      expect(result).toMatchObject({
+        ok: true,
+        output: {
+          has_more: false,
+          records: [
+            {
+              kind: "goal_disposition",
+              occurred_at: clock.now(),
+              content: `At ${new Date(clock.now()).toISOString()}, the goal “${goal.description}” was unblocked. Effective at ${new Date(effectiveAt).toISOString()}. Reason: until timestamp ${effectiveAt} passed; observed at ${clock.now()}`,
+              disclosure_label: { disclosure_class: "unknown" },
+            },
+          ],
+        },
+      });
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("bounds oversized disposition disclosure labels and still advances the cursor", async () => {
+    const clock = new ManualClock(1_000_100);
+    const harness = await createOfflineTestHarness({ clock });
+    try {
+      const dispatcher = createHarnessToolDispatcher(harness);
+      const earlier = harness.goalsRepository.add({
+        description: "Earlier goal",
+        priority: 5,
+        provenance: { kind: "manual" },
+      });
+      harness.goalsRepository.retire(earlier.id, "Finished earlier.", { kind: "manual" });
+      const audience = Array.from({ length: 2_000 }, () => createEntityId());
+      const episode = createEpisodeFixture({
+        audience_entity_id: audience[0]!,
+        origin_audience_entity_ids: audience,
+        shared: false,
+      });
+      await harness.episodicRepository.createEpisode(episode);
+      const goal = harness.goalsRepository.add({
+        description: "Goal with a large source audience",
+        priority: 5,
+        provenance: { kind: "episodes", episode_ids: [episode.id] },
+      });
+      expect(
+        await dispatcher.dispatch({
+          toolName: "tool.goals.retire",
+          input: { goal_id: goal.id, reason: "Finished." },
+          origin: "autonomous",
+        }),
+      ).toMatchObject({ ok: true });
+      const range = {
+        since: new Date(clock.now()).toISOString(),
+        until: new Date(clock.now()).toISOString(),
+        kinds: ["goal_disposition"],
+        limit: 1,
+      };
+      const first = await dispatcher.dispatch({
+        toolName: "tool.ownRecords.list",
+        input: range,
+        origin: "deliberator",
+      });
+      if (!first.ok) throw new Error(first.error);
+      expect(estimatePromptTokens(JSON.stringify(first.output))).toBeLessThanOrEqual(
+        DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET,
+      );
+      expect(first.output).toMatchObject({
+        records: [
+          {
+            kind: "goal_disposition",
+            content: null,
+            payload_status: "check_not_completed_budget",
+            oversized_anchors_omitted: true,
+            disclosure_label: {
+              disclosure_class: "unknown",
+              origin_audience_entity_ids: [],
+              private_to_entity_ids: [],
+            },
+          },
+        ],
+        has_more: true,
+        page_end_reason: "context_budget",
+        next_cursor: expect.any(String),
+      });
+      expect(JSON.stringify(first.output)).not.toContain(audience[0]);
+      const second = await dispatcher.dispatch({
+        toolName: "tool.ownRecords.list",
+        input: { ...range, cursor: (first.output as { next_cursor: string }).next_cursor },
+        origin: "deliberator",
+      });
+      expect(second).toMatchObject({
+        ok: true,
+        output: {
+          records: [
+            { content: expect.stringContaining(earlier.description), payload_status: "exact" },
+          ],
+          has_more: false,
+          next_cursor: null,
+        },
+      });
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("scrubs scheduled-wake, attachment, and Unicode-adjacent goal ids from disposition prose", async () => {
+    const clock = new ManualClock(1_000_100);
+    const harness = await createOfflineTestHarness({ clock });
+    try {
+      const dispatcher = createHarnessToolDispatcher(harness);
+      const attachmentId = createAttachmentId();
+      const wakeId = createScheduledWakeId();
+      const goal = harness.goalsRepository.add({
+        description: `检查${attachmentId}文档`,
+        priority: 5,
+        provenance: { kind: "manual" },
+      });
+      expect(
+        await dispatcher.dispatch({
+          toolName: "tool.goals.retire",
+          input: {
+            goal_id: goal.id,
+            reason: `已完成${goal.id}，无需继续；${wakeId}已处理。保留8和1000100。`,
+          },
+          origin: "autonomous",
+        }),
+      ).toMatchObject({ ok: true });
+      const result = await dispatcher.dispatch({
+        toolName: "tool.ownRecords.list",
+        input: {
+          since: new Date(clock.now()).toISOString(),
+          until: new Date(clock.now()).toISOString(),
+          kinds: ["goal_disposition"],
+        },
+        origin: "deliberator",
+      });
+      expect(result).toMatchObject({
+        ok: true,
+        output: {
+          records: [
+            {
+              content: `At ${new Date(clock.now()).toISOString()}, the goal “检查[internal_id]文档” was retired. Reason: 已完成[internal_id]，无需继续；[internal_id]已处理。保留8和1000100。`,
+            },
+          ],
+        },
+      });
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("renders automatic dependency audit references without hiding ordinary numbers or times", async () => {
+    const clock = new ManualClock(1_000_000);
+    const harness = await createOfflineTestHarness({ clock });
+    try {
+      const dispatcher = createHarnessToolDispatcher(harness);
+      const dependency = harness.goalsRepository.add({
+        description: "Prepare 8 checks",
+        priority: 5,
+        provenance: { kind: "manual" },
+      });
+      const goal = harness.goalsRepository.add({
+        description: "Complete 8 checks at 1000100",
+        priority: 5,
+        provenance: { kind: "manual" },
+      });
+      harness.goalsRepository.block(
+        goal.id,
+        {
+          blocker: { kind: "goal", goal_id: dependency.id },
+          attempt_status: "attempted_unavailable",
+          reason: "Tried 8 times at 1000000.",
+        },
+        { kind: "manual" },
+      );
+      clock.advance(100);
+      harness.goalsRepository.retire(dependency.id, "After 8 checks at 1000100.", {
+        kind: "manual",
+      });
+      const event = harness.identityEventRepository
+        .listGoalDispositionsInRange({
+          sinceMs: clock.now(),
+          untilMs: clock.now(),
+          limit: 10,
+        })
+        .find((entry) => entry.action === "unblock");
+      expect(event?.reason).toMatch(/identity event \d+ at 1000100/);
+      const result = await dispatcher.dispatch({
+        toolName: "tool.ownRecords.list",
+        input: {
+          since: new Date(clock.now()).toISOString(),
+          until: new Date(clock.now()).toISOString(),
+          kinds: ["goal_disposition"],
+        },
+        origin: "deliberator",
+      });
+      expect(result).toMatchObject({
+        ok: true,
+        output: {
+          records: [
+            {
+              content: `At ${new Date(clock.now()).toISOString()}, the goal “${goal.description}” was unblocked. Reason: blocker goal [internal_id] is abandoned; identity event [internal_id] at 1000100; observed at 1000100`,
+            },
+            {
+              content: `At ${new Date(clock.now()).toISOString()}, the goal “${dependency.description}” was retired. Reason: After 8 checks at 1000100.`,
+            },
+          ],
+        },
+      });
+    } finally {
       await harness.cleanup();
     }
   });

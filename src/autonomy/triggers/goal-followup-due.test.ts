@@ -256,7 +256,7 @@ describe("goal followup due trigger", () => {
     expect(topEvent?.payload).not.toHaveProperty("executiveGoalRank");
   });
 
-  it("excludes dormant goals from scan and nextDueAt", async () => {
+  it("defers dormant goals until the fourteen-day expiry", async () => {
     const clock = new ManualClock(2_500_000);
     const harness = await createOfflineTestHarness({ clock });
     cleanup = harness.cleanup;
@@ -287,7 +287,11 @@ describe("goal followup due trigger", () => {
     });
 
     await expect(trigger.scan()).resolves.toEqual([]);
-    await expect(trigger.nextDueAt!()).resolves.toBeNull();
+    expect(trigger.dormantGoalIds?.()).toEqual([goal.id]);
+    await expect(trigger.nextDueAt!()).resolves.toBe(clock.now() + 14 * 86_400_000);
+    clock.advance(14 * 86_400_000);
+    expect(await trigger.scan()).toHaveLength(1);
+    expect(trigger.dormantGoalIds?.()).toEqual([]);
   });
 
   it("releases stale followup dormancy for a new structural action key", async () => {

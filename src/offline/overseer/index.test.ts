@@ -1245,7 +1245,7 @@ describe("overseer process", () => {
     expect(resolverPrompt).toContain("assistant_output_under_review");
   });
 
-  it("queues temporal drift reviews for semantic edges without mutating them", async () => {
+  it("round-trips temporal edge reviews with only target-applicable repair fields", async () => {
     const nowMs = 10 * 24 * 60 * 60 * 1_000;
     const suggestedValidTo = nowMs - 500;
     const llm = new FakeLLMClient({
@@ -1308,7 +1308,7 @@ describe("overseer process", () => {
       evidence_episode_ids: [episodeId],
       created_at: nowMs - 100,
       last_verified_at: nowMs - 100,
-      valid_from: nowMs - 100,
+      valid_from: nowMs - 1_000,
     });
 
     const process = new OverseerProcess({
@@ -1346,7 +1346,66 @@ describe("overseer process", () => {
       },
     });
     expect(harness.semanticEdgeRepository.getEdge(edge.id)?.valid_to).toBeNull();
+    const review = harness.reviewQueueRepository.getOpen()[0]!;
+    expect(review.refs).not.toHaveProperty("corrected_start_time");
+    expect(review.refs).not.toHaveProperty("patch_description");
+    expect(review.refs.overseer_flag).not.toHaveProperty("corrected_start_time");
+    expect(review.refs.overseer_flag).not.toHaveProperty("patch_description");
+    await harness.reviewQueueRepository.resolve(review.id, "accept");
+    expect(harness.semanticEdgeRepository.getEdge(edge.id)?.valid_to).toBe(suggestedValidTo);
   });
+
+  it.each(["episode", "semantic_node"] as const)(
+    "round-trips temporal drift refs for a %s without unrelated repair fields",
+    async (targetType) => {
+      const llm = new FakeLLMClient({
+        responses: [
+          createOverseerResponse([
+            {
+              kind: "temporal_drift",
+              reason: "The recorded chronology needs repair.",
+              confidence: 0.8,
+              corrected_start_time: new Date(1_500).toISOString(),
+              corrected_end_time: new Date(2_000).toISOString(),
+              patch_description: "The incident followed rollback.",
+              suggested_valid_to: new Date(1_800).toISOString(),
+            },
+          ]),
+        ],
+      });
+      const harness = await createOfflineTestHarness({
+        llmClient: llm,
+        configOverrides: maxChecksConfig(),
+      });
+      cleanup.push(harness.cleanup);
+      const target =
+        targetType === "episode"
+          ? await harness.episodicRepository.createEpisode(createEpisodeFixture())
+          : await harness.semanticNodeRepository.insert(createSemanticNodeFixture());
+      const process = new OverseerProcess({
+        reviewQueueRepository: harness.reviewQueueRepository,
+        registry: harness.registry,
+      });
+      const result = await process.run(harness.createContext(), {});
+      expect(result.errors).toEqual([]);
+      const review = harness.reviewQueueRepository.getOpen()[0]!;
+      expect(review.refs).toMatchObject({ target_type: targetType, target_id: target.id });
+      expect(review.refs).not.toHaveProperty("suggested_valid_to");
+      await harness.reviewQueueRepository.resolve(review.id, "accept");
+      if (targetType === "episode") {
+        expect(await harness.episodicRepository.get(target.id as never)).toMatchObject({
+          start_time: 1_500,
+          end_time: 2_000,
+          narrative: "The incident followed rollback.",
+        });
+      } else {
+        expect(review.refs).not.toHaveProperty("corrected_start_time");
+        expect(await harness.semanticNodeRepository.get(target.id as never)).toMatchObject({
+          description: "The incident followed rollback.",
+        });
+      }
+    },
+  );
 
   it("drops suggested_valid_to from a non-edge temporal drift flag so the review refs resolve", async () => {
     const nowMs = 10 * 24 * 60 * 60 * 1_000;

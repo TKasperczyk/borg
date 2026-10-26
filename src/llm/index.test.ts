@@ -1,3 +1,5 @@
+import { getLlmErrorUsage } from "./usage.js";
+import { traceLlmCallRetryHook } from "../tracing/llm-call-trace.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -5,16 +7,21 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
-import type { Message } from "@anthropic-ai/sdk/resources/messages/messages.js";
+import type { Message, MessageStreamEvent } from "@anthropic-ai/sdk/resources/messages/messages.js";
 
 import { writeJsonFileAtomic } from "../util/atomic-write.js";
-import { AuthError, LLMError } from "../util/errors.js";
+import { AuthError, LLMError, describeErrorWithCauses } from "../util/errors.js";
 import {
   AnthropicLLMClient,
   CLAUDE_CODE_IDENTITY_BLOCK_TEXT,
   LLMStructuredOutputParseError,
+  OAUTH_USER_AGENT,
+  callStructuredTool,
   createOAuthFetch,
+  supportsForcedToolUse,
   toStructuredOutputFormat,
+  willSendThinkingUnderAutoToolChoice,
+  type LLMCompleteOptions,
   type TokenUsageEvent,
 } from "./index.js";
 import { FakeLLMClient } from "./test-support/fake-client.js";
@@ -61,6 +68,17 @@ function jsonResponse(body: unknown, status = 200): Response {
       "content-type": "application/json",
     },
   });
+}
+
+function messageStream(response: Message, events: readonly MessageStreamEvent[] = []) {
+  return {
+    async *[Symbol.asyncIterator]() {
+      yield* events;
+    },
+    async finalMessage() {
+      return response;
+    },
+  };
 }
 
 function delayedAbortAwareResponse(
@@ -158,6 +176,899 @@ describe("llm", () => {
     while (tempDirs.length > 0) {
       rmSync(tempDirs.pop() as string, { recursive: true, force: true });
     }
+  });
+
+  describe("model compatibility", () => {
+    const tools = [{ name: "lookup", inputSchema: { type: "object" as const } }];
+    const thinkingBlock = { type: "thinking" as const, thinking: "", signature: "sig-reasoning" };
+    const toolBlock = {
+      type: "tool_use" as const,
+      id: "toolu_1",
+      caller: { type: "direct" as const },
+      name: "lookup",
+      input: { id: 1 },
+    };
+    const toolResponse = createMessageBody({
+      content: [thinkingBlock, toolBlock],
+      stop_reason: "tool_use",
+    });
+    const noToolResponse = createMessageBody({ content: [thinkingBlock] });
+
+    it.each([
+      ["claude-opus-5", true],
+      ["claude-opus-5-20261001", true],
+      ["claude-opus-5-5-20261001", false],
+      ["claude-opus-4-5-20251101", true],
+      ["claude-opus-5-5", false],
+      ["claude-opus-6", false],
+      ["claude-opus-4-8", true],
+      ["claude-fable-5-1", false],
+      ["claude-fable-5", true],
+      ["claude-mythos-5-1", false],
+      ["claude-mythos-5", true],
+      ["claude-sonnet-5", true],
+      ["claude-haiku-4-5-20251001", true],
+      ["unknown", true],
+      ["claude-unknown-6", true],
+      ["claude-opus-5.4", true],
+      ["claude-opus-5.5", false],
+      ["claude-opus-5-10", false],
+      ["claude-opus-4-10", true],
+      ["claude-opus-10", false],
+      ["claude-fable-12.0", false],
+      ["claude-mythos-6", false],
+      ["  CLAUDE-OPUS-5-5  ", false],
+      ["claude-opus-5-5-20260923", false],
+      ["claude-opus-4-8-20260923", true],
+    ])("supportsForcedToolUse(%s) is %s", (model, expected) => {
+      expect(supportsForcedToolUse(model)).toBe(expected);
+    });
+
+    it("advertises an OAuth client version at least 2.1.280", () => {
+      const version = OAUTH_USER_AGENT.match(/^claude-cli\/(\d+)\.(\d+)\.(\d+)\s/)
+        ?.slice(1)
+        .map(Number);
+      expect(version).toHaveLength(3);
+      const minimum = [2, 1, 280];
+      const difference = version!.findIndex((part, index) => part !== minimum[index]);
+      expect(difference === -1 || version![difference]! > minimum[difference]!).toBe(true);
+    });
+
+    for (const method of ["complete", "converse", "streamComplete", "streamConverse"] as const) {
+      it.each([
+        { choice: { type: "tool" as const, name: "lookup" }, retry: false },
+        { choice: { type: "tool" as const, name: "lookup" }, retry: true },
+        { choice: { type: "any" as const }, retry: false },
+        { choice: { type: "any" as const }, retry: true },
+      ])(`${method} translates $choice.type with retry=$retry`, async ({ choice, retry }) => {
+        const log = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+        const first = retry ? noToolResponse : toolResponse;
+        const create = vi.fn().mockResolvedValueOnce(first).mockResolvedValue(toolResponse);
+        const stream = vi
+          .fn()
+          .mockReturnValueOnce(messageStream(first))
+          .mockImplementation(() => messageStream(toolResponse));
+        const usageSink = vi.fn();
+        const client = new AnthropicLLMClient({
+          client: { messages: { create, stream } },
+          usageSink,
+        });
+        const options = {
+          model: "claude-opus-5-5",
+          tools,
+          tool_choice: choice,
+          thinking: { type: "adaptive" },
+          effort: "high",
+          messages: [{ role: "user", content: "Retrouve cette information." }],
+          budget: "compatibility-test",
+        } satisfies LLMCompleteOptions;
+        const result =
+          method === "complete" || method === "streamComplete"
+            ? await client[method](options)
+            : await client[method]({
+                ...options,
+                messages: options.messages.map(({ role, content }) => ({
+                  role,
+                  content: [{ type: "text", text: content }],
+                })),
+              });
+        const send = method === "streamComplete" || method === "streamConverse" ? stream : create;
+        expect(send).toHaveBeenCalledTimes(retry ? 2 : 1);
+        for (const [request] of send.mock.calls) {
+          expect(request).toMatchObject({
+            tool_choice: { type: "auto" },
+            thinking: { type: "adaptive" },
+            output_config: { effort: "high" },
+          });
+        }
+        if (retry) {
+          expect(send.mock.calls[1]?.[0].messages).toEqual([
+            ...send.mock.calls[0]?.[0].messages,
+            { role: "assistant", content: first.content },
+            { role: "user", content: "Answer only by calling the lookup tool." },
+          ]);
+        }
+        expect(options.messages).toHaveLength(1);
+        expect(options.tool_choice).toEqual(choice);
+        expect(result).toMatchObject({
+          input_tokens: retry ? 24 : 12,
+          output_tokens: retry ? 14 : 7,
+        });
+        if ("tool_calls" in result) {
+          expect(result.text).toBe("");
+          expect(result.tool_calls).toEqual([{ id: "toolu_1", name: "lookup", input: { id: 1 } }]);
+        } else {
+          expect(result.messageBlocks).toEqual([
+            thinkingBlock,
+            { type: "tool_use", id: "toolu_1", name: "lookup", input: { id: 1 } },
+          ]);
+        }
+        expect(usageSink).toHaveBeenCalledExactlyOnceWith({
+          budget: "compatibility-test",
+          model: options.model,
+          input_tokens: retry ? 24 : 12,
+          output_tokens: retry ? 14 : 7,
+        });
+        expect(log).toHaveBeenCalledExactlyOnceWith("llm_call.tool_choice_translated", {
+          label: "compatibility-test",
+          model: options.model,
+          expected_tool: "lookup",
+          retry_fired: retry,
+          attempt: retry ? 2 : 1,
+          ...(retry ? { first_stop_reason: "end_turn", first_text_chars: 0 } : {}),
+        });
+      });
+    }
+
+    for (const method of ["complete", "converse", "streamComplete", "streamConverse"] as const) {
+      it.each([
+        {
+          name: "nonempty thinking",
+          content: [
+            { ...thinkingBlock, thinking: "Je consulte les données." },
+            { type: "text" as const, text: "Un instant.", citations: null },
+          ],
+          textChars: 11,
+        },
+        { name: "empty thinking", content: [thinkingBlock], textChars: 0 },
+        {
+          name: "redacted thinking",
+          content: [{ type: "redacted_thinking" as const, data: "signed-opaque-data" }],
+          textChars: 0,
+        },
+        {
+          name: "text only",
+          content: [{ type: "text" as const, text: "確認します。", citations: null }],
+          textChars: 6,
+        },
+      ])(`${method} preserves $name before the reminder`, async ({ content, textChars }) => {
+        const log = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+        const first = createMessageBody({ content });
+        const original = structuredClone(first);
+        const create = vi.fn().mockResolvedValueOnce(first).mockResolvedValueOnce(toolResponse);
+        const stream = vi
+          .fn()
+          .mockReturnValueOnce(messageStream(first))
+          .mockReturnValueOnce(messageStream(toolResponse));
+        const client = new AnthropicLLMClient({ client: { messages: { create, stream } } });
+        const options = {
+          model: "claude-opus-5-5",
+          tools,
+          tool_choice: { type: "any" as const },
+          messages: [],
+          budget: "test",
+        };
+        await client[method](options);
+        const send = method === "complete" || method === "converse" ? create : stream;
+        expect(send.mock.calls[1]?.[0].messages).toEqual([
+          { role: "assistant", content },
+          { role: "user", content: "Answer only by calling the lookup tool." },
+        ]);
+        expect(first).toEqual(original);
+        // Thinking is not counted; the model reads this text back before the reminder.
+        expect(log).toHaveBeenCalledExactlyOnceWith(
+          "llm_call.tool_choice_translated",
+          expect.objectContaining({ first_stop_reason: "end_turn", first_text_chars: textChars }),
+        );
+      });
+    }
+
+    it.each([false, true])("buffers first-attempt stream output with retry=%s", async (retry) => {
+      vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const onTextDelta = vi.fn();
+      const first = retry ? noToolResponse : toolResponse;
+      const stream = vi
+        .fn()
+        .mockReturnValueOnce({
+          async *[Symbol.asyncIterator]() {
+            yield {
+              type: "content_block_delta",
+              index: 0,
+              delta: { type: "text_delta", text: "first" },
+            };
+            expect(onTextDelta).not.toHaveBeenCalled();
+          },
+          async finalMessage() {
+            expect(onTextDelta).not.toHaveBeenCalled();
+            return first;
+          },
+        })
+        .mockReturnValueOnce(
+          messageStream(toolResponse, [
+            { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "retry" } },
+          ]),
+        );
+      const client = new AnthropicLLMClient({ client: { messages: { create: vi.fn(), stream } } });
+      await client.streamConverse({
+        model: "claude-opus-5-5",
+        tools,
+        tool_choice: { type: "any" },
+        messages: [],
+        budget: "test",
+        onTextDelta,
+        timeoutMs: 4321,
+      });
+      expect(onTextDelta).toHaveBeenCalledExactlyOnceWith(retry ? "retry" : "first");
+      for (const [, request] of stream.mock.calls) expect(request.timeout).toBe(4321);
+    });
+
+    it.each([false, true])(
+      "discards partial first-stream tool output on unary recovery, reminder=%s",
+      async (retry) => {
+        vi.spyOn(console, "warn").mockImplementation(() => undefined);
+        const onTextDelta = vi.fn();
+        const stream = vi
+          .fn()
+          .mockReturnValueOnce({
+            async *[Symbol.asyncIterator]() {
+              yield {
+                type: "content_block_start",
+                index: 0,
+                content_block: { ...toolBlock, input: {} },
+              };
+              yield {
+                type: "content_block_delta",
+                index: 0,
+                delta: { type: "input_json_delta", partial_json: '{"stale":' },
+              };
+              expect(onTextDelta).not.toHaveBeenCalled();
+              throw new LLMError("stalled", { code: "LLM_STREAM_EVENT_STALLED" });
+            },
+            finalMessage: vi.fn(),
+          })
+          .mockReturnValueOnce(
+            messageStream(toolResponse, [
+              { type: "content_block_start", index: 0, content_block: { ...toolBlock, input: {} } },
+              {
+                type: "content_block_delta",
+                index: 0,
+                delta: { type: "input_json_delta", partial_json: '{"id":1}' },
+              },
+            ]),
+          );
+        const create = vi.fn().mockResolvedValue(retry ? noToolResponse : toolResponse);
+        const onTransportRetry = vi.fn();
+        const client = new AnthropicLLMClient({ client: { messages: { create, stream } } });
+        await client.streamConverse({
+          model: "claude-opus-5-5",
+          tools,
+          tool_choice: { type: "any" },
+          messages: [],
+          budget: "test",
+          onTextDelta,
+          onTransportRetry,
+          timeoutMs: 4321,
+        });
+        expect(onTextDelta.mock.calls).toEqual(retry ? [['{"id":1}']] : []);
+        expect(stream).toHaveBeenCalledTimes(retry ? 2 : 1);
+        expect(create).toHaveBeenCalledTimes(1);
+        expect(onTransportRetry).toHaveBeenCalledTimes(1);
+        for (const send of [stream, create]) {
+          for (const [, request] of send.mock.calls) expect(request.timeout).toBe(4321);
+        }
+      },
+    );
+
+    it("keeps unary recovery after reminder deltas have escaped", async () => {
+      vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const onTextDelta = vi.fn();
+      const stream = vi
+        .fn()
+        .mockReturnValueOnce(
+          messageStream(noToolResponse, [
+            {
+              type: "content_block_delta",
+              index: 0,
+              delta: { type: "text_delta", text: "discarded" },
+            },
+          ]),
+        )
+        .mockReturnValueOnce({
+          async *[Symbol.asyncIterator]() {
+            yield {
+              type: "content_block_start",
+              index: 0,
+              content_block: { ...toolBlock, input: {} },
+            };
+            yield {
+              type: "content_block_delta",
+              index: 0,
+              delta: { type: "input_json_delta", partial_json: '{"id":' },
+            };
+            expect(onTextDelta).toHaveBeenCalledExactlyOnceWith('{"id":');
+            throw new LLMError("stalled", { code: "LLM_STREAM_EVENT_STALLED" });
+          },
+          finalMessage: vi.fn(),
+        });
+      const create = vi.fn().mockResolvedValue(toolResponse);
+      const client = new AnthropicLLMClient({ client: { messages: { create, stream } } });
+      await client.streamConverse({
+        model: "claude-opus-5-5",
+        tools,
+        tool_choice: { type: "any" },
+        messages: [],
+        budget: "test",
+        onTextDelta,
+        timeoutMs: 4321,
+      });
+      expect(onTextDelta).toHaveBeenCalledExactlyOnceWith('{"id":');
+      expect(stream).toHaveBeenCalledTimes(2);
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(create.mock.calls[0]?.[1].timeout).toBe(4321);
+    });
+
+    it("forwards the streaming per-call timeout to both attempts when SSE is unavailable", async () => {
+      vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const create = vi
+        .fn()
+        .mockResolvedValueOnce(noToolResponse)
+        .mockResolvedValueOnce(toolResponse);
+      const client = new AnthropicLLMClient({
+        client: { messages: { create } },
+        streamingCallTimeoutMs: 20,
+      });
+      await client.streamConverse({
+        model: "claude-opus-5-5",
+        tools,
+        tool_choice: { type: "any" },
+        messages: [],
+        budget: "test",
+        timeoutMs: 4321,
+      });
+      expect(create).toHaveBeenCalledTimes(2);
+      for (const [, request] of create.mock.calls) expect(request.timeout).toBe(4321);
+    });
+
+    it("retries any-tool requests without inventing a required name for multiple tools", async () => {
+      const log = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const create = vi.fn().mockResolvedValueOnce(noToolResponse).mockResolvedValue(toolResponse);
+      const client = new AnthropicLLMClient({ client: { messages: { create } } });
+      await client.complete({
+        model: "claude-mythos-5-1",
+        tools: [...tools, { ...tools[0]!, name: "other" }],
+        tool_choice: { type: "any" },
+        messages: [],
+        budget: "test",
+      });
+      expect(create.mock.calls[1]?.[0].messages).toEqual([
+        { role: "assistant", content: noToolResponse.content },
+        { role: "user", content: "Answer only by calling one of the provided tools." },
+      ]);
+      expect(log).toHaveBeenCalledWith("llm_call.tool_choice_translated", {
+        label: "test",
+        model: "claude-mythos-5-1",
+        expected_tool: null,
+        retry_fired: true,
+        attempt: 2,
+        first_stop_reason: "end_turn",
+        first_text_chars: 0,
+      });
+    });
+
+    it("leaves missing-tool failure to the structured caller after exactly one retry", async () => {
+      vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const create = vi.fn().mockResolvedValue(noToolResponse);
+      const client = new AnthropicLLMClient({ client: { messages: { create } } });
+      await expect(
+        callStructuredTool({
+          llmClient: client,
+          request: {
+            model: "claude-opus-5-5",
+            tools,
+            tool_choice: { type: "tool", name: "lookup" },
+            messages: [],
+            budget: "test",
+          },
+          toolName: "lookup",
+          parse: (input) => input,
+        }),
+      ).rejects.toMatchObject({
+        code: "LLM_STRUCTURED_TOOL_CALL_FAILED",
+        kind: "missing_tool_call",
+        usage: { input_tokens: 24, output_tokens: 14 },
+      });
+      expect(create).toHaveBeenCalledTimes(2);
+    });
+
+    it("does not retry or police a response containing a different tool", async () => {
+      vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const create = vi.fn().mockResolvedValue(
+        createMessageBody({
+          content: [{ ...toolBlock, name: "other" }],
+        }),
+      );
+      const client = new AnthropicLLMClient({ client: { messages: { create } } });
+      await expect(
+        client.complete({
+          model: "claude-opus-5-5",
+          tools,
+          tool_choice: { type: "tool", name: "lookup" },
+          messages: [],
+          budget: "test",
+        }),
+      ).resolves.toMatchObject({ tool_calls: [{ name: "other" }] });
+      expect(create).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(["claude-opus-5", "claude-opus-4-8", "claude-sonnet-5", "custom-model"])(
+      "keeps forced choices and no-tool responses unchanged on %s",
+      async (model) => {
+        const log = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+        const create = vi.fn().mockResolvedValue(noToolResponse);
+        const client = new AnthropicLLMClient({ client: { messages: { create } } });
+        for (const tool_choice of [{ type: "tool", name: "lookup" }, { type: "any" }] as const) {
+          await client.complete({ model, tools, tool_choice, messages: [], budget: "test" });
+          expect(create.mock.lastCall?.[0].tool_choice).toEqual(tool_choice);
+        }
+        expect(create).toHaveBeenCalledTimes(2);
+        expect(log).not.toHaveBeenCalled();
+      },
+    );
+
+    it("does not retry an explicit auto choice or a call without tools", async () => {
+      const log = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const create = vi.fn().mockResolvedValue(noToolResponse);
+      const client = new AnthropicLLMClient({ client: { messages: { create } } });
+      await client.complete({
+        model: "claude-opus-5-5",
+        tools,
+        tool_choice: { type: "auto" },
+        messages: [],
+        budget: "test",
+      });
+      await client.complete({ model: "claude-opus-5-5", messages: [], budget: "test" });
+      expect(create).toHaveBeenCalledTimes(2);
+      expect(create.mock.calls[0]?.[0].tool_choice).toEqual({ type: "auto" });
+      expect(create.mock.calls[1]?.[0].tool_choice).toBeUndefined();
+      expect(log).not.toHaveBeenCalled();
+    });
+
+    for (const model of [
+      "claude-opus-5-5",
+      "claude-opus-10",
+      "claude-fable-5-1",
+      "claude-mythos-6",
+    ]) {
+      it.each([{ type: "disabled" }, { type: "enabled", budget_tokens: 4096 }] as const)(
+        `${model} omits $type thinking with both auto and translated choices`,
+        async (thinking) => {
+          vi.spyOn(console, "warn").mockImplementation(() => undefined);
+          const create = vi.fn().mockResolvedValue(toolResponse);
+          const client = new AnthropicLLMClient({ client: { messages: { create } } });
+          for (const tool_choice of [{ type: "auto" }, { type: "tool", name: "lookup" }] as const) {
+            await client.complete({
+              model,
+              tools,
+              tool_choice,
+              thinking,
+              effort: "high",
+              messages: [],
+              budget: "test",
+            });
+          }
+          for (const [request] of create.mock.calls) {
+            expect(request.thinking).toBeUndefined();
+            expect(request.output_config).toEqual({ effort: "high" });
+            expect(request.tool_choice).toEqual({ type: "auto" });
+          }
+          expect(willSendThinkingUnderAutoToolChoice(model, thinking)).toBe(false);
+          expect(willSendThinkingUnderAutoToolChoice(model, { type: "adaptive" })).toBe(true);
+          expect(willSendThinkingUnderAutoToolChoice(model, undefined)).toBe(false);
+        },
+      );
+    }
+
+    it("retains manual thinking on older non-Opus models and omits it on older Opus", async () => {
+      const create = vi.fn().mockResolvedValue(toolResponse);
+      const client = new AnthropicLLMClient({ client: { messages: { create } } });
+      const thinking = { type: "enabled" as const, budget_tokens: 4096 };
+      for (const model of [
+        "claude-fable-5",
+        "claude-mythos-5",
+        "claude-sonnet-5",
+        "claude-opus-5",
+      ]) {
+        await client.complete({ model, thinking, messages: [], budget: "test" });
+        const expected = model === "claude-opus-5" ? undefined : thinking;
+        expect(create.mock.lastCall?.[0].thinking).toEqual(expected);
+        expect(willSendThinkingUnderAutoToolChoice(model, thinking)).toBe(expected !== undefined);
+      }
+    });
+
+    for (const method of ["complete", "converse", "streamComplete", "streamConverse"] as const) {
+      it.each([undefined, "medium", "max"] as const)(
+        `${method} keeps effort=%s stable across a tool reminder without explicit thinking`,
+        async (effort) => {
+          vi.spyOn(console, "warn").mockImplementation(() => undefined);
+          const create = vi
+            .fn()
+            .mockResolvedValueOnce(noToolResponse)
+            .mockResolvedValueOnce(toolResponse);
+          const stream = vi
+            .fn()
+            .mockReturnValueOnce(messageStream(noToolResponse))
+            .mockReturnValueOnce(messageStream(toolResponse));
+          const client = new AnthropicLLMClient({ client: { messages: { create, stream } } });
+          await client[method]({
+            model: "claude-opus-5-5",
+            tools,
+            tool_choice: { type: "any" },
+            effort,
+            messages: [],
+            budget: "test",
+          });
+          const send = method === "complete" || method === "converse" ? create : stream;
+          expect(send).toHaveBeenCalledTimes(2);
+          for (const [request] of send.mock.calls) {
+            expect(request.thinking).toBeUndefined();
+            expect(request.output_config).toEqual({ effort: effort ?? "high" });
+          }
+        },
+      );
+    }
+
+    it("defaults omitted effort to high for extractor/background requests", async () => {
+      vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const create = vi.fn().mockResolvedValue(toolResponse);
+      const client = new AnthropicLLMClient({ client: { messages: { create } } });
+      await client.complete({
+        model: "claude-opus-5-5",
+        tools,
+        tool_choice: { type: "any" },
+        messages: [],
+        budget: "background",
+      });
+      expect(create.mock.lastCall?.[0].thinking).toBeUndefined();
+      expect(create.mock.lastCall?.[0].output_config).toEqual({ effort: "high" });
+    });
+
+    it.each([
+      ["claude-haiku-4-5-20251001", undefined],
+      ["claude-sonnet-5", undefined],
+      ["claude-opus-5", undefined],
+      ["claude-opus-5-5", { effort: "high" }],
+    ])(
+      "sends the shared effort default only where the omitted default changed: %s",
+      async (model, expected) => {
+        vi.spyOn(console, "warn").mockImplementation(() => undefined);
+        const create = vi.fn().mockResolvedValue(toolResponse);
+        const client = new AnthropicLLMClient({ client: { messages: { create } } });
+        await client.complete({
+          model,
+          tools,
+          tool_choice: { type: "any" },
+          messages: [],
+          budget: "background",
+        });
+        expect(create.mock.lastCall?.[0].output_config).toEqual(expected);
+      },
+    );
+
+    it("keeps an explicit effort on models that never receive the default", async () => {
+      const create = vi.fn().mockResolvedValue(toolResponse);
+      const client = new AnthropicLLMClient({ client: { messages: { create } } });
+      await client.complete({
+        model: "claude-sonnet-5",
+        tools,
+        tool_choice: { type: "any" },
+        effort: "medium",
+        messages: [],
+        budget: "background",
+      });
+      expect(create.mock.lastCall?.[0].output_config).toEqual({ effort: "medium" });
+    });
+
+    it.each([false, true])(
+      "translates the unary fallback after a streaming stall with retry=%s",
+      async (retry) => {
+        vi.spyOn(console, "warn").mockImplementation(() => undefined);
+        const stream = vi.fn().mockReturnValue({
+          async *[Symbol.asyncIterator]() {
+            yield { type: "content_block_start", index: 0, content_block: thinkingBlock };
+            throw new LLMError("stalled", { code: "LLM_STREAM_EVENT_STALLED" });
+          },
+          finalMessage: vi.fn(),
+        });
+        const create = vi
+          .fn()
+          .mockResolvedValueOnce(retry ? noToolResponse : toolResponse)
+          .mockResolvedValue(toolResponse);
+        const client = new AnthropicLLMClient({ client: { messages: { create, stream } } });
+        await expect(
+          client.streamConverse({
+            model: "claude-fable-5-1",
+            tools,
+            tool_choice: { type: "any" },
+            thinking: { type: "enabled", budget_tokens: 4096 },
+            messages: [],
+            budget: "test",
+          }),
+        ).resolves.toMatchObject({
+          messageBlocks: [thinkingBlock, { type: "tool_use", name: "lookup" }],
+        });
+        expect(stream).toHaveBeenCalledTimes(retry ? 2 : 1);
+        expect(create).toHaveBeenCalledTimes(retry ? 2 : 1);
+        for (const send of [stream, create]) {
+          expect(send.mock.lastCall?.[0].tool_choice).toEqual({ type: "auto" });
+          expect(send.mock.lastCall?.[0].thinking).toBeUndefined();
+          expect(send.mock.lastCall?.[0].output_config).toEqual({ effort: "high" });
+        }
+        if (retry) {
+          expect(create.mock.lastCall?.[0].messages).toEqual([
+            { role: "assistant", content: noToolResponse.content },
+            { role: "user", content: "Answer only by calling the lookup tool." },
+          ]);
+        }
+      },
+    );
+
+    it("accounts for cache tokens from both compatibility attempts once", async () => {
+      vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const first = createMessageBody({
+        content: [thinkingBlock],
+        usage: {
+          ...noToolResponse.usage,
+          cache_creation_input_tokens: 3,
+          cache_read_input_tokens: 10,
+        },
+      });
+      const second = createMessageBody({
+        content: toolResponse.content,
+        usage: {
+          ...toolResponse.usage,
+          cache_creation_input_tokens: 7,
+          cache_read_input_tokens: 20,
+        },
+      });
+      const create = vi.fn().mockResolvedValueOnce(first).mockResolvedValueOnce(second);
+      const usageSink = vi.fn();
+      const client = new AnthropicLLMClient({ client: { messages: { create } }, usageSink });
+      const result = await client.complete({
+        model: "claude-opus-5-5",
+        tools,
+        tool_choice: { type: "any" },
+        messages: [],
+        budget: "test",
+      });
+      const totals = {
+        input_tokens: 24,
+        output_tokens: 14,
+        cache_creation_input_tokens: 10,
+        cache_read_input_tokens: 30,
+      };
+      expect(result).toMatchObject(totals);
+      expect(usageSink).toHaveBeenCalledExactlyOnceWith({
+        budget: "test",
+        model: "claude-opus-5-5",
+        ...totals,
+      });
+    });
+
+    it.each(["complete", "streamConverse"] as const)(
+      "%s keeps the retry within the per-call deadline and accounts for the first response on failure",
+      async (method) => {
+        vi.useFakeTimers();
+        vi.spyOn(console, "warn").mockImplementation(() => undefined);
+        const create = vi.fn(
+          async (_params: unknown, request?: { signal?: AbortSignal | null }) => {
+            await delayedAbortAwareResponse(request?.signal, 75, () =>
+              jsonResponse(noToolResponse),
+            );
+            return noToolResponse;
+          },
+        );
+        const usageSink = vi.fn();
+        const client = new AnthropicLLMClient({
+          client: { messages: { create } },
+          usageSink,
+          streamingCallTimeoutMs: 20,
+        });
+        const rejected = expect(
+          client[method]({
+            model: "claude-opus-5-5",
+            tools,
+            tool_choice: { type: "any" },
+            messages: [],
+            budget: "test",
+            timeoutMs: 100,
+          }),
+        ).rejects.toMatchObject({ code: "LLM_CALL_TIMED_OUT" });
+        await vi.advanceTimersByTimeAsync(100);
+        await rejected;
+        expect(create).toHaveBeenCalledTimes(2);
+        expect(create.mock.calls[0]?.[1]?.signal?.aborted).toBe(true);
+        expect(create.mock.calls[1]?.[1]?.signal?.aborted).toBe(true);
+        expect(usageSink).toHaveBeenCalledExactlyOnceWith({
+          budget: "test",
+          model: "claude-opus-5-5",
+          input_tokens: 12,
+          output_tokens: 7,
+        });
+      },
+    );
+
+    it("applies the one-shot retry when streaming is unavailable", async () => {
+      vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const create = vi.fn().mockResolvedValueOnce(noToolResponse).mockResolvedValue(toolResponse);
+      const client = new AnthropicLLMClient({ client: { messages: { create } } });
+      await client.streamComplete({
+        model: "claude-opus-5-5",
+        tools,
+        tool_choice: { type: "any" },
+        messages: [],
+        budget: "test",
+      });
+      expect(create).toHaveBeenCalledTimes(2);
+      expect(create.mock.calls[1]?.[0].tool_choice).toEqual({ type: "auto" });
+    });
+
+    it("streams tool input after empty thinking blocks without relying on intervening text", async () => {
+      const answer = { ...toolBlock, name: "EmitAnswer", input: { text: "Réponse." } };
+      const response = createMessageBody({
+        content: [thinkingBlock, answer],
+        stop_reason: "tool_use",
+      });
+      const events: MessageStreamEvent[] = [
+        { type: "content_block_start", index: 0, content_block: thinkingBlock },
+        { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "" } },
+        {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "signature_delta", signature: "sig-reasoning" },
+        },
+        { type: "content_block_stop", index: 0 },
+        { type: "content_block_start", index: 1, content_block: { ...answer, input: {} } },
+        {
+          type: "content_block_delta",
+          index: 1,
+          delta: { type: "input_json_delta", partial_json: '{"text":"Ré' },
+        },
+        {
+          type: "content_block_delta",
+          index: 1,
+          delta: { type: "input_json_delta", partial_json: 'ponse."}' },
+        },
+        { type: "content_block_stop", index: 1 },
+      ];
+      const stream = vi.fn().mockReturnValue(messageStream(response, events));
+      const client = new AnthropicLLMClient({ client: { messages: { create: vi.fn(), stream } } });
+      const chunks: string[] = [];
+      const result = await client.streamConverse({
+        model: "claude-opus-5-5",
+        tools: [{ ...tools[0]!, name: "EmitAnswer" }],
+        tool_choice: { type: "auto" },
+        thinking: { type: "adaptive" },
+        effort: "high",
+        messages: [],
+        budget: "test",
+        suppressRawTextStream: true,
+        onTextDelta: (text) => chunks.push(text),
+      });
+      expect(chunks.join("")).toBe("Réponse.");
+      expect(result.messageBlocks).toEqual([
+        thinkingBlock,
+        { type: "tool_use", id: "toolu_1", name: "EmitAnswer", input: { text: "Réponse." } },
+      ]);
+    });
+
+    it("uses the OAuth wire tool name in the retry reminder and restores the response name", async () => {
+      vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse(noToolResponse))
+        .mockResolvedValueOnce(
+          jsonResponse(createMessageBody({ content: [{ ...toolBlock, name: "Lookup" }] })),
+        );
+      vi.stubGlobal("fetch", fetchMock);
+      const client = new AnthropicLLMClient({ env: { ANTHROPIC_AUTH_TOKEN: "oauth-token" } });
+      const result = await client.complete({
+        model: "claude-opus-5-5",
+        tools,
+        tool_choice: { type: "tool", name: "lookup" },
+        messages: [],
+        budget: "test",
+      });
+      const first = JSON.parse(String(fetchMock.mock.calls[0]?.[1].body));
+      const second = JSON.parse(String(fetchMock.mock.calls[1]?.[1].body));
+      expect(first.tool_choice).toEqual({ type: "auto" });
+      expect(second.tool_choice).toEqual({ type: "auto" });
+      expect(second.messages).toEqual([
+        { role: "assistant", content: noToolResponse.content },
+        { role: "user", content: "Answer only by calling the Lookup tool." },
+      ]);
+      expect(result.tool_calls[0]?.name).toBe("lookup");
+    });
+
+    it("keeps the tool reminder one-shot even when OAuth refreshes during the retry", async () => {
+      const log = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const credentialsPath = createTempCredentialsPath(tempDirs);
+      writeJsonFileAtomic(credentialsPath, {
+        claudeAiOauth: {
+          accessToken: "stale-access",
+          refreshToken: "refresh-token",
+          expiresAt: Date.now() + 3_600_000,
+        },
+      });
+      const requests: Record<string, unknown>[] = [];
+      let refreshCalls = 0;
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+          if (new URL(String(input)).pathname === "/v1/oauth/token") {
+            refreshCalls += 1;
+            return jsonResponse({
+              access_token: "fresh-access",
+              refresh_token: "fresh-refresh",
+              expires_in: 3600,
+            });
+          }
+          requests.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+          return requests.length === 2
+            ? jsonResponse({ error: { message: "unauthorized" } }, 401)
+            : jsonResponse(noToolResponse);
+        }),
+      );
+      const usageSink = vi.fn();
+      const client = new AnthropicLLMClient({
+        env: { BORG_CLAUDE_CREDENTIALS_PATH: credentialsPath },
+        usageSink,
+      });
+      await expect(
+        client.complete({
+          model: "claude-opus-5-5",
+          tools,
+          tool_choice: { type: "tool", name: "lookup" },
+          messages: [{ role: "user", content: "Retrouve cette information." }],
+          budget: "test",
+        }),
+      ).resolves.toMatchObject({ tool_calls: [], input_tokens: 24, output_tokens: 14 });
+      expect(refreshCalls).toBe(1);
+      expect(requests).toHaveLength(3);
+      expect(
+        requests.every((request) => (request.tool_choice as { type: string }).type === "auto"),
+      ).toBe(true);
+      expect(requests[1]?.messages).toEqual([
+        { role: "user", content: "Retrouve cette information." },
+        { role: "assistant", content: noToolResponse.content },
+        { role: "user", content: "Answer only by calling the Lookup tool." },
+      ]);
+      expect(requests[2]?.messages).toEqual(requests[1]?.messages);
+      expect(usageSink).toHaveBeenCalledExactlyOnceWith({
+        budget: "test",
+        model: "claude-opus-5-5",
+        input_tokens: 24,
+        output_tokens: 14,
+      });
+      expect(log).toHaveBeenCalledExactlyOnceWith("llm_call.tool_choice_translated", {
+        label: "test",
+        model: "claude-opus-5-5",
+        expected_tool: "lookup",
+        retry_fired: true,
+        attempt: 2,
+        first_stop_reason: "end_turn",
+        first_text_chars: 0,
+      });
+    });
   });
 
   it("wraps anthropic messages and extracts tool calls", async () => {
@@ -355,6 +1266,7 @@ describe("llm", () => {
     expect(create.mock.calls[0]?.[0]).toMatchObject({
       output_config: outputConfig,
     });
+    expect(create.mock.calls[0]?.[0].output_config.effort).toBeUndefined();
     expect(result).toMatchObject({
       text: '{"ok":true}',
       structured_output: { ok: true },
@@ -366,7 +1278,7 @@ describe("llm", () => {
     const create = vi.fn().mockResolvedValue(
       createMessageBody({
         content: [{ type: "text", text: "I cannot comply.", citations: null }],
-        stop_reason: "refusal",
+        stop_reason: "end_turn",
       }),
     );
     const client = new AnthropicLLMClient({
@@ -398,6 +1310,17 @@ describe("llm", () => {
       code: "LLM_STRUCTURED_OUTPUT_PARSE_FAILED",
       rawText: "I cannot comply.",
     });
+
+    // Callers keep the top-level message and drop the cause chain, so a reason
+    // that lives only on `cause` reaches `autonomy_wakes.outcome_detail` as the
+    // bare label -- the same shape that made an earlier wake-failure run
+    // undiagnosable from its own record. The reason must be in the message.
+    const parseErrorMessage = await promise.then(
+      () => "",
+      (error: unknown) => (error as Error).message,
+    );
+    expect(parseErrorMessage).not.toBe("Failed to parse Anthropic structured output");
+    expect(parseErrorMessage).toMatch(/^Failed to parse Anthropic structured output: \S/);
   });
 
   it("preserves discriminator and literal constraints in structured-output schemas", () => {
@@ -1300,6 +2223,162 @@ describe("llm", () => {
     ]);
   });
 
+  it("keeps the network cause under fetch failed inside the bounded failure description", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new TypeError("fetch failed", {
+          cause: new Error("connect ECONNREFUSED 127.0.0.1:443"),
+        });
+      }),
+    );
+    const client = new AnthropicLLMClient({
+      env: {
+        ANTHROPIC_AUTH_TOKEN: "oauth-token",
+      },
+    });
+
+    let caught: unknown;
+    try {
+      await client.complete({
+        model: "claude-sonnet-4-5",
+        messages: [{ role: "user", content: "hello" }],
+        max_tokens: 32,
+        budget: "test",
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(describeErrorWithCauses(caught)).toBe(
+      "LLMError: Anthropic connection failed after 3 attempts; caused by Error: Connection error.; caused by TypeError: fetch failed; caused by Error: connect ECONNREFUSED 127.0.0.1:443",
+    );
+  });
+
+  it.each(["complete", "converse", "streamComplete", "streamConverse"] as const)(
+    "retries one refusal with the unchanged request and summed usage: %s",
+    async (method) => {
+      const refused = createMessageBody({ stop_reason: "refusal", content: [] });
+      const success = createMessageBody();
+      const streaming = method === "streamComplete" || method === "streamConverse";
+      const create = streaming
+        ? vi.fn().mockResolvedValue(success)
+        : vi.fn().mockResolvedValueOnce(refused).mockResolvedValueOnce(success);
+      const stream = vi.fn(() => messageStream(refused));
+      const usageSink = vi.fn();
+      const emit = vi.fn();
+      const client = new AnthropicLLMClient({
+        client: { messages: { create, stream } },
+        usageSink,
+      });
+      const request = {
+        model: "claude-opus-5-5",
+        messages: [{ role: "user" as const, content: "問い" }],
+        budget: "test",
+        onTransportRetry: traceLlmCallRetryHook({
+          tracer: { enabled: true, includePayloads: false, emit },
+          turnId: "turn_test",
+          label: "refusal-test",
+        }),
+      };
+      const response =
+        method === "complete" || method === "streamComplete"
+          ? await client[method](request)
+          : await client[method]({
+              ...request,
+              messages: request.messages.map(({ role, content }) => ({
+                role,
+                content: [{ type: "text", text: content }],
+              })),
+            });
+      expect(response).toMatchObject({
+        stop_reason: "end_turn",
+        input_tokens: 24,
+        output_tokens: 14,
+      });
+      expect(create).toHaveBeenCalledTimes(streaming ? 1 : 2);
+      expect((streaming ? stream : create).mock.calls[0]?.[0]).toEqual(
+        create.mock.calls[streaming ? 0 : 1]?.[0],
+      );
+      expect(emit).toHaveBeenCalledExactlyOnceWith(
+        "llm_call.retried",
+        expect.objectContaining({ kind: "refusal", code: "LLM_REFUSAL", retry_transport: "unary" }),
+      );
+      expect(usageSink).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ input_tokens: 24, output_tokens: 14 }),
+      );
+    },
+  );
+
+  it("shares one refusal allowance across forced-tool reminder attempts", async () => {
+    const create = vi
+      .fn()
+      .mockResolvedValueOnce(createMessageBody({ stop_reason: "refusal", content: [] }))
+      .mockResolvedValueOnce(createMessageBody())
+      .mockResolvedValueOnce(createMessageBody({ stop_reason: "refusal", content: [] }));
+    const usageSink = vi.fn();
+    const retry = vi.fn();
+    const translated = vi.fn();
+    const client = new AnthropicLLMClient({ client: { messages: { create } }, usageSink });
+    const request = {
+      model: "claude-opus-5-5",
+      messages: [{ role: "user" as const, content: "問い" }],
+      budget: "test",
+      tools: [
+        {
+          name: "Emit",
+          description: "Emit",
+          inputSchema: { type: "object" as const, properties: {} },
+        },
+      ],
+      tool_choice: { type: "tool" as const, name: "Emit" },
+      onTransportRetry: retry,
+      onToolChoiceTranslated: translated,
+    };
+    let error: unknown;
+    try {
+      await client.complete(request);
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toMatchObject({ code: "LLM_REFUSAL_EXHAUSTED" });
+    expect(getLlmErrorUsage(error)).toMatchObject({ input_tokens: 36, output_tokens: 21 });
+    expect(create).toHaveBeenCalledTimes(3);
+    expect(create.mock.calls[0]?.[0]).toEqual(create.mock.calls[1]?.[0]);
+    expect(create.mock.calls[2]?.[0].messages).toHaveLength(3);
+    expect(retry).toHaveBeenCalledOnce();
+    expect(translated).toHaveBeenCalledWith(
+      expect.objectContaining({ first_stop_reason: "end_turn", first_text_chars: 5 }),
+    );
+    expect(usageSink).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ input_tokens: 36, output_tokens: 21 }),
+    );
+  });
+
+  it("keeps refused-response usage when its retry reaches the original deadline", async () => {
+    vi.useFakeTimers();
+    const create = vi
+      .fn()
+      .mockResolvedValueOnce(createMessageBody({ stop_reason: "refusal", content: [] }))
+      .mockImplementationOnce(async () => await new Promise(() => {}));
+    const usageSink = vi.fn();
+    const client = new AnthropicLLMClient({ client: { messages: { create } }, usageSink });
+    const call = client.complete({
+      model: "claude-opus-5-5",
+      messages: [],
+      budget: "test",
+      timeoutMs: 50,
+    });
+    const rejection = expect(call).rejects.toMatchObject({ code: "LLM_CALL_TIMED_OUT" });
+    await vi.advanceTimersByTimeAsync(51);
+    await rejection;
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(usageSink).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ input_tokens: 12, output_tokens: 7 }),
+    );
+    vi.useRealTimers();
+  });
+
   it("retries a unary call once when it dies with a stall-class error", async () => {
     const create = vi
       .fn()
@@ -1731,7 +2810,7 @@ describe("llm", () => {
 
         expect(url.searchParams.get("beta")).toBe("true");
         expect(headers.get("anthropic-beta")).toContain("claude-code-20250219");
-        expect(headers.get("user-agent")).toContain("claude-cli/2.1.2");
+        expect(headers.get("user-agent")).toContain(OAUTH_USER_AGENT);
         expect(body.system[0]?.text).toBe(CLAUDE_CODE_IDENTITY_BLOCK_TEXT);
         expect(body.system[1]?.text).toBe("be concise");
         expect(body.tools[0]?.name).toBe("Lookup");
@@ -1883,7 +2962,7 @@ describe("llm", () => {
 
   it("treats a newer Opus generation as Opus for temperature and manual thinking", async () => {
     // Regression guard: the Opus family gate must not be pinned to a version
-    // digit. Opus 5 rejects both `temperature` and manual budget_tokens
+    // digit. Opus 5.5 rejects both `temperature` and manual budget_tokens
     // thinking, so a gate that only matched claude-opus-4* would 400 here.
     const fetchMock = vi.fn(
       async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
@@ -1905,7 +2984,7 @@ describe("llm", () => {
 
     await expect(
       client.complete({
-        model: "claude-opus-5",
+        model: "claude-opus-5-5",
         system: "be concise",
         messages: [{ role: "user", content: "hello" }],
         temperature: 0,
@@ -1954,15 +3033,14 @@ describe("llm", () => {
     });
   });
 
-  it("omits thinking and effort when tool_choice forces tool use", async () => {
+  it("omits thinking but preserves explicit effort when tool_choice forces tool use", async () => {
     const fetchMock = vi.fn(
       async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
         const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
 
-        // The API rejects thinking under forced tool use, so both thinking and the
-        // effort that rides with it are dropped.
+        // Forced choice omits thinking, but request-level effort must stay stable.
         expect(body.thinking).toBeUndefined();
-        expect(body.output_config).toBeUndefined();
+        expect(body.output_config).toEqual({ effort: "max" });
 
         return jsonResponse(createMessageBody());
       },
@@ -2416,7 +3494,7 @@ describe("llm", () => {
     expect(deltas.join("")).not.toContain("self_report");
   });
 
-  it("lifts stalled stream errors from the Anthropic request failure cause", async () => {
+  it("surfaces a stalled stream error thrown at the top level as itself", async () => {
     const stalledError = new LLMError("Anthropic SSE stream stalled after 20ms without a chunk", {
       code: "LLM_STREAM_STALLED",
     });
@@ -2443,12 +3521,7 @@ describe("llm", () => {
         max_tokens: 32,
         budget: "test",
       }),
-    ).rejects.toMatchObject({
-      code: "LLM_STREAM_STALLED",
-      cause: {
-        code: "LLM_STREAM_STALLED",
-      },
-    });
+    ).rejects.toBe(stalledError);
   });
 
   it("lifts event-stalled stream errors through the same retryable transport path", async () => {

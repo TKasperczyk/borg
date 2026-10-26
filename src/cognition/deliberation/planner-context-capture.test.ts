@@ -202,6 +202,7 @@ describe("planner context capture", () => {
           autonomySchedulerState: {
             operatorAttentionIndex: {
               total: 125,
+              subjectless: 4,
               records: attentionRows,
             },
             observedAt: NOW_MS,
@@ -250,9 +251,8 @@ describe("planner context capture", () => {
               },
               window_headway_reasons: { total: 0, without_detail: 0, reasons: [] },
               window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
-              window_error_span: null,
-              window_silent_span: null,
               window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
+              window_interrupted_reasons: { total: 0, without_detail: 0, reasons: [] },
             },
             budget: {
               max_wakes_per_window: 6,
@@ -294,7 +294,12 @@ describe("planner context capture", () => {
     );
     expect(plannerSurfaceText(replayPair.compact.rendered.system)).toContain("in_flight=1");
     expect(replayPair.legacy.rendered.system).toContain("Harness scheduler state");
-    expect(replayPair.legacy.rendered.system).toContain("Operator attention records: total=125");
+    expect(replayPair.legacy.rendered.system).toContain(
+      "Operator attention records: total=125, 4 without a subject",
+    );
+    expect(plannerSurfaceText(replayPair.compact.rendered.system)).toContain(
+      "Operator attention records: total=125, 4 without a subject",
+    );
     expect(plannerSurfaceText(replayPair.compact.rendered.system)).toContain("Capture subject");
     const capturedRows =
       parsed.render_input.compactContext.turnMechanismEvidence?.autonomySchedulerState
@@ -318,6 +323,90 @@ describe("planner context capture", () => {
     expect(repositoryGet).not.toHaveBeenCalled();
     expect(reRetrieve).not.toHaveBeenCalled();
   });
+
+  it.each([0, 1])(
+    "replays a version-2 capture without a subjectless count and %i displayed null-subject rows",
+    (shownRows) => {
+      const raw = JSON.parse(JSON.stringify(record())) as {
+        schema_version: number;
+        render_input: { compactContext: Record<string, unknown> };
+      };
+      expect(raw.schema_version).toBe(2);
+      const attention = {
+        total: 125,
+        records: Array.from({ length: shownRows }, () =>
+          operatorAttentionPromptRow({
+            record_key: "historical-filing",
+            filed_at: NOW_MS,
+            filer_entity_id: createEntityId(),
+            subject: null,
+          }),
+        ),
+      };
+      raw.render_input.compactContext.turnMechanismEvidence = {
+        recentSuppressions: [],
+        recentRegenerations: [],
+        autonomySchedulerState: {
+          operatorAttentionIndex: attention,
+          observedAt: NOW_MS,
+          enabled: true,
+          tickInFlight: false,
+          intervalMs: 60_000,
+          droppedIntervalFires: { since_interval_armed: 0, current_tick: null },
+          intervalArmedAt: NOW_MS,
+          nextTickAt: NOW_MS + 60_000,
+          scheduledTickAt: NOW_MS + 60_000,
+          sources: [],
+          fleetBrake: {
+            enabled: true,
+            empty_streak: 0,
+            empty_streak_threshold: 5,
+            streak_anchor_ts: null,
+            cooldown_until: null,
+            error_streak: 0,
+            error_streak_threshold: 3,
+            error_paused_until: null,
+            bypass_count: 0,
+            freshness_bypass_cap: 3,
+            window_outcomes: { headway: 0, silent: 0, error: 0, busy: 0, interrupted: 0 },
+            window_headway_reasons: { total: 0, without_detail: 0, reasons: [] },
+            window_error_reasons: { total: 0, without_detail: 0, reasons: [] },
+            window_silent_reasons: { total: 0, without_detail: 0, reasons: [] },
+            window_interrupted_reasons: { total: 0, without_detail: 0, reasons: [] },
+          },
+          budget: {
+            max_wakes_per_window: 6,
+            window_ms: 60 * 60_000,
+            window_started_at: NOW_MS - 60 * 60_000,
+            used_in_current_window: 0,
+            reserved_contemplative_wakes_per_window: 2,
+            contemplative_used_in_current_window: 0,
+            wakes_in_current_window_by_trigger: [],
+            next_budget_slot_frees_at: null,
+          },
+        },
+      };
+      const parsed = parsePlannerContextCaptureRecord(raw);
+      expect(
+        parsed.render_input.compactContext.turnMechanismEvidence?.autonomySchedulerState
+          ?.operatorAttentionIndex,
+      ).not.toHaveProperty("subjectless");
+      const replay = renderCapturedPlannerSurfacePair(parsed.render_input);
+      const text = plannerSurfaceText(replay.compact.rendered.system);
+      const heading = text
+        .split("\n")
+        .map((line) => line.trim())
+        .find((line) => line.startsWith("Operator attention records:"));
+      expect(heading).toBe(
+        `Operator attention records: total=125; latest ${shownRows} shown, newest first.`,
+      );
+      expect(heading).not.toContain("without a subject");
+      expect(heading).not.toContain("undefined");
+      expect(
+        text.split("\n").filter((line) => line.includes("| subject=subject unavailable")),
+      ).toHaveLength(shownRows);
+    },
+  );
 
   it("preserves block history and answered-edge basis across planner capture and replay", () => {
     const goal = goalSchema.parse({

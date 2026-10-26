@@ -125,6 +125,37 @@ export function isCognitionRetireEligible(commitment: CommitmentRecord): boolean
   return enforcementClass !== "critical" || commitment.critical_domain === "audience_scope";
 }
 
+// The committer of a corrective preference is whoever sent the entries the row
+// is stored against. Resolve it over that whole id set rather than only the
+// entry the extraction named: when no source entry is cited the id set still
+// falls back to the turn's own entries, and those carry a sender the harness
+// can look up. Senders that disagree stay null -- an ambiguous author is not a
+// reason to pick one.
+function resolveCorrectivePreferenceCommitter(input: {
+  entryIds: readonly StreamEntryId[] | undefined;
+  sourceUserEntries: readonly StreamEntry[] | undefined;
+  senderAttribution: readonly CurrentTurnUserInputSenderAttribution[] | undefined;
+}): EntityId | null {
+  let resolved: EntityId | null = null;
+
+  for (const entryId of input.entryIds ?? []) {
+    const sender =
+      input.sourceUserEntries?.find((entry) => entry.id === entryId)?.sender_entity_id ??
+      input.senderAttribution?.find((attribution) => attribution.entryId === entryId)
+        ?.senderEntityId ??
+      null;
+
+    if (sender === null) continue;
+    if (resolved === null) {
+      resolved = sender;
+      continue;
+    }
+    if (resolved !== sender) return null;
+  }
+
+  return resolved;
+}
+
 function buildCorrectivePreferenceCommitment(input: {
   candidate: CorrectivePreferenceCandidate;
   restrictedAudience: EntityId | null;
@@ -175,7 +206,7 @@ function buildCorrectivePreferenceRetirementClaim(input: {
   return {
     retiredId: input.retirement.commitmentId,
     allowedActiveCommitmentIds: input.activeCommitments.map((commitment) => commitment.id),
-    reason: input.retirement.reason,
+    reason: "retired_by_corrective_preference",
     confidence: input.retirement.confidence,
   };
 }
@@ -713,12 +744,14 @@ export class CorrectivePreferenceTurnService {
       } else {
         acceptedCorrectiveCandidate = correctiveCandidate;
         const directiveSourceStreamEntryId = correctiveCandidate.directive_source_stream_entry_id;
-        const directiveSourceEntry = input.sourceUserEntries?.find(
-          (entry) => entry.id === directiveSourceStreamEntryId,
-        );
-        const directiveSourceAttribution = input.senderAttribution?.find(
-          (attribution) => attribution.entryId === directiveSourceStreamEntryId,
-        );
+        const correctiveSourceStreamEntryIds =
+          directiveSourceStreamEntryId === null
+            ? input.sourceUserEntryIds === undefined || input.sourceUserEntryIds.length === 0
+              ? input.persistedUserEntryId === undefined
+                ? undefined
+                : [input.persistedUserEntryId]
+              : [...input.sourceUserEntryIds]
+            : [directiveSourceStreamEntryId];
         correctiveCommitment = buildCorrectivePreferenceCommitment({
           candidate: correctiveCandidate,
           restrictedAudience: this.resolveCorrectiveRestrictedAudience({
@@ -729,20 +762,12 @@ export class CorrectivePreferenceTurnService {
             turnId: input.turnId,
             sessionId: input.sessionId,
           }),
-          committedByEntityId:
-            directiveSourceStreamEntryId === null
-              ? null
-              : (directiveSourceEntry?.sender_entity_id ??
-                directiveSourceAttribution?.senderEntityId ??
-                null),
-          sourceStreamEntryIds:
-            directiveSourceStreamEntryId === null
-              ? input.sourceUserEntryIds === undefined || input.sourceUserEntryIds.length === 0
-                ? input.persistedUserEntryId === undefined
-                  ? undefined
-                  : [input.persistedUserEntryId]
-                : [...input.sourceUserEntryIds]
-              : [directiveSourceStreamEntryId],
+          committedByEntityId: resolveCorrectivePreferenceCommitter({
+            entryIds: correctiveSourceStreamEntryIds,
+            sourceUserEntries: input.sourceUserEntries,
+            senderAttribution: input.senderAttribution,
+          }),
+          sourceStreamEntryIds: correctiveSourceStreamEntryIds,
           nowMs: this.options.clock.now(),
         });
       }

@@ -156,8 +156,12 @@ describe("executeToolLoop", () => {
       ],
     });
 
+    const emit = vi.fn();
     const result = await executeToolLoop({
       llmClient: llm,
+      tracer: { enabled: true, includePayloads: false, emit },
+      turnId: "turn-terminal",
+      traceLabel: "finalizer",
       dispatcher,
       sessionId: DEFAULT_SESSION_ID,
       model: "fake",
@@ -169,6 +173,22 @@ describe("executeToolLoop", () => {
       budget: "test",
     });
 
+    llm.converseRequests[0]?.onToolChoiceTranslated?.({
+      label: "test",
+      model: "fake",
+      expected_tool: "no_output",
+      retry_fired: false,
+      attempt: 1,
+    });
+    expect(emit).toHaveBeenCalledWith("llm_call.tool_choice_translated", {
+      turnId: "turn-terminal",
+      session_id: DEFAULT_SESSION_ID,
+      label: "finalizer",
+      model: "fake",
+      expected_tool: "no_output",
+      retry_fired: false,
+      attempt: 1,
+    });
     expect(result).toMatchObject({
       text: "discard me",
       iterations: 0,
@@ -191,7 +211,7 @@ describe("executeToolLoop", () => {
     ).toEqual([]);
   });
 
-  it("runs a single tool-use round and returns the final text", async () => {
+  it("round-trips empty thinking before a tool-use round and returns the final text", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
     const dispatcher = createDispatcher(tempDir);
@@ -213,6 +233,7 @@ describe("executeToolLoop", () => {
     const llm = new FakeLLMClient({
       responses: [
         [
+          { type: "thinking", thinking: "", signature: "sig-before-tool" },
           {
             type: "tool_use",
             id: "toolu_1",
@@ -248,6 +269,13 @@ describe("executeToolLoop", () => {
           output: { echoed: "hello" },
           ok: true,
         },
+      ],
+    });
+    expect(llm.converseRequests[1]?.messages.at(-2)).toEqual({
+      role: "assistant",
+      content: [
+        { type: "thinking", thinking: "", signature: "sig-before-tool" },
+        { type: "tool_use", id: "toolu_1", name: "tool.test.echo", input: { value: "hello" } },
       ],
     });
     expect(llm.converseRequests[1]?.messages.at(-1)).toEqual({

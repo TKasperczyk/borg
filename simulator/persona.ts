@@ -3,6 +3,7 @@ import type {
   ContentBlock,
   Message,
   MessageParam,
+  OutputConfig,
   TextBlockParam,
 } from "@anthropic-ai/sdk/resources/messages/messages.js";
 import { z } from "zod";
@@ -10,6 +11,9 @@ import { z } from "zod";
 import { getFreshCredentials } from "../src/auth/claude-oauth.js";
 import {
   CLAUDE_CODE_IDENTITY_BLOCK_TEXT,
+  OAUTH_USER_AGENT,
+  DEFAULT_LLM_EFFORT,
+  needsExplicitEffortDefault,
   createOAuthFetch,
   type LLMClient,
   type LLMCompleteResult,
@@ -20,10 +24,9 @@ import {
 
 import type { Persona } from "./types.js";
 
-export const PERSONA_MODEL = "claude-opus-5";
+export const PERSONA_MODEL = "claude-opus-5-5";
 
 const OAUTH_BETAS = "oauth-2025-04-20,claude-code-20250219,interleaved-thinking-2025-05-14";
-const OAUTH_USER_AGENT = "claude-cli/2.1.2 (external, cli)";
 const DEFAULT_MOCK_MESSAGES = [
   "My dog's name is Otto, and I'm trying to get a clean start on a distributed systems project this week.",
   "The architecture is still fuzzy, but I think Spanish practice after dinner is helping me reset.",
@@ -39,6 +42,7 @@ type PersonaClient = {
       system?: string | TextBlockParam[];
       messages: MessageParam[];
       max_tokens: number;
+      output_config?: OutputConfig;
     }): {
       finalMessage(): Promise<Message>;
     };
@@ -625,6 +629,7 @@ export class PersonaSession {
         system: systemParam(initialized.systemPrefix, this.persona),
         messages: sanitizeMessages(messages),
         max_tokens: 4_000,
+        ...(needsExplicitEffortDefault(this.model) ? { output_config: { effort: DEFAULT_LLM_EFFORT } } : {}),
       })
       .finalMessage();
     return responseText(response);

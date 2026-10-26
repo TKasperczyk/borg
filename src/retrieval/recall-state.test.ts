@@ -491,6 +491,62 @@ describe("retrieval recall_state", () => {
     });
   });
 
+  it("carries one rehydrated entry's kind and instant, and neither for a join", async () => {
+    harness = await createHarness();
+    const sessionId = testSessionId();
+    const reply = await harness.streamWriter.append({
+      kind: "agent_msg",
+      content: "Warm single reply receipt",
+    });
+    const joinedQuestion = await harness.streamWriter.append({
+      kind: "user_msg",
+      content: "Warm joined question receipt",
+    });
+    const joinedReply = await harness.streamWriter.append({
+      kind: "agent_msg",
+      content: "Warm joined reply receipt",
+    });
+    seedRecallHandles({
+      harness,
+      scopeKey: sessionId,
+      activeHandles: [
+        createStateHandle({ source: "raw_stream", streamIds: [reply.id] }),
+        createStateHandle({
+          source: "raw_stream",
+          streamIds: [joinedQuestion.id, joinedReply.id],
+        }),
+      ],
+    });
+
+    const result = await harness.retrievalPipeline.searchWithContextForDisclosure(
+      "unrelated recall",
+      {
+        sessionId,
+        turnCounter: 2,
+        limit: 1,
+      },
+    );
+    const warmRaw = result.evidence.filter(
+      (item) => item.source === "warm_recall" && item.provenance?.streamIds !== undefined,
+    );
+    const single = warmRaw.find((item) => item.provenance?.streamIds?.length === 1);
+    const joined = warmRaw.find((item) => item.provenance?.streamIds?.length === 2);
+
+    expect(single?.text).toBe("Warm single reply receipt");
+    expect(single).toMatchObject({
+      streamEntryKind: "agent_msg",
+      streamEntryAtMs: reply.timestamp,
+    });
+    expect(single?.streamEntrySessionId).toBeUndefined();
+    // The handle keeps its ids in its own stored order, which this test does not fix.
+    expect(joined?.text.split("\n").sort()).toEqual([
+      "Warm joined question receipt",
+      "Warm joined reply receipt",
+    ]);
+    expect(joined?.streamEntryKind).toBeUndefined();
+    expect(joined?.streamEntryAtMs).toBeUndefined();
+  });
+
   it("keeps the fresh duplicate evidence item and reinforces the handle", async () => {
     harness = await createHarness();
     const sessionId = testSessionId();

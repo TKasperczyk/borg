@@ -134,6 +134,38 @@ describe("review open-question extractor", () => {
     expect(String(llm.requests[0]?.messages[0]?.content)).toContain('"complete":true');
   });
 
+  it("renders a period proposal byte-identical with or without its apply fence", async () => {
+    const response = createToolResponse({
+      question: "¿Qué versión del relato debe quedar?",
+      urgency: 0.5,
+      related_episode_ids: [],
+      related_semantic_node_ids: [],
+    });
+    const llm = new FakeLLMClient({ responses: [response, response] });
+    const extractor = new ReviewOpenQuestionExtractor({ llmClient: llm, model: "bg-model" });
+    const refs = {
+      target_type: "autobiographical_period",
+      target_id: "abp_aaaaaaaaaaaaaaaa",
+      repair_op: "patch",
+      patch: { narrative: "Relato revisado del periodo." },
+    };
+
+    await extractor.extract(
+      createReviewItem({ kind: "identity_inconsistency", refs }),
+      createContext(),
+    );
+    await extractor.extract(
+      createReviewItem({
+        kind: "identity_inconsistency",
+        refs: { ...refs, expected_record_version: 3 },
+      }),
+      createContext(),
+    );
+
+    expect(String(llm.requests[0]?.messages[0]?.content)).toContain("Relato revisado");
+    expect(llm.requests[1]?.messages[0]?.content).toEqual(llm.requests[0]?.messages[0]?.content);
+  });
+
   it("fails closed and emits degraded observability when no LLM is configured", async () => {
     const events: unknown[] = [];
     const extractor = new ReviewOpenQuestionExtractor({

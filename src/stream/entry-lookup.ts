@@ -13,7 +13,8 @@ export type HydrateStreamEntriesByIdInput = {
   dataDir: string;
   sessionId: SessionId;
   streamEntryIds: readonly StreamEntryId[];
-  entryIndex?: Pick<StreamEntryIndexRepository, "lookupMany">;
+  entryIndex?: Pick<StreamEntryIndexRepository, "lookupMany"> &
+    Partial<Pick<StreamEntryIndexRepository, "resolveEntityReferences">>;
   createStreamReader?: (sessionId: SessionId) => StreamReader;
   fallbackSessionIds?: readonly SessionId[];
   budgetMs?: number;
@@ -135,7 +136,7 @@ export async function hydrateStreamEntriesById(
         continue;
       }
 
-      entries.set(streamEntryId, entry);
+      entries.set(streamEntryId, input.entryIndex?.resolveEntityReferences?.(entry) ?? entry);
       pendingIds.delete(streamEntryId);
     }
   }

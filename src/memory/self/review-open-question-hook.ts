@@ -1,5 +1,5 @@
 import { StreamWriter } from "../../stream/index.js";
-import type { ReviewQueueItem } from "../review-queue/review-queue.js";
+import { reviewRefsForModel, type ReviewQueueItem } from "../review-queue/review-queue.js";
 import {
   entityIdHelpers,
   episodeIdHelpers,
@@ -242,7 +242,7 @@ export async function enqueueOpenQuestionForReview(
       sourceTextProxy: JSON.stringify({
         kind: item.kind,
         reason: item.reason,
-        refs: item.refs,
+        refs: reviewRefsForModel(item.refs),
       }),
       onSearchFailure: (error) => {
         console.warn("Review open-question candidate search failed open", {
@@ -319,7 +319,7 @@ export async function appendInternalFailureEvent(
   error: unknown,
   details?: Record<string, unknown>,
 ): Promise<void> {
-  try {
+  await streamWriter.failureReports.report(async () => {
     await streamWriter.append({
       kind: "internal_event",
       content: {
@@ -328,9 +328,7 @@ export async function appendInternalFailureEvent(
         error: formatHookError(error),
       },
     });
-  } catch {
-    // Best-effort logging only.
-  }
+  });
 }
 
 export async function appendOpenQuestionHookFailureEvent(

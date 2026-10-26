@@ -7,6 +7,8 @@ import type {
 } from "../../memory/shared-state/index.js";
 import { createSharedStateEntryId, createEntityId, createStreamEntryId } from "../../util/ids.js";
 import { estimatePromptTokens } from "../../util/token-estimate.js";
+import { OPEN_QUESTION_STATUSES } from "../../memory/self/index.js";
+import { LIFECYCLE_OPEN_QUESTION_STATUSES } from "./open-question-handles.js";
 import { EVIDENCE_LEDGER_SECTION_DEFINITIONS, type EvidenceLedger } from "./types.js";
 import {
   buildSharedStateArtifactPromptSummary,
@@ -646,12 +648,523 @@ describe("compactEvidenceLedger", () => {
     );
     const rendered = renderEvidenceLedger(compacted.ledger) ?? "";
 
-    expect(canonical?.citations).toEqual(["ep_route", "semn_route", "strm_route"]);
+    expect(canonical?.citations).toEqual(["ep_route", "strm_route"]);
     expect(section(compacted.ledger, "episodes").entries).toEqual([]);
-    expect(section(compacted.ledger, "semantic_graph").entries).toEqual([]);
+    expect(
+      section(compacted.ledger, "semantic_graph").entries.map((entry) => [
+        entry.id,
+        entry.citations,
+      ]),
+    ).toEqual([["semantic_node:semn_route", undefined]]);
     expect(section(compacted.ledger, "prior_session_memory").entries).toEqual([]);
+    expect(compacted.traceSummary.dedupedEntryCount).toBe(2);
+    expect(rendered).toContain("[citation: ep_route, strm_route]");
+  });
+
+  it("folds a row only into a canonical it shares a handle with, not one a chain of handles reaches", () => {
+    const ledger = makeLedger();
+
+    section(ledger, "retrieved_raw_stream_evidence").entries.push(
+      syntheticEntry({
+        id: "retrieved_stream:raw_1",
+        text: "Raw message strm_1 from another session.",
+        trust_rank: 68,
+        state_metadata: { stream_ids: ["strm_1"] },
+      }),
+    );
+    section(ledger, "episodes").entries.push(
+      ...[
+        ["ep_1", "strm_1"],
+        ["ep_2", "strm_2"],
+      ].map(([episodeId, streamId]) =>
+        syntheticEntry({
+          id: `episode:${episodeId}`,
+          source_type: "episode",
+          text: `Episode compiled from ${streamId}.`,
+          trust_rank: 52,
+          state_metadata: { episode_id: episodeId, source_stream_ids: [streamId] },
+        }),
+      ),
+    );
+    section(ledger, "semantic_graph").entries.push(
+      syntheticEntry({
+        id: "semantic_node:semn_hub",
+        source_type: "semantic_node",
+        text: "Node drawn from both episodes.",
+        trust_rank: 42,
+        state_metadata: { node_id: "semn_hub", source_episode_ids: ["ep_1", "ep_2"] },
+      }),
+    );
+
+    const compacted = compactEvidenceLedger(ledger, {
+      targetTokens: 20_000,
+      hardCapTokens: 40_000,
+    });
+
+    expect(
+      section(compacted.ledger, "retrieved_raw_stream_evidence").entries.map((entry) => [
+        entry.id,
+        entry.citations,
+      ]),
+    ).toEqual([["retrieved_stream:raw_1", ["ep_1", "strm_1"]]]);
+    expect(
+      section(compacted.ledger, "episodes").entries.map((entry) => [entry.text, entry.citations]),
+    ).toEqual([["Episode compiled from strm_2.", ["ep_1", "ep_2", "semn_hub", "strm_2"]]]);
+    expect(section(compacted.ledger, "semantic_graph").entries).toEqual([]);
+    expect(compacted.traceSummary.dedupedEntryCount).toBe(2);
+  });
+
+  it("keeps a row whose provenance canonical the section cap cuts", () => {
+    const ledger = makeLedger();
+
+    section(ledger, "current_session_transcript").entries.push(
+      ...["strm_a", "strm_b", "strm_c"].map((streamId) =>
+        syntheticEntry({
+          id: `current_session_stream:${streamId}`,
+          source_type: "current_session_stream",
+          text: `Transcript row ${streamId}.`,
+          trust_rank: 95,
+        }),
+      ),
+    );
+    const episodeSources: Array<[string, string[]]> = [
+      ["ep_a", ["strm_a"]],
+      ["ep_bc", ["strm_b", "strm_c"]],
+    ];
+
+    section(ledger, "episodes").entries.push(
+      ...episodeSources.map(([episodeId, sourceStreamIds]) =>
+        syntheticEntry({
+          id: `episode:${episodeId}`,
+          source_type: "episode",
+          text: `Episode compiled from ${sourceStreamIds.join(" and ")}.`,
+          trust_rank: 52,
+          state_metadata: {
+            episode_id: episodeId,
+            source_stream_ids: sourceStreamIds,
+          },
+        }),
+      ),
+    );
+
+    const compacted = compactEvidenceLedger(ledger, {
+      targetTokens: 20_000,
+      hardCapTokens: 40_000,
+      sectionOptions: {
+        current_session_transcript: {
+          maxEntries: 1,
+          maxTokens: 20_000,
+        },
+      },
+    });
+    const transcriptEntries = section(compacted.ledger, "current_session_transcript").entries;
+
+    expect(transcriptEntries.map((entry) => [entry.id, entry.citations])).toEqual([
+      ["current_session_stream:strm_c", undefined],
+      ["evidence_ledger_omitted:current_session_transcript", undefined],
+    ]);
+    expect(section(compacted.ledger, "episodes").entries.map((entry) => entry.id)).toEqual([
+      "episode:ep_a",
+      "episode:ep_bc",
+    ]);
+    expect(compacted.traceSummary.dedupedEntryCount).toBe(0);
+    expect(compacted.traceSummary.omittedEntryCountsBySection.current_session_transcript).toBe(2);
+  });
+
+  it("does not fold the rest of a cut canonical's group into a kept row it shares a handle with", () => {
+    const ledger = makeLedger();
+
+    section(ledger, "current_session_transcript").entries.push(
+      ...["strm_a", "strm_z"].map((streamId) =>
+        syntheticEntry({
+          id: `current_session_stream:${streamId}`,
+          source_type: "current_session_stream",
+          text: `Transcript row ${streamId}.`,
+          trust_rank: 95,
+        }),
+      ),
+    );
+    const episodeSources: Array<[string, string[]]> = [["ep_q", ["strm_a", "strm_r"]]];
+
+    section(ledger, "episodes").entries.push(
+      ...episodeSources.map(([episodeId, sourceStreamIds]) =>
+        syntheticEntry({
+          id: `episode:${episodeId}`,
+          source_type: "episode",
+          text: `Episode compiled from ${sourceStreamIds.join(" and ")}.`,
+          trust_rank: 52,
+          state_metadata: {
+            episode_id: episodeId,
+            source_stream_ids: sourceStreamIds,
+          },
+        }),
+      ),
+    );
+    section(ledger, "retrieved_raw_stream_evidence").entries.push(
+      syntheticEntry({
+        id: "retrieved_stream:raw_r",
+        text: "Raw message strm_r from another session.",
+        trust_rank: 68,
+        state_metadata: { stream_ids: ["strm_r"] },
+      }),
+    );
+
+    const compacted = compactEvidenceLedger(ledger, {
+      targetTokens: 20_000,
+      hardCapTokens: 40_000,
+      sectionOptions: {
+        current_session_transcript: {
+          maxEntries: 1,
+          maxTokens: 20_000,
+        },
+      },
+    });
+
+    expect(
+      section(compacted.ledger, "retrieved_raw_stream_evidence").entries.map((entry) => [
+        entry.id,
+        entry.citations,
+      ]),
+    ).toEqual([["retrieved_stream:raw_r", undefined]]);
+    expect(section(compacted.ledger, "episodes").entries.map((entry) => entry.id)).toEqual([
+      "episode:ep_q",
+    ]);
+    expect(compacted.traceSummary.dedupedEntryCount).toBe(0);
+  });
+
+  it("regroups a cut canonical's rows only with rows that render the same episode", () => {
+    const ledger = makeLedger();
+
+    section(ledger, "current_session_transcript").entries.push(
+      ...["strm_a", "strm_z"].map((streamId) =>
+        syntheticEntry({
+          id: `current_session_stream:${streamId}`,
+          source_type: "current_session_stream",
+          text: `Transcript row ${streamId}.`,
+          trust_rank: 95,
+        }),
+      ),
+    );
+    const episodeSources: Array<[string, string]> = [
+      ["ep_q", "strm_a"],
+      ["ep_r", "strm_r"],
+    ];
+
+    section(ledger, "episodes").entries.push(
+      ...episodeSources.map(([episodeId, streamId]) =>
+        syntheticEntry({
+          id: `episode:${episodeId}`,
+          source_type: "episode",
+          text: `Episode compiled from ${streamId}.`,
+          trust_rank: 52,
+          state_metadata: { episode_id: episodeId, source_stream_ids: [streamId] },
+        }),
+      ),
+    );
+    section(ledger, "retrieved_memory_evidence").entries.push(
+      ...episodeSources.map(([episodeId, streamId]) =>
+        syntheticEntry({
+          id: `retrieved_evidence:evidence_episode_${episodeId}_recall`,
+          source_type: "episode",
+          text: `Recalled episode compiled from ${streamId}.`,
+          trust_rank: 52,
+          state_metadata: { episode_id: episodeId, stream_ids: [streamId] },
+        }),
+      ),
+    );
+    section(ledger, "semantic_graph").entries.push(
+      syntheticEntry({
+        id: "semantic_node:semn_hub",
+        source_type: "semantic_node",
+        text: "Node drawn from both episodes.",
+        trust_rank: 42,
+        state_metadata: { node_id: "semn_hub", source_episode_ids: ["ep_q", "ep_r"] },
+      }),
+    );
+
+    const compacted = compactEvidenceLedger(ledger, {
+      targetTokens: 20_000,
+      hardCapTokens: 40_000,
+      sectionOptions: {
+        current_session_transcript: {
+          maxEntries: 1,
+          maxTokens: 20_000,
+        },
+      },
+    });
+
+    expect(
+      section(compacted.ledger, "episodes").entries.map((entry) => [entry.id, entry.citations]),
+    ).toEqual([
+      ["episode:ep_q", ["ep_q", "strm_a"]],
+      ["episode:ep_r", ["ep_q", "ep_r", "semn_hub", "strm_r"]],
+    ]);
+    expect(section(compacted.ledger, "retrieved_memory_evidence").entries).toEqual([]);
+    expect(section(compacted.ledger, "semantic_graph").entries).toEqual([]);
     expect(compacted.traceSummary.dedupedEntryCount).toBe(3);
-    expect(rendered).toContain("[citation: ep_route, semn_route, strm_route]");
+  });
+
+  it("keeps a row on the page when the canonical it shares a handle with leaves its other evidence off it", () => {
+    const ledger = makeLedger();
+
+    section(ledger, "current_session_transcript").entries.push(
+      syntheticEntry({
+        id: "current_session_stream:strm_a",
+        source_type: "current_session_stream",
+        text: "Transcript row strm_a.",
+        trust_rank: 95,
+      }),
+    );
+    section(ledger, "episodes").entries.push(
+      syntheticEntry({
+        id: "episode:ep_x",
+        source_type: "episode",
+        text: "Episode compiled from strm_a and strm_b.",
+        trust_rank: 52,
+        state_metadata: { episode_id: "ep_x", source_stream_ids: ["strm_a", "strm_b"] },
+      }),
+    );
+    section(ledger, "recent_lived_experience").entries.push(
+      syntheticEntry({
+        id: "recent_lived_experience:day",
+        source_type: "system_metadata",
+        text: "Day summary drawn from strm_a and strm_c.",
+        trust_rank: 49,
+        state_metadata: { source_stream_ids: ["strm_a", "strm_c"] },
+      }),
+    );
+
+    const compacted = compactEvidenceLedger(ledger, {
+      targetTokens: 20_000,
+      hardCapTokens: 40_000,
+    });
+
+    expect(
+      section(compacted.ledger, "current_session_transcript").entries.map((entry) => [
+        entry.id,
+        entry.citations,
+      ]),
+    ).toEqual([["current_session_stream:strm_a", undefined]]);
+    expect(
+      section(compacted.ledger, "episodes").entries.map((entry) => [entry.text, entry.citations]),
+    ).toEqual([["Episode compiled from strm_a and strm_b.", undefined]]);
+    expect(
+      section(compacted.ledger, "recent_lived_experience").entries.map((entry) => [
+        entry.text,
+        entry.citations,
+      ]),
+    ).toEqual([["Day summary drawn from strm_a and strm_c.", undefined]]);
+    expect(compacted.traceSummary.dedupedEntryCount).toBe(0);
+  });
+
+  it("folds a row whose evidence the kept rows all show", () => {
+    const ledger = makeLedger();
+
+    section(ledger, "current_session_transcript").entries.push(
+      ...["strm_a", "strm_b"].map((streamId) =>
+        syntheticEntry({
+          id: `current_session_stream:${streamId}`,
+          source_type: "current_session_stream",
+          text: `Transcript row ${streamId}.`,
+          trust_rank: 95,
+        }),
+      ),
+    );
+    section(ledger, "episodes").entries.push(
+      syntheticEntry({
+        id: "episode:ep_x",
+        source_type: "episode",
+        text: "Episode compiled from strm_a and strm_b.",
+        trust_rank: 52,
+        state_metadata: { episode_id: "ep_x", source_stream_ids: ["strm_a", "strm_b"] },
+      }),
+    );
+
+    const compacted = compactEvidenceLedger(ledger, {
+      targetTokens: 20_000,
+      hardCapTokens: 40_000,
+    });
+
+    expect(section(compacted.ledger, "episodes").entries).toEqual([]);
+    expect(
+      section(compacted.ledger, "current_session_transcript").entries.flatMap(
+        (entry) => entry.citations ?? [],
+      ),
+    ).toEqual(["ep_x", "strm_a", "strm_b"]);
+    expect(compacted.traceSummary.dedupedEntryCount).toBe(1);
+  });
+
+  it("keeps a node's rows in one group when the cap cuts an episode its node row shares", () => {
+    const ledger = makeLedger();
+
+    section(ledger, "episodes").entries.push(
+      ...[
+        ["ep_k", "strm_k"],
+        ["ep_e", "strm_e"],
+      ].map(([episodeId, streamId]) =>
+        syntheticEntry({
+          id: `episode:${episodeId}`,
+          source_type: "episode",
+          text: `Episode compiled from ${streamId}.`,
+          trust_rank: 52,
+          state_metadata: { episode_id: episodeId, source_stream_ids: [streamId] },
+        }),
+      ),
+    );
+    section(ledger, "retrieved_memory_evidence").entries.push(
+      syntheticEntry({
+        id: "retrieved_evidence:evidence_node_semn_n_recall",
+        source_type: "semantic_node",
+        text: "Recalled node semn_n.",
+        trust_rank: 50,
+        state_metadata: { node_id: "semn_n" },
+      }),
+    );
+    section(ledger, "semantic_graph").entries.push(
+      syntheticEntry({
+        id: "semantic_node:semn_n",
+        source_type: "semantic_node",
+        text: "Node semn_n drawn from ep_e.",
+        trust_rank: 42,
+        state_metadata: { node_id: "semn_n", source_episode_ids: ["ep_e"] },
+      }),
+    );
+
+    const compacted = compactEvidenceLedger(ledger, {
+      targetTokens: 20_000,
+      hardCapTokens: 40_000,
+      sectionOptions: {
+        episodes: {
+          maxEntries: 1,
+          maxTokens: 20_000,
+        },
+      },
+    });
+
+    expect(section(compacted.ledger, "episodes").entries.map((entry) => entry.id)).toEqual([
+      "episode:ep_k",
+      "evidence_ledger_omitted:episodes",
+    ]);
+    expect(section(compacted.ledger, "semantic_graph").entries.map((entry) => entry.id)).toEqual(
+      [],
+    );
+    expect(
+      section(compacted.ledger, "retrieved_memory_evidence").entries.map((entry) => [
+        entry.id,
+        entry.citations,
+      ]),
+    ).toEqual([["retrieved_evidence:evidence_node_semn_n_recall", ["ep_e", "semn_n"]]]);
+    expect(compacted.traceSummary.dedupedEntryCount).toBe(1);
+  });
+
+  it("folds two rows of one section that render the same episode but not rows sharing only evidence", () => {
+    const ledger = makeLedger();
+
+    section(ledger, "prior_session_memory").entries.push(
+      syntheticEntry({
+        id: "episode:ep_p",
+        source_type: "episode",
+        text: "Prior episode ep_p.",
+        trust_rank: 30,
+        state_metadata: { episode_id: "ep_p", source_stream_ids: ["strm_p"] },
+      }),
+      syntheticEntry({
+        id: "retrieved_evidence:evidence_episode_ep_p_recall",
+        source_type: "episode",
+        text: "Recalled prior episode ep_p.",
+        trust_rank: 30,
+        state_metadata: { episode_id: "ep_p", stream_ids: ["strm_p"] },
+      }),
+      syntheticEntry({
+        id: "episode:ep_s",
+        source_type: "episode",
+        text: "Prior episode ep_s, compiled from the same message.",
+        trust_rank: 30,
+        state_metadata: { episode_id: "ep_s", source_stream_ids: ["strm_p"] },
+      }),
+    );
+
+    const compacted = compactEvidenceLedger(ledger, {
+      targetTokens: 20_000,
+      hardCapTokens: 40_000,
+    });
+
+    expect(
+      section(compacted.ledger, "prior_session_memory").entries.map((entry) => [
+        entry.id,
+        entry.citations,
+      ]),
+    ).toEqual([
+      ["episode:ep_p", ["ep_p", "strm_p"]],
+      ["episode:ep_s", undefined],
+    ]);
+    expect(compacted.traceSummary.dedupedEntryCount).toBe(1);
+  });
+
+  it("leaves a duplicate on the page when the cap cuts the row it would fold into", () => {
+    const ledger = makeLedger();
+
+    section(ledger, "current_session_transcript").entries.push(
+      ...["strm_a", "strm_z"].map((streamId) =>
+        syntheticEntry({
+          id: `current_session_stream:${streamId}`,
+          source_type: "current_session_stream",
+          text: `Transcript row ${streamId}.`,
+          trust_rank: 95,
+        }),
+      ),
+    );
+    section(ledger, "episodes").entries.push(
+      ...[
+        ["ep_k", "strm_k"],
+        ["ep_q", "strm_a"],
+      ].map(([episodeId, streamId]) =>
+        syntheticEntry({
+          id: `episode:${episodeId}`,
+          source_type: "episode",
+          text: `Episode compiled from ${streamId}.`,
+          trust_rank: 52,
+          state_metadata: { episode_id: episodeId, source_stream_ids: [streamId] },
+        }),
+      ),
+    );
+    section(ledger, "retrieved_memory_evidence").entries.push(
+      syntheticEntry({
+        id: "retrieved_evidence:evidence_episode_ep_q_recall",
+        source_type: "episode",
+        text: "Recalled episode compiled from strm_a.",
+        trust_rank: 52,
+        state_metadata: { episode_id: "ep_q", stream_ids: ["strm_a"] },
+      }),
+    );
+
+    const compacted = compactEvidenceLedger(ledger, {
+      targetTokens: 20_000,
+      hardCapTokens: 40_000,
+      sectionOptions: {
+        current_session_transcript: {
+          maxEntries: 1,
+          maxTokens: 20_000,
+        },
+        episodes: {
+          maxEntries: 1,
+          maxTokens: 20_000,
+        },
+      },
+    });
+
+    expect(section(compacted.ledger, "episodes").entries.map((entry) => entry.id)).toEqual([
+      "episode:ep_k",
+      "evidence_ledger_omitted:episodes",
+    ]);
+    expect(
+      section(compacted.ledger, "retrieved_memory_evidence").entries.map((entry) => [
+        entry.id,
+        entry.citations,
+      ]),
+    ).toEqual([["retrieved_evidence:evidence_episode_ep_q_recall", undefined]]);
+    expect(compacted.traceSummary.dedupedEntryCount).toBe(0);
+    expect(compacted.traceSummary.omittedEntryCountsBySection.episodes).toBe(1);
   });
 
   it("keeps richer retrieved evidence canonical over recent lived experience with shared provenance", () => {
@@ -975,6 +1488,10 @@ describe("compactEvidenceLedger", () => {
 
     expect(rendered).toContain("lower-priority entries from open_questions");
     expect(rendered).toContain("A status absent from that list had no rows cut here");
+    // The absent status reports on the one admission that could have carried it, not on a draw that
+    // ran and came back empty: the closed statuses never reach this section by the scored draw.
+    expect(rendered).toContain("an absence at admission rather than a budget cut");
+    expect(rendered).not.toContain("is an empty draw");
 
     const clause = /Omitted by state: ([^.]+)\./.exec(rendered)?.[1] ?? "";
     const tallied = [...clause.matchAll(/([a-z_]+) (\d+)/g)];
@@ -986,6 +1503,59 @@ describe("compactEvidenceLedger", () => {
     expect(tallied.map(([, status]) => status)).toEqual(["abandoned", "open", "resolved"]);
     expect(talliedTotal).toBe(compacted.traceSummary.omittedEntryCountsBySection.open_questions);
     expect(talliedTotal).toBe(8);
+  });
+
+  it("names both open questions admissions with the status sets the enums actually carry", () => {
+    const ledger = makeLedger();
+    const pressureText = "open question pressure ".repeat(40);
+
+    section(ledger, "open_questions").entries = Array.from({ length: 12 }, (_, index) =>
+      syntheticEntry({
+        id: `open_question:oq_${index}`,
+        text: `question ${index} ${pressureText}`,
+        trust_rank: 38,
+        state: `${OPEN_QUESTION_STATUSES[index % OPEN_QUESTION_STATUSES.length]!} public`,
+      }),
+    );
+
+    const compacted = compactEvidenceLedger(ledger, {
+      targetTokens: 20_000,
+      hardCapTokens: 30_000,
+      maxEntryTextTokens: 60,
+      sectionOptions: {
+        open_questions: {
+          maxEntries: 8,
+          maxTokens: 4_000,
+        },
+      },
+    });
+    const rendered = renderEvidenceLedger(compacted.ledger) ?? "";
+    const admission =
+      /A status-bearing row reaches this section by one of two admissions[\s\S]*?produced nothing here\./.exec(
+        rendered,
+      )?.[0] ?? "";
+
+    expect(admission).not.toBe("");
+    // The clause no longer ends by calling the store's population unavailable: the section framing
+    // prints it per status, so that sentence would contradict a number two lines above it.
+    expect(rendered).not.toContain("neither admission counts");
+
+    // The two sides of the sentence are derived from the admissions' own status sets rather than
+    // restated, so widening either enum breaks this instead of leaving the sentence quietly false.
+    const handleMatched: readonly string[] = LIFECYCLE_OPEN_QUESTION_STATUSES;
+    const drawn = OPEN_QUESTION_STATUSES.filter((status) => !handleMatched.includes(status));
+
+    expect(handleMatched.length).toBeGreaterThan(0);
+    expect(drawn.length).toBeGreaterThan(0);
+    expect([...handleMatched, ...drawn].sort()).toEqual([...OPEN_QUESTION_STATUSES].sort());
+
+    for (const status of handleMatched) {
+      expect(admission.slice(0, admission.indexOf("only by handle match"))).toContain(status);
+    }
+
+    for (const status of drawn) {
+      expect(admission.slice(admission.indexOf("only by handle match"))).toContain(status);
+    }
   });
 
   it("reports an empty open questions omission composition when no cut row carried a status", () => {
@@ -1018,6 +1588,9 @@ describe("compactEvidenceLedger", () => {
     expect(rendered).toContain(
       "none of the omitted entries carried a status, so no status had rows cut here",
     );
+    // The admission sentence describes the section, not this cut, so an empty tally carries it too:
+    // a reader with zero statuses in the tally is exactly the one about to over-read an absence.
+    expect(rendered).toContain("A status-bearing row reaches this section by one of two admissions");
   });
 
   it("trims recent lived experience before core retrieved evidence sections", () => {

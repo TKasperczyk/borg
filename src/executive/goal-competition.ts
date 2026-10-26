@@ -129,6 +129,33 @@ export function topExecutiveCandidateGoalIds(input: {
     .slice(0, limit);
 }
 
+/**
+ * The candidate goals whose full detail a page expands.
+ *
+ * Rank alone is the wrong membership rule, because rank is not what makes a
+ * goal the turn's focus. An autonomy trigger may name a goal outright, and the
+ * forced selection ignores both the focus threshold and the score sort -- so
+ * the goal a wake is about can sit anywhere in the ranking, including below
+ * every goal that fits the expansion. Expanding the top scorers alone would
+ * then render every field of goals the turn is not about and none of the one it
+ * is. The selected goal is therefore appended when the ranking left it out.
+ */
+export function expandedExecutiveCandidateGoalIds(input: {
+  candidates: readonly ExecutiveGoalScore[];
+  eligibleGoalIds: ReadonlySet<GoalRecord["id"]>;
+  limit: number;
+  selectedGoalId: GoalRecord["id"] | null;
+}): GoalRecord["id"][] {
+  const ranked = topExecutiveCandidateGoalIds(input);
+  const { selectedGoalId } = input;
+
+  return selectedGoalId === null ||
+    ranked.includes(selectedGoalId) ||
+    !input.eligibleGoalIds.has(selectedGoalId)
+    ? ranked
+    : [...ranked, selectedGoalId];
+}
+
 export function selectExecutiveFocus(input: SelectExecutiveFocusInput): ExecutiveFocus {
   const threshold = input.threshold ?? DEFAULT_EXECUTIVE_GOAL_FOCUS_THRESHOLD;
   const scoreBasis = {

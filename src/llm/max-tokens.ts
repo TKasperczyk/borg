@@ -6,11 +6,11 @@ function matchesModelFamily(model: string, family: RegExp): boolean {
 // ceiling to the 8_192 fallback below. (The Opus/Sonnet families now advertise
 // 128_000; 64_000 is the ceiling this harness deliberately runs at.)
 export function getModelMaxOutputTokens(model: string): number {
-  if (matchesModelFamily(model, /^claude-(opus|sonnet)-\d(?:[-._].+)?$/)) {
+  if (matchesModelFamily(model, /^claude-(opus|sonnet)-\d+(?:[-._].+)?$/)) {
     return 64_000;
   }
 
-  if (matchesModelFamily(model, /^claude-haiku-\d(?:[-._].+)?$/)) {
+  if (matchesModelFamily(model, /^claude-haiku-\d+(?:[-._].+)?$/)) {
     return 32_000;
   }
 

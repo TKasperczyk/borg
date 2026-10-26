@@ -237,7 +237,10 @@ describe("retrieval confidence prompt rendering", () => {
     // is a quantity with no scale: a reader cannot tell 0.69 from 0.44 in
     // consequence. Rendered floor-or-no-floor, because printing the floor only
     // on turns that cross it would make crossing look like the only way the
-    // path is ever decided -- it is the fourth test of four.
+    // path is ever decided. The ladder is stated in outcomes rather than by
+    // index: each clause names a test and the side it lands on, so the sentence
+    // is checkable against what it enumerates, and reordering the ladder cannot
+    // leave a true count standing beside a false position.
     const high = summarizeRetrievalConfidence(
       makeRetrievalConfidence({ overall: 0.69, sampleSize: 21 }),
     );
@@ -248,7 +251,12 @@ describe("retrieval confidence prompt rendering", () => {
     expect(high).toContain("overall=0.69(s2_floor=0.45)");
     expect(low).toContain("overall=0.31(s2_floor=0.45)");
     for (const rendered of [high, low]) {
-      expect(rendered).toContain("fourth test in the path ladder");
+      expect(rendered).toContain("not the only test in the path ladder");
+      // Each clause names a test and the side it lands on, and "all four"
+      // counts referents this same sentence enumerates.
+      expect(rendered).toContain("reflective mode and high stakes take S2 above the floor");
+      expect(rendered).toContain("idle mode takes S1 below it");
+      expect(rendered).toContain("operational-contradiction override outranks all four");
     }
   });
 
@@ -868,6 +876,47 @@ describe("plan-requested compact terminal retrieval", () => {
     expect(rendered).not.toContain(`${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER}=\"`);
     expect(rendered).toContain('check_not_completed_count="0"');
     expect(rendered).toContain("<check_not_completed_count>0</check_not_completed_count>");
+  });
+
+  it("names the kind and instant of a raw-stream payload ahead of its text", () => {
+    const input = {
+      evidence: [
+        verificationEvidence("evidence:quoting", "Where those silent wakes sit: ...", {
+          source: "raw_stream",
+          streamEntryKind: "agent_msg",
+          streamEntryAtMs: Date.parse("2026-09-13T22:41:19.000Z"),
+        }),
+        verificationEvidence("evidence:structured", "a commitment payload"),
+      ],
+      episodes: [],
+      semantic: {
+        matched_node_ids: [],
+        matched_nodes: [],
+        supports: [],
+        contradicts: [],
+        categories: [],
+        support_hits: [],
+        causal_hits: [],
+        contradiction_hits: [],
+        category_hits: [],
+      },
+      open_questions: [],
+    } as never;
+    const rendered = renderPlanRequestedVerificationRetrieval(input, 2_000);
+
+    // Ahead of the text, so the label is met before the prose rather than after
+    // a payload the reader may stop short of.
+    expect(rendered).toContain(
+      "{&quot;stream_entry_kind&quot;:&quot;agent_msg&quot;,&quot;stream_entry_at&quot;:&quot;2026-09-13T22:41:19.000Z&quot;,&quot;text&quot;:",
+    );
+    // A row from another source gains nothing: the fields are raw-stream only,
+    // and an absent one is absent rather than rendered empty.
+    const structuredRow = rendered
+      .split("\n")
+      .find((line) => line.includes('handle="evidence:structured"'));
+    expect(structuredRow).toBeDefined();
+    expect(structuredRow).not.toContain("stream_entry_kind");
+    expect(structuredRow).not.toContain("stream_entry_at");
   });
 
   it("reports zero membership tokens for zero candidates", () => {

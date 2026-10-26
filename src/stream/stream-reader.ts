@@ -1,3 +1,4 @@
+import type { EntityRepository } from "../memory/commitments/repository.js";
 import { closeSync, existsSync, fstatSync, openSync, readSync } from "node:fs";
 import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
@@ -59,18 +60,23 @@ function reverseLineToString(
 
 export type StreamReaderOptions = {
   dataDir: string;
+  entityRepository?: Pick<EntityRepository, "resolveReferences">;
   sessionId?: SessionId;
   logger?: LoggerLike;
-  entryIndex?: Pick<StreamEntryIndexRepository, "lookup">;
+  entryIndex?: Pick<StreamEntryIndexRepository, "lookup"> &
+    Partial<Pick<StreamEntryIndexRepository, "resolveEntityReferences">>;
 };
 
 export class StreamReader {
+  private readonly entityRepository?: Pick<EntityRepository, "resolveReferences">;
   private readonly dataDir: string;
   private readonly sessionId: SessionId;
   private readonly logger: LoggerLike;
-  private readonly entryIndex?: Pick<StreamEntryIndexRepository, "lookup">;
+  private readonly entryIndex?: Pick<StreamEntryIndexRepository, "lookup"> &
+    Partial<Pick<StreamEntryIndexRepository, "resolveEntityReferences">>;
 
   constructor(options: StreamReaderOptions) {
+    this.entityRepository = options.entityRepository;
     this.dataDir = options.dataDir;
     this.sessionId = options.sessionId ?? DEFAULT_SESSION_ID;
     this.logger = options.logger ?? console;
@@ -95,14 +101,18 @@ export class StreamReader {
         return undefined;
       }
 
-      if (parsed.data.entry_index !== undefined || this.entryIndex === undefined) {
-        return parsed.data;
+      const entry =
+        this.entityRepository?.resolveReferences(parsed.data) ??
+        this.entryIndex?.resolveEntityReferences?.(parsed.data) ??
+        parsed.data;
+      if (entry.entry_index !== undefined || this.entryIndex === undefined) {
+        return entry;
       }
 
-      const indexedEntry = this.entryIndex.lookup(parsed.data.id);
+      const indexedEntry = this.entryIndex.lookup(entry.id);
       return indexedEntry?.entry_index === null || indexedEntry?.entry_index === undefined
-        ? parsed.data
-        : { ...parsed.data, entry_index: indexedEntry.entry_index };
+        ? entry
+        : { ...entry, entry_index: indexedEntry.entry_index };
     } catch (error) {
       this.logger.error(`Skipping unreadable stream line in ${this.streamPath}`);
       this.logger.error(error instanceof Error ? error.message : String(error));

@@ -71,28 +71,6 @@ export type AutonomyWakeOutcomeDetailTally = {
   }>;
 };
 
-/**
- * Where one outcome's rows sit relative to the window's other wakes. A bucket
- * count alone cannot distinguish one continuous run from the same number of
- * failures scattered through successes, and the two support opposite readings:
- * a run is one incident whose trigger mix is whatever happened to be firing
- * during it, while a scatter is a rate that can differ by trigger. The rows hold
- * the ordering; the tally discarded it.
- *
- * `other_outcomes_between` counts the window's wakes that fall strictly between
- * this bucket's first and last row and did NOT land in it -- zero means an
- * unbroken run, any positive number means the bucket is interleaved.
- * `extends_before_window` reports whether the wake immediately preceding the
- * bucket's first row -- which may sit outside the window, the table retains more
- * than the window covers -- shares the outcome, so a run that started earlier is
- * not read as beginning at the window edge. It is null when no earlier wake is
- * retained, which is the absence of evidence rather than a no.
- */
-export type AutonomyWakeOutcomeSpan = {
-  other_outcomes_between: number;
-  extends_before_window: boolean | null;
-};
-
 export const AUTONOMY_WAKE_SOURCE_METADATA = {
   commitment_expiring: {
     type: "trigger",
@@ -161,12 +139,22 @@ export type AutonomyWakeSource<Payload extends Record<string, unknown> = Record<
     scan(): Promise<DueEvent<Payload>[]>;
     buildTurn(event: DueEvent<Payload>): TurnInput;
     nextDueAt?(): Promise<number | null>;
+    /** Internal handles for counting shared per-goal dormancy across sources. */
+    dormantGoalIds?(): readonly string[];
     // Optional lifecycle hook invoked by the scheduler immediately after a wake
     // fires successfully (watermark committed). Lets a source make its own
     // persisted state authoritative at fire-time instead of waiting for the next
     // scan to reconcile. Best-effort: the watermark remains the idempotency
     // source of truth, so a throwing onFired never causes a re-fire.
     onFired?(event: DueEvent<Payload>): void | Promise<void>;
+    /**
+     * Synchronous SQLite bookkeeping, committed atomically with source watermarks.
+     * Returning source_owned makes the hook responsible for all latches, including the primary.
+     */
+    commitFired?(
+      event: DueEvent<Payload>,
+      completion: { shownOpenQuestionIds: readonly string[] },
+    ): void | { watermark: "source_owned" };
   };
 
 export type AutonomyTrigger<Payload extends Record<string, unknown> = Record<string, unknown>> =
@@ -203,6 +191,9 @@ export type AutonomySchedulerWakeDescription = {
   ts: number;
   trigger_name: AutonomyWakeSourceName;
   outcome: AutonomyWakeOutcome | null;
+  preparation_failed: boolean;
+  /** Absent only in historical captures. */
+  turn_provider_failed?: boolean;
   headway_bases: string[] | null;
   finalizer_rounds: number | null;
   stall_retries: number | null;
@@ -218,6 +209,7 @@ export type AutonomySchedulerBudgetDescription = {
    * comparable across reads.
    */
   window_started_at: number;
+  /** Excludes structurally recorded preparation and turn provider failures; outcome tallies retain them. */
   used_in_current_window: number;
   reserved_contemplative_wakes_per_window: number;
   contemplative_used_in_current_window: number;
@@ -302,13 +294,6 @@ export type AutonomySchedulerFleetBrakeDescription = {
    */
   window_error_reasons: AutonomyWakeOutcomeDetailTally;
   /**
-   * Where those same errored rows sit in the window's order. Carried for errors
-   * and not for every bucket because this is the bucket whose count invites
-   * a rate reading, and a rate over a window that clips a longer run is a slice
-   * of that run rather than a property of anything the window contains.
-   */
-  window_error_span: AutonomyWakeOutcomeSpan | null;
-  /**
    * The `silent` entry of `window_outcomes` above, split by what actually ended
    * the wake -- same rows, same window, same categories, one level of detail
    * further down, and read the same way as `window_error_reasons`.
@@ -323,18 +308,23 @@ export type AutonomySchedulerFleetBrakeDescription = {
    */
   window_silent_reasons: AutonomyWakeOutcomeDetailTally;
   /**
-   * Where those same silent rows sit in the window's order, read exactly like
-   * `window_error_span`. Carried for the same reason and one more: `silent` is
-   * the bucket whose count invites a reading about the entity rather than about
-   * the machine, and scattered silences and consecutive ones are the same number
-   * and a different fact -- only the second has the shape of a disposition. The
-   * count alone cannot separate them, and the ordering that would is already in
-   * the table.
+   * The `interrupted` entry of `window_outcomes` above, split by the detail its
+   * writer recorded -- same rows, same window, read like `window_error_reasons`.
+   *
+   * Carried because this is the bucket whose bare count is least readable, and
+   * the ambiguity runs in opposite directions rather than merely being coarse.
+   * `interrupted` has two writers. The scheduler records it when an autonomous
+   * turn COMPLETED and the bookkeeping after it failed. Startup reconciliation
+   * records it for a row an earlier process left with no outcome, on a predicate
+   * with no lower time bound. So `interrupted=N` cannot say whether those turns
+   * ran, which is the one question the count is asked, and the detail separates
+   * the two exactly -- it already exists at the moment each writer records.
    */
-  window_silent_span: AutonomyWakeOutcomeSpan | null;
+  window_interrupted_reasons: AutonomyWakeOutcomeDetailTally;
 };
 
 export type AutonomySchedulerDescription = {
+  dormant_goals: number;
   /**
    * The clock read every other field here is as of. `describe()` takes it once
    * and derives the budget cutoff, the window counts and `next_tick_at` from
@@ -369,10 +359,11 @@ export type AutonomySchedulerDescription = {
   /**
    * The interval the handle was armed with. Load-bearing to any consumer
    * comparing `scheduled_tick_at` across reads: that stamp is the last tick
-   * entry plus this, so while one handle stays armed consecutive values differ
-   * by a multiple of it (plus timer drift), and a delta that is not a multiple
-   * means the handle was re-armed. Without this term a series of stamps is
-   * just a series of stamps -- the phase is only readable against the period.
+   * entry plus this, so consecutive values differ by a multiple of it plus the
+   * lateness each entry kept -- an off-grid residue is that lateness and a
+   * re-arm alike, and only `interval_armed_at` separates them. Without this
+   * term a series of stamps is just a series of stamps -- the phase is only
+   * readable against the period.
    */
   interval_ms: number;
   /**
@@ -409,9 +400,10 @@ export type AutonomySchedulerDescription = {
    *
    * The scheduler has held this value since the first version of `start()` (it
    * is one of the two terms in the tick anchor); it simply never left the class.
-   * Re-arm was inferable only off `scheduled_tick_at` grid arithmetic, which
-   * needs two reads, an unbroken series, and a delta large enough for the
-   * off-grid residue to exceed timer drift.
+   * Before it, re-arm was approached off `scheduled_tick_at` grid arithmetic,
+   * which never separated it: the anchor is written on tick entry and keeps the
+   * lateness that entry arrived with, so an off-grid residue is retained
+   * lateness and a re-arm alike at any number of reads.
    */
   interval_armed_at: number | null;
   /**
@@ -448,6 +440,7 @@ export type AutonomyTickEventResult = {
     | "budget_skipped"
     | "fleet_cooldown_skipped"
     | "error_circuit_skipped"
+    | "maintenance_skipped"
     | "busy_skipped"
     | "bookkeeping_error"
     | "error";
@@ -455,20 +448,30 @@ export type AutonomyTickEventResult = {
   outcomeSummary?: string;
   turnResultId?: string | null;
   error?: string;
+  errorName?: string;
 };
 
 export type TickResult = {
   status: "disabled" | "ok";
   ts: number;
   scannedSources: AutonomyWakeSourceName[];
+  /** Operational scans deferred before they could perform embedding work. */
+  maintenanceHeldSources?: AutonomyWakeSourceName[];
   dueEvents: number;
   firedEvents: number;
   budgetSkipped: number;
   fleetCooldownSkipped: number;
   errorCircuitSkipped: number;
   busySkipped: number;
+  /**
+   * Interval fires refused because this tick was still running. Reset when the
+   * next tracked tick starts, so it is this tick's overrun and not a total.
+   */
+  droppedIntervalFires: number;
   errorCount: number;
   sourceErrorCount: number;
+  /** Scan/preparation failures, including sources that produced no due event. */
+  sourceErrors?: Array<{ sourceName: AutonomyWakeSourceName; error: string; errorName?: string }>;
   bookkeepingErrorCount: number;
   events: AutonomyTickEventResult[];
 };

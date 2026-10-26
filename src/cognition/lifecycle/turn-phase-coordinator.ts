@@ -758,9 +758,7 @@ export class TurnPhaseCoordinator {
         const resolvedAudienceEntityId =
           turnInput.audience === undefined || isSelfAudience
             ? null
-            : this.options.entityRepository.resolve(turnInput.audience, {
-                provenance: "transport_audience_label",
-              });
+            : this.options.entityRepository.resolveAudienceLabel(turnInput.audience);
         const resolvedAudienceEntity =
           resolvedAudienceEntityId === null
             ? null

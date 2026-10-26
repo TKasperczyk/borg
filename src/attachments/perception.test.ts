@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { FakeEmbeddingClient, type EmbeddingClient } from "../embeddings/index.js";
 import { FakeLLMClient } from "../llm/test-support/fake-client.js";
@@ -141,10 +141,12 @@ describe("ImagePerceptionService", () => {
         ],
       ],
     });
+    const emit = vi.fn();
     const service = new ImagePerceptionService({
       repository,
       attachmentRepository,
       llmClient: llm,
+      tracer: { enabled: true, includePayloads: false, emit },
       embeddingClient: new FakeEmbeddingClient(4),
       model: "haiku-test",
       promptVersion: "test-v1",
@@ -155,6 +157,21 @@ describe("ImagePerceptionService", () => {
       turnId: "turn-image",
     });
 
+    llm.converseRequests[0]?.onToolChoiceTranslated?.({
+      label: "image-perception",
+      model: "haiku-test",
+      expected_tool: IMAGE_PERCEPTION_TOOL_NAME,
+      retry_fired: true,
+      attempt: 2,
+    });
+    expect(emit).toHaveBeenCalledWith("llm_call.tool_choice_translated", {
+      turnId: "turn-image",
+      label: "image-perception",
+      model: "haiku-test",
+      expected_tool: IMAGE_PERCEPTION_TOOL_NAME,
+      retry_fired: true,
+      attempt: 2,
+    });
     expect(record?.created_turn_global).toBe(42);
     expect(record?.audience).toBe("Alice");
     expect(record?.search_terms).toContain("v88 screenshot");
@@ -328,10 +345,9 @@ describe("ImagePerceptionService", () => {
     const { attachmentId, attachmentRepository, repository } = setup();
     const bobAttachmentId = createAttachmentId();
     const unknownAttachmentId = createAttachmentId();
-    db!.prepare("UPDATE stream_attachments SET audience = ? WHERE attachment_id = ?").run(
-      "Alex",
-      attachmentId,
-    );
+    db!
+      .prepare("UPDATE stream_attachments SET audience = ? WHERE attachment_id = ?")
+      .run("Alex", attachmentId);
 
     for (const record of [
       {

@@ -1,3 +1,4 @@
+import type { EntityRepository } from "../commitments/repository.js";
 import { Buffer } from "node:buffer";
 
 import {
@@ -519,7 +520,7 @@ function originAudienceEntityIdsFromRow(row: Record<string, unknown>): EntityId[
   return [...new Set(parsed)];
 }
 
-function fromEpisodeRow(row: Record<string, unknown>): Episode {
+export function fromEpisodeRow(row: Record<string, unknown>): Episode {
   const originAudienceEntityIds = originAudienceEntityIdsFromRow(row);
   const emotionalArc = (() => {
     if (row.emotional_arc === null || row.emotional_arc === undefined || row.emotional_arc === "") {
@@ -662,7 +663,7 @@ function applyHotLaneCooldownPenalty(
     .map((entry) => entry.candidate);
 }
 
-function fromEpisodeStatsRow(row: Record<string, unknown>): EpisodeStats {
+export function fromEpisodeStatsRow(row: Record<string, unknown>): EpisodeStats {
   const parsed = episodeStatsSchema.safeParse({
     episode_id: row.episode_id,
     retrieval_count: Number(row.retrieval_count),
@@ -744,6 +745,7 @@ export type ReconciliationReport = {
 };
 
 export type EpisodicRepositoryOptions = {
+  entityRepository?: Pick<EntityRepository, "resolveReferences">;
   table: LanceDbTable;
   db: SqliteDatabase;
   clock?: Clock;
@@ -758,6 +760,10 @@ export class EpisodicRepository {
 
   constructor(private readonly options: EpisodicRepositoryOptions) {
     this.clock = options.clock ?? new SystemClock();
+  }
+
+  private project<T>(value: T): T {
+    return this.options.entityRepository?.resolveReferences(value) ?? value;
   }
 
   private get table(): LanceDbTable {
@@ -798,6 +804,7 @@ export class EpisodicRepository {
   }
 
   private buildVisibilityWhereClause(capability: ViewerCapability): string | undefined {
+    capability = this.project(capability);
     switch (capability.kind) {
       case "unrestricted":
         return undefined;
@@ -820,7 +827,7 @@ export class EpisodicRepository {
   }
 
   private buildOptionsVisibilityWhereClause(options: EpisodeVisibilityOptions): string | undefined {
-    return this.buildVisibilityWhereClause(resolveViewerCapability(options));
+    return this.buildVisibilityWhereClause(resolveViewerCapability(this.project(options)));
   }
 
   private buildIndexedVisibilityWhereClause(
@@ -830,6 +837,7 @@ export class EpisodicRepository {
     sql: string;
     params: unknown[];
   } {
+    capability = this.project(capability);
     switch (capability.kind) {
       case "unrestricted":
         return { sql: "1 = 1", params: [] };
@@ -946,14 +954,14 @@ export class EpisodicRepository {
 
   private async listEpisodesWhere(where: string | undefined): Promise<Episode[]> {
     const rows = await this.table.list(where === undefined ? {} : { where });
-    return rows.map((row) => fromEpisodeRow(row));
+    return rows.map((row) => this.project(fromEpisodeRow(row)));
   }
 
   async listVisibleEpisodes(
     options: EpisodeVisibilityOptions = {},
     extraWhere?: string,
   ): Promise<Episode[]> {
-    const viewer = resolveViewerCapability(options);
+    const viewer = resolveViewerCapability(this.project(options));
     const episodes = await this.listEpisodesWhere(
       combineWhereClauses(this.buildOptionsVisibilityWhereClause(options), extraWhere),
     );
@@ -1140,7 +1148,10 @@ export class EpisodicRepository {
     order: IndexedEpisodeOrder,
     limit: number,
   ): EpisodeId[] {
-    const branches = this.buildIndexedVisibilityBranches(resolveViewerCapability(options), order);
+    const branches = this.buildIndexedVisibilityBranches(
+      resolveViewerCapability(this.project(options)),
+      order,
+    );
     const orderBy =
       order === "heat"
         ? "heat_score DESC, updated_at DESC, episode_id DESC"
@@ -1406,7 +1417,7 @@ export class EpisodicRepository {
       return null;
     }
 
-    const episode = fromEpisodeRow(row);
+    const episode = this.project(fromEpisodeRow(row));
     const stats = this.getStats(id);
 
     if (
@@ -1426,7 +1437,9 @@ export class EpisodicRepository {
 
     const where = `id IN (${ids.map((id) => quoteSqlString(id)).join(", ")})`;
     const rows = await this.table.list({ where, limit: ids.length });
-    const episodeById = new Map(rows.map((row) => [String(row.id), fromEpisodeRow(row)]));
+    const episodeById = new Map(
+      rows.map((row) => [String(row.id), this.project(fromEpisodeRow(row))]),
+    );
     return ids
       .map((id) => episodeById.get(id))
       .filter((value): value is Episode => value !== undefined);
@@ -2026,7 +2039,7 @@ export class EpisodicRepository {
           : undefined,
     });
     const ranked = rows.map((row) => {
-      const episode = fromEpisodeRow(row);
+      const episode = this.project(fromEpisodeRow(row));
       return {
         episode,
         similarity: toSimilarity(getDistance(row)),
@@ -2040,7 +2053,7 @@ export class EpisodicRepository {
     const results: EpisodeSearchCandidate[] = [];
     const viewer =
       visibilityMode === "disclosure"
-        ? resolveViewerCapability(options as EpisodeSearchOptions)
+        ? resolveViewerCapability(this.project(options as EpisodeSearchOptions))
         : null;
 
     for (const item of ranked) {
@@ -2142,7 +2155,7 @@ export class EpisodicRepository {
 
     if (visibilityMode === "disclosure") {
       const visibility = this.buildIndexedVisibilityWhereClause(
-        resolveViewerCapability(options),
+        resolveViewerCapability(this.project(options)),
         "ei",
       );
       clauses.push(visibility.sql);
@@ -2255,7 +2268,10 @@ export class EpisodicRepository {
     const termPlaceholders = sqlPlaceholders(normalizedTermList.length);
     const visibility =
       visibilityMode === "disclosure"
-        ? this.buildIndexedVisibilityWhereClause(resolveViewerCapability(options), "ei")
+        ? this.buildIndexedVisibilityWhereClause(
+            resolveViewerCapability(this.project(options)),
+            "ei",
+          )
         : { sql: "1 = 1", params: [] };
     const visibilityParams = visibility.params;
     const rows = this.db
@@ -2336,7 +2352,10 @@ export class EpisodicRepository {
 
     const visibility =
       visibilityMode === "disclosure"
-        ? this.buildIndexedVisibilityWhereClause(resolveViewerCapability(options), "ei")
+        ? this.buildIndexedVisibilityWhereClause(
+            resolveViewerCapability(this.project(options)),
+            "ei",
+          )
         : { sql: "1 = 1", params: [] };
     const results: EpisodeSearchCandidate[] = [];
     const seenIds = new Set<EpisodeId>();
@@ -2428,6 +2447,21 @@ export class EpisodicRepository {
       limit?: number;
     },
   ): Promise<EpisodeSearchCandidate[]> {
+    return this.listRecentForSessionInternal(options, "disclosure");
+  }
+
+  async listRecentForSessionForCognition(options: {
+    sessionId: SessionId;
+    sinceMs: number;
+    limit?: number;
+  }): Promise<EpisodeSearchCandidate[]> {
+    return this.listRecentForSessionInternal(options, "cognition");
+  }
+
+  private async listRecentForSessionInternal(
+    options: EpisodeVisibilityOptions & { sessionId: SessionId; sinceMs: number; limit?: number },
+    visibilityMode: EpisodeSearchVisibilityMode,
+  ): Promise<EpisodeSearchCandidate[]> {
     const limit = assertPositiveLimit(options.limit ?? DEFAULT_SEARCH_LIMIT, "List limit");
 
     if (!Number.isFinite(options.sinceMs)) {
@@ -2437,10 +2471,13 @@ export class EpisodicRepository {
     }
 
     await this.ensureEpisodeIndexBackfilled();
-    const visibility = this.buildIndexedVisibilityWhereClause(
-      resolveViewerCapability(options),
-      "ei",
-    );
+    const visibility =
+      visibilityMode === "disclosure"
+        ? this.buildIndexedVisibilityWhereClause(
+            resolveViewerCapability(this.project(options)),
+            "ei",
+          )
+        : { sql: "1 = 1", params: [] };
     const rows = this.db
       .prepare(
         `
@@ -2518,7 +2555,7 @@ export class EpisodicRepository {
     const limit = assertPositiveLimit(options.limit ?? DEFAULT_LIST_LIMIT, "List limit");
     const cursor = options.cursor === undefined ? undefined : decodeCursor(options.cursor);
     const rows = await this.table.list();
-    const episodes = rows.map((row) => fromEpisodeRow(row)).sort(compareEpisodes);
+    const episodes = rows.map((row) => this.project(fromEpisodeRow(row))).sort(compareEpisodes);
     const filtered =
       cursor === undefined
         ? episodes
@@ -2537,7 +2574,7 @@ export class EpisodicRepository {
 
   async listAll(): Promise<Episode[]> {
     const rows = await this.table.list();
-    return rows.map((row) => fromEpisodeRow(row)).sort(compareEpisodes);
+    return rows.map((row) => this.project(fromEpisodeRow(row))).sort(compareEpisodes);
   }
 
   async listUnarchivedEpisodeIds(): Promise<EpisodeId[]> {
@@ -2884,7 +2921,7 @@ export class EpisodicRepository {
       limit: 1,
     });
 
-    return rows[0] === undefined ? null : fromEpisodeRow(rows[0]);
+    return rows[0] === undefined ? null : this.project(fromEpisodeRow(rows[0]));
   }
 
   async findBySourceStreamIdsContaining(
@@ -2905,7 +2942,7 @@ export class EpisodicRepository {
     const rows = await this.table.list();
 
     for (const row of rows) {
-      const episode = fromEpisodeRow(row);
+      const episode = this.project(fromEpisodeRow(row));
 
       if (requiredSourceIds.every((streamId) => episode.source_stream_ids.includes(streamId))) {
         return episode;

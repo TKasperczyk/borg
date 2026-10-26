@@ -210,6 +210,64 @@ describe("review queue", () => {
     );
   });
 
+  it("preserves period version fences and transactional sibling supersession through embedding preparation", async () => {
+    const harness = await createOfflineTestHarness();
+    cleanup.push(harness.cleanup);
+    const prepareSerializedEmbeddings = vi.fn(async (payload: unknown) => {
+      expect(harness.db.raw.inTransaction).toBe(false);
+      return await refreshSerializedEmbeddings(payload, harness.createContext().embeddingClient);
+    });
+    const queue = new ReviewQueueRepository({
+      db: harness.db,
+      clock: harness.clock,
+      autobiographicalRepository: harness.autobiographicalRepository,
+      identityService: harness.identityService,
+      prepareSerializedEmbeddings,
+    });
+    registerBuiltinReviewQueueHandlers(queue);
+    const period = harness.autobiographicalRepository.upsertPeriod({
+      label: "Current",
+      start_ts: 1,
+      narrative: "Original narrative",
+      provenance: { kind: "offline", process: "self-narrator" },
+    });
+    const refs = {
+      target_type: "autobiographical_period",
+      target_id: period.id,
+      repair_op: "patch",
+      expected_record_version: period.record_version,
+      patch: { narrative: "Updated narrative" },
+      proposed_provenance: { kind: "offline", process: "self-narrator" },
+    };
+    const older = queue.enqueue({ kind: "identity_inconsistency", refs, reason: "older proposal" });
+    const winner = queue.enqueue({
+      kind: "identity_inconsistency",
+      refs,
+      reason: "winning proposal",
+    });
+    const stale = queue.enqueue({
+      kind: "identity_inconsistency",
+      refs: { ...refs, expected_record_version: period.record_version! + 10 },
+      reason: "wrong version",
+    });
+    await expect(queue.resolve(stale.id, "accept")).rejects.toThrow();
+    expect(queue.get(older.id)?.resolved_at).toBeNull();
+    expect(harness.autobiographicalRepository.getPeriod(period.id)?.record_version).toBe(
+      period.record_version,
+    );
+    await queue.resolve(winner.id, "accept");
+    expect(prepareSerializedEmbeddings).toHaveBeenCalledTimes(2);
+    expect(harness.autobiographicalRepository.getPeriod(period.id)).toMatchObject({
+      narrative: "Updated narrative",
+      record_version: period.record_version! + 1,
+    });
+    expect(queue.get(older.id)).toMatchObject({
+      resolution: "dismiss",
+      refs: { superseded_by_review_id: winner.id },
+    });
+    expect(queue.get(stale.id)?.resolved_at).toBeNull();
+  });
+
   it("opens review_queue schema on empty databases and databases with existing review rows", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     cleanup.push(async () => {
@@ -612,6 +670,96 @@ describe("review queue", () => {
     );
   });
 
+  it.each(["synchronous", "rejected"])(
+    "flush waits for a %s hook's delayed error reporter",
+    async (mode) => {
+      const harness = await createOfflineTestHarness();
+      cleanup.push(harness.cleanup);
+      const report = createDeferred();
+      const failure = new Error("hook failed");
+      const onEnqueueError = vi.fn(async () => await report.promise);
+      const queue = new ReviewQueueRepository({
+        db: harness.db,
+        onEnqueue: () => {
+          if (mode === "synchronous") throw failure;
+          return Promise.reject(failure);
+        },
+        onEnqueueError,
+      });
+      queue.enqueue({
+        kind: "contradiction",
+        reason: "test",
+        refs: { node_ids: [createSemanticNodeId(), createSemanticNodeId()] },
+      });
+      let flushed = false;
+      const flushing = queue.flushEnqueueHooks().then(() => {
+        flushed = true;
+      });
+      try {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(onEnqueueError).toHaveBeenCalledOnce();
+        expect(flushed).toBe(false);
+        report.resolve();
+        await flushing;
+        expect(flushed).toBe(true);
+      } finally {
+        report.resolve();
+        await flushing;
+      }
+    },
+  );
+
+  it.each(["synchronous", "asynchronous"])(
+    "retains a %s reporter failure for drain without aborting enqueue or skipping other hooks",
+    async (mode) => {
+      const harness = await createOfflineTestHarness();
+      cleanup.push(harness.cleanup);
+      const log = vi.spyOn(console, "error").mockImplementation(() => {});
+      const delayed = createDeferred();
+      const failure = new Error("failure reporter unavailable");
+      let reports = 0;
+      const queue = new ReviewQueueRepository({
+        db: harness.db,
+        onEnqueue: () => {
+          throw new Error("hook failed");
+        },
+        onEnqueueError: () => {
+          if (++reports > 1) return delayed.promise;
+          if (mode === "synchronous") throw failure;
+          return Promise.reject(failure);
+        },
+      });
+      const enqueue = () =>
+        queue.enqueue({
+          kind: "contradiction",
+          reason: "test",
+          refs: { node_ids: [createSemanticNodeId(), createSemanticNodeId()] },
+        });
+      expect(enqueue).not.toThrow();
+      expect(enqueue).not.toThrow();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      let settled = false;
+      const flushing = queue
+        .flushEnqueueHooks()
+        .catch((error: unknown) => error)
+        .finally(() => {
+          settled = true;
+        });
+      try {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(settled).toBe(false);
+        delayed.resolve();
+        expect(await flushing).toMatchObject({ errors: [failure] });
+        expect(log).toHaveBeenCalled();
+        await expect(queue.flushEnqueueHooks()).rejects.toMatchObject({ errors: [failure] });
+      } finally {
+        delayed.resolve();
+        await flushing;
+        log.mockRestore();
+      }
+    },
+  );
+
   it("logs hook failures without aborting edge insertion", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     const store = new LanceDbStore({
@@ -641,8 +789,8 @@ describe("review queue", () => {
       onEnqueue() {
         throw new Error("hook exploded");
       },
-      onEnqueueError: (error) => {
-        void writer.append({
+      onEnqueueError: async (error) => {
+        await writer.append({
           kind: "internal_event",
           content: {
             hook: "review_queue_open_question",
@@ -706,9 +854,7 @@ describe("review queue", () => {
       last_verified_at: 1_000,
     });
 
-    await new Promise((resolve) => {
-      setTimeout(resolve, 25);
-    });
+    await reviewQueue.flushEnqueueHooks();
 
     const entries = new StreamReader({
       dataDir: tempDir,

@@ -189,6 +189,25 @@ describe("reconcileSemanticBeliefRevision", () => {
     );
   });
 
+  it("leaves the judge room to reason before its verdicts", async () => {
+    const entry = makeLockedSharedStateEntry({
+      text: "Project runtime is Node 22",
+    });
+    const deps = makeSemanticRevisionDependencies({
+      verdict: "keep",
+    });
+
+    await reconcileSemanticBeliefRevision({
+      artifact: makeSharedStateArtifact([entry]),
+      operations: [makeSharedStateAddOperation(entry)],
+      dependencies: deps.dependencies,
+      nowMs: 2_000,
+      turnId: "turn_semantic_output_cap",
+    });
+
+    expect(deps.complete).toHaveBeenCalledWith(expect.objectContaining({ max_tokens: 4_000 }));
+  });
+
   it("reuses cached keep verdicts without calling the judge again for unchanged entry and candidate status", async () => {
     const cache = new SemanticRevisionVerdictCache();
     const entry = makeLockedSharedStateEntry({

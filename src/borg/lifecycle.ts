@@ -7,12 +7,14 @@ import type { BorgDependencies } from "./types.js";
 export async function closeBestEffort(
   sqlite: SqliteDatabase | undefined,
   lance: LanceDbStore | undefined,
-): Promise<void> {
+): Promise<boolean> {
+  let closed = true;
   if (sqlite !== undefined) {
     try {
       sqlite.close();
     } catch {
-      // Best-effort cleanup after a partial Borg.open failure.
+      closed = false;
+      // Keep the bank lease if a store may still be open.
     }
   }
 
@@ -20,17 +22,23 @@ export async function closeBestEffort(
     try {
       await lance.close();
     } catch {
-      // Best-effort cleanup after a partial Borg.open failure.
+      closed = false;
+      // Keep the bank lease if a store may still be open.
     }
   }
+  return closed;
 }
 
-export async function closeBorgDependencies(deps: BorgDependencies): Promise<void> {
+function collectCloseError(errors: unknown[], label: string, error: unknown): void {
+  errors.push(error);
+  console.error(`Failed to close ${label}`, error);
+}
+
+export async function drainBorgDependencies(
+  deps: BorgDependencies,
+  admittedOperations: readonly Promise<unknown>[] = [],
+): Promise<void> {
   const errors: unknown[] = [];
-  const collectCloseError = (label: string, error: unknown): void => {
-    errors.push(error);
-    console.error(`Failed to close ${label}`, error);
-  };
 
   const schedulerStops = [
     {
@@ -57,7 +65,7 @@ export async function closeBorgDependencies(deps: BorgDependencies): Promise<voi
   ] as const;
 
   const schedulerStopResults = await Promise.allSettled(
-    schedulerStops.map((stop) => Promise.resolve().then(() => stop.close())),
+    schedulerStops.map(async (stop) => await stop.close()),
   );
 
   schedulerStopResults.forEach((result, index) => {
@@ -68,41 +76,78 @@ export async function closeBorgDependencies(deps: BorgDependencies): Promise<voi
     const schedulerStop = schedulerStops[index];
 
     if (schedulerStop !== undefined) {
-      collectCloseError(schedulerStop.label, result.reason);
+      collectCloseError(errors, schedulerStop.label, result.reason);
     }
   });
 
+  await Promise.allSettled(admittedOperations);
   try {
     await deps.streamIngestionCoordinator?.close();
   } catch (error) {
-    collectCloseError("stream ingestion coordinator", error);
-  } finally {
-    try {
-      await deps.reviewQueueRepository?.flushEnqueueHooks?.();
-    } catch (error) {
-      collectCloseError("review queue enqueue hooks", error);
-    }
-
-    await Promise.allSettled(deps.pendingStartupTasks ?? []);
-    await Promise.allSettled([
-      deps.actionRepository?.waitForPendingEmbeddings(),
-      deps.openQuestionsRepository?.waitForPendingEmbeddings(),
-      deps.observedEventRepository?.waitForPendingEmbeddings(),
-    ]);
-    try {
-      deps.sqlite.close();
-    } catch (error) {
-      collectCloseError("SQLite database", error);
-    }
-
-    try {
-      await deps.lance.close();
-    } catch (error) {
-      collectCloseError("LanceDB store", error);
-    }
+    collectCloseError(errors, "stream ingestion coordinator", error);
   }
 
-  if (errors.length === 0) await deps.releaseEmbeddingBankAccess?.();
+  // Startup work may enqueue repository writes; wait for it before snapshotting
+  // repository queues so those tails remain covered by the bank lease.
+  const startupResults = await Promise.allSettled(deps.pendingStartupTasks ?? []);
+  try {
+    await deps.semanticReviewService?.flushDuplicateReviews?.();
+  } catch (error) {
+    collectCloseError(errors, "semantic duplicate reviews", error);
+  }
+  try {
+    await deps.reviewQueueRepository?.flushEnqueueHooks?.();
+  } catch (error) {
+    collectCloseError(errors, "review queue enqueue hooks", error);
+  }
+  const pendingResults = await Promise.allSettled([
+    deps.actionRepository?.waitForPendingEmbeddings(),
+    deps.openQuestionsRepository?.waitForPendingEmbeddings(),
+    deps.observedEventRepository?.waitForPendingEmbeddings(),
+  ]);
+  for (const result of [...startupResults, ...pendingResults]) {
+    if (result.status === "rejected") {
+      collectCloseError(errors, "pending embeddings/startup work", result.reason);
+    }
+  }
+  try {
+    await deps.failureReports?.flush();
+  } catch (error) {
+    collectCloseError(errors, "stream failure reports", error);
+  }
+  if (errors.length > 0) {
+    throw new AggregateError(errors, "One or more Borg dependencies failed to drain");
+  }
+}
+
+export async function closeBorgDependencies(
+  deps: BorgDependencies,
+  options: { drain?: false | (() => Promise<void>); retainBankLease?: boolean } = {},
+): Promise<void> {
+  const errors: unknown[] = [];
+  if (options.drain !== false) {
+    try {
+      await (options.drain?.() ?? drainBorgDependencies(deps));
+    } catch (error) {
+      collectCloseError(errors, "runtime", error);
+    }
+  }
+  try {
+    deps.sqlite.close();
+  } catch (error) {
+    collectCloseError(errors, "SQLite database", error);
+  }
+  try {
+    await deps.lance.close();
+  } catch (error) {
+    collectCloseError(errors, "LanceDB store", error);
+  }
+
+  // A failed/timed-out host drain cannot prove that background writers drained,
+  // even if Borg's own drain completed. Retain the lease until process exit.
+  if (errors.length === 0 && options.drain !== false && options.retainBankLease !== true) {
+    await deps.releaseEmbeddingBankAccess?.();
+  }
 
   if (errors.length > 0) {
     throw new AggregateError(errors, "One or more Borg dependencies failed to close");

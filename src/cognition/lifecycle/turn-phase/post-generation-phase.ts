@@ -13,7 +13,11 @@ import type { ActualFrameAnomalyClassification } from "../../frame-anomaly/index
 import type { ClosureLoopAssessment } from "../../generation/closure-loop.js";
 import { appendRecentRegeneration } from "../../generation/discourse-state.js";
 import type { ActiveParticipant } from "../../participants.js";
-import { isDirectedOutboundTurnOrigin, type PerceptionResult } from "../../types.js";
+import {
+  isDirectedOutboundTurnOrigin,
+  runsReflectionPersistence,
+  type PerceptionResult,
+} from "../../types.js";
 import type { LLMClient } from "../../../llm/index.js";
 import type {
   StreamEntry,
@@ -747,12 +751,27 @@ export async function runPostGenerationPhase(input: {
     actionEmission.kind === "message" &&
     actionCoordinatorResult.regenerationBreadcrumb?.kind === "commitment_guard_regeneration"
   ) {
-    postActionWorkingMemory = appendRecentRegeneration(postActionWorkingMemory, {
+    const regeneration = {
       turnId: actionCoordinatorResult.regenerationBreadcrumb.turnId,
       ts: input.options.clock.now(),
       sourceStreamEntryId: persistedAgentEntry.id,
       commitments: actionCoordinatorResult.regenerationBreadcrumb.commitments,
-    });
+    };
+    postActionWorkingMemory = appendRecentRegeneration(postActionWorkingMemory, regeneration);
+
+    // Reflection persistence is what saves `postActionWorkingMemory` on this path. An origin that
+    // skips it would drop the entry, while its failed regenerations still reach
+    // `recent_suppressions` through the suppressed path's own save. Append to the stored state
+    // alone, so nothing else from such a turn is absorbed.
+    if (!runsReflectionPersistence(input.origin)) {
+      input.options.workingMemoryStore.save({
+        ...appendRecentRegeneration(
+          input.options.workingMemoryStore.load(input.sessionId),
+          regeneration,
+        ),
+        updated_at: input.options.clock.now(),
+      });
+    }
   }
   if (
     actionEmission.kind === "message" &&
@@ -857,6 +876,7 @@ export async function runPostGenerationPhase(input: {
         deliberation,
         actionResult,
         retrievedEpisodes: deliberation.retrievedEpisodes,
+        recalledOpenQuestions: input.retrievalPhase.retrieval.open_questions,
         retrievalConfidence: input.retrievalPhase.retrieval.confidence,
         executiveFocus: input.retrievalPhase.executiveFocusWithStep,
         selectedSkill: input.retrievalPhase.selectedSkill,

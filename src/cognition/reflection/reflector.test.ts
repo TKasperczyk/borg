@@ -2697,6 +2697,361 @@ describe("reflector", () => {
     });
   });
 
+  it("traces the reflection call when its response carries no tool call", async () => {
+    const pendingIntents = [
+      {
+        description: "Check the Atlas rollout after tests finish",
+        next_action: "review deploy status",
+      },
+    ];
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "The rollout check is done, so the pending action",
+          input_tokens: 8,
+          output_tokens: 768,
+          stop_reason: "max_tokens",
+          tool_calls: [],
+        },
+      ],
+    });
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+    });
+    cleanup.push(harness.cleanup);
+    const tracer = new CaptureTracer();
+    const reflector = createHarnessReflector(harness, {
+      clock: harness.clock,
+      llmClient: harness.llmClient,
+      model: "haiku",
+      proceduralEvidenceRepository: harness.proceduralEvidenceRepository,
+      tracer,
+    });
+    const workingMemory = createWorkingMemoryFixture({
+      turn_counter: 2,
+      pending_actions: pendingIntents,
+      mode: "problem_solving" as const,
+    });
+
+    const { workingMemory: reflected } = await reflector.reflect(
+      {
+        turnId: "turn-missing-reflection-call",
+        userMessage: "The Atlas rollout is checked.",
+        workingMemory,
+        selfSnapshot: {
+          values: [],
+          goals: [],
+          traits: [],
+        },
+        deliberationResult: {
+          path: "system_1",
+          response: "Good, that closes it.",
+          thoughts: [],
+          tool_calls: [],
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            stop_reason: "end_turn",
+          },
+          decision_reason: "confidence",
+          retrievedEpisodes: [],
+          referencedEpisodeIds: null,
+          intents: [],
+          thoughtsPersisted: false,
+        },
+        actionResult: {
+          response: "Good, that closes it.",
+          tool_calls: [],
+          intents: [],
+          workingMemory,
+        },
+        retrievedEpisodes: [],
+        retrievalConfidence: createRetrievalConfidence(),
+        suppressionSet: new SuppressionSet(),
+        currentTurnStreamEntryIds: [createStreamEntryId()],
+      },
+      harness.streamWriter,
+    );
+
+    expect(reflected.pending_actions).toEqual(pendingIntents);
+    const reflectorCalls = tracer.events.filter(
+      (event) => event.event.startsWith("llm_call.") && event.data.label === "reflector",
+    );
+    expect(reflectorCalls.map((event) => event.event)).toEqual([
+      "llm_call.started",
+      "llm_call.completed",
+    ]);
+    expect(reflectorCalls[1]?.data).toMatchObject({
+      turnId: "turn-missing-reflection-call",
+      stopReason: "max_tokens",
+    });
+  });
+
+  it("traces an intent update that matches no held pending action", async () => {
+    const pendingIntents: Array<{ description: string; next_action: string | null }> = [
+      {
+        description: "Check the Atlas rollout after tests finish",
+        next_action: "review deploy status",
+      },
+    ];
+    const llm = new FakeLLMClient({
+      responses: [
+        createReflectionResponse(
+          [],
+          [],
+          [
+            {
+              description: "Check the Atlas rollout after the tests finish",
+              next_action: "review deploy status",
+              actor: "borg",
+              status: "completed",
+              evidence: "The current turn reported the rollout checked.",
+            },
+          ],
+        ),
+      ],
+    });
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+    });
+    cleanup.push(harness.cleanup);
+    const tracer = new CaptureTracer();
+    const reflector = createHarnessReflector(harness, {
+      clock: harness.clock,
+      llmClient: harness.llmClient,
+      model: "haiku",
+      proceduralEvidenceRepository: harness.proceduralEvidenceRepository,
+      tracer,
+    });
+    const workingMemory = createWorkingMemoryFixture({
+      turn_counter: 2,
+      pending_actions: pendingIntents,
+      mode: "problem_solving" as const,
+    });
+
+    const { workingMemory: reflected } = await reflector.reflect(
+      {
+        turnId: "turn-unmatched-intent",
+        userMessage: "The Atlas rollout is checked.",
+        workingMemory,
+        selfSnapshot: {
+          values: [],
+          goals: [],
+          traits: [],
+        },
+        deliberationResult: {
+          path: "system_1",
+          response: "Good, that closes it.",
+          thoughts: [],
+          tool_calls: [],
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            stop_reason: "end_turn",
+          },
+          decision_reason: "confidence",
+          retrievedEpisodes: [],
+          referencedEpisodeIds: null,
+          intents: [],
+          thoughtsPersisted: false,
+        },
+        actionResult: {
+          response: "Good, that closes it.",
+          tool_calls: [],
+          intents: [],
+          workingMemory,
+        },
+        retrievedEpisodes: [],
+        retrievalConfidence: createRetrievalConfidence(),
+        suppressionSet: new SuppressionSet(),
+        currentTurnStreamEntryIds: [createStreamEntryId()],
+      },
+      harness.streamWriter,
+    );
+
+    expect(reflected.pending_actions).toEqual(pendingIntents);
+    expect(harness.actionRepository.list({ state: "completed" })).toEqual([]);
+    expect(tracer.events).toContainEqual({
+      event: "reflector.intent_update.rejected",
+      data: {
+        turnId: "turn-unmatched-intent",
+        reason: "no_matching_pending_action",
+        count: 1,
+        updates: [
+          {
+            description: "Check the Atlas rollout after the tests finish",
+            next_action: "review deploy status",
+            status: "completed",
+          },
+        ],
+      },
+    });
+    expect(
+      tracer.events.filter((event) => event.event === "reflector.intent_update.completed"),
+    ).toEqual([]);
+  });
+
+  it.each([
+    {
+      name: "resolves a null next_action update to the one held action with its description",
+      pendingIntents: [
+        {
+          description: "Den Atlas-Rollout nach den Tests prüfen",
+          next_action: "Deploy-Status ansehen",
+        },
+        {
+          description: "Open a new incident if rollout fails",
+          next_action: "create incident",
+        },
+      ],
+      updates: [{ description: "  Den Atlas-Rollout nach den Tests prüfen ", next_action: null }],
+      expectedPending: [
+        {
+          description: "Open a new incident if rollout fails",
+          next_action: "create incident",
+        },
+      ],
+      expectedCompleted: ["Den Atlas-Rollout nach den Tests prüfen"],
+      expectedRejectedCount: 0,
+    },
+    {
+      name: "records a null next_action update and an exact update for one held action once",
+      pendingIntents: [
+        {
+          description: "Check the Atlas rollout after tests finish",
+          next_action: "review deploy status",
+        },
+      ],
+      updates: [
+        { description: "Check the Atlas rollout after tests finish", next_action: null },
+        {
+          description: "Check the Atlas rollout after tests finish",
+          next_action: "review deploy status",
+        },
+      ],
+      expectedPending: [],
+      expectedCompleted: ["Check the Atlas rollout after tests finish"],
+      expectedRejectedCount: 0,
+    },
+    {
+      name: "leaves a null next_action update unmatched when two held actions share its description",
+      pendingIntents: [
+        {
+          description: "ロールアウトを確認する",
+          next_action: "デプロイ状況を見る",
+        },
+        {
+          description: "ロールアウトを確認する",
+          next_action: "ログを読む",
+        },
+      ],
+      updates: [{ description: "ロールアウトを確認する", next_action: null }],
+      expectedPending: [
+        {
+          description: "ロールアウトを確認する",
+          next_action: "デプロイ状況を見る",
+        },
+        {
+          description: "ロールアウトを確認する",
+          next_action: "ログを読む",
+        },
+      ],
+      expectedCompleted: [],
+      expectedRejectedCount: 1,
+    },
+  ])(
+    "$name",
+    async ({
+      pendingIntents,
+      updates,
+      expectedPending,
+      expectedCompleted,
+      expectedRejectedCount,
+    }) => {
+      const llm = new FakeLLMClient({
+        responses: [
+          createReflectionResponse(
+            [],
+            [],
+            updates.map((update) => ({
+              ...update,
+              actor: "borg" as const,
+              status: "completed" as const,
+              evidence: "The current turn reported the rollout checked.",
+            })),
+          ),
+        ],
+      });
+      const harness = await createOfflineTestHarness({
+        llmClient: llm,
+      });
+      cleanup.push(harness.cleanup);
+      const tracer = new CaptureTracer();
+      const reflector = createHarnessReflector(harness, {
+        clock: harness.clock,
+        llmClient: harness.llmClient,
+        model: "haiku",
+        proceduralEvidenceRepository: harness.proceduralEvidenceRepository,
+        tracer,
+      });
+      const workingMemory = createWorkingMemoryFixture({
+        turn_counter: 2,
+        pending_actions: pendingIntents,
+        mode: "problem_solving" as const,
+      });
+
+      const { workingMemory: reflected } = await reflector.reflect(
+        {
+          turnId: "turn-null-next-action",
+          userMessage: "The rollout is checked.",
+          workingMemory,
+          selfSnapshot: {
+            values: [],
+            goals: [],
+            traits: [],
+          },
+          deliberationResult: {
+            path: "system_1",
+            response: "Good, that closes it.",
+            thoughts: [],
+            tool_calls: [],
+            usage: {
+              input_tokens: 1,
+              output_tokens: 1,
+              stop_reason: "end_turn",
+            },
+            decision_reason: "confidence",
+            retrievedEpisodes: [],
+            referencedEpisodeIds: null,
+            intents: [],
+            thoughtsPersisted: false,
+          },
+          actionResult: {
+            response: "Good, that closes it.",
+            tool_calls: [],
+            intents: [],
+            workingMemory,
+          },
+          retrievedEpisodes: [],
+          retrievalConfidence: createRetrievalConfidence(),
+          suppressionSet: new SuppressionSet(),
+          currentTurnStreamEntryIds: [createStreamEntryId()],
+        },
+        harness.streamWriter,
+      );
+
+      expect(reflected.pending_actions).toEqual(expectedPending);
+      expect(
+        harness.actionRepository.list({ state: "completed" }).map((record) => record.description),
+      ).toEqual(expectedCompleted);
+      expect(
+        tracer.events
+          .filter((event) => event.event === "reflector.intent_update.rejected")
+          .map((event) => event.data.count),
+      ).toEqual(expectedRejectedCount === 0 ? [] : [expectedRejectedCount]);
+    },
+  );
+
   it("preserves a pending procedural attempt when reflection returns no procedural outcome for it", async () => {
     // Sprint 53: omitted outcomes leave the attempt pending so a later
     // turn can grade it. The orchestrator expires attempts via TTL.
@@ -3047,6 +3402,25 @@ describe("reflector", () => {
     expect(llm.requests[0]?.system).toContain("For retired_goals");
     expect(llm.requests[0]?.system).toContain("The default is to leave goals active.");
     expect(llm.requests[0]?.system).toContain(SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE);
+  });
+
+  it("leaves the reflection call room to reason before its tool call", async () => {
+    const llm = new FakeLLMClient({
+      responses: [createReflectionResponse()],
+    });
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+    });
+    cleanup.push(harness.cleanup);
+    const reflector = createHarnessReflector(harness, {
+      clock: harness.clock,
+      llmClient: harness.llmClient,
+      model: "claude-opus-5-5",
+    });
+
+    await reflector.reflect(createOpenQuestionReflectionContext(), harness.streamWriter);
+
+    expect(llm.requests[0]?.max_tokens).toBe(16_000);
   });
 
   it("passes current trait vocabulary with established traits and capped strongest candidates", async () => {

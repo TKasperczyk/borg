@@ -104,6 +104,7 @@ import {
 } from "./turn-execution-metrics.js";
 
 export type TurnResult = {
+  shownOpenQuestionIds?: readonly string[];
   turn_id: string;
   mode: CognitiveMode;
   path: "system_1" | "system_2" | "suppressed";
@@ -121,6 +122,7 @@ export type TurnResult = {
   retrievedEpisodeIds: string[];
   referencedEpisodeIds: string[];
   intents: IntentRecord[];
+  /** Nonterminal call outcomes across all attempts, including replaced emissions. */
   toolCalls: ToolLoopCallRecord[];
   finalizer_rounds: number;
   stall_retries: number;
@@ -311,17 +313,20 @@ export class TurnOrchestrator {
       entityRepository: options.entityRepository,
       tracer: this.tracer,
     });
+    const preTurnExtractionModel =
+      options.config.anthropic.models.preTurnExtraction ??
+      options.config.anthropic.models.recallExpansion;
     const turnActionStateService = new TurnActionStateService({
+      model: preTurnExtractionModel,
       similarityConfig: options.config,
-      model: options.config.anthropic.models.recallExpansion,
       actionRepository: options.actionRepository,
       embeddingClient: options.embeddingClient,
       clock: this.clock,
       tracer: this.tracer,
     });
     const turnGoalPromotionService = new TurnGoalPromotionService({
+      model: preTurnExtractionModel,
       similarityConfig: options.config,
-      model: options.config.anthropic.models.recallExpansion,
       identityService: options.identityService,
       goalsRepository: options.goalsRepository,
       executiveStepsRepository: options.executiveStepsRepository,
@@ -535,6 +540,7 @@ export class TurnOrchestrator {
   }
 
   async run(input: TurnOrchestratorInput): Promise<TurnResult> {
+    input = this.options.entityRepository.resolveReferences(input);
     const sessionId = input.sessionId ?? DEFAULT_SESSION_ID;
     this.options.attachmentService.validateAttachments(input.attachments ?? []);
     const effectiveLockMode =
@@ -576,17 +582,15 @@ export class TurnOrchestrator {
     try {
       try {
         try {
-          const result = await turnExecutionMetricsStorage.run(
-            executionMetrics,
-            () =>
-              this.turnPhaseCoordinator.run({
-                input: phaseInput,
-                globalTurnCounter,
-                sessionId,
-                turnId,
-                streamWriter,
-                lifecycleTracker,
-              }),
+          const result = await turnExecutionMetricsStorage.run(executionMetrics, () =>
+            this.turnPhaseCoordinator.run({
+              input: phaseInput,
+              globalTurnCounter,
+              sessionId,
+              turnId,
+              streamWriter,
+              lifecycleTracker,
+            }),
           );
           lifecycleTracker.commitTurnState();
           terminalOutcome =

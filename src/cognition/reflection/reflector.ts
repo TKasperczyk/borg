@@ -150,7 +150,8 @@ const JOURNAL_APPEND_TOOL_NAME = "tool.journal.append";
 const OPEN_QUESTION_CREATE_TOOL_NAME = "tool.openQuestions.create";
 const OPEN_QUESTION_RESOLVE_TOOL_NAME = "tool.openQuestions.resolve";
 const SCHEDULED_WAKE_CREATE_TOOL_NAME = "tool.scheduledWakes.create";
-const DEFAULT_REFLECTION_MAX_TOKENS = 768;
+// Thinking counts against max_tokens, so this must fit the reasoning as well as the payload.
+const DEFAULT_REFLECTION_MAX_TOKENS = 16_000;
 const REFLECTION_GOAL_PROGRESS_NOTES_CHAR_BUDGET = 1_200;
 // Candidate labels can grow quickly; established traits are the stable vocabulary,
 // while the strongest 40 candidates give the reflector reuse handles without unbounded prompt growth.
@@ -526,17 +527,44 @@ function intentKey(intent: IntentRecord): string {
   ]);
 }
 
+// Returns the key of the held pending action an update resolves, or null.
+// A null next_action on the update identifies nothing beyond the description,
+// so it resolves by description when exactly one held key carries it.
+function heldIntentKeyForUpdate(
+  pendingActions: readonly IntentRecord[],
+  update: IntentRecord,
+): string | null {
+  const key = intentKey(update);
+  const pendingKeys = new Set(pendingActions.map((intent) => intentKey(intent)));
+
+  if (pendingKeys.has(key)) {
+    return key;
+  }
+
+  if (update.next_action !== null) {
+    return null;
+  }
+
+  const description = update.description.trim().toLowerCase();
+  const sameDescriptionKeys = new Set(
+    pendingActions
+      .filter((intent) => intent.description.trim().toLowerCase() === description)
+      .map((intent) => intentKey(intent)),
+  );
+
+  return sameDescriptionKeys.size === 1 ? [...sameDescriptionKeys][0]! : null;
+}
+
 function selectResolvedIntentKeys(
   pendingActions: readonly IntentRecord[],
   updates: readonly ReflectionOutput["intent_updates"][number][],
 ): Set<string> {
-  const pendingKeys = new Set(pendingActions.map((intent) => intentKey(intent)));
   const resolved = new Set<string>();
 
   for (const update of updates) {
-    const key = intentKey(update);
+    const key = heldIntentKeyForUpdate(pendingActions, update);
 
-    if (pendingKeys.has(key)) {
+    if (key !== null) {
       resolved.add(key);
     }
   }
@@ -548,14 +576,13 @@ function selectResolvedIntentUpdates(
   pendingActions: readonly IntentRecord[],
   updates: readonly ReflectionOutput["intent_updates"][number][],
 ): ReflectionOutput["intent_updates"] {
-  const pendingKeys = new Set(pendingActions.map((intent) => intentKey(intent)));
   const selected: ReflectionOutput["intent_updates"] = [];
   const selectedKeys = new Set<string>();
 
   for (const update of updates) {
-    const key = intentKey(update);
+    const key = heldIntentKeyForUpdate(pendingActions, update);
 
-    if (!pendingKeys.has(key) || selectedKeys.has(key)) {
+    if (key === null || selectedKeys.has(key)) {
       continue;
     }
 
@@ -977,6 +1004,13 @@ export class Reflector {
       context.workingMemory.pending_actions,
       intentUpdates,
     );
+    const unmatchedIntentUpdates = intentUpdates.filter(
+      (update) => heldIntentKeyForUpdate(context.workingMemory.pending_actions, update) === null,
+    );
+
+    if (unmatchedIntentUpdates.length > 0) {
+      this.emitIntentUpdateUnmatched(context, unmatchedIntentUpdates);
+    }
 
     await this.persistActionRecords(context, resolvedIntentUpdates, streamWriter, effects);
 
@@ -1709,6 +1743,29 @@ export class Reflector {
     });
   }
 
+  private emitIntentUpdateUnmatched(
+    context: ReflectionContext,
+    updates: readonly ReflectionOutput["intent_updates"][number][],
+  ): void {
+    const tracer = this.options.tracer;
+
+    if (tracer?.enabled !== true || context.turnId === undefined) {
+      return;
+    }
+
+    tracer.emit("reflector.intent_update.rejected", {
+      turnId: context.turnId,
+      ...(context.sessionId !== undefined ? { session_id: context.sessionId } : {}),
+      reason: "no_matching_pending_action",
+      count: updates.length,
+      updates: updates.map((update) => ({
+        description: update.description,
+        next_action: update.next_action,
+        status: update.status,
+      })),
+    });
+  }
+
   private applyRetiredGoals(
     context: ReflectionContext,
     retirements: readonly ReflectionOutput["retired_goals"][number][],
@@ -2165,6 +2222,12 @@ export class Reflector {
             tool_choice: { type: "tool", name: REFLECTION_TOOL_NAME },
             max_tokens: this.maxTokens,
             budget: "reflection",
+          },
+          trace: {
+            tracer: this.options.tracer,
+            turnId: context.turnId,
+            sessionId: context.sessionId,
+            label: "reflector",
           },
           toolName: REFLECTION_TOOL_NAME,
           parse: (input) => {

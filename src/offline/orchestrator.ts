@@ -60,8 +60,13 @@ function traceErrorDetails(errors: readonly OfflineProcessError[]) {
 
 export class MaintenanceOrchestrator {
   private operationQueue: Promise<void> = Promise.resolve();
+  private activePassStartedAt: number | null = null;
 
   constructor(private readonly options: MaintenanceOrchestratorOptions) {}
+
+  getActivePassStartedAt(): number | null {
+    return this.activePassStartedAt;
+  }
 
   private async runExclusive<T>(operation: () => Promise<T>): Promise<T> {
     const previous = this.operationQueue;
@@ -73,9 +78,11 @@ export class MaintenanceOrchestrator {
 
     await previous;
 
+    this.activePassStartedAt = this.options.baseContext.clock.now();
     try {
       return await operation();
     } finally {
+      this.activePassStartedAt = null;
       release();
     }
   }

@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -23,6 +23,7 @@ import {
   rmSync,
   tmpdir,
 } from "./test-helpers.js";
+import { EMBEDDING_ACCESS_FILE } from "../../embeddings/bank-profile.js";
 import { DemoMessageConnector } from "../../outbound/index.js";
 import {
   AUTONOMY_WAKE_STARTUP_INTERRUPTED_DETAIL,
@@ -33,8 +34,10 @@ import { createEpisodeFixture, createSemanticNodeFixture } from "../../offline/t
 import { resolveMemoryDisclosureLabelForEpisodeIds } from "../../retrieval/index.js";
 import { createBorgFacades } from "../facade.js";
 import type { BorgDependencies } from "../types.js";
-import { createEntityId } from "../../util/ids.js";
-import type { StreamEntryIndexRepository } from "../../stream/index.js";
+import { createEntityId, createSemanticNodeId, DEFAULT_SESSION_ID } from "../../util/ids.js";
+import { StreamReader, StreamWriter, type StreamEntryIndexRepository } from "../../stream/index.js";
+import * as reviewOpenQuestionHook from "../../memory/self/review-open-question-hook.js";
+import { EpisodicExtractor } from "../../memory/episodic/extractor.js";
 
 type DisclosureBatchingInternals = {
   deps: {
@@ -58,6 +61,90 @@ describe("Borg", () => {
       rmSync(tempDirs.pop() as string, { recursive: true, force: true });
     }
   });
+
+  it.each([
+    ["review", "synchronous"],
+    ["review", "asynchronous"],
+    ["semantic", "synchronous"],
+    ["semantic", "asynchronous"],
+    ["open-question embedding", "synchronous"],
+    ["open-question embedding", "asynchronous"],
+    ["inline diagnostic", "synchronous"],
+    ["inline diagnostic", "asynchronous"],
+  ])(
+    "aggregates a %s %s reporting failure at shutdown without failing live work",
+    async (source, mode) => {
+      const tempDir = mkdtempSync(join(tmpdir(), "borg-report-outcome-"));
+      tempDirs.push(tempDir);
+      const borg = await Borg.open({
+        config: createTestConfig({ dataDir: tempDir }),
+        embeddingDimensions: 4,
+        embeddingClient: new ScriptedEmbeddingClient(),
+        llmClient: new FakeLLMClient(),
+      });
+      const { deps } = borgInternals<{ deps: BorgDependencies }>(borg);
+      const failure = new Error("failure report append unavailable");
+      const original = new Error("original work failed");
+      const log = vi.spyOn(console, "error").mockImplementation(() => {});
+      vi.spyOn(StreamWriter.prototype, "append").mockImplementation(() => {
+        if (mode === "synchronous") throw failure;
+        return Promise.reject(failure);
+      });
+      if (source === "review") {
+        vi.spyOn(reviewOpenQuestionHook, "enqueueOpenQuestionForReview").mockRejectedValue(
+          original,
+        );
+        expect(() =>
+          deps.reviewQueueRepository.enqueue({
+            kind: "contradiction",
+            reason: "test",
+            refs: { node_ids: [createSemanticNodeId(), createSemanticNodeId()] },
+          }),
+        ).not.toThrow();
+        await deps.reviewQueueRepository.flushEnqueueHooks();
+      } else if (source === "semantic") {
+        vi.spyOn(deps.semanticReviewService, "reviewDuplicateCandidate").mockRejectedValue(
+          original,
+        );
+        deps.semanticReviewService.queueDuplicateReview(createSemanticNodeFixture());
+        await deps.semanticReviewService.flushDuplicateReviews();
+      } else if (source === "open-question embedding") {
+        vi.spyOn(deps.embeddingClient, "embed").mockRejectedValue(original);
+        expect(() =>
+          borg.self.openQuestions.add({
+            question: "Will its failure report reach shutdown?",
+            urgency: 0.4,
+            source: "user",
+            provenance: { kind: "manual" },
+          }),
+        ).not.toThrow();
+        await deps.openQuestionsRepository.waitForPendingEmbeddings();
+      } else {
+        const writer = deps.createStreamWriter(DEFAULT_SESSION_ID);
+        await expect(
+          reviewOpenQuestionHook.appendInternalFailureEvent(writer, "inline", original),
+        ).resolves.toBeUndefined();
+        writer.close();
+      }
+      const sqliteClose = vi.spyOn(deps.sqlite, "close");
+      const lanceClose = vi.spyOn(deps.lance, "close");
+      try {
+        await expect(borg.close()).rejects.toMatchObject({
+          errors: [
+            expect.objectContaining({
+              errors: expect.arrayContaining([expect.objectContaining({ errors: [failure] })]),
+            }),
+          ],
+        });
+        expect(log).toHaveBeenCalled();
+        expect(sqliteClose).toHaveBeenCalledOnce();
+        expect(lanceClose).toHaveBeenCalledOnce();
+        expect(existsSync(join(tempDir, EMBEDDING_ACCESS_FILE))).toBe(true);
+      } finally {
+        await deps.releaseEmbeddingBankAccess?.();
+      }
+    },
+  );
 
   it("merges sparse Borg.open config with required defaults", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
@@ -102,6 +189,173 @@ describe("Borg", () => {
     expect(config.maintenance).toEqual(DEFAULT_CONFIG.maintenance);
     expect(config.autonomy.executiveFocus).toEqual(DEFAULT_CONFIG.autonomy.executiveFocus);
   });
+
+  it("closes direct connector admission and drains accepted turn tails and enqueues before stores", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-drain-"));
+    tempDirs.push(tempDir);
+    const borg = await Borg.open({
+      config: createTestConfig({ dataDir: tempDir }),
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: new FakeLLMClient(),
+    });
+    const { deps } = borgInternals<{ deps: BorgDependencies }>(borg);
+    let finishTurn!: () => void;
+    let finishEnqueue!: () => void;
+    const turnTail = new Promise<never>((resolve) => {
+      finishTurn = () => resolve(undefined as never);
+    });
+    const enqueueTail = new Promise<never>((resolve) => {
+      finishEnqueue = () => resolve(undefined as never);
+    });
+    vi.spyOn(deps.turnOrchestrator, "run").mockReturnValue(turnTail);
+    vi.spyOn(deps.messageEnqueuer, "enqueueMessage").mockReturnValue(enqueueTail);
+    const sqliteClose = vi.spyOn(deps.sqlite, "close");
+    const turn = borg.turn({ audience: "self", userMessage: "accepted", stakes: "low" });
+    const enqueue = borg.enqueueMessage({} as never);
+    let drained = false;
+    const drain = (async () => {
+      await borg.beginShutdown();
+      drained = true;
+    })();
+    await expect(
+      borg.turn({ audience: "self", userMessage: "late", stakes: "low" }),
+    ).rejects.toMatchObject({ code: "BORG_SHUTTING_DOWN" });
+    await expect(borg.enqueueMessage({} as never)).rejects.toMatchObject({
+      code: "BORG_SHUTTING_DOWN",
+    });
+    expect(drained).toBe(false);
+    expect(sqliteClose).not.toHaveBeenCalled();
+    finishTurn();
+    await turn;
+    expect(drained).toBe(false);
+    finishEnqueue();
+    await enqueue;
+    await drain;
+    await borg.close({ drain: false });
+    expect(sqliteClose).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    "rejected review hook",
+    "synchronous review hook throw",
+    "semantic duplicate review",
+    "ingestion failure",
+  ])(
+    "holds stores and the bank lease until the failure append settles: %s",
+    async (failureKind) => {
+      const tempDir = mkdtempSync(join(tmpdir(), "borg-report-drain-"));
+      tempDirs.push(tempDir);
+      const borg = await Borg.open({
+        config: createTestConfig({ dataDir: tempDir }),
+        embeddingDimensions: 4,
+        embeddingClient: new ScriptedEmbeddingClient(),
+        llmClient: new FakeLLMClient(),
+      });
+      const { deps } = borgInternals<{ deps: BorgDependencies }>(borg);
+      const failure = new Error("review hook failed");
+      const hook =
+        failureKind === "semantic duplicate review"
+          ? "semantic_duplicate_review"
+          : "review_queue_open_question";
+      let finishReport!: () => void;
+      const reportGate = new Promise<void>((resolve) => {
+        finishReport = resolve;
+      });
+      let reportStarted!: () => void;
+      const started = new Promise<void>((resolve) => {
+        reportStarted = resolve;
+      });
+      let reportFinished!: () => void;
+      const finished = new Promise<void>((resolve) => {
+        reportFinished = resolve;
+      });
+      const append = StreamWriter.prototype.append;
+      vi.spyOn(StreamWriter.prototype, "append").mockImplementation(async function (
+        this: StreamWriter,
+        input,
+      ) {
+        const isReport =
+          failureKind === "ingestion failure"
+            ? typeof input.content === "string" &&
+              input.content.startsWith("Live stream ingestion failed:")
+            : typeof input.content === "object" &&
+              input.content !== null &&
+              "hook" in input.content &&
+              input.content.hook === hook;
+        if (isReport) {
+          reportStarted();
+          await reportGate;
+          try {
+            return await append.call(this, input);
+          } finally {
+            reportFinished();
+          }
+        }
+        return await append.call(this, input);
+      });
+      const sqliteClose = vi.spyOn(deps.sqlite, "close");
+      const lanceClose = vi.spyOn(deps.lance, "close");
+      let closing: Promise<void> | undefined;
+      try {
+        if (failureKind === "ingestion failure") {
+          const entry = await borg.stream.append({
+            kind: "user_msg",
+            content: "Source for failed extraction",
+          });
+          vi.spyOn(EpisodicExtractor.prototype, "extractFromStream").mockRejectedValue(failure);
+          void deps.streamIngestionCoordinator!.ingest(entry.session_id, {
+            minEntriesThreshold: 1,
+          });
+        } else if (failureKind === "semantic duplicate review") {
+          vi.spyOn(deps.semanticReviewService, "reviewDuplicateCandidate").mockRejectedValue(
+            failure,
+          );
+          deps.semanticReviewService.queueDuplicateReview(createSemanticNodeFixture());
+        } else {
+          const hookSpy = vi.spyOn(reviewOpenQuestionHook, "enqueueOpenQuestionForReview");
+          if (failureKind === "synchronous review hook throw") {
+            hookSpy.mockImplementation(() => {
+              throw failure;
+            });
+          } else {
+            hookSpy.mockRejectedValue(failure);
+          }
+          deps.reviewQueueRepository.enqueue({
+            kind: "contradiction",
+            reason: "test review",
+            refs: { node_ids: [createSemanticNodeId(), createSemanticNodeId()] },
+          });
+        }
+        await started;
+        closing = borg.close();
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(sqliteClose).not.toHaveBeenCalled();
+        expect(lanceClose).not.toHaveBeenCalled();
+        expect(existsSync(join(tempDir, EMBEDDING_ACCESS_FILE))).toBe(true);
+        finishReport();
+        await closing;
+        expect(sqliteClose).toHaveBeenCalledOnce();
+        expect(lanceClose).toHaveBeenCalledOnce();
+        expect(existsSync(join(tempDir, EMBEDDING_ACCESS_FILE))).toBe(false);
+        expect(new StreamReader({ dataDir: tempDir }).tail(10)).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              kind: "internal_event",
+              content:
+                failureKind === "ingestion failure"
+                  ? expect.stringContaining("Live stream ingestion failed:")
+                  : expect.objectContaining({ hook }),
+            }),
+          ]),
+        );
+      } finally {
+        finishReport();
+        await finished;
+        await (closing ?? borg.close());
+      }
+    },
+  );
 
   it("uses maintenance process lists for default dream plans", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
@@ -814,6 +1068,7 @@ describe("Borg", () => {
     const searchEpisodesForDisclosure = vi.fn(async () => []);
     const facades = createBorgFacades({
       actionRepository: {},
+      entityRepository: { resolveReferences: (value: unknown) => value },
       retrievalPipeline: { searchEpisodesForDisclosure },
       // The weights are deployment-tunable via config.retrieval.attentionWeights,
       // so the facade reads them from config rather than inlining literals; the
@@ -852,7 +1107,10 @@ describe("Borg", () => {
     const facades = createBorgFacades({
       actionRepository: {},
       config: DEFAULT_CONFIG,
-      entityRepository: { get: () => ({ canonical_name: "Alice", aliases: ["A"] }) },
+      entityRepository: {
+        get: () => ({ id: audience, canonical_name: "Alice", aliases: ["A"] }),
+        resolveReferences: <T>(value: T): T => value,
+      },
       socialRepository: { getProfile: () => profile },
       retrievalPipeline: { searchEpisodesForDisclosure, recallEpisodeHitsForCognition },
     } as unknown as BorgDependencies);
@@ -889,6 +1147,7 @@ describe("Borg", () => {
     const searchEpisodesForDisclosure = vi.fn(async () => []);
     const facades = createBorgFacades({
       actionRepository: {},
+      entityRepository: { resolveReferences: (value: unknown) => value },
       retrievalPipeline: { searchEpisodesForDisclosure },
       config: {
         ...DEFAULT_CONFIG,
@@ -1206,5 +1465,31 @@ describe("Borg", () => {
     await expect(Borg.open(openOptions)).rejects.toThrow(failure);
     expect(sqliteCloseSpy).toHaveBeenCalledTimes(1);
     expect(lanceCloseSpy).toHaveBeenCalledTimes(1);
+    expect(existsSync(join(tempDir, EMBEDDING_ACCESS_FILE))).toBe(false);
+  });
+
+  it("retains the lease if partial-open store cleanup fails", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-partial-open-"));
+    tempDirs.push(tempDir);
+    const close = LanceDbStore.prototype.close;
+    const closeSpy = vi
+      .spyOn(LanceDbStore.prototype, "close")
+      .mockRejectedValueOnce(new Error("close failed"));
+    const failure = new Error("LLM init failed");
+    const openOptions = {
+      dataDir: tempDir,
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      get llmClient(): FakeLLMClient {
+        throw failure;
+      },
+    };
+    try {
+      await expect(Borg.open(openOptions)).rejects.toBe(failure);
+      expect(existsSync(join(tempDir, EMBEDDING_ACCESS_FILE))).toBe(true);
+    } finally {
+      const store = closeSpy.mock.instances[0];
+      if (store !== undefined) await close.call(store);
+    }
   });
 });

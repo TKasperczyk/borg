@@ -148,6 +148,7 @@ export const identityInconsistencyReviewRefsSchema = z.union([
       repair_op: z.literal("patch"),
       patch: nonEmptyAutobiographicalPeriodPatchSchema,
       next_period_open_payload: autobiographicalPeriodSchema.optional(),
+      expected_record_version: z.number().int().positive().optional(),
     })
     .strict(),
   z
@@ -402,6 +403,7 @@ export function createIdentityInconsistencyReviewQueueHandler(): ReviewQueueHand
             throughReview: true,
             reason: item.reason,
             reviewItemId: item.id,
+            expectedVersion: refs.expected_record_version,
           },
         );
         assertApplied({
@@ -409,11 +411,18 @@ export function createIdentityInconsistencyReviewQueueHandler(): ReviewQueueHand
           label: "Identity patch for autobiographical period",
           targetId: refs.target_id,
         });
+        return result.status === "applied" && result.record.record_version !== undefined
+          ? {
+              supersededPeriodVersion: {
+                targetId: refs.target_id,
+                recordVersion: result.record.record_version,
+              },
+            }
+          : undefined;
       };
 
       if (refs.next_period_open_payload === undefined) {
-        applyPeriodPatch();
-        return;
+        return applyPeriodPatch();
       }
 
       if (ctx.autobiographicalRepository === undefined) {
@@ -425,9 +434,10 @@ export function createIdentityInconsistencyReviewQueueHandler(): ReviewQueueHand
         );
       }
 
-      ctx.autobiographicalRepository.runInTransaction(() => {
-        applyPeriodPatch();
+      return ctx.autobiographicalRepository.runInTransaction(() => {
+        const outcome = applyPeriodPatch();
         identityService.addPeriod(refs.next_period_open_payload!);
+        return outcome;
       });
     },
   };

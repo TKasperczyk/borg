@@ -1,3 +1,4 @@
+import { LLMError } from "../../util/errors.js";
 import { describe, expect, it, vi } from "vitest";
 
 import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../../tracing/tracer.js";
@@ -555,6 +556,180 @@ describe("RuminatorProcess", () => {
     }
   });
 
+  it("accepts omitted tensions and connected questions as empty lists", async () => {
+    const questionText = "What still explains the rollout tension?";
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      embeddingClient: new TestEmbeddingClient(new Map([[questionText, [1, 0, 0, 0]]])),
+    });
+    const process = new RuminatorProcess({
+      openQuestionsRepository: harness.openQuestionsRepository,
+      growthMarkersRepository: harness.growthMarkersRepository,
+      registry: harness.registry,
+    });
+
+    try {
+      await harness.episodicRepository.createEpisode(
+        createEpisodeFixture({ created_at: 2_000_000, significance: 0.95 }, [1, 0, 0, 0]),
+      );
+      const question = harness.openQuestionsRepository.add({
+        question: questionText,
+        urgency: 0.5,
+        source: "reflection",
+        created_at: 1_000_000,
+        last_touched: 1_000_000,
+        provenance: { kind: "manual" },
+      });
+      llm.pushResponse({
+        text: "",
+        input_tokens: 50,
+        output_tokens: 40,
+        stop_reason: "tool_use",
+        tool_calls: [
+          {
+            id: "toolu_1",
+            name: RUMINATOR_TOOL_NAME,
+            input: { outcome: "still_open", reasoning: "I need more evidence to settle this." },
+          },
+        ],
+      });
+
+      const plan = await process.plan(harness.createContext(), {});
+      expect(plan.items).toContainEqual(
+        expect.objectContaining({
+          action: "mark_unresolved",
+          question_id: question.id,
+          tensions: [],
+          connected_open_question_ids: [],
+        }),
+      );
+      await process.apply(harness.createContext(), plan);
+      expect(harness.openQuestionsRepository.listRecentRuminations(question.id)[0]).toMatchObject({
+        tensions: [],
+        connected_open_question_ids: [],
+      });
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("records a missing tool call against its question with the stop reason and output tokens", async () => {
+    const questionText = "What still explains the rollout tension?";
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      embeddingClient: new TestEmbeddingClient(new Map([[questionText, [1, 0, 0, 0]]])),
+    });
+    const process = new RuminatorProcess({
+      openQuestionsRepository: harness.openQuestionsRepository,
+      growthMarkersRepository: harness.growthMarkersRepository,
+      registry: harness.registry,
+    });
+
+    try {
+      await harness.episodicRepository.createEpisode(
+        createEpisodeFixture({ created_at: 2_000_000, significance: 0.95 }, [1, 0, 0, 0]),
+      );
+      const question = harness.openQuestionsRepository.add({
+        question: questionText,
+        urgency: 0.5,
+        source: "reflection",
+        created_at: 1_000_000,
+        last_touched: 1_000_000,
+        provenance: { kind: "manual" },
+      });
+      llm.pushResponse({
+        text: "The evidence does not settle this yet.",
+        input_tokens: 50,
+        output_tokens: 2_310,
+        stop_reason: "end_turn",
+        tool_calls: [],
+      });
+
+      const plan = await process.plan(harness.createContext(), {});
+
+      expect(plan.errors).toEqual([
+        {
+          process: "ruminator",
+          message: `Ruminator did not emit tool ${RUMINATOR_TOOL_NAME}: stop_reason=end_turn, output_tokens=2310`,
+          code: "RUMINATOR_INVALID",
+          target_type: "open_question",
+          target_id: question.id,
+        },
+      ]);
+      expect(plan.items).toEqual([]);
+      expect((await process.apply(harness.createContext(), plan)).errors).toEqual(plan.errors);
+      expect(harness.openQuestionsRepository.get(question.id)).toMatchObject({
+        last_ruminated_at: null,
+        record_version: question.record_version,
+      });
+      expect(harness.openQuestionsRepository.countRuminations(question.id)).toBe(0);
+      expect(
+        (await process.plan(harness.createContext(), {})).scheduling.selected_question_ids,
+      ).toContain(question.id);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it.each([false, true])(
+    "traces failed model visits without stamping (payloads=%s)",
+    async (includePayloads) => {
+      const questionText = "未解決の問い";
+      const tracer = new CaptureTracer();
+      Object.defineProperty(tracer, "includePayloads", { value: includePayloads });
+      const llm = new FakeLLMClient();
+      vi.spyOn(llm, "complete").mockRejectedValue(
+        new LLMError("refused", { code: "LLM_REFUSAL_EXHAUSTED" }),
+      );
+      const harness = await createOfflineTestHarness({
+        llmClient: llm,
+        tracer,
+        embeddingClient: new TestEmbeddingClient(new Map([[questionText, [1, 0, 0, 0]]])),
+      });
+      try {
+        await harness.episodicRepository.createEpisode(
+          createEpisodeFixture({ created_at: 2_000_000, significance: 0.95 }, [1, 0, 0, 0]),
+        );
+        const question = harness.openQuestionsRepository.add({
+          question: questionText,
+          urgency: 0.5,
+          source: "reflection",
+          created_at: 1_000_000,
+          last_touched: 1_000_000,
+          provenance: { kind: "manual" },
+        });
+        const process = new RuminatorProcess({
+          openQuestionsRepository: harness.openQuestionsRepository,
+          growthMarkersRepository: harness.growthMarkersRepository,
+          registry: harness.registry,
+        });
+        const context = harness.createContext();
+        const plan = await process.plan(context);
+        expect(plan.items).toEqual([]);
+        await process.apply(context, plan);
+        expect(harness.openQuestionsRepository.get(question.id)?.last_ruminated_at).toBeNull();
+        expect(plan.errors).toContainEqual(
+          expect.objectContaining({ target_id: question.id, code: "LLM_REFUSAL_EXHAUSTED" }),
+        );
+        const started = tracer.events.find(
+          (event) => event.event === "llm_call.started" && event.data.correlation_id !== undefined,
+        )!.data;
+        expect(started).toMatchObject({
+          run_id: context.runId,
+          correlation_id: `${context.runId}:ruminator:resolution:${question.id}`,
+          selected_question_ids: [question.id],
+          window_question_ids: [question.id],
+        });
+        if (includePayloads) expect(String(started.prompt).length).toBeLessThanOrEqual(2000);
+        else expect(started).not.toHaveProperty("prompt");
+      } finally {
+        await harness.cleanup();
+      }
+    },
+  );
+
   it.each([
     {
       label: "an item wrapper",
@@ -833,7 +1008,7 @@ describe("RuminatorProcess", () => {
         growth_marker: null,
       },
     },
-  ])("fails parsing but still stamps the LLM visit for $label", async ({ toolInput }) => {
+  ])("does not stamp a failed parse after schema repair for $label", async ({ toolInput }) => {
     const clock = new FixedClock(3_000_000);
     const questionText = "What remains unsettled in this synthetic rumination?";
     const response = {
@@ -894,13 +1069,7 @@ describe("RuminatorProcess", () => {
       const plan = await process.plan(harness.createContext(), {});
 
       expect(llm.requests).toHaveLength(2);
-      expect(plan.items).toEqual([
-        expect.objectContaining({
-          action: "mark_unresolved",
-          question_id: question.id,
-          rumination_note: null,
-        }),
-      ]);
+      expect(plan.items).toEqual([]);
       expect(plan.errors).toHaveLength(1);
 
       await process.apply(harness.createContext(), plan);
@@ -910,7 +1079,7 @@ describe("RuminatorProcess", () => {
         status: "open",
         resolution_note: null,
         unresolved_rumination_ticks: 0,
-        last_ruminated_at: clock.now(),
+        last_ruminated_at: null,
       });
     } finally {
       await harness.cleanup();
@@ -1376,6 +1545,9 @@ describe("RuminatorProcess", () => {
     const futureText = "Which new uncertainty is not due yet?";
     const harness = await createOfflineTestHarnessBase({
       clock,
+      llmClient: new FakeLLMClient({
+        responses: [createDuplicateJudgmentResponse([]), createDuplicateJudgmentResponse([])],
+      }),
       embeddingClient: new TestEmbeddingClient(
         new Map([
           [lowText, [1, 0, 0, 0]],
@@ -1471,9 +1643,13 @@ describe("RuminatorProcess", () => {
   });
 
   it("plans urgency bumps and abandonments without LLM calls when evidence is weak", async () => {
+    const llm = new FakeLLMClient();
     const harness = await createOfflineTestHarness({
       clock: new FixedClock(40 * 24 * 60 * 60 * 1_000),
+      llmClient: llm,
     });
+    // This case exercises evidence-only scheduling; duplicate judgments have separate coverage.
+    vi.spyOn(harness.openQuestionsRepository, "searchSimilar").mockResolvedValue([]);
     const process = new RuminatorProcess({
       openQuestionsRepository: harness.openQuestionsRepository,
       growthMarkersRepository: harness.growthMarkersRepository,
@@ -1497,9 +1673,11 @@ describe("RuminatorProcess", () => {
         provenance: { kind: "manual" },
         last_touched: 0,
       });
+      await harness.openQuestionsRepository.waitForPendingEmbeddings();
 
       const plan = await process.plan(harness.createContext(), {});
 
+      expect(llm.requests).toHaveLength(0);
       expect(plan.items).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
@@ -1676,7 +1854,10 @@ describe("RuminatorProcess", () => {
       // threshold is interpolated from config rather than restated -- so a threshold change moves
       // the prompt with it instead of leaving a second copy of the number behind to drift.
       expect(prompt).toContain('"unresolved_rumination_ticks":3');
-      expect(prompt).toContain("counts the recorded rumination notes");
+      // A completed dormant-question wake advances the count without a note, so it is not a
+      // count of recorded notes.
+      expect(prompt).toContain("recorded notes and completed dormant-question wakes");
+      expect(prompt).not.toContain("recorded-note ticks");
       expect(prompt).not.toContain("counts the passes");
       expect(prompt).toContain("have reached 7");
       expect(prompt).not.toContain("have reached 4");
@@ -1685,7 +1866,90 @@ describe("RuminatorProcess", () => {
     }
   });
 
-  it("dismisses stale no-traction questions but keeps ones with active actions", async () => {
+  it("names how many notes the record holds beside the capped tail it shows", async () => {
+    const questionText = "What still explains the Atlas note tail?";
+    const llm = new FakeLLMClient();
+    const clock = new ManualClock(3_000_000);
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      clock,
+      embeddingClient: new TestEmbeddingClient(new Map([[questionText, [1, 0, 0, 0]]])),
+      configOverrides: {
+        offline: {
+          ruminator: {
+            staleNoTractionTicks: 7,
+          },
+        },
+      },
+    });
+    const process = new RuminatorProcess({
+      openQuestionsRepository: harness.openQuestionsRepository,
+      growthMarkersRepository: harness.growthMarkersRepository,
+      registry: harness.registry,
+    });
+
+    try {
+      await harness.episodicRepository.createEpisode(
+        createEpisodeFixture(
+          {
+            title: "Atlas tail evidence",
+            narrative: "Atlas evidence arrived after the question was last touched.",
+            tags: ["atlas"],
+            significance: 0.95,
+            created_at: 2_000_000,
+            updated_at: 2_000_000,
+          },
+          [1, 0, 0, 0],
+        ),
+      );
+      const question = harness.openQuestionsRepository.add({
+        question: questionText,
+        urgency: 0.7,
+        source: "reflection",
+        created_at: 1_000_000,
+        last_touched: 1_000_000,
+        provenance: { kind: "manual" },
+      });
+      // Five notes on the record against a tick count of three -- the two diverge in production
+      // when a merge hands a duplicate's notes over without its ticks, so the prompt has to carry
+      // both numbers rather than let one stand in for the other.
+      for (let index = 0; index < 5; index += 1) {
+        harness.openQuestionsRepository.recordRumination({
+          open_question_id: question.id,
+          note: `Atlas tail note ${index}`,
+          source_process: "test",
+          provenance: { kind: "manual" },
+          created_at: 1_100_000 + index * 1_000,
+        });
+      }
+      harness.openQuestionsRepository.markRuminated(question.id, 3);
+      clock.advance(100_000);
+      llm.pushResponse(
+        createStillOpenRuminatorResponse({
+          reasoning: "The evidence narrows the tension but does not settle it.",
+          tensions: ["The tail is shown but the record is longer."],
+        }),
+      );
+
+      await process.plan(harness.createContext(), {});
+      const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+
+      // The shown count is the rendered tail's own length and the total comes from the store, so
+      // neither can drift from what the reader is actually holding.
+      expect(prompt).toContain('"recorded_rumination_notes":5');
+      expect(prompt).toContain("the 3 most recent of the 5 recorded on this question");
+      expect(prompt).toContain("unshown rather than absent");
+      expect(prompt).toContain("a merge runs two such lines through one record");
+      expect(prompt).toContain("Atlas tail note 4");
+      expect(prompt).toContain("Atlas tail note 2");
+      expect(prompt).not.toContain("Atlas tail note 1");
+      expect(prompt).not.toContain("Atlas tail note 0");
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("applies the rumination/citation timeout without claiming action progress was assessed", async () => {
     const tracer = new CaptureTracer();
     const harness = await createOfflineTestHarness({
       tracer,
@@ -1758,8 +2022,10 @@ describe("RuminatorProcess", () => {
           }),
         ]),
       );
-      expect(plan.items).not.toEqual(
-        expect.arrayContaining([expect.objectContaining({ question_id: active.id })]),
+      expect(plan.items).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ question_id: active.id, action: "abandon" }),
+        ]),
       );
 
       await process.apply(ctx, plan);
@@ -1767,9 +2033,11 @@ describe("RuminatorProcess", () => {
       expect(harness.openQuestionsRepository.get(stale.id)).toMatchObject({
         status: "abandoned",
         abandoned_reason: "stale_no_traction",
+        unresolved_rumination_ticks: 2,
+        last_ruminated_at: harness.clock.now(),
       });
       expect(harness.openQuestionsRepository.get(active.id)).toMatchObject({
-        status: "open",
+        status: "abandoned",
         unresolved_rumination_ticks: 2,
       });
       expect(tracer.events).toContainEqual({
@@ -2626,6 +2894,8 @@ describe("RuminatorProcess", () => {
     const warn = vi.fn();
     const harness = await createOfflineTestHarness({
       llmClient: llm,
+      // A successful no-evidence check would otherwise bump urgency and stamp.
+      clock: new FixedClock(8 * 24 * 60 * 60 * 1_000),
       embeddingClient: new TestEmbeddingClient(
         new Map([
           [firstText, [1, 0, 0, 0]],
@@ -2661,7 +2931,13 @@ describe("RuminatorProcess", () => {
 
       const plan = await process.plan(harness.createContext(), {});
 
-      expect(plan.items.some((item) => item.action === "merge_duplicate")).toBe(false);
+      expect(plan.items).toEqual([]);
+      await process.apply(harness.createContext(), plan);
+      expect(
+        harness.openQuestionsRepository
+          .listAllOpen()
+          .every((question) => question.last_ruminated_at === null),
+      ).toBe(true);
       expect(llm.requests).toHaveLength(1);
       expect(warn).toHaveBeenCalledWith(
         "Ruminator duplicate judgment failed open without backstop merges",
@@ -3268,7 +3544,7 @@ describe("RuminatorProcess", () => {
 
       expect(harness.openQuestionsRepository.get(firstQuestion.id)).toMatchObject({
         unresolved_rumination_ticks: 0,
-        last_ruminated_at: harness.clock.now(),
+        last_ruminated_at: null,
       });
       expect(harness.openQuestionsRepository.get(secondQuestion.id)).toMatchObject({
         unresolved_rumination_ticks: 0,

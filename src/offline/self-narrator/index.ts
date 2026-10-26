@@ -22,11 +22,12 @@ import {
   growthMarkerIdSchema,
   growthMarkerSchema,
   type AutobiographicalPeriod,
+  type GrowthMarker,
 } from "../../memory/self/index.js";
 import { createAutobiographicalPeriodId, createGrowthMarkerId } from "../../util/ids.js";
 import { BudgetExceededError, StorageError } from "../../util/errors.js";
 import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
-import { estimatePromptTokens } from "../../util/token-estimate.js";
+import { estimatePromptTokens, estimatePromptTokensFromLength } from "../../util/token-estimate.js";
 
 import type { ReverserRegistry } from "../audit-log.js";
 import { getBudgetErrorTokens, withBudget } from "../budget.js";
@@ -60,6 +61,10 @@ const selfNarratorObservationSchema = z.object({
   period_decision_confidence: z.number().min(0).max(1).default(0),
 });
 const SELF_NARRATOR_TOOL_NAME = "EmitSelfNarratorObservations";
+const SELF_NARRATOR_SYSTEM_PROMPT = [
+  "I identify grounded autobiographical growth markers by clustering candidate episodes thematically. I return no observations when the evidence is weak.",
+  SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE,
+].join("\n");
 export const SELF_NARRATOR_TOOL = {
   name: SELF_NARRATOR_TOOL_NAME,
   description:
@@ -87,6 +92,8 @@ const selfNarratorPlanItemSchema = z.discriminatedUnion("action", [
     previous: autobiographicalPeriodSchema,
     narrative: z.string(),
     key_episode_ids: z.array(episodeIdSchema),
+    // This pass's own citations; key_episode_ids stops admitting them once it holds eight.
+    evidence_episode_ids: z.array(episodeIdSchema).default([]),
     disclosure_label: memoryDisclosureLabelSchema,
     themes: z.array(z.string().min(1)),
   }),
@@ -189,55 +196,22 @@ export const SELF_NARRATOR_PERIOD_NARRATIVE_GUIDANCE = [
   "If the evidence is too thin for a period narrative, I set period_narrative to null.",
 ].join(" ");
 
-function episodePromptRow(episode: Episode): string {
-  return JSON.stringify(episodeEvidencePromptRow(episode, { start_time: episode.start_time }));
-}
-
-// Newest-first: updating the period narrative never advances start_ts, so an
-// oldest-first window would re-select the same episodes on every run. The
-// estimate is over the row that actually enters the prompt. At least one
-// episode is always kept so a single oversized row cannot empty the selection.
-function selectNewestEpisodesWithinBudget(
-  episodesOldestFirst: readonly Episode[],
-  maxEpisodes: number,
-  maxInputTokens: number,
-): { episodes: Episode[]; omittedEpisodeCount: number } {
-  const selected: Episode[] = [];
-  let inputTokens = 0;
-
-  for (let index = episodesOldestFirst.length - 1; index >= 0; index -= 1) {
-    const episode = episodesOldestFirst[index]!;
-    const rowTokens = estimatePromptTokens(episodePromptRow(episode));
-    const wouldExceedTokenCap = selected.length > 0 && inputTokens + rowTokens > maxInputTokens;
-
-    if (selected.length >= maxEpisodes || wouldExceedTokenCap) {
-      break;
-    }
-
-    selected.push(episode);
-    inputTokens += rowTokens;
-  }
-
-  selected.reverse();
-
-  return {
-    episodes: selected,
-    omittedEpisodeCount: episodesOldestFirst.length - selected.length,
-  };
-}
-
 function buildObservationPrompt(
   episodes: readonly Episode[],
   minSupportEpisodes: number,
   maxObservationsPerRun: number,
   currentPeriod: AutobiographicalPeriod | null,
-  omittedEpisodeCount: number,
-): string {
-  return [
+  priorGrowthMarkers: readonly GrowthMarker[],
+  availableMessageTokens: number,
+  maxEpisodes: number,
+  maxInputTokens: number,
+): { sourceEpisodes: Episode[]; prompt: string; coverage: string } {
+  const priorContext = [
     "I narrate my own recent experience by identifying thematic clusters and grounded autobiographical growth observations from these candidate episodes.",
     `I emit my result by calling the ${SELF_NARRATOR_TOOL_NAME} tool exactly once.`,
     "I return an empty observations array if there is no grounded growth signal.",
     SELF_NARRATOR_PERIOD_NARRATIVE_GUIDANCE,
+    "The current narrative and growth markers are prior context. When continuing this period, I revise and extend its existing story with the shown evidence, preserving earlier developments even when their episodes are omitted. I decide whether a successor period is warranted; a presentation limit is not a period boundary.",
     `${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE} I apply this to growth marker what_changed, before_description, after_description, and period_narrative fields.`,
     "I set period_decision to continue_current or open_new based on whether these observations belong in the current autobiographical period. The configured cadence remains authoritative; if I emit open_new before cadence has elapsed, the host ignores that decision.",
     "I only cite evidence_episode_ids from the provided episodes.",
@@ -258,14 +232,75 @@ function buildObservationPrompt(
             ),
           },
     ),
-    ...(omittedEpisodeCount > 0
-      ? [
-          `These are the ${episodes.length} most recent candidate episodes of this period; ${omittedEpisodeCount} earlier episodes are omitted for length.`,
-        ]
-      : []),
-    "Episodes:",
-    ...episodes.map(episodePromptRow),
+    "Existing growth markers for the current period (prior context, not additional citable episodes):",
+    ...priorGrowthMarkers.map((marker) =>
+      JSON.stringify({
+        ts: new Date(marker.ts).toISOString(),
+        category: marker.category,
+        what_changed: marker.what_changed,
+        before_description: marker.before_description,
+        after_description: marker.after_description,
+        confidence: marker.confidence,
+        source_process: marker.source_process,
+        ...memoryDisclosurePayloadFields(marker.disclosure_label ?? unknownMemoryDisclosureLabel()),
+      }),
+    ),
   ].join("\n");
+
+  // Episodes arrive chronologically. Keep a contiguous newest suffix, stopping
+  // at the first non-fitting row rather than skipping a large recent episode.
+  // Prefix end times cover overlapping episodes without inspecting their text.
+  const prefixEndTimes: number[] = [];
+  for (const episode of episodes) {
+    prefixEndTimes.push(Math.max(prefixEndTimes.at(-1) ?? -Infinity, episode.end_time));
+  }
+  type LimitingBound = "maxEpisodesPerRun" | "maxInputTokensPerRun" | "maxPromptTokens";
+  const coverage = (omittedCount: number, bound: LimitingBound): string =>
+    omittedCount === 0
+      ? `All ${episodes.length} candidate episodes are shown; 0 earlier episodes omitted.`
+      : `${omittedCount} earlier episodes of this period are not shown due to ${bound}. They cover ${new Date(episodes[0]!.start_time).toISOString()} to ${new Date(prefixEndTimes[omittedCount - 1]!).toISOString()}. The newest ${episodes.length - omittedCount} episodes are shown below in chronological order.`;
+  const header = (omittedCount: number, bound: LimitingBound) =>
+    `${priorContext}\n${coverage(omittedCount, bound)}\nEpisodes:`;
+  const rows: string[] = [];
+  let rowsLength = 0;
+  let rowTokens = 0;
+  let omittedCount = episodes.length;
+  let limitingBound: LimitingBound = "maxPromptTokens";
+  for (let index = episodes.length - 1; index >= 0; index -= 1) {
+    const episode = episodes[index]!;
+    const row = JSON.stringify(
+      episodeEvidencePromptRow(episode, { start_time: episode.start_time }),
+    );
+    const nextRowsLength = rowsLength + 1 + row.length;
+    const nextRowTokens = rowTokens + estimatePromptTokens(row);
+    if (rows.length >= maxEpisodes) {
+      limitingBound = "maxEpisodesPerRun";
+      break;
+    }
+    if (nextRowTokens > maxInputTokens) {
+      limitingBound = "maxInputTokensPerRun";
+      break;
+    }
+    // Reserve the longest bound label so reporting the eventual stopping reason
+    // cannot push a previously admitted suffix beyond the complete-prompt cap.
+    if (
+      estimatePromptTokensFromLength(
+        header(index, "maxInputTokensPerRun").length + nextRowsLength,
+      ) > availableMessageTokens
+    ) {
+      limitingBound = "maxPromptTokens";
+      break;
+    }
+    rows.push(row);
+    rowsLength = nextRowsLength;
+    rowTokens = nextRowTokens;
+    omittedCount = index;
+  }
+  return {
+    sourceEpisodes: episodes.slice(omittedCount),
+    prompt: [header(omittedCount, limitingBound), ...rows.reverse()].join("\n"),
+    coverage: coverage(omittedCount, limitingBound),
+  };
 }
 
 function invalidObservationResponse(error: unknown): unknown {
@@ -438,13 +473,51 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
           episode.end_time >= currentPeriod.start_ts,
       )
       .sort((left, right) => left.start_time - right.start_time || left.id.localeCompare(right.id));
-    const { episodes: sourceEpisodes, omittedEpisodeCount } = selectNewestEpisodesWithinBudget(
+    const minSupportEpisodes = ctx.config.offline.selfNarrator.minSupportEpisodes;
+    const maxObservationsPerRun = ctx.config.offline.selfNarrator.maxObservationsPerRun;
+    const priorGrowthMarkers =
+      currentPeriod === null
+        ? []
+        : ctx.growthMarkersRepository.list({
+            sinceTs: currentPeriod.start_ts,
+            untilTs: currentPeriod.end_ts ?? undefined,
+            // SQLite's unbounded LIMIT: prior context must not silently lose markers.
+            limit: -1,
+          });
+    // Prior context can inform any observation, even when only shown episodes
+    // are cited and the model emits no composed period narrative.
+    const priorContextDisclosureLabels = [
+      ...(currentPeriod === null
+        ? []
+        : [currentPeriod.disclosure_label ?? unknownMemoryDisclosureLabel()]),
+      ...priorGrowthMarkers.map(
+        (marker) => marker.disclosure_label ?? unknownMemoryDisclosureLabel(),
+      ),
+    ];
+    const tools = [SELF_NARRATOR_TOOL];
+    const promptOverheadTokens =
+      estimatePromptTokens(SELF_NARRATOR_SYSTEM_PROMPT) +
+      estimatePromptTokens(JSON.stringify(tools));
+    const { sourceEpisodes, prompt, coverage } = buildObservationPrompt(
       candidateEpisodes,
+      minSupportEpisodes,
+      maxObservationsPerRun,
+      currentPeriod,
+      priorGrowthMarkers,
+      ctx.config.offline.selfNarrator.maxPromptTokens - promptOverheadTokens,
       ctx.config.offline.selfNarrator.maxEpisodesPerRun,
       ctx.config.offline.selfNarrator.maxInputTokensPerRun,
     );
-    const minSupportEpisodes = ctx.config.offline.selfNarrator.minSupportEpisodes;
-    const maxObservationsPerRun = ctx.config.offline.selfNarrator.maxObservationsPerRun;
+    if (
+      candidateEpisodes.length >= minSupportEpisodes &&
+      sourceEpisodes.length < minSupportEpisodes
+    ) {
+      errors.push({
+        process: this.name,
+        code: "SELF_NARRATOR_PROMPT_BUDGET_TOO_SMALL",
+        message: `Self-narrator evidence bounds could not fit system/tool overhead, prior context and ${minSupportEpisodes} newest episodes; skipped model call. ${coverage}`,
+      });
+    }
     const markerCandidates: Array<z.infer<typeof serializableGrowthMarkerSchema>> = [];
     const markerThemes: string[] = [];
     const periodDecisions: Array<"continue_current" | "open_new"> = [];
@@ -463,23 +536,14 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
                 llmClient,
                 request: {
                   model: ctx.config.anthropic.models.background,
-                  system: [
-                    "I identify grounded autobiographical growth markers by clustering candidate episodes thematically. I return no observations when the evidence is weak.",
-                    SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE,
-                  ].join("\n"),
+                  system: SELF_NARRATOR_SYSTEM_PROMPT,
                   messages: [
                     {
                       role: "user",
-                      content: buildObservationPrompt(
-                        sourceEpisodes,
-                        minSupportEpisodes,
-                        maxObservationsPerRun,
-                        currentPeriod,
-                        omittedEpisodeCount,
-                      ),
+                      content: prompt,
                     },
                   ],
-                  tools: [SELF_NARRATOR_TOOL],
+                  tools,
                   tool_choice: { type: "tool", name: SELF_NARRATOR_TOOL_NAME },
                   max_tokens: 8_000,
                   budget: "offline-self-narrator",
@@ -498,26 +562,39 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
             }
             const allowedIds = new Set<string>(sourceEpisodes.map((episode) => episode.id));
 
+            // An invalid observation is rejected on its own: its siblings are still checked.
             for (const observation of response.observations.slice(0, maxObservationsPerRun)) {
               if (observation.evidence_episode_ids.length < minSupportEpisodes) {
-                throw new StorageError("Self-narrator observation cited too few episodes", {
-                  code: "SELF_NARRATOR_INVALID_REF",
-                });
+                errors.push(
+                  offlineProcessError(
+                    this.name,
+                    new StorageError("Self-narrator observation cited too few episodes", {
+                      code: "SELF_NARRATOR_INVALID_REF",
+                    }),
+                  ),
+                );
+                continue;
               }
 
               if (!observation.evidence_episode_ids.every((id) => allowedIds.has(id))) {
-                throw new StorageError("Self-narrator referenced episodes outside candidates", {
-                  code: "SELF_NARRATOR_INVALID_REF",
-                });
+                errors.push(
+                  offlineProcessError(
+                    this.name,
+                    new StorageError("Self-narrator referenced episodes outside candidates", {
+                      code: "SELF_NARRATOR_INVALID_REF",
+                    }),
+                  ),
+                );
+                continue;
               }
 
               const evidenceEpisodeIds = observation.evidence_episode_ids.map(
                 (id) => id as Episode["id"],
               );
-              const disclosureLabel = await disclosureLabelForEpisodeIds(
-                ctx.episodicRepository,
-                evidenceEpisodeIds,
-              );
+              const disclosureLabel = combineMemoryDisclosureLabels([
+                await disclosureLabelForEpisodeIds(ctx.episodicRepository, evidenceEpisodeIds),
+                ...priorContextDisclosureLabels,
+              ]);
 
               markerCandidates.push(
                 serializableGrowthMarkerSchema.parse({
@@ -564,20 +641,24 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
     const markerDisclosureLabels = markerCandidates.map(
       (marker) => marker.disclosure_label ?? unknownMemoryDisclosureLabel(),
     );
+    const priorNarrativeDisclosureLabels =
+      periodNarratives.length === 0 ? [] : priorContextDisclosureLabels;
     const periodDisclosureLabel =
       markerCandidates.length === 0
         ? unknownMemoryDisclosureLabel()
-        : combineMemoryDisclosureLabels(markerDisclosureLabels);
+        : combineMemoryDisclosureLabels([
+            ...markerDisclosureLabels,
+            ...priorNarrativeDisclosureLabels,
+          ]);
     const themes = uniqueStrings([
       ...markerCandidates.map((marker) => marker.category),
       ...markerThemes,
     ]).slice(0, 6);
     const periodDecision = periodDecisions.includes("open_new") ? "open_new" : "continue_current";
     const composedPeriodNarrative = periodNarratives[0] ?? null;
+    const nextPeriodStartTs = sourceEpisodes.at(-1)?.start_time ?? nowMs;
     const nextLabel =
-      configuredLabel.length > 0
-        ? configuredLabel
-        : (currentPeriod?.label ?? defaultQuarterLabel(nowMs));
+      configuredLabel.length > 0 ? configuredLabel : defaultQuarterLabel(nextPeriodStartTs);
     const openNewPeriod =
       periodDecision === "open_new" &&
       themes.length > 0 &&
@@ -599,14 +680,14 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
           items.push({
             action: "close_period",
             previous: currentPeriod,
-            end_ts: nowMs,
+            end_ts: nextPeriodStartTs,
           });
         }
 
         const period = autobiographicalPeriodSchema.parse({
           id: createAutobiographicalPeriodId(),
           label: nextLabel,
-          start_ts: sourceEpisodes.at(-1)?.start_time ?? nowMs,
+          start_ts: nextPeriodStartTs,
           end_ts: null,
           narrative,
           key_episode_ids: keyEpisodeIds,
@@ -636,6 +717,7 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
       const nextDisclosureLabel = combineMemoryDisclosureLabels([
         currentPeriod.disclosure_label ?? unknownMemoryDisclosureLabel(),
         ...markerDisclosureLabels,
+        ...priorNarrativeDisclosureLabels,
       ]);
 
       if (
@@ -650,6 +732,7 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
           previous: currentPeriod,
           narrative: nextNarrative ?? currentPeriod.narrative,
           key_episode_ids: nextKeyEpisodes,
+          evidence_episode_ids: keyEpisodeIds,
           disclosure_label: nextDisclosureLabel,
           themes: nextThemes,
         });
@@ -841,7 +924,15 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
                 themes: item.themes,
               },
               proposed_provenance: processProvenance,
-              evidence_episode_ids: item.key_episode_ids,
+              // The resolver judges the revision on a bounded head of this list, so it leads
+              // with what this pass cited rather than with the period's earliest key episodes.
+              evidence_episode_ids: uniqueValues([
+                ...item.evidence_episode_ids,
+                ...item.key_episode_ids,
+              ]).slice(0, 8),
+              // The patch replaces the whole narrative, so it may only land on the version this
+              // pass read; a revision accepted in between would otherwise vanish unseen.
+              expected_record_version: item.previous.record_version,
             },
             reason: `self-narrator proposed revising autobiographical period ${item.period_id}`,
           });

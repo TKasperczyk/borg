@@ -13,6 +13,11 @@ import type { TurnTracer } from "../tracing/tracer.js";
 import type { SessionId } from "../util/ids.js";
 import type { TemporalCue } from "../contracts/cognitive-contracts.js";
 import { parseIsoInstant } from "../util/iso-instant.js";
+import {
+  type MemoryDisclosureLabel,
+  unknownMemoryDisclosureLabel,
+} from "../memory/common/disclosure-label.js";
+import { memoryDisclosurePayloadFields } from "../memory/common/disclosure-serializers.js";
 
 const recallSemanticVariantStrategySchema = z.enum([
   "combined",
@@ -58,6 +63,7 @@ export type RecallIdentityHandles = {
 
 export type RecallOwnerActivityExcerpt = {
   excerpt: string;
+  disclosureLabel: MemoryDisclosureLabel;
   occurredAt: number;
   venue: StreamConversation;
   counterpartyName?: string;
@@ -224,6 +230,7 @@ export function clipRecallQueryPlannerContext(
                 MAX_RECALL_QUERY_ACTIVITY_EXCERPT_CHARS,
               ),
               occurredAt: activity.occurredAt,
+              disclosureLabel: activity.disclosureLabel ?? unknownMemoryDisclosureLabel(),
               venue: {
                 ...activity.venue,
                 name: clipRecallQueryHandle(activity.venue.name),
@@ -255,7 +262,7 @@ You will receive these data sections:
 - CONTEXT: prior conversation turns as separate labelled records, oldest to newest.
 - FOCUS: the current turn that needs memory retrieval.
 - IDENTITY_HANDLES: already-resolved names and venue/entity handles.
-- OWNER_RECENT_ACTIVITY: optional excerpts of the memory owner's own recent messages in other visible sessions, labelled with venue and time.
+- OWNER_RECENT_ACTIVITY: optional excerpts of the memory owner's own recent messages across sessions, labelled with venue, time, and disclosure constraints. Private evidence is available for internal reasoning, not automatically authorized for disclosure to the current audience.
 - OWNER_LIVED_EXPERIENCE: optional first-person summaries of the memory owner's recent closed days, newest first. Use them exactly like OWNER_RECENT_ACTIVITY to resolve references to what the owner did, said, or decided on an earlier day.
 - NOW: optional current wall-clock instant (ISO-8601) with its time zone, for resolving relative time references.
 - SEMANTIC_VARIANT_COUNT: integer N, the exact number of semantic variants to emit.
@@ -437,6 +444,7 @@ function buildRecallQueryPlannerUserMessage(input: RecallQueryPlanInput): string
     venue: row.venue,
     ...(row.counterpartyName === undefined ? {} : { counterparty_name: row.counterpartyName }),
     excerpt: row.excerpt,
+    ...memoryDisclosurePayloadFields(row.disclosureLabel),
   }));
   const livedExperience = (input.ownerLivedExperience ?? []).map((row, index) => ({
     day_summary: index + 1,

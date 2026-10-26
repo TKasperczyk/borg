@@ -331,7 +331,7 @@ export class MaintenanceScheduler {
       cadenceWatermarkProcessName(result.cadence),
       MAINTENANCE_CADENCE_WATERMARK_SESSION_ID,
       {
-        lastTs: this.clock.now(),
+        lastTs: result.cadence === "heavy" ? result.ts : this.clock.now(),
         lastEntryId: this.watermarkEntryIdFor(result),
       },
     );
@@ -374,7 +374,7 @@ export class MaintenanceScheduler {
     const processes = this.processNamesFor(cadence);
     const shouldOptimizeStorage = this.shouldOptimizeStorage(cadence);
 
-    if (!this.options.enabled) {
+    if (!this.options.enabled || this.stopping) {
       return {
         status: "disabled",
         cadence,

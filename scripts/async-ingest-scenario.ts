@@ -17,7 +17,7 @@ import {
 import type {
   StreamCursor,
   StreamEntry,
-  StreamResponseTo,
+  StreamBacklogResponseTo,
   StreamWriter,
 } from "../src/stream/index.js";
 import {
@@ -295,7 +295,7 @@ function cursorFor(entry: Pick<StreamEntry, "id" | "timestamp">): StreamCursor {
 function responseToFor(
   entries: readonly Pick<StreamEntry, "id" | "timestamp">[],
   fromCursorExclusive: StreamCursor | null = null,
-): StreamResponseTo {
+): StreamBacklogResponseTo {
   const last = entries[entries.length - 1];
 
   assert.ok(last, "response_to requires at least one source entry");
@@ -624,6 +624,7 @@ async function main(): Promise<void> {
           "Burst received: I saw the three launch-room updates together.",
         );
         assert.deepEqual(agent.response_to, expectedStamp);
+        assert.ok(agent.response_to?.kind === "stream_backlog");
         assert.equal(agent.response_to?.count, 3);
         assert.deepEqual(watermark, expectedStamp.through_cursor_inclusive);
 
@@ -706,7 +707,9 @@ async function main(): Promise<void> {
           reopened,
         ).deps.chatResponseWatermarkCoordinator.getWatermark(currentSession.session_id);
         const matchingAgents = agentMessages(reopened, currentSession.session_id).filter(
-          (entry) => entry.response_to?.source_entry_ids.includes(first.streamEntryId) === true,
+          (entry) =>
+            entry.response_to?.kind === "stream_backlog" &&
+            entry.response_to.source_entry_ids.includes(first.streamEntryId),
         );
 
         assert.deepEqual(tickResult, {
@@ -718,6 +721,7 @@ async function main(): Promise<void> {
         assert.ok(agent, "expected image replay terminal agent_msg");
         assert.equal(agent.content, "Image burst recovered with both stored perceptions.");
         assert.deepEqual(agent.response_to, expectedStamp);
+        assert.ok(agent.response_to?.kind === "stream_backlog");
         assert.equal(agent.response_to?.count, 2);
         assert.deepEqual(watermark, expectedStamp.through_cursor_inclusive);
         assert.equal(imagePerceptionRequests(llm).length, visionCallsAfterReceipt);
@@ -725,7 +729,10 @@ async function main(): Promise<void> {
         assert.ok(firstMessageOffset >= 0, "first image message missing from render");
         assert.ok(secondMessageOffset > firstMessageOffset, "image messages rendered out of order");
         assert.ok(firstCaptionOffset > firstMessageOffset, "first caption not attached to message");
-        assert.ok(firstCaptionOffset < secondMessageOffset, "first caption crossed message boundary");
+        assert.ok(
+          firstCaptionOffset < secondMessageOffset,
+          "first caption crossed message boundary",
+        );
         assert.ok(secondCaptionOffset > secondMessageOffset, "second caption not attached");
         assert.ok(renderedBatch.includes("first crash visible text"));
         assert.ok(renderedBatch.includes("second crash visible text"));
@@ -822,6 +829,7 @@ async function main(): Promise<void> {
           "Remainder received: I picked up the follow-up after the watermark.",
         );
         assert.deepEqual(agent.response_to, expectedStamp);
+        assert.ok(agent.response_to?.kind === "stream_backlog");
         assert.deepEqual(agent.response_to?.from_cursor_exclusive, lastWatermark);
         assert.deepEqual(watermark, expectedStamp.through_cursor_inclusive);
 
@@ -1064,7 +1072,9 @@ async function main(): Promise<void> {
         const replayTick = await reopened.inbox.catchUp.tick(currentSession.session_id);
         const agentsAfterReplay = agentMessages(reopened, currentSession.session_id);
         const matchingCrashAgents = agentsAfterReplay.filter(
-          (entry) => entry.response_to?.source_entry_ids.includes(enqueued.streamEntryId) === true,
+          (entry) =>
+            entry.response_to?.kind === "stream_backlog" &&
+            entry.response_to.source_entry_ids.includes(enqueued.streamEntryId),
         );
         const reopenedWatermark = borgInternals<HarnessBorgInternals>(
           reopened,

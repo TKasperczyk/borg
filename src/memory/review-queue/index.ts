@@ -8,6 +8,7 @@ export {
   reviewQueueItemSchema,
   reviewResolutionSchema,
   reviewResolutionInputSchema,
+  reviewRefsForModel,
   stripReviewResolverRefs,
   type ReviewKind,
   type BeliefRevisionTarget,

@@ -132,6 +132,56 @@ describe("semantic review service", () => {
     },
   );
 
+  it.each(["synchronous", "asynchronous"])(
+    "retains a %s duplicate reporter failure until all reviews drain",
+    async (mode) => {
+      const fixture = await createSemanticFixture();
+      cleanup.push(async () => {
+        fixture.db.close();
+        await fixture.store.close();
+        rmSync(fixture.tempDir, { recursive: true, force: true });
+      });
+      const failure = new Error("duplicate reporter unavailable");
+      const log = vi.spyOn(console, "error").mockImplementation(() => {});
+      let finish!: () => void;
+      const delayed = new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+      let reports = 0;
+      const service = new SemanticReviewService({
+        nodeRepository: fixture.nodeRepository,
+        onDuplicateReviewError: () => {
+          if (++reports > 1) return delayed;
+          if (mode === "synchronous") throw failure;
+          return Promise.reject(failure);
+        },
+      });
+      vi.spyOn(service, "reviewDuplicateCandidate").mockRejectedValue(new Error("review failed"));
+      const node = createSemanticNodeFixture(buildProposition(createSemanticNodeId(), "Candidate"));
+      expect(() => service.queueDuplicateReview(node)).not.toThrow();
+      expect(() => service.queueDuplicateReview(node)).not.toThrow();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      let settled = false;
+      const flushing = service
+        .flushDuplicateReviews()
+        .catch((error: unknown) => error)
+        .finally(() => {
+          settled = true;
+        });
+      try {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(settled).toBe(false);
+        finish();
+        expect(await flushing).toMatchObject({ errors: [failure] });
+        expect(log).toHaveBeenCalled();
+        await expect(service.flushDuplicateReviews()).rejects.toMatchObject({ errors: [failure] });
+      } finally {
+        finish();
+        await flushing;
+      }
+    },
+  );
+
   it("keeps repository inserts inert until duplicate review is explicitly requested", async () => {
     const fixture = await createSemanticFixture();
     const llm = new FakeLLMClient({
@@ -348,24 +398,19 @@ describe("semantic review service", () => {
       dataDir: fixture.tempDir,
       clock: fixture.clock,
     });
-    const logged: Promise<void>[] = [];
     const reviewService = new SemanticReviewService({
       nodeRepository: fixture.nodeRepository,
       enqueueReview: vi.fn(),
       llmClient: new FakeLLMClient(),
       contradictionJudgeModel: "haiku",
-      onDuplicateReviewError: (error) => {
-        const promise = writer
-          .append({
-            kind: "internal_event",
-            content: {
-              hook: "semantic_duplicate_review",
-              error: error instanceof Error ? error.message : String(error),
-            },
-          })
-          .then(() => undefined);
-        logged.push(promise);
-        return promise;
+      onDuplicateReviewError: async (error) => {
+        await writer.append({
+          kind: "internal_event",
+          content: {
+            hook: "semantic_duplicate_review",
+            error: error instanceof Error ? error.message : String(error),
+          },
+        });
       },
     });
 
@@ -385,10 +430,7 @@ describe("semantic review service", () => {
     );
 
     reviewService.queueDuplicateReview(inserted);
-    await new Promise((resolve) => {
-      setImmediate(resolve);
-    });
-    await Promise.all(logged);
+    await reviewService.flushDuplicateReviews();
 
     const [entry] = new StreamReader({
       dataDir: fixture.tempDir,

@@ -119,6 +119,8 @@ describe("inner life internal tools", () => {
   // reader who checked the unnamed field read the write's own doing as history.
   it("names both rumination fields this write resets, not only the counter", () => {
     const tool = createOpenQuestionsResolveTool({
+      episodicRepository: { getMany: async () => [] },
+      entryIndex: { lookupEntriesById: (ids) => new Map(ids.map((id) => [id, {} as never])) },
       identityService: {
         resolveOpenQuestion: () => {
           throw new Error("not invoked");
@@ -132,6 +134,75 @@ describe("inner life internal tools", () => {
     expect(tool.description).toContain("because this write set them there");
   });
 
+  // Both evidence arms are optional and the refinement fires only when both are
+  // empty, so stream evidence alone resolves. The rejection used to carry
+  // path: ["resolution_evidence_episode_ids"], and a reader who took the path as the
+  // address of the fault read an open disjunction as a required episode arm --
+  // on a question whose episode arm is empty for unrelated reasons, that reads as
+  // structural confirmation. The address is the record; the message names the arms.
+  it("accepts either evidence arm alone and addresses the empty-both rejection to the record", () => {
+    const tool = createOpenQuestionsResolveTool({
+      episodicRepository: { getMany: async () => [] },
+      entryIndex: { lookupEntriesById: (ids) => new Map(ids.map((id) => [id, {} as never])) },
+      identityService: {
+        resolveOpenQuestion: () => {
+          throw new Error("not invoked");
+        },
+      },
+      disclosureLabelForEvidence: async () => selfPrivateMemoryDisclosureLabel(),
+    });
+    const openQuestionId = createOpenQuestionId();
+
+    expect(
+      tool.inputSchema.safeParse({
+        open_question_id: openQuestionId,
+        resolution_note: "Settled on stream evidence alone.",
+        resolution_evidence_stream_entry_ids: [createStreamEntryId()],
+      }).success,
+    ).toBe(true);
+    expect(
+      tool.inputSchema.safeParse({
+        open_question_id: openQuestionId,
+        resolution_note: "Settled on episode evidence alone.",
+        resolution_evidence_episode_ids: [createEpisodeId()],
+      }).success,
+    ).toBe(true);
+
+    const bothEmpty = tool.inputSchema.safeParse({
+      open_question_id: openQuestionId,
+      resolution_note: "No evidence at all.",
+    });
+
+    expect(bothEmpty.success).toBe(false);
+
+    const issue = bothEmpty.success
+      ? undefined
+      : bothEmpty.error.issues.find((candidate) => candidate.code === "custom");
+
+    expect(issue?.path).toEqual([]);
+    expect(issue?.message).toContain("resolution_evidence_episode_ids");
+    expect(issue?.message).toContain("resolution_evidence_stream_entry_ids");
+  });
+
+  it("distinguishes structural citation checks from relevance and disclosure", () => {
+    const tool = createOpenQuestionsResolveTool({
+      episodicRepository: { getMany: async () => [] },
+      entryIndex: { lookupEntriesById: () => new Map() },
+      identityService: {
+        resolveOpenQuestion: () => {
+          throw new Error("not invoked");
+        },
+      },
+      disclosureLabelForEvidence: async () => selfPrivateMemoryDisclosureLabel(),
+    });
+
+    expect(tool.description).toContain("must name stored episode or stream records");
+    expect(tool.description).toContain("including archived records");
+    expect(tool.description).toContain("Existence does not establish relevance");
+    expect(tool.description).toContain("never a second witness to what I concluded");
+    expect(tool.description).toContain("Stream citations retain an unknown disclosure label");
+  });
+
   it("surfaces identity-governance review-required open question resolution as tool data", async () => {
     const current = sampleOpenQuestion();
     const resolveOpenQuestion = vi.fn(() => ({
@@ -139,6 +210,8 @@ describe("inner life internal tools", () => {
       current,
     }));
     const tool = createOpenQuestionsResolveTool({
+      episodicRepository: { getMany: async () => [] },
+      entryIndex: { lookupEntriesById: (ids) => new Map(ids.map((id) => [id, {} as never])) },
       identityService: { resolveOpenQuestion },
       disclosureLabelForEvidence: async () => selfPrivateMemoryDisclosureLabel(),
     });
@@ -176,6 +249,44 @@ describe("inner life internal tools", () => {
           disclosure_class: "self_private",
         },
       },
+    });
+  });
+
+  // This tool and the post-turn reflector both store provenance online_reflector / reflector,
+  // so the transition trace is the one record that names which writer resolved the question.
+  // The tool passed its source path without a tracer, and the event was never emitted.
+  it("traces an applied resolution under the tool's own source path", async () => {
+    const record = sampleOpenQuestion({ status: "resolved" });
+    const emit = vi.fn();
+    const tool = createOpenQuestionsResolveTool({
+      episodicRepository: { getMany: async () => [] },
+      entryIndex: { lookupEntriesById: (ids) => new Map(ids.map((id) => [id, {} as never])) },
+      identityService: {
+        resolveOpenQuestion: () => ({ status: "applied" as const, record }),
+      },
+      disclosureLabelForEvidence: async () => selfPrivateMemoryDisclosureLabel(),
+      tracer: { enabled: true, emit },
+    });
+
+    const result = await tool.invoke(
+      {
+        open_question_id: record.id,
+        resolution_note: "Settled from the thread.",
+        resolution_evidence_stream_entry_ids: [createStreamEntryId()],
+      },
+      context,
+    );
+
+    expect(result).toMatchObject({ status: "applied", openQuestion: { id: record.id } });
+    expect(emit).toHaveBeenCalledTimes(1);
+    expect(emit).toHaveBeenCalledWith("open_question_resolution.transitioned", {
+      turnId: context.turnId,
+      oq_id: record.id,
+      source_path: "tool.openQuestions.resolve",
+      decision: "resolved",
+      decision_reason: "autonomous_tool",
+      evidence_episode_count: 0,
+      evidence_stream_entry_count: 1,
     });
   });
 

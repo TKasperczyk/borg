@@ -124,12 +124,80 @@ function evidenceHandles(
   return handles;
 }
 
+const OBJECT_ID_PREFIXES = [
+  ["current_session_stream:", "stream"],
+  ["episode:", "episode"],
+  ["semantic_node:", "semantic_node"],
+  ["semantic_edge:", "semantic_edge"],
+  ["open_question:", "open_question"],
+] as const;
+
+// A retrieved row's metadata names the object it renders next to the evidence that object rests on
+// (an episode row also carries its source stream ids), so the most specific id present is the object.
+const RETRIEVED_OBJECT_ID_KEYS = [
+  ["open_question_id", "open_question"],
+  ["commitment_id", "commitment"],
+  ["image_perception_id", "image_perception"],
+  ["edge_id", "semantic_edge"],
+  ["node_id", "semantic_node"],
+  ["episode_id", "episode"],
+] as const;
+
+// The one object a row renders, as opposed to the evidence it cites. Two rows with the same object
+// show the same memory twice, so they fold even inside one section, where rows that merely share
+// evidence stay apart. A row naming no single object has none and folds only by provenance.
+function objectHandle(entry: EvidenceLedgerEntry): string | null {
+  for (const [prefix, type] of OBJECT_ID_PREFIXES) {
+    const value = suffixAfterPrefix(entry.id, prefix);
+
+    if (value !== null && value.length > 0) {
+      return `${type}:${value}`;
+    }
+  }
+
+  if (
+    entry.id.startsWith("commitment:") ||
+    entry.id.startsWith("group_commitment:") ||
+    entry.id.startsWith("participant_commitment:")
+  ) {
+    const commitmentId = suffixAfterLastColon(entry.id);
+    return commitmentId === null ? null : `commitment:${commitmentId}`;
+  }
+
+  // A raw-stream row's text is the message itself; elsewhere a stream id is only evidence.
+  if (entry.id.startsWith("retrieved_stream:")) {
+    const streamIds = metadataStringArray(entry.state_metadata, "stream_ids");
+    return streamIds.length === 1 ? `stream:${streamIds[0]!}` : null;
+  }
+
+  if (!entry.id.startsWith("retrieved_evidence:")) {
+    return null;
+  }
+
+  for (const [key, type] of RETRIEVED_OBJECT_ID_KEYS) {
+    const value = metadataString(entry.state_metadata?.[key]);
+
+    if (value !== null) {
+      return `${type}:${value}`;
+    }
+  }
+
+  return null;
+}
+
+// How a row groups in one dedupe pass. By default it groups by every evidence handle it carries.
+// "object" groups it only with rows rendering the same object; "section_object" only with those of
+// them in its own section.
+export type ProvenanceDedupeGrouping = "object" | "section_object";
+
 type LedgerEntryRef = {
   sectionId: EvidenceLedgerSectionId;
   sectionIndex: number;
   entryIndex: number;
   entry: EvidenceLedgerEntry;
   handles: Set<string>;
+  sourceHandles: Set<string>;
+  object: string | null;
 };
 
 function isProvenanceDedupeProtected(ref: LedgerEntryRef): boolean {
@@ -173,7 +241,7 @@ function citationHandles(refs: readonly LedgerEntryRef[]): string[] {
   return [
     ...new Set(
       refs
-        .flatMap((ref) => [...ref.handles])
+        .flatMap((ref) => [...ref.sourceHandles])
         .sort((left, right) => {
           return citationRank(left) - citationRank(right) || left.localeCompare(right);
         }),
@@ -204,6 +272,11 @@ function retrievedOpenQuestionId(ref: LedgerEntryRef): string | null {
     ? metadataString(ref.entry.state_metadata?.["open_question_id"])
     : null;
 }
+
+type FoldGroup = {
+  group: LedgerEntryRef[];
+  openQuestionMerge: RetrievedOpenQuestionMerge | null;
+};
 
 function retrievedOpenQuestionMerge(
   group: readonly LedgerEntryRef[],
@@ -268,9 +341,102 @@ function mergeRetrievedOpenQuestionEntries(
   };
 }
 
-export function dedupeEvidenceLedgerByProvenance(ledger: EvidenceLedger): {
+export function provenanceDedupeEntryKey(
+  sectionId: EvidenceLedgerSectionId,
+  entryId: string,
+): string {
+  return `${sectionId}\u0000${entryId}`;
+}
+
+function pushIndexed(index: Map<string, LedgerEntryRef[]>, key: string, ref: LedgerEntryRef): void {
+  const refs = index.get(key);
+
+  if (refs === undefined) {
+    index.set(key, [ref]);
+  } else {
+    refs.push(ref);
+  }
+}
+
+// Shared handles chain a group together, so two of its rows can share no evidence at all. A row
+// folds only into a canonical that renders its object or shares one of its handles from another
+// section; folded along the chain instead, its text would leave the page under a row it has nothing
+// in common with. The rows that render one object fold together, where the first of them in
+// canonical order would: split between two canonicals, a cut of one would put its rows back on the
+// page beside the others. In canonical order, each row not yet placed becomes a canonical and folds
+// every unplaced row that qualifies.
+function directFoldGroups(group: readonly LedgerEntryRef[]): LedgerEntryRef[][] {
+  const ordered = [...group].sort(
+    (left, right) =>
+      Number(isProvenanceDedupeProtected(right)) - Number(isProvenanceDedupeProtected(left)) ||
+      compareCanonicalRefs(left, right),
+  );
+  const refsByHandle = new Map<string, LedgerEntryRef[]>();
+  const refsByObject = new Map<string, LedgerEntryRef[]>();
+
+  for (const ref of ordered) {
+    for (const handle of ref.handles) {
+      pushIndexed(refsByHandle, handle, ref);
+    }
+
+    if (ref.object !== null) {
+      pushIndexed(refsByObject, ref.object, ref);
+    }
+  }
+
+  const objectRows = (ref: LedgerEntryRef): LedgerEntryRef[] =>
+    ref.object === null ? [ref] : (refsByObject.get(ref.object) ?? [ref]);
+  const placed = new Set<LedgerEntryRef>();
+  const foldGroups: LedgerEntryRef[][] = [];
+
+  for (const canonical of ordered) {
+    if (placed.has(canonical)) {
+      continue;
+    }
+
+    placed.add(canonical);
+    const folded = new Set<LedgerEntryRef>();
+    const candidates = [
+      ...objectRows(canonical),
+      ...[...canonical.handles].flatMap((handle) =>
+        (refsByHandle.get(handle) ?? [])
+          .filter(
+            (ref) =>
+              ref.sectionId !== canonical.sectionId &&
+              objectRows(ref)[0] === ref &&
+              !isProvenanceDedupeProtected(ref),
+          )
+          .flatMap(objectRows),
+      ),
+    ];
+
+    for (const ref of candidates) {
+      if (!placed.has(ref) && !isProvenanceDedupeProtected(ref)) {
+        folded.add(ref);
+        placed.add(ref);
+      }
+    }
+
+    if (folded.size > 0) {
+      foldGroups.push(group.filter((ref) => ref === canonical || folded.has(ref)));
+    }
+  }
+
+  return foldGroups;
+}
+
+// A row keyed in `groupingByEntryKey` groups as its value says; every other row groups by all its
+// evidence handles. A keyed row naming no object stays in its section but neither absorbs nor is
+// folded.
+// `foldedEntryKeysByCanonicalKey` maps each canonical that folded at least one row into itself to
+// the keys of the rows it folded.
+export function dedupeEvidenceLedgerByProvenance(
+  ledger: EvidenceLedger,
+  options: { groupingByEntryKey?: ReadonlyMap<string, ProvenanceDedupeGrouping> } = {},
+): {
   ledger: EvidenceLedger;
   dedupedEntryCount: number;
+  foldedEntryKeysByCanonicalKey: Map<string, string[]>;
 } {
   const refs: LedgerEntryRef[] = [];
   const parents = new DisjointSet<number>(() => -1);
@@ -309,7 +475,23 @@ export function dedupeEvidenceLedgerByProvenance(ledger: EvidenceLedger): {
 
   for (const [sectionIndex, section] of ledger.sections.entries()) {
     for (const [entryIndex, entry] of section.entries.entries()) {
-      const handles = evidenceHandles(section.id, entry);
+      const sourceHandles = evidenceHandles(section.id, entry);
+      const object = objectHandle(entry);
+      const grouping = options.groupingByEntryKey?.get(
+        provenanceDedupeEntryKey(section.id, entry.id),
+      );
+      // Object handles live in their own namespaces, so a keyed row never joins a row that groups
+      // another way.
+      const handles =
+        grouping === undefined
+          ? sourceHandles
+          : object === null
+            ? new Set<string>()
+            : new Set([
+                grouping === "object"
+                  ? `object:${object}`
+                  : `section_object:${section.id}:${object}`,
+              ]);
       const refIndex = refs.length;
       refs.push({
         sectionId: section.id,
@@ -317,6 +499,8 @@ export function dedupeEvidenceLedgerByProvenance(ledger: EvidenceLedger): {
         entryIndex,
         entry,
         handles,
+        sourceHandles,
+        object,
       });
       parents.add(refIndex);
 
@@ -348,16 +532,25 @@ export function dedupeEvidenceLedgerByProvenance(ledger: EvidenceLedger): {
   const canonicalByRef = new Map<LedgerEntryRef, EvidenceLedgerEntry>();
   const droppedRefs = new Set<LedgerEntryRef>();
   const droppedCountsBySectionIndex = new Map<number, number>();
+  const foldedEntryKeysByCanonicalKey = new Map<string, string[]>();
   let dedupedEntryCount = 0;
 
-  for (const group of groups.values()) {
-    const sectionIds = new Set(group.map((ref) => ref.sectionId));
-    const openQuestionMerge = retrievedOpenQuestionMerge(group);
-
-    if (group.length <= 1 || (sectionIds.size <= 1 && openQuestionMerge === null)) {
-      continue;
+  const foldGroups = [...groups.values()].flatMap((group): FoldGroup[] => {
+    if (group.length <= 1) {
+      return [];
     }
 
+    const openQuestionMerge = retrievedOpenQuestionMerge(group);
+
+    return openQuestionMerge !== null
+      ? [{ group, openQuestionMerge }]
+      : directFoldGroups(group).map((foldGroup) => ({
+          group: foldGroup,
+          openQuestionMerge: null,
+        }));
+  });
+
+  for (const { group, openQuestionMerge } of foldGroups) {
     const canonical =
       openQuestionMerge?.canonical ??
       (() => {
@@ -378,6 +571,8 @@ export function dedupeEvidenceLedgerByProvenance(ledger: EvidenceLedger): {
         : mergeRetrievedOpenQuestionEntries(group, openQuestionMerge),
     );
 
+    const foldedEntryKeys: string[] = [];
+
     for (const ref of group) {
       if (ref !== canonical && !isProvenanceDedupeProtected(ref)) {
         droppedRefs.add(ref);
@@ -386,7 +581,16 @@ export function dedupeEvidenceLedgerByProvenance(ledger: EvidenceLedger): {
           (droppedCountsBySectionIndex.get(ref.sectionIndex) ?? 0) + 1,
         );
         dedupedEntryCount += 1;
+        foldedEntryKeys.push(provenanceDedupeEntryKey(ref.sectionId, ref.entry.id));
       }
+    }
+
+    if (foldedEntryKeys.length > 0) {
+      const canonicalKey = provenanceDedupeEntryKey(canonical.sectionId, canonical.entry.id);
+      foldedEntryKeysByCanonicalKey.set(canonicalKey, [
+        ...(foldedEntryKeysByCanonicalKey.get(canonicalKey) ?? []),
+        ...foldedEntryKeys,
+      ]);
     }
   }
 
@@ -431,5 +635,81 @@ export function dedupeEvidenceLedgerByProvenance(ledger: EvidenceLedger): {
   return {
     ledger: cloneLedgerWithSections(ledger, sections),
     dedupedEntryCount,
+    foldedEntryKeysByCanonicalKey,
   };
+}
+
+// A row folded into a kept canonical reaches the page only as ids, so it is redundant only while
+// the page shows the evidence it rests on: a handle of the canonical's own, or an object a kept row
+// renders or folded rows render that rest on the page themselves. Lists the folded rows of kept
+// canonicals resting on anything else, each with the folded rows that render its object. A row
+// rendering the canonical's own object is that memory again and is never listed.
+export function foldedEntryKeysWithEvidenceOffPage(
+  ledger: EvidenceLedger,
+  foldedEntryKeysByCanonicalKey: ReadonlyMap<string, readonly string[]>,
+  keptEntryKeys: ReadonlySet<string>,
+): string[] {
+  type Row = { sourceHandles: Set<string>; object: string | null };
+  const rowsByKey = new Map<string, Row>();
+
+  for (const section of ledger.sections) {
+    for (const entry of section.entries) {
+      rowsByKey.set(provenanceDedupeEntryKey(section.id, entry.id), {
+        sourceHandles: evidenceHandles(section.id, entry),
+        object: objectHandle(entry),
+      });
+    }
+  }
+
+  const folds = [...foldedEntryKeysByCanonicalKey].flatMap(([canonicalKey, foldedEntryKeys]) => {
+    const canonical = rowsByKey.get(canonicalKey);
+
+    if (canonical === undefined || !keptEntryKeys.has(canonicalKey)) {
+      return [];
+    }
+
+    return foldedEntryKeys.flatMap((key) => {
+      const row = rowsByKey.get(key);
+      return row === undefined ? [] : [{ key, row, canonical }];
+    });
+  });
+  const onPage = new Set(
+    [...keptEntryKeys].flatMap((key) => {
+      const object = rowsByKey.get(key)?.object;
+      return object === null || object === undefined ? [] : [object];
+    }),
+  );
+  const restsOnPage = ({ row, canonical }: { row: Row; canonical: Row }) =>
+    [...row.sourceHandles].every(
+      (handle) => handle === row.object || canonical.sourceHandles.has(handle) || onPage.has(handle),
+    );
+
+  for (let grew = true; grew; ) {
+    grew = false;
+
+    for (const { row } of folds) {
+      const { object } = row;
+
+      if (
+        object !== null &&
+        !onPage.has(object) &&
+        folds.every((other) => other.row.object !== object || restsOnPage(other))
+      ) {
+        onPage.add(object);
+        grew = true;
+      }
+    }
+  }
+
+  const offPage = folds.filter(
+    (fold) =>
+      (fold.row.object === null || fold.row.object !== fold.canonical.object) &&
+      !restsOnPage(fold),
+  );
+  const offPageKeys = new Set(offPage.map((fold) => fold.key));
+  const offPageObjects = new Set(offPage.flatMap((fold) => fold.row.object ?? []));
+
+  return folds.flatMap(({ key, row }) =>
+    offPageKeys.has(key) || (row.object !== null && offPageObjects.has(row.object)) ? [key] : [],
+  );
 }

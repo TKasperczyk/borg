@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -7,7 +7,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createMigrations } from "../../borg/storage-setup.js";
 import { StorageError } from "../../util/errors.js";
 import productionMigrations from "../fixtures/prod-migrations.json";
-import { composeMigrations, openDatabase, type Migration, type SqliteDatabase } from "./index.js";
+import {
+  composeMigrations,
+  openDatabase,
+  runMigrations,
+  type Migration,
+  type SqliteDatabase,
+} from "./index.js";
 
 describe("migration name reconciliation", () => {
   let tempDir: string;
@@ -109,6 +115,56 @@ describe("migration name reconciliation", () => {
       schema,
     );
     expect(reopenedDb.prepare("SELECT total_changes() AS count").get()).toEqual({ count: 0 });
+  });
+
+  it("opens the 73-row Sol demo ledger without moves and applies only four pending migrations", () => {
+    const [header, ...rows] = readFileSync(
+      new URL("../fixtures/sol-demo-bank-migrations.txt", import.meta.url),
+      "utf8",
+    )
+      .trim()
+      .split("\n");
+    expect(header).toBe("id|name|applied_at");
+    const liveLedger = rows.map((row) => {
+      const [id, name, appliedAt] = row.split("|");
+      return { id: Number(id), name: name!, applied_at: Number(appliedAt) };
+    });
+    expect(liveLedger).toHaveLength(73);
+    const migrations = createMigrations();
+    const byName = new Map(migrations.map((migration) => [migration.name, migration]));
+    const legacyDb = reopenDatabase(
+      liveLedger.map(({ id, name }) => {
+        const migration = byName.get(name);
+        expect(migration?.id).toBe(id);
+        return { ...migration!, id };
+      }),
+    );
+    const stamp = legacyDb.prepare("UPDATE _migrations SET applied_at = ? WHERE id = ?");
+    for (const row of liveLedger) stamp.run(row.applied_at, row.id);
+    expect(legacyDb.listAppliedMigrations()).toEqual(liveLedger);
+    const appliedIds: number[] = [];
+    const trackedMigrations = migrations.map((migration) => ({
+      ...migration,
+      up(database: SqliteDatabase) {
+        appliedIds.push(migration.id);
+        if (typeof migration.up === "string") database.exec(migration.up);
+        else migration.up(database);
+      },
+    }));
+    const appliedAt = 1_900_000_000_000;
+    runMigrations(legacyDb, trackedMigrations, appliedAt);
+    expect(appliedIds).toEqual([16_000_006, 16_000_007, 28_000_001, 28_000_002]);
+    const after = legacyDb.listAppliedMigrations();
+    expect(after).toHaveLength(77);
+    expect(after.filter((row) => !appliedIds.includes(row.id))).toEqual(liveLedger);
+    expect(after.filter((row) => appliedIds.includes(row.id)).map((row) => row.applied_at)).toEqual(
+      [appliedAt, appliedAt, appliedAt, appliedAt],
+    );
+    const changes = legacyDb.prepare("SELECT total_changes() AS count").get();
+    runMigrations(legacyDb, trackedMigrations, appliedAt + 1000);
+    expect(appliedIds).toHaveLength(4);
+    expect(legacyDb.listAppliedMigrations()).toEqual(after);
+    expect(legacyDb.prepare("SELECT total_changes() AS count").get()).toEqual(changes);
   });
 
   it("swaps applied migration ids without rerunning them", () => {

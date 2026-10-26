@@ -20,7 +20,7 @@ import {
   isEpisodeVisibleToCapability,
   resolveViewerCapability,
 } from "../memory/episodic/access.js";
-import { parseEpisodeParticipantEntityIdTerm } from "../memory/episodic/participant-terms.js";
+import { episodeParticipantEntityId } from "../memory/episodic/participant-terms.js";
 import type { EpisodicRepository } from "../memory/episodic/repository.js";
 import type {
   Episode,
@@ -181,7 +181,8 @@ export type RetrievalPipelineOptions = {
   >;
   openQuestionsRepository?: OpenQuestionsRepository;
   imagePerceptionRepository?: ImagePerceptionRepository;
-  entityRepository?: Pick<EntityRepository, "findByName">;
+  entityRepository?: Pick<EntityRepository, "findByName"> &
+    Partial<Pick<EntityRepository, "get" | "resolveReferences">>;
   commitmentRepository?: Pick<CommitmentRepository, "get" | "list">;
   recallStateRepository?: Pick<RecallStateRepository, "load" | "save">;
   clock?: Clock;
@@ -619,6 +620,7 @@ export class RetrievalPipeline {
     expansionOverride?: ExpansionOutcome,
     intentQueryVectorsOverride?: IntentQueryVectorMemo,
   ): Promise<RetrievedContext> {
+    options = this.options.entityRepository?.resolveReferences?.(options) ?? options;
     if (this.tracer.enabled && options.traceTurnId !== undefined) {
       this.tracer.emit("retrieval.started", {
         turnId: options.traceTurnId,
@@ -1118,6 +1120,10 @@ export class RetrievalPipeline {
       return null;
     }
 
+    // One entry's verbatim text says whose it is and when it was written, as a fresh
+    // raw-stream hit does. A join of several entries has no single author or instant.
+    const onlyEntry = orderedEntries.length === 1 ? orderedEntries[0] : undefined;
+
     return {
       id: `warm_recall_raw_stream_${handle.streamIds.join("_")}`,
       source: "warm_recall",
@@ -1130,6 +1136,9 @@ export class RetrievalPipeline {
       },
       recallIntentId: WARM_RECALL_INTENT_ID,
       matchedTerms: [],
+      ...(onlyEntry === undefined
+        ? {}
+        : { streamEntryKind: onlyEntry.kind, streamEntryAtMs: onlyEntry.timestamp }),
       score: warmRecallScore(stateHandle),
       scoreBreakdown: {
         provenance: 1,
@@ -2330,6 +2339,7 @@ export class RetrievalPipeline {
     id: Episode["id"],
     options: RetrievalGetEpisodeOptions = {},
   ): Promise<RetrievedEpisode | null> {
+    options = this.options.entityRepository?.resolveReferences?.(options) ?? options;
     const episode = await this.options.episodicRepository.get(id);
 
     if (episode === null) {
@@ -2423,10 +2433,12 @@ export class RetrievalPipeline {
           continue;
         }
 
+        const id =
+          episodeParticipantEntityId(participant) ??
+          this.options.entityRepository.findByName(participant);
         participantEntityIds.set(
           key,
-          parseEpisodeParticipantEntityIdTerm(participant) ??
-            this.options.entityRepository.findByName(participant),
+          id === null ? null : (this.options.entityRepository.get?.(id)?.id ?? id),
         );
       }
     }
@@ -3210,6 +3222,9 @@ function streamEntryToEvidence(
     },
     recallIntentId: intent.id,
     matchedTerms: [],
+    streamEntryKind: entry.kind,
+    streamEntryAtMs: entry.timestamp,
+    streamEntrySessionId: entry.session_id,
     score:
       intent.kind === "recent"
         ? RECENT_RAW_STREAM_EVIDENCE_SCORE

@@ -489,7 +489,9 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
       | undefined,
   ): EntityId | null | undefined => {
     if (options?.audienceEntityId !== undefined) {
-      return options.audienceEntityId;
+      return options.audienceEntityId === null
+        ? null
+        : (deps.entityRepository.get(options.audienceEntityId)?.id ?? options.audienceEntityId);
     }
 
     if (options?.audience === undefined) {
@@ -500,9 +502,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
       return null;
     }
 
-    return deps.entityRepository.resolve(options.audience, {
-      provenance: "transport_audience_label",
-    });
+    return deps.entityRepository.resolveAudienceLabel(options.audience);
   };
 
   const resolveEpisodeAudienceTerms = (
@@ -534,6 +534,11 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
     options: (RetrievalSharedOptions & { audience?: string | null }) | undefined,
     audienceEntityId: EntityId | null | undefined,
   ): RetrievalSharedOptions => {
+    options = options === undefined ? undefined : deps.entityRepository.resolveReferences(options);
+    audienceEntityId =
+      audienceEntityId == null
+        ? audienceEntityId
+        : (deps.entityRepository.get(audienceEntityId)?.id ?? audienceEntityId);
     const audienceProfile =
       options?.audienceProfile !== undefined
         ? options.audienceProfile
@@ -589,6 +594,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
   const resolveEpisodeSearchOptions = (
     options: BorgEpisodeSearchOptions | undefined,
   ): DisclosureRetrievalOptions => {
+    options = options === undefined ? undefined : deps.entityRepository.resolveReferences(options);
     const audienceEntityId = resolveEpisodeAudienceEntityId(options);
     return {
       ...options,
@@ -728,6 +734,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
     episodic: {
       rememberForTenant: (input) => getTenantFactRememberer().remember(input),
       recallForCognition: (query, options) => {
+        options = deps.entityRepository.resolveReferences(options);
         const rankingAudienceEntityId =
           options.rankingAudienceEntityId ?? options.recallContext.currentAudienceEntityId;
         return deps.retrievalPipeline.recallEpisodeHitsForCognition(query, {
@@ -739,7 +746,9 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
       get: (id, options = {}) =>
         deps.retrievalPipeline.getEpisode(id, {
           audienceEntityId: resolveEpisodeAudienceEntityId(options),
-          visibleAudienceEntityIds: options.visibleAudienceEntityIds,
+          visibleAudienceEntityIds: options.visibleAudienceEntityIds?.map(
+            (id) => deps.entityRepository.get(id)?.id ?? id,
+          ),
           crossAudience: options.crossAudience,
         }),
       inspect: (id) => deps.episodicRepository.get(id, { includeArchived: true }),
@@ -786,6 +795,8 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
       listAll: () => deps.episodicRepository.listAll(),
       listRecentForSession: (...args) =>
         deps.episodicRepository.listRecentForSessionForDisclosure(...args),
+      listRecentForSessionForCognition: (...args) =>
+        deps.episodicRepository.listRecentForSessionForCognition(...args),
       getStats: (...args) => deps.episodicRepository.getStats(...args),
     },
     self: {
@@ -921,6 +932,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
         deps.socialRepository.adjustTrust(deps.entityRepository.resolve(entity), delta, provenance),
     },
     entities: {
+      resolveAudienceLabel: (...args) => deps.entityRepository.resolveAudienceLabel(...args),
       resolve: (...args) => deps.entityRepository.resolve(...args),
       resolveExternal: (...args) => deps.entityRepository.resolveExternal(...args),
       findByExternalId: (...args) => deps.entityRepository.findByExternalId(...args),
@@ -1167,7 +1179,10 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
             activeOnly: options.activeOnly,
             audience:
               options.audienceEntityId !== undefined
-                ? options.audienceEntityId
+                ? options.audienceEntityId === null
+                  ? null
+                  : (deps.entityRepository.get(options.audienceEntityId)?.id ??
+                    options.audienceEntityId)
                 : options.audience === undefined
                   ? undefined
                   : options.audience === null
@@ -1311,6 +1326,8 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
     },
     maintenance: {
       scheduler: deps.maintenanceScheduler,
+      storageMemoryStats: () => deps.lance.memoryStats(),
+      storageTableStats: () => deps.lance.tableStats(),
       config: maintenanceConfigSnapshot,
       // Manual heavy maintenance always optimizes. The config flag gates only
       // automatic scheduler ticks; callers decide whether a manual run is dry.

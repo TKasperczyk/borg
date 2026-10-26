@@ -9,7 +9,8 @@ import type {
   TurnResult,
 } from "./cognition/index.js";
 import { createBorgFacades } from "./borg/facade.js";
-import { closeBorgDependencies } from "./borg/lifecycle.js";
+import { closeBorgDependencies, drainBorgDependencies } from "./borg/lifecycle.js";
+import { CognitionError } from "./util/errors.js";
 import { openBorgDependencies } from "./borg/open.js";
 import type { BorgFacades } from "./borg/public-facade.js";
 import type { BorgDependencies, BorgOpenOptions } from "./borg/types.js";
@@ -36,6 +37,10 @@ export type { BorgEnqueueMessageInput, BorgEnqueueMessageResult } from "./cognit
  * operational state. Repository construction and storage wiring stay internal.
  */
 export class Borg {
+  private admissionClosed = false;
+  private drainPromise: Promise<void> | null = null;
+  private drainCompleted = false;
+  private readonly admittedOperations = new Set<Promise<unknown>>();
   readonly similarityThresholds: SimilarityThresholds;
   readonly stream: BorgFacades["stream"];
   readonly episodic: BorgFacades["episodic"];
@@ -103,23 +108,56 @@ export class Borg {
    * deliberation, generation, persistence, and post-turn maintenance hooks.
    */
   turn(input: TurnInput): Promise<TurnResult> {
-    return this.deps.turnOrchestrator.run(input);
+    return this.runAdmittedOperation(async () => await this.deps.turnOrchestrator.run(input));
   }
 
   /** Check an external cognition reply using the shared structural guard, without LLM work. */
   guardReply(input: IdentifierOnlyGuardInput) {
-    return this.deps.turnOrchestrator.postGenerationGuardRunner.run({
-      ...input,
-      executionMode: "identifiers-only",
-      closureLoop: null,
-    });
+    return this.runAdmittedOperation(
+      async () =>
+        await this.deps.turnOrchestrator.postGenerationGuardRunner.run({
+          ...input,
+          executionMode: "identifiers-only",
+          closureLoop: null,
+        }),
+    );
   }
 
   /**
    * Durably enqueue an inbound chat message without running a cognition turn.
    */
   enqueueMessage(input: BorgEnqueueMessageInput): Promise<BorgEnqueueMessageResult> {
-    return this.deps.messageEnqueuer.enqueueMessage(input);
+    return this.runAdmittedOperation(
+      async () => await this.deps.messageEnqueuer.enqueueMessage(input),
+    );
+  }
+
+  private async runAdmittedOperation<T>(run: () => Promise<T>): Promise<T> {
+    if (this.admissionClosed) {
+      throw new CognitionError("Borg is shutting down", { code: "BORG_SHUTTING_DOWN" });
+    }
+    const operation = run();
+    this.admittedOperations.add(operation);
+    try {
+      return await operation;
+    } finally {
+      this.admittedOperations.delete(operation);
+    }
+  }
+
+  /** Hosts call this before awaiting their own request/connector leases. */
+  closeAdmission(): void {
+    this.admissionClosed = true;
+  }
+
+  /** Close admission, then drain accepted work and its tails after host leases have settled. */
+  beginShutdown(): Promise<void> {
+    this.closeAdmission();
+    this.drainPromise ??= (async () => {
+      await drainBorgDependencies(this.deps, [...this.admittedOperations]);
+      this.drainCompleted = true;
+    })();
+    return this.drainPromise;
   }
 
   /**
@@ -169,8 +207,15 @@ export class Borg {
     return new Borg(await openBorgDependencies(options));
   }
 
-  /** Close underlying storage and runtime resources. */
-  async close(): Promise<void> {
-    await closeBorgDependencies(this.deps);
+  /**
+   * Close resources; drain:false skips an unfinished runtime drain after its deadline.
+   * Hosts must retainBankLease on any host drain failure/timeout, even if Borg drained.
+   */
+  async close(options: { drain?: boolean; retainBankLease?: boolean } = {}): Promise<void> {
+    this.admissionClosed = true;
+    await closeBorgDependencies(this.deps, {
+      drain: options.drain === false && !this.drainCompleted ? false : () => this.beginShutdown(),
+      retainBankLease: options.retainBankLease,
+    });
   }
 }

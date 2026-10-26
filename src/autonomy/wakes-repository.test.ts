@@ -145,6 +145,9 @@ describe("AutonomyWakesRepository", () => {
       expect(repository.interruptOrphanedWakesAtStartup()).toBe(2);
       expect(repository.interruptOrphanedWakesAtStartup()).toBe(0);
       repository.recordOutcome(completed.id, "interrupted", "must not replace headway");
+      repository.recordOutcome(completed.id, "error", "must not waive budget", null, undefined, {
+        preparationFailed: true,
+      });
 
       const wakes = repository.listSince(0, 10);
       expect(
@@ -167,6 +170,7 @@ describe("AutonomyWakesRepository", () => {
       );
       expect(wakes.find((wake) => wake.id === completed.id)).toMatchObject({
         outcome: "headway",
+        preparation_failed: false,
         outcome_detail: null,
       });
       expect(wakes.find((wake) => wake.id === recentInFlight.id)).toMatchObject({
@@ -174,6 +178,42 @@ describe("AutonomyWakesRepository", () => {
         outcome_detail: null,
       });
       expect(repository.countSince(0, { outcome: "interrupted" })).toBe(2);
+    } finally {
+      db.close();
+    }
+  });
+
+  // The sweep's predicate is bounded above by the grace window and not bounded
+  // below at all, so it reaches rows no run of this process ever touched. That
+  // is deliberate -- one writer per data directory means an old unrecorded row
+  // cannot belong to anyone -- but it is also the reason the stored detail must
+  // not date the interruption to this start: the row below is orphaned thirty
+  // days and any number of restarts before the process that stamps it.
+  it("sweeps an orphan from arbitrarily far back and records a detail that fits the stored bound", () => {
+    const clock = new ManualClock(1_000);
+    const db = openDatabase(":memory:", { migrations: autonomyMigrations });
+
+    try {
+      const repository = new AutonomyWakesRepository({ db, clock });
+      const ancientOrphan = repository.record({
+        trigger_name: "open_question_dormant",
+        session_id: DEFAULT_SESSION_ID,
+        wake_source_type: "trigger",
+      });
+      clock.advance(30 * 24 * 60 * 60_000);
+
+      expect(repository.interruptOrphanedWakesAtStartup()).toBe(1);
+      expect(
+        repository.listSince(0, 10).find((wake) => wake.id === ancientOrphan.id),
+      ).toMatchObject({
+        outcome: "interrupted",
+        outcome_detail: AUTONOMY_WAKE_STARTUP_INTERRUPTED_DETAIL,
+      });
+      // The sweep writes the constant directly rather than through
+      // clampOutcomeDetail, so nothing truncates it if it grows past the bound.
+      expect(AUTONOMY_WAKE_STARTUP_INTERRUPTED_DETAIL.length).toBeLessThanOrEqual(
+        AUTONOMY_WAKE_OUTCOME_DETAIL_MAX_LENGTH,
+      );
     } finally {
       db.close();
     }
@@ -252,63 +292,6 @@ describe("AutonomyWakesRepository", () => {
       });
       // The window edge applies to the tally exactly as it does to the counts.
       expect(repository.summarizeOutcomeDetailsSince(1_003, "error").total).toBe(2);
-    } finally {
-      db.close();
-    }
-  });
-
-  it("positions an outcome's rows against the window's other wakes and the wake before them", () => {
-    const clock = new ManualClock(1_000);
-    const db = openDatabase(":memory:", { migrations: autonomyMigrations });
-    const repository = new AutonomyWakesRepository({ db, clock });
-
-    try {
-      const recordWake = (outcome: "error" | "headway") => {
-        clock.advance(1);
-        const wake = repository.record({
-          trigger_name: "goal_followup_due",
-          session_id: DEFAULT_SESSION_ID,
-          wake_source_type: "trigger",
-        });
-        repository.recordOutcome(wake.id, outcome);
-        return wake;
-      };
-
-      // ts 1001..1004: an unbroken run. ts 1005: the success that ends it.
-      recordWake("error");
-      recordWake("error");
-      recordWake("error");
-      recordWake("error");
-      recordWake("headway");
-
-      // Over the whole table the run is unbroken and nothing precedes it, so the
-      // "did this start earlier" question has no evidence rather than a no.
-      expect(repository.describeOutcomeSpanSince(0, "error")).toEqual({
-        other_outcomes_between: 0,
-        extends_before_window: null,
-      });
-
-      // A window whose edge falls inside the run sees only its tail. The count
-      // inside the window cannot tell that apart from a run that began there --
-      // the predecessor read is what does, and it deliberately ignores the edge.
-      expect(repository.describeOutcomeSpanSince(1_003, "error")).toEqual({
-        other_outcomes_between: 0,
-        extends_before_window: true,
-      });
-
-      // ts 1006 error, 1007 headway, 1008 error: now the bucket is interleaved,
-      // and the wake before its first row is the success at 1005.
-      recordWake("error");
-      recordWake("headway");
-      recordWake("error");
-
-      expect(repository.describeOutcomeSpanSince(1_006, "error")).toEqual({
-        other_outcomes_between: 1,
-        extends_before_window: false,
-      });
-
-      // An empty bucket has no position to report.
-      expect(repository.describeOutcomeSpanSince(0, "busy")).toBeNull();
     } finally {
       db.close();
     }
@@ -409,6 +392,8 @@ describe("AutonomyWakesRepository", () => {
         { id: 6, name: "autonomy_wakes_selected_goal" },
         { id: 7, name: "autonomy_wakes_headway_bases" },
         { id: 8, name: "autonomy_wakes_execution_counts" },
+        { id: 9, name: "autonomy_wakes_preparation_failed" },
+        { id: 10, name: "autonomy_wakes_turn_provider_failed" },
       ]);
 
       const table = db
@@ -518,6 +503,141 @@ describe("AutonomyWakesRepository", () => {
           stall_retries: null,
         }),
       ]);
+    } finally {
+      db.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("excludes only recorded preparation failures from budget counts across migration and reopen", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-autonomy-preparation-migration-"));
+    const dbPath = join(tempDir, "borg.db");
+    let db = openDatabase(dbPath, { migrations: autonomyMigrations.slice(0, 8) });
+    try {
+      db.prepare(
+        `INSERT INTO autonomy_wakes (
+        id, ts, trigger_name, wake_source_type, source_category, outcome, outcome_detail
+      ) VALUES (?, 1000, 'scheduled_reflection', 'trigger', 'contemplative', 'error', ?)`,
+      ).run(
+        "autonomy_wake_aaaaaaaaaaaaaaaa",
+        "Autonomous source preparation failed: legacy text is not structure",
+      );
+      db.close();
+      db = openDatabase(dbPath, { migrations: autonomyMigrations });
+      let repository = new AutonomyWakesRepository({ db, clock: new ManualClock(2_000) });
+      const failed = repository.record({
+        trigger_name: "scheduled_reflection",
+        wake_source_type: "trigger",
+        source_category: "contemplative",
+      });
+      repository.recordOutcome(
+        failed.id,
+        "error",
+        "retrieval timed out",
+        null,
+        { finalizer_rounds: 0, stall_retries: 0 },
+        { preparationFailed: true },
+      );
+      repository.record({ trigger_name: "goal_followup_due", wake_source_type: "trigger" });
+      db.close();
+      db = openDatabase(dbPath, { migrations: autonomyMigrations });
+      repository = new AutonomyWakesRepository({ db });
+      expect(repository.countSince(0)).toBe(3);
+      expect(repository.countSince(0, { excludePreparationFailures: true })).toBe(2);
+      expect(
+        repository.countSince(0, {
+          excludePreparationFailures: true,
+          sourceCategory: "contemplative",
+        }),
+      ).toBe(1);
+      expect(repository.countSince(0, { outcome: "error" })).toBe(2);
+      expect(repository.summarizeOutcomeDetailsSince(0, "error").total).toBe(2);
+      expect(repository.listSince(0, 10)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: "autonomy_wake_aaaaaaaaaaaaaaaa",
+            preparation_failed: false,
+          }),
+          expect.objectContaining({
+            id: failed.id,
+            outcome: "error",
+            preparation_failed: true,
+            finalizer_rounds: 0,
+            stall_retries: 0,
+          }),
+        ]),
+      );
+      expect(() => db.prepare("UPDATE autonomy_wakes SET preparation_failed = 2").run()).toThrow();
+    } finally {
+      db.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("migrates and persists provider exemptions without reclassifying legacy errors", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-autonomy-provider-migration-"));
+    const dbPath = join(tempDir, "borg.db");
+    let db = openDatabase(dbPath, { migrations: autonomyMigrations.slice(0, 9) });
+    try {
+      db.prepare(
+        `INSERT INTO autonomy_wakes
+        (id, ts, trigger_name, wake_source_type, source_category, outcome, outcome_detail)
+        VALUES ('autonomy_wake_aaaaaaaaaaaaaaaa', 1000, 'scheduled_reflection', 'trigger', 'contemplative', 'error', 'provider timeout')`,
+      ).run();
+      db.close();
+      db = openDatabase(dbPath, { migrations: autonomyMigrations });
+      let repository = new AutonomyWakesRepository({ db, clock: new ManualClock(2_000) });
+      const failed = repository.record({
+        trigger_name: "scheduled_reflection",
+        wake_source_type: "trigger",
+        source_category: "contemplative",
+      });
+      repository.recordOutcome(failed.id, "error", "typed provider failure", null, undefined, {
+        turnProviderFailed: true,
+      });
+      // Terminal rows cannot have their budget classification overwritten.
+      repository.recordOutcome(failed.id, "error", "later model error");
+      const headway = repository.record({
+        trigger_name: "goal_followup_due",
+        wake_source_type: "trigger",
+      });
+      repository.recordOutcome(headway.id, "headway", null, null, undefined, {
+        turnProviderFailed: true,
+      });
+      db.close();
+      db = openDatabase(dbPath, { migrations: autonomyMigrations });
+      repository = new AutonomyWakesRepository({ db });
+      expect(repository.countSince(0)).toBe(3);
+      expect(
+        repository.countSince(0, {
+          excludePreparationFailures: true,
+          excludeTurnProviderFailures: true,
+        }),
+      ).toBe(2);
+      expect(
+        repository.countSince(0, {
+          excludeTurnProviderFailures: true,
+          sourceCategory: "contemplative",
+        }),
+      ).toBe(1);
+      expect(repository.summarizeOutcomeDetailsSince(0, "error").total).toBe(2);
+      expect(repository.listSince(0, 10)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: "autonomy_wake_aaaaaaaaaaaaaaaa",
+            turn_provider_failed: false,
+          }),
+          expect.objectContaining({
+            id: failed.id,
+            turn_provider_failed: true,
+            preparation_failed: false,
+          }),
+          expect.objectContaining({ id: headway.id, turn_provider_failed: false }),
+        ]),
+      );
+      expect(() =>
+        db.prepare("UPDATE autonomy_wakes SET turn_provider_failed = 2").run(),
+      ).toThrow();
     } finally {
       db.close();
       rmSync(tempDir, { recursive: true, force: true });

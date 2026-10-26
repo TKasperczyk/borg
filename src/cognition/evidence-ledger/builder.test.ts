@@ -849,6 +849,42 @@ describe("EvidenceLedgerBuilder", () => {
     );
   });
 
+  // Pin the one-to-one, order-preserving mapping from applicable commitments
+  // to standing-ledger entries with corresponding commitment ids.
+  it("maps applicable commitments one-to-one onto standing-ledger commitment entries", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-commitment-one-to-one-"));
+    tempDirs.push(tempDir);
+    const commitments = [
+      makeCommitment(createStreamEntryId()),
+      makeCommitment(createStreamEntryId()),
+      makeCommitment(createStreamEntryId()),
+    ];
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+      relationalSlotRepository: { list: () => [] },
+      actionRepository: { list: () => [] },
+      currentSessionTranscriptTokenBudget: 50_000,
+    });
+
+    const ledger = await builder.build({
+      sessionId: DEFAULT_SESSION_ID,
+      turnId: "turn-commitment-one-to-one",
+      nowMs: NOW_MS,
+      audienceEntityId: null,
+      currentUserMessage: "Check commitments.",
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: commitments,
+      retrievedEvidence: [],
+      retrievedEpisodes: [],
+      openQuestions: [],
+      pendingCorrections: [],
+    });
+
+    expect(ledger.audienceStanding?.commitmentEntries.map((entry) => entry.id)).toEqual(
+      commitments.map((record) => `commitment:${record.id}`),
+    );
+  });
+
   it("keeps recent lived activity as labeled audience-standing metadata with source handles", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
@@ -2312,6 +2348,8 @@ describe("EvidenceLedgerBuilder", () => {
         session_scope: "prior_session",
         text: "Prior Barcelona narrative.",
       }),
+    ]);
+    expect(ledger.sections.find((section) => section.id === "open_questions")?.entries).toEqual([
       expect.objectContaining({
         source_type: "system_metadata",
         session_scope: "prior_session",
@@ -2726,6 +2764,155 @@ describe("EvidenceLedgerBuilder", () => {
     expect(rendered).not.toContain(`id=retrieved_evidence:${evidence.id}`);
     expect(compacted.traceSummary.dedupedEntryCount).toBe(1);
     expect(compacted.traceSummary.omittedEntryCountsBySection.open_questions).toBe(0);
+  });
+
+  it("keeps a cut open-question row's retrieval twin folded with it instead of in a kept row's place", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const questions = [makeOpenQuestion(createEpisodeId()), makeOpenQuestion(createEpisodeId())];
+    const evidence: EvidenceItem[] = questions.map((question, index) => ({
+      id: `evidence_open_question_${question.id}_followup`,
+      source: "open_question",
+      text: question.question,
+      provenance: {
+        openQuestionId: question.id,
+      },
+      recallIntentId: "intent-open-question-followup",
+      matchedTerms: [],
+      score: 0.8 - index * 0.1,
+      scoreBreakdown: {
+        salience: 0.7,
+      },
+    }));
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+      relationalSlotRepository: { list: () => [] },
+      actionRepository: { list: () => [] },
+      currentSessionTranscriptTokenBudget: 50_000,
+    });
+
+    const ledger = await builder.build({
+      sessionId: DEFAULT_SESSION_ID,
+      nowMs: NOW_MS,
+      audienceEntityId: null,
+      currentUserMessage: "What remains unresolved?",
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [],
+      retrievedEvidence: evidence,
+      retrievedEpisodes: [],
+      retrievedSemantic: null,
+      openQuestions: questions,
+      pendingCorrections: [],
+      frameAnomaly: null,
+    });
+    const compacted = compactEvidenceLedger(ledger, {
+      targetTokens: 20_000,
+      hardCapTokens: 40_000,
+      sectionOptions: {
+        open_questions: {
+          maxEntries: 1,
+          maxTokens: 2_500,
+        },
+      },
+    });
+    const entries =
+      compacted.ledger.sections.find((section) => section.id === "open_questions")?.entries ?? [];
+
+    expect(entries.map((entry) => entry.id)).toEqual([
+      `open_question:${questions[0]!.id}`,
+      "evidence_ledger_omitted:open_questions",
+    ]);
+    expect(entries[0]?.state).toContain("score=0.80");
+    expect(entries[1]?.text).toContain("omitted 1 lower-priority entries");
+    expect(entries[1]?.text).toContain("Omitted by state: open 1.");
+    expect(compacted.traceSummary.dedupedEntryCount).toBe(2);
+    expect(compacted.traceSummary.omittedEntryCountsBySection.open_questions).toBe(1);
+  });
+
+  it("keeps a prior-session open question in open_questions with its retrieval twin, so that section's cut and tally cover it", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const priorEntry: StreamEntry = {
+      id: createStreamEntryId(),
+      timestamp: NOW_MS - 60_000,
+      kind: "user_msg",
+      content: "An older session raised the callback question.",
+      turn_status: "active",
+      session_id: createSessionId(),
+      compressed: false,
+      sender_entity_id: null,
+      reply_target_entity_id: null,
+    };
+    const priorEpisodeId = createEpisodeId();
+    const question = makeOpenQuestion(priorEpisodeId);
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+      relationalSlotRepository: { list: () => [] },
+      actionRepository: { list: () => [] },
+      currentSessionTranscriptTokenBudget: 50_000,
+    });
+
+    const ledger = await builder.build({
+      sessionId: DEFAULT_SESSION_ID,
+      nowMs: NOW_MS,
+      audienceEntityId: null,
+      currentUserMessage: "What remains unresolved?",
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [],
+      retrievedEvidence: [
+        {
+          id: `evidence_open_question_${question.id}_followup`,
+          source: "open_question",
+          text: question.question,
+          provenance: {
+            openQuestionId: question.id,
+          },
+          recallIntentId: "intent-open-question-followup",
+          matchedTerms: [],
+          score: 0.8,
+          scoreBreakdown: {
+            salience: 0.7,
+          },
+        },
+      ],
+      retrievedEpisodes: [
+        makeRetrievedEpisode({
+          id: priorEpisodeId,
+          narrative: "Prior callback narrative.",
+          sourceStreamIds: [priorEntry.id],
+          citationChain: [priorEntry],
+        }),
+      ],
+      retrievedSemantic: null,
+      openQuestions: [question],
+      pendingCorrections: [],
+      frameAnomaly: null,
+    });
+    const compacted = compactEvidenceLedger(ledger, {
+      targetTokens: 20_000,
+      hardCapTokens: 40_000,
+      sectionOptions: {
+        prior_session_memory: {
+          maxEntries: 1,
+          maxTokens: 2_500,
+        },
+      },
+    });
+    const sectionEntries = (sectionId: string) =>
+      compacted.ledger.sections.find((section) => section.id === sectionId)?.entries ?? [];
+    const openQuestionEntries = sectionEntries("open_questions");
+
+    expect(openQuestionEntries.map((entry) => entry.id)).toEqual([`open_question:${question.id}`]);
+    expect(openQuestionEntries[0]).toMatchObject({
+      session_scope: "prior_session",
+      via_retrieval: true,
+    });
+    expect(openQuestionEntries[0]?.state).toContain("open");
+    expect(openQuestionEntries[0]?.state).toContain("score=0.80");
+    expect(sectionEntries("prior_session_memory").map((entry) => entry.id)).toEqual([
+      `episode:${priorEpisodeId}`,
+    ]);
+    expect(compacted.traceSummary.dedupedEntryCount).toBe(1);
   });
 
   it("renders relational slots scoped and ordered by active participant", async () => {
@@ -3672,23 +3859,37 @@ describe("EvidenceLedgerBuilder", () => {
       id: expect.stringMatching(/^action_thread:/),
       state: expect.stringContaining("completed"),
       state_metadata: expect.objectContaining({
-        transitions: 3,
+        records: 3,
         current_action_id: completed.id,
         goal_id: goalId,
       }),
     });
     expect(actionEntries[0]?.state).toContain("disclosure_class=unknown");
+    // The origin is a different record from the current one and holds its own state. `current:`
+    // below names only `completed`, so without a disposition on this line the description of a
+    // still-open intent renders under the one state on the page -- a thread-mate's. Asserted on the
+    // rendered line rather than on the metadata: the line is what a reader is handed.
     expect(actionEntries[0]?.text).toContain(
-      "originating_intent: consider writing the harness presentation",
+      `originating_intent (considering since ${new Date(
+        NOW_MS,
+      ).toISOString()}, open): consider writing the harness presentation`,
     );
-    expect(actionEntries[0]?.text).toContain("transitions: 3, current: completed");
+    expect(actionEntries[0]?.text).toContain("records: 3, current: completed");
+    expect(actionEntries[0]?.state_metadata).toMatchObject({
+      origin_action_id: considering.id,
+      origin_state: "considering",
+    });
     // The originating description is the oldest write in the thread; without its own stamp a reader
     // cannot tell whether it disagrees with `current_intent` because the world changed or because
-    // one of them is wrong.
+    // one of them is wrong. And the stamp alone dates a link that no row records: the only thing
+    // that put these three records in one thread is description similarity, so the clause says that
+    // where a reader would otherwise take the grouping for a stored fact.
     expect(actionEntries[0]?.text).toContain(
-      `at ${new Date(NOW_MS + 20).toISOString()}; originating_intent recorded ${new Date(
+      `since ${new Date(NOW_MS + 20).toISOString()}; originating_intent is a separate record created ${new Date(
         NOW_MS,
-      ).toISOString()}`,
+      ).toISOString()}, this record created ${new Date(
+        NOW_MS + 2,
+      ).toISOString()}, grouped with this one by description similarity rather than by any recorded link`,
     );
     expect(actionEntries[0]?.text).toContain(
       "current_intent: finished writing the harness presentation",
@@ -4474,7 +4675,14 @@ describe("EvidenceLedgerBuilder", () => {
       ledger.sections.find((section) => section.id === "action_states")?.entries ?? [];
 
     expect(actionEntries).toHaveLength(3);
-    expect(actionEntries.map((entry) => entry.state_metadata?.["transitions"])).toEqual([1, 1, 1]);
+    expect(actionEntries.map((entry) => entry.state_metadata?.["records"])).toEqual([1, 1, 1]);
+    // Nothing was grouped, so no row may carry the merge vocabulary: a single-record thread has no
+    // origin distinct from itself and no similarity link to disclose.
+    for (const entry of actionEntries) {
+      expect(entry.text).toContain("action: ");
+      expect(entry.text).not.toContain("originating_intent");
+      expect(entry.text).not.toContain("current_intent");
+    }
   });
 
   it("summarizes omitted null-goal action threads with state counts and bounded samples", async () => {
@@ -4613,6 +4821,8 @@ describe("EvidenceLedgerBuilder", () => {
       },
       openQuestionsRepository: {
         findByHandles: () => [resolvedQuestion],
+        countRuminations: () => 18,
+        countByStatus: () => ({ open: 104, resolved: 238, abandoned: 75 }),
       },
       currentSessionTranscriptTokenBudget: 50_000,
     });
@@ -4643,9 +4853,68 @@ describe("EvidenceLedgerBuilder", () => {
           resolution_note: "The user explicitly said the dish worked out well.",
           resolved_at: NOW_MS,
           resolution_evidence_stream_entry_ids: [resolvedEntry.id],
+          // A closed row shows neither the counter nor the stamp, because the closing write zeroed
+          // both. The note count is taken from the repository rather than the row, so it is the one
+          // quantity on a closed question that still reports how much work the loop did on it.
+          recorded_rumination_notes: 18,
         }),
       }),
     ]);
+  });
+
+  it("prints the open-question store population even when the section draws nothing", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-open-question-population-"));
+    tempDirs.push(tempDir);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new FixedClock(NOW_MS),
+    });
+    const currentEntry = await writer.append({
+      kind: "user_msg",
+      content: "Nothing here matches any question I am carrying.",
+    });
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+      relationalSlotRepository: { list: () => [] },
+      actionRepository: { list: () => [] },
+      openQuestionsRepository: {
+        findByHandles: () => [],
+        countRuminations: () => 0,
+        countByStatus: () => ({ open: 104, resolved: 238, abandoned: 75 }),
+      },
+      currentSessionTranscriptTokenBudget: 50_000,
+    });
+
+    const ledger = await builder.build({
+      sessionId: DEFAULT_SESSION_ID,
+      audienceEntityId: null,
+      currentUserMessage: String(currentEntry.content),
+      currentUserEntry: currentEntry,
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [],
+      retrievedEpisodes: [],
+      retrievedEvidence: [],
+      retrievedSemantic: null,
+      openQuestions: [],
+      pendingCorrections: [],
+      frameAnomaly: null,
+    });
+    const section = ledger.sections.find((entry) => entry.id === "open_questions");
+
+    // The empty draw is the case this line exists for: both admissions can produce nothing while the
+    // store holds hundreds, and a page showing only "No entries." is what a register of zero looks
+    // like too. So the population has to survive the path that renders no rows at all.
+    expect(section?.entries).toEqual([]);
+
+    const rendered = renderSection(section!);
+
+    expect(rendered).toContain("my open_questions store at this read: open 104, resolved 238");
+    expect(rendered).toContain("abandoned 75");
+    expect(rendered).toContain("No entries.");
+    expect(rendered.indexOf("my open_questions store")).toBeLessThan(
+      rendered.indexOf("No entries."),
+    );
   });
 
   it("adds ISO and relative labels to open open-question metadata", async () => {
@@ -4692,6 +4961,65 @@ describe("EvidenceLedgerBuilder", () => {
         }),
       }),
     ]);
+  });
+
+  it("resolves semantic-only question provenance to stream citations without exposing node ids", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-semantic-question-"));
+    tempDirs.push(tempDir);
+    const source = await new StreamWriter({
+      dataDir: tempDir,
+      clock: new FixedClock(NOW_MS),
+    }).append({ kind: "user_msg", content: "The source of a contradiction." });
+    const episode = createEpisodeFixture({
+      id: createEpisodeId(),
+      source_stream_ids: [source.id],
+    });
+    const node = createSemanticNodeFixture({ source_episode_ids: [episode.id], archived: true });
+    const missingNodeId = createSemanticNodeId();
+    const question: OpenQuestion = {
+      ...makeOpenQuestion(episode.id),
+      source: "contradiction",
+      related_episode_ids: [],
+      related_semantic_node_ids: [node.id, node.id, missingNodeId],
+      provenance: null,
+    };
+    const getNodes = vi.fn(async () => [node, null]);
+    const getEpisodes = vi.fn(async () => [episode]);
+    const builder = new EvidenceLedgerBuilder({
+      createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+      relationalSlotRepository: { list: () => [] },
+      actionRepository: { list: () => [] },
+      semanticNodeRepository: { getMany: getNodes },
+      episodicRepository: { getMany: getEpisodes },
+      currentSessionTranscriptTokenBudget: 50_000,
+    });
+    const ledger = await builder.build({
+      sessionId: DEFAULT_SESSION_ID,
+      audienceEntityId: null,
+      nowMs: NOW_MS,
+      currentUserMessage: "Review my questions.",
+      workingMemory: makeWorkingMemory(),
+      applicableCommitments: [],
+      retrievedEvidence: [],
+      retrievedEpisodes: [],
+      openQuestions: [question],
+      pendingCorrections: [],
+    });
+    expect(getNodes).toHaveBeenCalledWith([node.id, missingNodeId], { includeArchived: true });
+    expect(getEpisodes).toHaveBeenCalledWith([episode.id]);
+    expect(
+      ledger.sections.find((section) => section.id === "open_questions")?.entries[0],
+    ).toMatchObject({ citations: [source.id], session_scope: "current_session" });
+    const rendered = renderEvidenceLedger(
+      compactEvidenceLedger(ledger, {
+        targetTokens: 50_000,
+        hardCapTokens: 60_000,
+      }).ledger,
+    );
+    expect(rendered).toContain(`[citation: ${source.id}]`);
+    expect(rendered).not.toContain(node.id);
+    expect(rendered).not.toContain(missingNodeId);
+    expect(rendered).not.toContain(episode.id);
   });
 
   it("includes old resolved open questions by handle before repository limits", async () => {
@@ -4782,6 +5110,86 @@ describe("EvidenceLedgerBuilder", () => {
           }),
         ]),
       );
+    } finally {
+      db.close();
+    }
+  });
+
+  it("admits a closed open question through a semantic node on this page", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new FixedClock(NOW_MS),
+    });
+    const currentEntry = await writer.append({
+      kind: "user_msg",
+      content: "Die beiden Aussagen über den Zeitplan passen nicht zusammen.",
+    });
+    const db = openDatabase(join(tempDir, "open-questions.db"), {
+      migrations: selfMigrations,
+    });
+    const repository = new OpenQuestionsRepository({
+      db,
+      clock: new FixedClock(NOW_MS),
+    });
+    const node = makeSemanticNode({
+      episodeId: createEpisodeId(),
+      label: "Schedule claim",
+    });
+
+    try {
+      const dismissed = repository.add({
+        question: "Do the two schedule claims contradict each other?",
+        urgency: 0.5,
+        related_semantic_node_ids: [node.id, createSemanticNodeId()],
+        source: "contradiction",
+      });
+      repository.abandon(dismissed.id, "stale_no_traction");
+      const builder = new EvidenceLedgerBuilder({
+        createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+        relationalSlotRepository: { list: () => [] },
+        actionRepository: { list: () => [] },
+        openQuestionsRepository: repository,
+        currentSessionTranscriptTokenBudget: 50_000,
+      });
+      const build = (retrievedSemantic: RetrievedSemantic | null) =>
+        builder.build({
+          sessionId: DEFAULT_SESSION_ID,
+          audienceEntityId: null,
+          currentUserMessage: String(currentEntry.content),
+          currentUserEntry: currentEntry,
+          workingMemory: makeWorkingMemory(),
+          applicableCommitments: [],
+          retrievedEvidence: [],
+          retrievedEpisodes: [],
+          retrievedSemantic,
+          openQuestions: [],
+          pendingCorrections: [],
+          frameAnomaly: null,
+        });
+      const openQuestionIds = async (retrievedSemantic: RetrievedSemantic | null) =>
+        (
+          (await build(retrievedSemantic)).sections.find(
+            (section) => section.id === "open_questions",
+          )?.entries ?? []
+        ).map((entry) => entry.id);
+
+      expect(
+        await openQuestionIds({
+          supports: [],
+          contradicts: [],
+          categories: [],
+          matched_node_ids: [node.id],
+          matched_nodes: [node],
+          support_hits: [],
+          causal_hits: [],
+          contradiction_hits: [],
+          category_hits: [],
+        }),
+      ).toEqual([`open_question:${dismissed.id}`]);
+      expect(await openQuestionIds(null)).toEqual([]);
     } finally {
       db.close();
     }
@@ -5345,6 +5753,79 @@ describe("EvidenceLedgerBuilder", () => {
       session_scope: "global",
     });
   });
+
+  it.each(["raw_stream", "recent_raw_stream"] as const)(
+    "preserves verbatim prior-session %s recall over derived evidence with the same provenance",
+    async (source) => {
+      const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+      tempDirs.push(tempDir);
+      const streamId = createStreamEntryId();
+      const verbatim = "昨日の約束は、金曜に確認することでした。";
+      const builder = new EvidenceLedgerBuilder({
+        createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+        relationalSlotRepository: { list: () => [] },
+        actionRepository: { list: () => [] },
+        currentSessionTranscriptTokenBudget: 50_000,
+      });
+      const ledger = await builder.build({
+        sessionId: DEFAULT_SESSION_ID,
+        nowMs: NOW_MS,
+        audienceEntityId: null,
+        currentUserMessage: "What did we agree?",
+        workingMemory: makeWorkingMemory(),
+        applicableCommitments: [],
+        retrievedEvidence: [
+          {
+            id: "prior-verbatim",
+            source,
+            text: verbatim,
+            provenance: { streamIds: [streamId] },
+            streamEntrySessionId: createSessionId(),
+            streamEntryKind: "user_msg",
+            recallIntentId: "intent-prior",
+            matchedTerms: [],
+            score: 0.9,
+            scoreBreakdown: {},
+          },
+        ],
+        retrievedEpisodes: [
+          makeRetrievedEpisode({
+            id: createEpisodeId(),
+            narrative: "A derived account of the agreement.",
+            sourceStreamIds: [streamId],
+            citationChain: [],
+          }),
+        ],
+        retrievedSemantic: null,
+        openQuestions: [],
+        pendingCorrections: [],
+        frameAnomaly: null,
+      });
+      expect(ledger.sections.find((section) => section.id === "episodes")?.entries).toHaveLength(1);
+
+      const compacted = compactEvidenceLedger(ledger, {
+        targetTokens: 20_000,
+        hardCapTokens: 40_000,
+      });
+      const rawSection = compacted.ledger.sections.find(
+        (section) => section.id === "retrieved_raw_stream_evidence",
+      )!;
+      expect(rawSection.entries).toEqual([
+        expect.objectContaining({
+          text: verbatim,
+          session_scope: "prior_session",
+          source_type: "prior_session_stream",
+          actor: "user",
+        }),
+      ]);
+      expect(renderSection(rawSection)).toContain(verbatim);
+      expect(renderEvidenceLedger(compacted.ledger)).toContain(verbatim);
+      expect(
+        compacted.ledger.sections.find((section) => section.id === "episodes")?.entries,
+      ).toEqual([]);
+      expect(compacted.traceSummary.dedupedEntryCount).toBe(1);
+    },
+  );
 
   it("dedupes retrieved raw stream evidence against current_session_transcript by stream id", async () => {
     // Sprint 8d.6.3 regression: same underlying stream entry must not

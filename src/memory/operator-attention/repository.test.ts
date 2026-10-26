@@ -27,7 +27,7 @@ describe("operator attention index", () => {
     };
     try {
       const repository = new OperatorAttentionRepository({ db });
-      expect(repository.snapshot()).toEqual({ total: 0, records: [] });
+      expect(repository.snapshot()).toEqual({ total: 0, subjectless: 0, records: [] });
       expect(repository.record(filing)).toEqual({ inserted: true });
       expect(repository.record({ ...filing, subject: null })).toEqual({ inserted: false });
       const label = {
@@ -37,6 +37,7 @@ describe("operator attention index", () => {
         publicToEntityIds: [],
       };
       expect(repository.snapshot().records).toEqual([{ ...filing, disclosure_label: label }]);
+      expect(repository.snapshot().subjectless).toBe(0);
       for (let i = 0; i < 124; i += 1) {
         repository.record({
           ...filing,
@@ -49,6 +50,7 @@ describe("operator attention index", () => {
       db = openDatabase(path, { migrations });
       const snapshot = new OperatorAttentionRepository({ db }).snapshot();
       expect(snapshot.total).toBe(125);
+      expect(snapshot.subjectless).toBe(124);
       expect(snapshot.records).toHaveLength(OPERATOR_ATTENTION_RECENT_LIMIT);
       for (const row of snapshot.records) expect(row.disclosure_label).toEqual(label);
       expect(snapshot.records[0]).toMatchObject({
@@ -72,6 +74,35 @@ describe("operator attention index", () => {
     } finally {
       db.close();
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("counts null subjects outside the newest window independently of record-key prefixes", () => {
+    const db = openDatabase(":memory:", { migrations: createMigrations() });
+    const repository = new OperatorAttentionRepository({ db });
+    const filer = createEntityId();
+    try {
+      repository.record({
+        record_key: "another-connector:older",
+        filed_at: 1,
+        filer_entity_id: filer,
+        subject: null,
+      });
+      for (let index = 0; index <= OPERATOR_ATTENTION_RECENT_LIMIT; index += 1) {
+        repository.record({
+          record_key: `cclink:legacy:${index}`,
+          filed_at: index + 2,
+          filer_entity_id: filer,
+          subject: "記録された件名",
+        });
+      }
+      const snapshot = repository.snapshot();
+      expect(snapshot.total).toBe(OPERATOR_ATTENTION_RECENT_LIMIT + 2);
+      expect(snapshot.subjectless).toBe(1);
+      expect(snapshot.records).toHaveLength(OPERATOR_ATTENTION_RECENT_LIMIT);
+      expect(snapshot.records.every((record) => record.subject !== null)).toBe(true);
+    } finally {
+      db.close();
     }
   });
 });

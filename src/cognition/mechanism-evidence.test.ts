@@ -59,12 +59,37 @@ describe("turn mechanism evidence", () => {
           },
         },
       });
-      const workingMemory = appendRecentSuppression(createWorkingMemory(DEFAULT_SESSION_ID, 100), {
-        turnId: "turn-suppressed",
-        reason: "finalizer_no_output",
-        ts: 100,
-        sourceStreamEntryId: suppressionEntry.id,
+      // A diagnostic written before text_chars existed carries no such field, and
+      // defaulting it to 0 on the way back would assert the one thing the row cannot
+      // support -- that the attempt produced nothing. Absence must stay absence.
+      const countedEntry = await writer.append({
+        kind: "agent_suppressed",
+        turn_id: "turn-counted",
+        content: {
+          reason: "invalid_tool_after_regenerate",
+          turn_id: "turn-counted",
+          finalizer_invalid_tool: {
+            tool_name: "none",
+            reason: "expected exactly one emission tool call, got 0",
+            attempt: "regenerate",
+            text_chars: 0,
+          },
+        },
       });
+      const workingMemory = appendRecentSuppression(
+        appendRecentSuppression(createWorkingMemory(DEFAULT_SESSION_ID, 100), {
+          turnId: "turn-suppressed",
+          reason: "finalizer_no_output",
+          ts: 100,
+          sourceStreamEntryId: suppressionEntry.id,
+        }),
+        {
+          turnId: "turn-counted",
+          reason: "invalid_tool_after_regenerate",
+          ts: 100,
+          sourceStreamEntryId: countedEntry.id,
+        },
+      );
 
       const evidence = await hydrateTurnMechanismEvidence({
         dataDir: tempDir,
@@ -74,7 +99,7 @@ describe("turn mechanism evidence", () => {
         createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
       });
 
-      expect(evidence.recentSuppressions).toHaveLength(1);
+      expect(evidence.recentSuppressions).toHaveLength(2);
       expect(evidence.recentSuppressions[0]?.diagnostic).toEqual({
         noOutputCategories: ["with_open_question"],
         primaryNoOutputReason: "other",
@@ -83,6 +108,14 @@ describe("turn mechanism evidence", () => {
           tool_name: "EmitNoOutput",
           reason: "schema_error",
           attempt: "initial",
+        },
+      });
+      expect(evidence.recentSuppressions[1]?.diagnostic).toEqual({
+        finalizerInvalidTool: {
+          tool_name: "none",
+          reason: "expected exactly one emission tool call, got 0",
+          attempt: "regenerate",
+          text_chars: 0,
         },
       });
     } finally {

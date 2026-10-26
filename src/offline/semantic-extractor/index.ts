@@ -511,6 +511,7 @@ export class SemanticExtractorProcess implements OfflineProcess<SemanticExtracto
               entryIndex: ctx.entryIndex,
               createStreamReader: (sessionId) =>
                 new StreamReader({
+                  entityRepository: ctx.entityRepository,
                   dataDir: ctx.config.dataDir,
                   sessionId,
                 }),

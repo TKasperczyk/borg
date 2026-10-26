@@ -43,6 +43,7 @@ export class RawStreamAdapter {
       const reader = new StreamReader({
         dataDir: this.options.dataDir,
         sessionId,
+        entryIndex: this.options.entryIndex,
       });
 
       entries.push(

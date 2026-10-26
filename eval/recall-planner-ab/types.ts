@@ -1,4 +1,5 @@
 import type { RecallQueryPlan } from "../../src/retrieval/recall-expansion.js";
+import type { MemoryDisclosureLabel } from "../../src/memory/common/disclosure-label.js";
 
 import type {
   EmbeddingCallRecord,
@@ -28,6 +29,7 @@ export type RecallPlannerCase = {
   };
   owner_recent_activity: Array<{
     excerpt: string;
+    disclosure_label?: MemoryDisclosureLabel;
     occurred_at: number;
     venue: RecallPlannerConversation;
     counterparty_name?: string;

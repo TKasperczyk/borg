@@ -1,3 +1,7 @@
+import {
+  createTurnExecutionMetrics,
+  turnExecutionMetricsStorage,
+} from "../turn-execution-metrics.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -18,6 +22,10 @@ import {
   promptSurfaceBlocksForSurface,
 } from "../prompts/prompt-surface-registry.js";
 import { resolveFinalizerNonTerminalTools } from "./autonomous-finalizer-tools.js";
+import {
+  FINALIZER_NO_OUTPUT_CATEGORIES,
+  FINALIZER_NO_OUTPUT_PRIMARY_REASONS,
+} from "../generation/types.js";
 import { OUTBOUND_POST_TOOL_NAME } from "../../tools/internal/outbound-post-name.js";
 import type { DeliberationContext } from "./types.js";
 import {
@@ -55,11 +63,14 @@ async function runEmissionFinalizer(
   llm: LLMClient,
   tempDirs: string[],
   options: {
+    shownOpenQuestionIds?: readonly string[];
     cacheableSystemPrompt?: CacheableFinalizerSystemPrompt;
     additionalPromptSections?: Parameters<typeof runFinalizer>[0]["additionalPromptSections"];
     finalizerDynamicPromptCacheEnabled?: boolean;
     finalizerTransport?: Parameters<typeof runFinalizer>[0]["finalizerTransport"];
     finalizerAttempt?: Parameters<typeof runFinalizer>[0]["finalizerAttempt"];
+    thinking?: Parameters<typeof runFinalizer>[0]["thinking"];
+    effort?: Parameters<typeof runFinalizer>[0]["effort"];
     finalizerSurfaceVariant?: Parameters<typeof runFinalizer>[0]["finalizerSurfaceVariant"];
     tracer?: Parameters<typeof runFinalizer>[0]["tracer"];
     turnId?: string;
@@ -78,6 +89,7 @@ async function runEmissionFinalizer(
     sessionId: DEFAULT_SESSION_ID,
     model: "fake",
     baseSystemPrompt: "Legacy base dynamic prompt.",
+    shownOpenQuestionIds: options.shownOpenQuestionIds,
     cacheableSystemPrompt: options.cacheableSystemPrompt ?? {
       staticPrefix: "Stable static prompt.",
       dynamicContent: "Base dynamic prompt.",
@@ -96,6 +108,8 @@ async function runEmissionFinalizer(
     userEntryId: undefined,
     maxTokens: 256,
     path: "system_1",
+    ...(options.thinking === undefined ? {} : { thinking: options.thinking }),
+    ...(options.effort === undefined ? {} : { effort: options.effort }),
     ...(options.finalizerAttempt === undefined
       ? {}
       : { finalizerAttempt: options.finalizerAttempt }),
@@ -218,6 +232,52 @@ describe("runFinalizer emission tools", () => {
     while (tempDirs.length > 0) {
       rmSync(tempDirs.pop() as string, { recursive: true, force: true });
     }
+  });
+
+  it.each([undefined, "medium", "max"] as const)(
+    "keeps wire effort=%s constant when regeneration omits thinking",
+    async (effort) => {
+      const create = vi.fn().mockResolvedValue({
+        content: [
+          {
+            type: "tool_use",
+            id: "answer-effort",
+            name: "EmitAnswer",
+            input: { text: "Réponse." },
+          },
+        ],
+        usage: { input_tokens: 4, output_tokens: 2 },
+        stop_reason: "tool_use",
+      });
+      const client = new AnthropicLLMClient({ client: { messages: { create } } });
+      await runEmissionFinalizer(client, tempDirs, { thinking: { type: "adaptive" }, effort });
+      await runEmissionFinalizer(client, tempDirs, {
+        thinking: { type: "adaptive" },
+        effort,
+        finalizerAttempt: "regenerate",
+      });
+      expect(create).toHaveBeenCalledTimes(2);
+      expect(create.mock.calls[0]?.[0].thinking).toEqual({ type: "adaptive" });
+      expect(create.mock.calls[1]?.[0].thinking).toBeUndefined();
+      for (const [request] of create.mock.calls) {
+        expect(request.output_config).toEqual(effort === undefined ? undefined : { effort });
+      }
+    },
+  );
+
+  it("unions whole question ids only across finalizer requests actually sent", async () => {
+    const metrics = createTurnExecutionMetrics();
+    expect(metrics.shownOpenQuestionIds).toBeUndefined();
+    await turnExecutionMetricsStorage.run(metrics, async () => {
+      await runEmissionFinalizer(createAnsweringLlm("first"), tempDirs, {
+        shownOpenQuestionIds: ["oq_a"],
+      });
+      await runEmissionFinalizer(createAnsweringLlm("retry"), tempDirs, {
+        finalizerAttempt: "regenerate",
+        shownOpenQuestionIds: ["oq_b", "oq_a"],
+      });
+    });
+    expect(metrics.shownOpenQuestionIds).toEqual(["oq_a", "oq_b"]);
   });
 
   it("does not expose EmitContinueThought on active user turns", async () => {
@@ -1487,6 +1547,45 @@ describe("runFinalizer emission tools", () => {
       });
     },
   );
+
+  // The two fields are read side by side on my own silences list, and a primary that never
+  // shows up among the categories reads as the two records disagreeing. It is the schema:
+  // the category field takes the semantic enum only, so these values cannot be written there
+  // at all. Derive the set so this tracks an edit to either enum instead of pinning names.
+  it.each(
+    FINALIZER_NO_OUTPUT_PRIMARY_REASONS.filter(
+      (reason) => !(FINALIZER_NO_OUTPUT_CATEGORIES as readonly string[]).includes(reason),
+    ),
+  )("rejects %s as an EmitNoOutput category", async (primaryOnlyReason) => {
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          messageBlocks: [
+            {
+              type: "tool_use",
+              id: "toolu_no_output_category",
+              name: "EmitNoOutput",
+              input: {
+                reason: "no_visible_reply_needed",
+                primary_no_output_reason: primaryOnlyReason,
+                no_output_categories: [primaryOnlyReason],
+              },
+            },
+          ],
+          input_tokens: 4,
+          output_tokens: 2,
+          stop_reason: "tool_use",
+        },
+      ],
+    });
+
+    const result = await runEmissionFinalizer(llm, tempDirs);
+
+    expect(result.decision).toMatchObject({
+      kind: "invalid_tool",
+      toolName: "EmitNoOutput",
+    });
+  });
 
   it("rejects malformed EmitSelfReport payloads", async () => {
     const llm = new FakeLLMClient({

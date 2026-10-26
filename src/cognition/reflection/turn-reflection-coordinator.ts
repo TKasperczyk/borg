@@ -1,7 +1,7 @@
 import type { LLMClient } from "../../llm/index.js";
 import type { AffectiveSignal, MoodRepository } from "../../memory/affective/index.js";
 import type { ProceduralContext, SkillSelectionResult } from "../../memory/procedural/index.js";
-import type { OpenQuestionsRepository } from "../../memory/self/index.js";
+import type { OpenQuestion, OpenQuestionsRepository } from "../../memory/self/index.js";
 import type { SocialRepository } from "../../memory/social/index.js";
 import type {
   PendingSocialAttribution,
@@ -39,6 +39,24 @@ function emptyReflectionEffects(): ReflectionEffects {
   };
 }
 
+// The reflector can resolve only the questions it is handed, and the store's urgency top-N is not
+// chosen by the turn: a question this turn recalled and answered could rank below it and stay open.
+// Recalled open questions come first; the urgency draw fills the remaining slots, so the count holds.
+function reflectionOpenQuestions(
+  recalled: readonly OpenQuestion[],
+  byUrgency: readonly OpenQuestion[],
+): OpenQuestion[] {
+  const byId = new Map<string, OpenQuestion>();
+
+  for (const question of [...recalled, ...byUrgency]) {
+    if (question.status === "open" && !byId.has(question.id)) {
+      byId.set(question.id, question);
+    }
+  }
+
+  return [...byId.values()].slice(0, OPEN_QUESTIONS_REFLECTION_LIMIT);
+}
+
 export type TurnReflectionCoordinatorOptions = {
   moodRepository: Pick<MoodRepository, "update">;
   socialRepository: Pick<SocialRepository, "recordInteractionWithId">;
@@ -64,6 +82,8 @@ export type RunTurnReflectionInput = {
   deliberation: DeliberationResult;
   actionResult: ActionResult;
   retrievedEpisodes: DeliberationResult["retrievedEpisodes"];
+  // The open questions this turn's retrieval recalled, the set its evidence ledger draws from.
+  recalledOpenQuestions?: readonly OpenQuestion[];
   retrievalConfidence: Parameters<Reflector["reflect"]>[0]["retrievalConfidence"];
   executiveFocus: ExecutiveFocus;
   selectedSkill: SkillSelectionResult | null;
@@ -169,10 +189,13 @@ export class TurnReflectionCoordinator {
     }
 
     const reflector = this.options.createReflector(input.llmClient);
-    const activeOpenQuestions = this.options.openQuestionsRepository.list({
-      status: "open",
-      limit: OPEN_QUESTIONS_REFLECTION_LIMIT,
-    });
+    const activeOpenQuestions = reflectionOpenQuestions(
+      input.recalledOpenQuestions ?? [],
+      this.options.openQuestionsRepository.list({
+        status: "open",
+        limit: OPEN_QUESTIONS_REFLECTION_LIMIT,
+      }),
+    );
     const reflection = await reflector.reflect(
       {
         turnId: input.turnId,

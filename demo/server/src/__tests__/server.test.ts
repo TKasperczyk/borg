@@ -34,6 +34,8 @@ import {
   createFakeStreamingResponse,
 } from "../../../../src/llm/test-support/fake-client.js";
 import type { AttachmentService } from "../../../../src/attachments/index.js";
+import type { BorgDependencies } from "../../../../src/borg/types.js";
+import { EMBEDDING_ACCESS_FILE } from "../../../../src/embeddings/bank-profile.js";
 import { IMAGE_PERCEPTION_TOOL_NAME } from "../../../../src/attachments/perception.js";
 import type { Episode, EpisodicRepository } from "../../../../src/memory/episodic/index.js";
 import type { CreatorDirectiveRepository } from "../../../../src/memory/creator-directives/index.js";
@@ -42,9 +44,11 @@ import type { ReviewQueueRepository } from "../../../../src/memory/review-queue/
 import type { TrainOfThoughtRepository } from "../../../../src/memory/train-of-thought/index.js";
 import { TestEmbeddingClient, createTestConfig } from "../../../../src/offline/test-support.js";
 import type { AuditLog } from "../../../../src/offline/audit-log.js";
+import type { AutonomyWakesRepository } from "../../../../src/autonomy/wakes-repository.js";
 import type { LanceDbTable } from "../../../../src/storage/lancedb/index.js";
 import type { StreamWriter } from "../../../../src/stream/index.js";
 import {
+  BorgRequestGate,
   broadcastMaintenanceTick,
   createDemoServerApp,
   ensureDemoDefaultSession,
@@ -53,6 +57,8 @@ import {
 } from "../app.js";
 import { LiveBroadcaster, createLiveBridge, type LiveFrame } from "../live.js";
 import { createResetBorgController, type BorgHandle } from "../reset.js";
+import { MemorySampler } from "../memory.js";
+import { createDemoRuntimeShutdownHandler } from "../shutdown.js";
 
 const PNG_1X1 = Uint8Array.from([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
@@ -66,6 +72,7 @@ type BorgTestInternals = {
   deps: {
     attachmentService: AttachmentService;
     auditLog: AuditLog;
+    autonomyWakesRepository: AutonomyWakesRepository;
     createStreamWriter(sessionId: typeof DEFAULT_SESSION_ID): StreamWriter;
     creatorDirectiveRepository: CreatorDirectiveRepository;
     episodicRepository: EpisodicRepository;
@@ -101,6 +108,7 @@ function createBorgCloseStub(input: { start?: () => void } = {}): Borg {
     },
     autonomy: {
       scheduler: {
+        setObserver: vi.fn(),
         start: vi.fn(),
         stop: vi.fn(async () => {}),
       },
@@ -720,6 +728,194 @@ describe("demo server", () => {
     }
   });
 
+  it("closes HTTP turn and reset admission while waiting for accepted requests", async () => {
+    const gate = new BorgRequestGate();
+    const lease = gate.acquire();
+    let drained = false;
+    const pending = (async () => {
+      await gate.beginShutdown();
+      drained = true;
+    })();
+    expect(() => gate.acquire()).toThrow("Borg is shutting down");
+    expect(() => gate.beginReset()).toThrow("Borg is shutting down");
+    expect(drained).toBe(false);
+    lease.release();
+    await pending;
+    expect(drained).toBe(true);
+  });
+
+  it("holds stores and the lease for a background vector tail created by late HTTP body parsing", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-http-drain-"));
+    tempDirs.push(tempDir);
+    const { borg, live } = await openHarness({ tempDir });
+    const { deps } = borg as unknown as { deps: BorgDependencies };
+    const question = borg.self.openQuestions.add({
+      question: "What will the late request change?",
+      urgency: 0.4,
+      provenance: { kind: "manual" },
+      source: "user",
+    });
+    await deps.openQuestionsRepository.waitForPendingEmbeddings();
+    const table = (deps.openQuestionsRepository as unknown as { table: LanceDbTable }).table;
+    const finishVector = createDeferred<void>();
+    const vectorStarted = createDeferred<void>();
+    const upsert = table.upsert.bind(table);
+    const vectorWrite = vi.spyOn(table, "upsert").mockImplementation(async (...args) => {
+      vectorStarted.resolve();
+      await finishVector.promise;
+      return await upsert(...args);
+    });
+    const sqliteClose = vi.spyOn(deps.sqlite, "close");
+    const lanceClose = vi.spyOn(deps.lance, "close");
+    const runtimeDrain = vi.spyOn(borg, "beginShutdown");
+    const requestGate = new BorgRequestGate();
+    const borgHandle: BorgHandle = { current: borg };
+    const { app, beginShutdown } = createDemoServerApp({ borgHandle, live, requestGate });
+    const parsed = createDeferred<void>();
+    const body = createDeferred<void>();
+    const request = Promise.resolve(
+      app.fetch(
+        new Request(`http://localhost/api/identity/open-questions/${question.id}`, {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          duplex: "half",
+          body: new ReadableStream({
+            async start(controller) {
+              parsed.resolve();
+              await body.promise;
+              controller.enqueue(new TextEncoder().encode(JSON.stringify({ action: "bump" })));
+              controller.close();
+            },
+          }),
+        } as RequestInit),
+      ),
+    );
+    await parsed.promise;
+    const stopConnector = vi.fn(async () => {});
+    const exit = vi.fn();
+    const shutdown = createDemoRuntimeShutdownHandler({
+      borgHandle,
+      onShutdownRequested: vi.fn(),
+      beginHttpDrain: beginShutdown,
+      stopHost: [],
+      stopConnector,
+      forceCloseConnections: vi.fn(),
+      exit,
+      logger: { log: vi.fn(), error: vi.fn() },
+    });
+    const closing = shutdown("SIGTERM");
+    try {
+      expect(() => requestGate.acquire()).toThrow("Borg is shutting down");
+      await expect(borg.enqueueMessage({} as never)).rejects.toMatchObject({
+        code: "BORG_SHUTTING_DOWN",
+      });
+      expect((await requestJson(app, "/api/admin/reset", "POST", {})).status).toBe(503);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(runtimeDrain).not.toHaveBeenCalled();
+      expect(stopConnector).not.toHaveBeenCalled();
+      body.resolve();
+      expect((await request).status).toBe(200);
+      await vectorStarted.promise;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(stopConnector).toHaveBeenCalledOnce();
+      expect(runtimeDrain).toHaveBeenCalledOnce();
+      expect(sqliteClose).not.toHaveBeenCalled();
+      expect(lanceClose).not.toHaveBeenCalled();
+      expect(existsSync(join(tempDir, EMBEDDING_ACCESS_FILE))).toBe(true);
+      finishVector.resolve();
+      await closing;
+      expect(sqliteClose).toHaveBeenCalledOnce();
+      expect(lanceClose).toHaveBeenCalledOnce();
+      expect(existsSync(join(tempDir, EMBEDDING_ACCESS_FILE))).toBe(false);
+      expect(exit).toHaveBeenCalledWith(0);
+    } finally {
+      body.resolve();
+      finishVector.resolve();
+      await request;
+      await closing;
+      vectorWrite.mockRestore();
+      runtimeDrain.mockRestore();
+      sqliteClose.mockRestore();
+      lanceClose.mockRestore();
+    }
+  });
+
+  it.each(["HTTP", "connector"])(
+    "retains the lease on an %s-only timeout even after Borg's internal drain completed",
+    async (blockedStage) => {
+      const tempDir = mkdtempSync(join(tmpdir(), "borg-host-timeout-"));
+      tempDirs.push(tempDir);
+      const { borg, live } = await openHarness({ tempDir });
+      const { deps } = borg as unknown as { deps: BorgDependencies };
+      const borgHandle: BorgHandle = { current: borg };
+      const { app, beginShutdown } = createDemoServerApp({ borgHandle, live });
+      await borg.beginShutdown();
+      const sqliteClose = vi.spyOn(deps.sqlite, "close");
+      const runtimeDrain = vi.spyOn(borg, "beginShutdown");
+      const finish = createDeferred<void>();
+      const acquired = createDeferred<void>();
+      const request =
+        blockedStage === "HTTP"
+          ? Promise.resolve(
+              app.fetch(
+                new Request("http://localhost/api/operator-attention", {
+                  method: "POST",
+                  headers: { "content-type": "application/json" },
+                  duplex: "half",
+                  body: new ReadableStream({
+                    async start(controller) {
+                      acquired.resolve();
+                      await finish.promise;
+                      controller.enqueue(new TextEncoder().encode("{}"));
+                      controller.close();
+                    },
+                  }),
+                } as RequestInit),
+              ),
+            )
+          : undefined;
+      if (request) await acquired.promise;
+      const stopConnector = vi.fn(async () => {
+        if (blockedStage === "connector") await finish.promise;
+      });
+      const exit = vi.fn();
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const shutdown = createDemoRuntimeShutdownHandler({
+        borgHandle,
+        onShutdownRequested: vi.fn(),
+        beginHttpDrain: beginShutdown,
+        stopHost: [],
+        stopConnector,
+        forceCloseConnections: vi.fn(),
+        exit,
+        logger: { log: vi.fn(), error: vi.fn() },
+      });
+      const closing = shutdown("SIGTERM");
+      try {
+        await vi.advanceTimersByTimeAsync(75_000);
+        await closing;
+        expect(sqliteClose).toHaveBeenCalledOnce();
+        expect(existsSync(join(tempDir, EMBEDDING_ACCESS_FILE))).toBe(true);
+        expect(exit).toHaveBeenCalledWith(1);
+        const drainCallsAtClose = runtimeDrain.mock.calls.length;
+        finish.resolve();
+        await request;
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(runtimeDrain).toHaveBeenCalledTimes(drainCallsAtClose);
+        if (blockedStage === "HTTP") expect(stopConnector).not.toHaveBeenCalled();
+      } finally {
+        finish.resolve();
+        await request;
+        await closing;
+        vi.useRealTimers();
+        sqliteClose.mockRestore();
+        runtimeDrain.mockRestore();
+        // This test owns the retained lease; production keeps it until exit.
+        await deps.releaseEmbeddingBankAccess?.();
+      }
+    },
+  );
+
   it("closeAll attempts every live client even if one close throws", () => {
     const broadcaster = new LiveBroadcaster({ error: () => {} });
     let secondClosed = false;
@@ -1106,6 +1302,7 @@ describe("demo server", () => {
     expect(await resent.json()).toEqual({ inserted: false });
     expect(borg.operatorAttention.snapshot()).toEqual({
       total: 1,
+      subjectless: 0,
       records: [
         {
           ...record,
@@ -1137,6 +1334,7 @@ describe("demo server", () => {
       expect(response.status).toBe(400);
     }
     expect(borg.operatorAttention.snapshot().total).toBe(2);
+    expect(borg.operatorAttention.snapshot().subjectless).toBe(1);
     expect(JSON.stringify(borg.operatorAttention.snapshot())).not.toContain("NEVER STORE");
   });
 
@@ -1205,6 +1403,92 @@ describe("demo server", () => {
       error: {
         message: "Mark a creator first",
       },
+    });
+  });
+
+  it("serves cached memory samples during reset without reading storage on GET", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-memory-"));
+    tempDirs.push(tempDir);
+    const { borg, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const handle: BorgHandle = { current: borg };
+    const getStorage = vi.fn(() => borg.maintenance);
+    const requestGate = new BorgRequestGate();
+    const sampler = new MemorySampler({
+      config: { intervalMs: 300000, tableIntervalMs: 0, historyLimit: 2 },
+      getStorage,
+      getActivity: () => ({
+        ...live.broadcaster.memoryStats(),
+        ledgerCacheEntries: live.ledgerCache.size,
+      }),
+      log: vi.fn(),
+    });
+    sampler.sample();
+    const { app } = createDemoServerApp({
+      borgHandle: handle,
+      live,
+      memorySampler: sampler,
+      requestGate,
+    });
+    const resetLease = requestGate.beginReset();
+    handle.state = "closing";
+    for (let i = 0; i < 2; i++) {
+      const response = await app.request("/api/admin/memory");
+      expect(response.status).toBe(200);
+      expect(response.headers.get("Cache-Control")).toBe("no-store");
+      expect(await response.json()).toEqual(sampler.snapshot());
+    }
+    expect(getStorage).toHaveBeenCalledOnce();
+    resetLease.release();
+  });
+
+  it("exposes stable memory diagnostic codes while keeping native errors in server logs", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-demo-memory-errors-"));
+    tempDirs.push(tempDir);
+    const { borg, live } = await openHarness({ tempDir });
+    closers.push(() => borg.close());
+    const cause = new Error("native diagnostic details at /private/lance/table/_versions");
+    vi.spyOn(borg.maintenance, "storageMemoryStats").mockImplementation(() => {
+      throw cause;
+    });
+    vi.spyOn(borg.maintenance, "storageTableStats").mockRejectedValue(cause);
+    const logger = { error: vi.fn() };
+    const sampler = new MemorySampler({
+      config: { intervalMs: 300000, tableIntervalMs: 1800000, historyLimit: 2 },
+      getStorage: () => borg.maintenance,
+      getActivity: () => ({
+        ...live.broadcaster.memoryStats(),
+        ledgerCacheEntries: live.ledgerCache.size,
+      }),
+      log: vi.fn(),
+      logger,
+    });
+    sampler.sample();
+    await sampler.stop(); // Wait for the one metadata refresh before the next sample.
+    sampler.sample();
+    const { app } = createDemoServerApp({
+      borgHandle: { current: borg },
+      live,
+      memorySampler: sampler,
+    });
+    const response = await app.request("/api/admin/memory");
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    expect(body).not.toContain("/private/lance");
+    expect(body).not.toContain("native diagnostic details");
+    expect(JSON.parse(body)).toMatchObject({
+      latest: {
+        storageErrorCode: "LANCEDB_MEMORY_STATS_FAILED",
+        lanceTables: { errorCode: "LANCEDB_TABLE_STATS_FAILED", tables: [] },
+      },
+    });
+    expect(logger.error).toHaveBeenCalledWith("LanceDB memory diagnostics failed", {
+      code: "LANCEDB_MEMORY_STATS_FAILED",
+      cause,
+    });
+    expect(logger.error).toHaveBeenCalledWith("LanceDB table metadata refresh failed", {
+      code: "LANCEDB_TABLE_STATS_FAILED",
+      cause,
     });
   });
 
@@ -4328,6 +4612,20 @@ describe("demo server", () => {
       wake_source_type: "trigger",
       source_category: "contemplative",
     });
+    const failedWake = borg.autonomy.wakes.record({
+      trigger_name: "open_question_dormant",
+      session_id: DEFAULT_SESSION_ID,
+      wake_source_type: "trigger",
+    });
+    const internal = borg as unknown as BorgTestInternals;
+    internal.deps.autonomyWakesRepository.recordOutcome(
+      failedWake.id,
+      "error",
+      "retrieval timed out",
+      null,
+      { finalizer_rounds: 0, stall_retries: 0 },
+      { preparationFailed: true },
+    );
 
     const response = await app.request("/api/autonomy");
 
@@ -4363,12 +4661,19 @@ describe("demo server", () => {
           next_due_at: null,
         }),
       ]),
-      recent_wakes: [
+      recent_wakes: expect.arrayContaining([
         expect.objectContaining({
           trigger_name: "scheduled_reflection",
           session_id: DEFAULT_SESSION_ID,
+          preparation_failed: false,
         }),
-      ],
+        expect.objectContaining({
+          id: failedWake.id,
+          outcome: "error",
+          outcome_detail: "retrieval timed out",
+          preparation_failed: true,
+        }),
+      ]),
     });
     const conditionSource = body.wake_sources.find(
       (source: { name: string }) => source.name === "commitment_revoked",
@@ -5068,9 +5373,18 @@ describe("demo server", () => {
       injectWebSocket: vi.fn(),
     }));
     const wireMaintenanceSchedulerLiveObserverMock = vi.fn();
+    const hostTracer = { enabled: true, includePayloads: true, emit: vi.fn() };
+    const memoryConstruct = vi.fn();
+    const createResetBorgControllerMock = vi.fn((_options: { openBorg: () => Promise<Borg> }) =>
+      vi.fn(),
+    );
+    const memoryStart = vi.fn();
+    const memoryStop = vi.fn(async () => {});
 
     vi.doMock("borg", () => ({
       Borg: { open },
+      compositeTracer: vi.fn(() => hostTracer),
+      createTurnTracer: vi.fn(() => ({})),
       DemoMessageConnector: class DemoMessageConnector {},
       loadConfig: vi.fn(() => ({
         dataDir: ".borg-data/test-entry",
@@ -5093,7 +5407,17 @@ describe("demo server", () => {
       createLiveBridge: vi.fn(() => liveBridgeMock),
     }));
     vi.doMock("../reset.js", () => ({
-      createResetBorgController: vi.fn(() => vi.fn()),
+      createResetBorgController: createResetBorgControllerMock,
+    }));
+    vi.doMock("../memory.js", () => ({
+      readMemorySamplerConfig: vi.fn(() => ({})),
+      MemorySampler: class {
+        constructor(options: unknown) {
+          memoryConstruct(options);
+        }
+        start = memoryStart;
+        stop = memoryStop;
+      },
     }));
     vi.spyOn(console, "log").mockImplementation(() => {});
 
@@ -5101,8 +5425,39 @@ describe("demo server", () => {
       await import("../index.js?server-start");
       expect(open).toHaveBeenCalledTimes(1);
       expect(start).toHaveBeenCalledTimes(1);
+      expect(borg.autonomy.scheduler.setObserver).toHaveBeenCalledOnce();
+      expect(
+        vi.mocked(borg.autonomy.scheduler.setObserver).mock.invocationCallOrder[0],
+      ).toBeLessThan(vi.mocked(borg.autonomy.scheduler.start).mock.invocationCallOrder[0]!);
       expect(wireMaintenanceSchedulerLiveObserverMock).toHaveBeenCalledWith(borg, liveBridgeMock);
       expect(serveMock).toHaveBeenCalledTimes(1);
+      expect(memoryStart).toHaveBeenCalledOnce();
+      expect(memoryConstruct).toHaveBeenCalledWith(expect.objectContaining({ tracer: hostTracer }));
+      const observer = vi.mocked(borg.autonomy.scheduler.setObserver).mock.calls[0]![0]!;
+      await observer.onTick?.({
+        status: "ok",
+        ts: 1000,
+        scannedSources: [],
+        dueEvents: 1,
+        firedEvents: 0,
+        budgetSkipped: 0,
+        fleetCooldownSkipped: 0,
+        errorCircuitSkipped: 0,
+        busySkipped: 0,
+        droppedIntervalFires: 0,
+        errorCount: 0,
+        sourceErrorCount: 0,
+        bookkeepingErrorCount: 0,
+        events: [],
+      });
+      expect(hostTracer.emit).toHaveBeenCalledWith(
+        "autonomy.tick",
+        expect.objectContaining({ dueEvents: 1 }),
+      );
+      const replacement = createBorgCloseStub();
+      open.mockResolvedValueOnce(replacement);
+      await createResetBorgControllerMock.mock.calls[0]![0].openBorg();
+      expect(replacement.autonomy.scheduler.setObserver).toHaveBeenCalledOnce();
     } finally {
       if (previousPort === undefined) {
         delete process.env.PORT;
@@ -5114,6 +5469,7 @@ describe("demo server", () => {
       vi.doUnmock("../app.js");
       vi.doUnmock("../live.js");
       vi.doUnmock("../reset.js");
+      vi.doUnmock("../memory.js");
       vi.resetModules();
     }
   });

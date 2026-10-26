@@ -1,7 +1,15 @@
+import { createDemoRuntimeShutdownHandler } from "./shutdown.js";
 import { pathToFileURL } from "node:url";
 
 import { serve } from "@hono/node-server";
-import { Borg, DemoMessageConnector, loadConfig, type MessageConnector } from "borg";
+import {
+  Borg,
+  DemoMessageConnector,
+  compositeTracer,
+  createTurnTracer,
+  loadConfig,
+  type MessageConnector,
+} from "borg";
 
 import {
   createDemoServerApp,
@@ -10,7 +18,9 @@ import {
   serializeStreamEntries,
   wireMaintenanceSchedulerLiveObserver,
 } from "./app.js";
+import { wireAutonomySchedulerObserver } from "./autonomy-observer.js";
 import { createLiveBridge } from "./live.js";
+import { MemorySampler, readMemorySamplerConfig } from "./memory.js";
 import { createResetBorgController, type BorgHandle } from "./reset.js";
 
 // Generic hook: load an external connector plugin (e.g. a chat bridge living outside this
@@ -70,9 +80,14 @@ const dataDir = demoConfig.dataDir;
 const demoCreatorEntityName = process.env.DEMO_CREATOR_ENTITY_NAME ?? undefined;
 const port = readPort();
 const live = createLiveBridge();
+const hostTracer = compositeTracer([createTurnTracer({ env: process.env }), live.tracer]);
+const memorySamplerConfig = readMemorySamplerConfig();
 const connectorPlugin = await loadExternalConnectorPlugin();
 
+let shutdownRequested = false;
+
 async function openDemoBorg(): Promise<Borg> {
+  if (shutdownRequested) throw new Error("Borg is shutting down");
   const borg = await Borg.open({
     config: demoConfig,
     tracer: live.tracer,
@@ -82,7 +97,13 @@ async function openDemoBorg(): Promise<Borg> {
       ...(connectorPlugin?.outboundConnectors ?? []),
     ],
   });
+  if (shutdownRequested) {
+    await borg.close();
+    throw new Error("Borg is shutting down");
+  }
   ensureDemoDefaultSession(borg, { demoCreatorEntityName });
+  // Attach before start, including when reset opens a replacement Borg.
+  wireAutonomySchedulerObserver(borg.autonomy.scheduler, hostTracer);
   return borg;
 }
 
@@ -114,7 +135,21 @@ if (connectorPlugin) {
 
 const resetBorg = createResetBorgController({ dataDir, live, borgHandle, openBorg: openDemoBorg });
 
-const { app, injectWebSocket } = createDemoServerApp({
+const memorySampler = new MemorySampler({
+  config: memorySamplerConfig,
+  getStorage: () =>
+    borgHandle.state === "closing" || borgHandle.state === "dead"
+      ? null
+      : borgHandle.current.maintenance,
+  getActivity: () => ({
+    ...live.broadcaster.memoryStats(),
+    ledgerCacheEntries: live.ledgerCache.size,
+  }),
+  tracer: hostTracer,
+});
+
+const { app, injectWebSocket, beginShutdown } = createDemoServerApp({
+  memorySampler,
   borgHandle,
   live,
   corsOrigins: readCorsOrigins(),
@@ -128,57 +163,36 @@ const server = serve({
 });
 
 injectWebSocket(server);
+memorySampler.start();
 
 console.log(`Borg demo server listening on http://localhost:${port}`);
 
-let shuttingDown = false;
-const shutdown = async (signal: NodeJS.Signals) => {
-  if (shuttingDown) {
-    return;
-  }
-
-  shuttingDown = true;
-  console.log(`Received ${signal}; shutting down`);
-
-  live.broadcaster.closeAll();
-  const serverWithConnectionCloser = server as typeof server & {
-    closeAllConnections?: () => void;
-  };
-  await new Promise<void>((resolve) => {
-    const forceCloseTimer = setTimeout(() => {
-      serverWithConnectionCloser.closeAllConnections?.();
-      resolve();
-    }, 5_000);
-
-    server.close(() => {
-      clearTimeout(forceCloseTimer);
-      resolve();
-    });
-  });
-  if (connectorPlugin) {
-    await connectorPlugin.stop().catch((error: unknown) => {
-      console.error("external connector plugin stop failed", error);
-    });
-  }
-  if (borgHandle.state !== "dead" && borgHandle.state !== "closing") {
-    await borgHandle.current.autonomy.scheduler.stop().catch(() => undefined);
-    await borgHandle.current.maintenance.scheduler.stop().catch(() => undefined);
-    await borgHandle.current.close();
-  }
-};
-
-function exitAfterShutdown(signal: NodeJS.Signals): void {
-  void shutdown(signal)
-    .then(() => process.exit(0))
-    .catch((error: unknown) => {
-      console.error("Borg demo server shutdown failed", error);
-      process.exit(1);
-    });
-}
-
-process.once("SIGINT", (signal) => {
-  exitAfterShutdown(signal);
+const shutdown = createDemoRuntimeShutdownHandler({
+  borgHandle,
+  onShutdownRequested: () => {
+    shutdownRequested = true;
+  },
+  beginHttpDrain: beginShutdown,
+  stopHost: [
+    () => live.broadcaster.closeAll(),
+    () => memorySampler.stop(),
+    () =>
+      new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      }),
+  ],
+  stopConnector: async () => {
+    await connectorPlugin?.stop();
+  },
+  forceCloseConnections: () => {
+    (server as typeof server & { closeAllConnections?: () => void }).closeAllConnections?.();
+  },
+  exit: (code) => process.exit(code),
 });
-process.once("SIGTERM", (signal) => {
-  exitAfterShutdown(signal);
+
+process.on("SIGINT", (signal) => {
+  void shutdown(signal);
+});
+process.on("SIGTERM", (signal) => {
+  void shutdown(signal);
 });

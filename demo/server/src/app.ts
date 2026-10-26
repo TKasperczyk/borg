@@ -762,9 +762,8 @@ export function ensureDemoSession(
     source_external_id: sourceExternalId,
     source_url: existing?.source_url ?? null,
     label: input.label ?? existing?.label ?? demoSessionLabel(input.sessionId),
-    // sessions.ensure() overwrites both audience columns unconditionally, so a caller
-    // that does not name an audience must adopt the stored one rather than re-stamp the
-    // demo default over it -- the same adoption the source/label fields above rely on.
+    // Keep the stored label when the request omits it; sessions.ensure retains an
+    // established entity binding even when the transport label resolves elsewhere.
     audience_label: input.audienceLabel ?? existing?.audience_label ?? DEMO_DEFAULT_AUDIENCE_LABEL,
     audience_entity_id: input.audienceEntityId ?? existing?.audience_entity_id ?? null,
     conversation_kind: existing?.conversation_kind ?? DEMO_CONVERSATION_KIND,
@@ -834,14 +833,15 @@ export function ensureDemoOperatorSession(borg: Borg) {
 function parseKnownEntityId(borg: Borg, value: string, label: string): EntityId {
   const entityId = parseRequest(entityParamSchema, { id: value }).id;
 
-  if (borg.entities.get(entityId) === null) {
+  const entity = borg.entities.get(entityId);
+  if (entity === null) {
     throw new HTTPException(400, { message: `${label} entity not found` });
   }
 
-  return entityId;
+  return entity.id;
 }
 
-function resolveTurnAudienceEntityId(
+export function resolveTurnAudienceEntityId(
   borg: Borg,
   input: {
     audienceLabel: string;
@@ -849,22 +849,18 @@ function resolveTurnAudienceEntityId(
     existingAudienceEntityId?: EntityId | null;
   },
 ): EntityId | null {
+  // The persisted room binding wins over transport labels and incoming handles.
+  if (input.existingAudienceEntityId != null) {
+    return borg.entities.resolveAudienceLabel(input.audienceLabel, input.existingAudienceEntityId);
+  }
   if (input.explicitAudienceEntityId !== undefined) {
-    return parseKnownEntityId(borg, input.explicitAudienceEntityId, "audience");
+    return borg.entities.resolveAudienceLabel(
+      input.audienceLabel,
+      parseKnownEntityId(borg, input.explicitAudienceEntityId, "audience"),
+    );
   }
 
-  if (input.existingAudienceEntityId !== undefined && input.existingAudienceEntityId !== null) {
-    if (borg.entities.get(input.existingAudienceEntityId) === null) {
-      throw new HTTPException(400, { message: "audience entity not found" });
-    }
-
-    return input.existingAudienceEntityId;
-  }
-
-  return borg.entities.resolve(input.audienceLabel, {
-    kind: "person",
-    provenance: "transport_audience_label",
-  });
+  return borg.entities.resolveAudienceLabel(input.audienceLabel);
 }
 
 function resolveTurnSenderEntityId(
@@ -1197,7 +1193,8 @@ function abortedAnchorFailureReason(entry: StreamEntry): string | null {
 }
 
 function sourceEntryIds(entry: StreamEntry): string[] {
-  const sourceEntryIds = entry.response_to?.source_entry_ids;
+  if (entry.response_to?.kind !== "stream_backlog") return [];
+  const sourceEntryIds = entry.response_to.source_entry_ids;
   if (!Array.isArray(sourceEntryIds)) {
     return [];
   }
@@ -2081,6 +2078,7 @@ function mapAutonomyWake(borg: Borg, wake: AutonomyWakeRecord) {
     source_category: wake.source_category,
     selected_goal_id: wake.selected_goal_id,
     outcome: wake.outcome,
+    preparation_failed: wake.preparation_failed,
     outcome_detail: wake.outcome_detail,
     headway_bases: wake.headway_bases,
     finalizer_rounds: wake.finalizer_rounds,
@@ -3018,6 +3016,7 @@ export function wireMaintenanceSchedulerLiveObserver(borg: Borg, live: LiveBridg
 }
 
 export type DemoServerAppInput = {
+  memorySampler?: Pick<import("./memory.js").MemorySampler, "snapshot">;
   borgHandle: BorgHandle;
   live: LiveBridge;
   corsOrigins?: readonly string[];
@@ -3052,8 +3051,21 @@ type BorgRequestGateLease = {
 export class BorgRequestGate {
   private inflight = 0;
   private resetting = false;
+  private shuttingDown = false;
+  private drained: (() => void) | undefined;
+  private drainPromise: Promise<void> | undefined;
+
+  beginShutdown(): Promise<void> {
+    this.shuttingDown = true;
+    this.drainPromise ??= new Promise<void>((resolve) => {
+      this.drained = resolve;
+      if (this.inflight === 0 && !this.resetting) resolve();
+    });
+    return this.drainPromise;
+  }
 
   acquire(): BorgRequestGateLease {
+    if (this.shuttingDown) throw new HTTPException(503, { message: "Borg is shutting down" });
     if (this.resetting) {
       throw new HTTPException(503, { message: "Borg reset in progress" });
     }
@@ -3069,11 +3081,13 @@ export class BorgRequestGate {
 
         released = true;
         this.inflight = Math.max(0, this.inflight - 1);
+        if (this.inflight === 0 && !this.resetting) this.drained?.();
       },
     };
   }
 
   beginReset(): BorgRequestGateLease {
+    if (this.shuttingDown) throw new HTTPException(503, { message: "Borg is shutting down" });
     if (this.resetting) {
       throw new HTTPException(409, { message: "Borg reset already in progress" });
     }
@@ -3093,6 +3107,7 @@ export class BorgRequestGate {
 
         released = true;
         this.resetting = false;
+        if (this.inflight === 0) this.drained?.();
       },
     };
   }
@@ -3156,6 +3171,23 @@ export function createDemoServerApp(args: DemoServerAppInput) {
     return jsonError(500, "Internal Server Error");
   });
 
+  app.use("/api/*", async (c, next) => {
+    const pathname = new URL(c.req.url).pathname;
+    // This endpoint serves cached sampler data only, including during reset/drain.
+    // It neither touches Borg nor starts embeddings or background writes.
+    if (pathname === "/api/admin/memory") return next();
+    // Acquire before body parsing (including reset) or any middleware await.
+    const lease =
+      pathname === "/api/admin/reset"
+        ? input.requestGate.beginReset()
+        : input.requestGate.acquire();
+    try {
+      await next();
+    } finally {
+      lease.release();
+    }
+  });
+
   app.use(
     "/api/*",
     cors({
@@ -3163,18 +3195,9 @@ export function createDemoServerApp(args: DemoServerAppInput) {
     }),
   );
 
-  app.use("/api/*", async (c, next) => {
-    const pathname = new URL(c.req.url).pathname;
-    if (pathname === "/api/live" || pathname === "/api/admin/reset") {
-      return next();
-    }
-
-    const lease = input.requestGate.acquire();
-    try {
-      await next();
-    } finally {
-      lease.release();
-    }
+  app.get("/api/admin/memory", (c) => {
+    c.header("Cache-Control", "no-store");
+    return c.json(args.memorySampler?.snapshot() ?? { latest: null, history: [] });
   });
 
   app.get(
@@ -4406,7 +4429,6 @@ export function createDemoServerApp(args: DemoServerAppInput) {
       throw new HTTPException(501, { message: "Reset not wired up in this server" });
     }
 
-    const resetLease = input.requestGate.beginReset();
     try {
       clearAppCaches();
       await input.resetBorg();
@@ -4422,10 +4444,8 @@ export function createDemoServerApp(args: DemoServerAppInput) {
         throw new HTTPException(500, { message: error.message });
       }
       mapBorgErrorToHttp(error);
-    } finally {
-      resetLease.release();
     }
   });
 
-  return { app, injectWebSocket };
+  return { app, injectWebSocket, beginShutdown: () => input.requestGate.beginShutdown() };
 }

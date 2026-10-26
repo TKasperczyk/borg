@@ -1,5 +1,7 @@
+import { z } from "zod";
 import { join } from "node:path";
 
+import Anthropic from "@anthropic-ai/sdk";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { StreamReader, StreamWatermarkRepository, StreamWriter } from "../stream/index.js";
@@ -21,6 +23,7 @@ import { associateTurnExecutionMetricsWithError } from "../cognition/turn-execut
 
 import {
   createCommitmentExpiringTrigger,
+  createOpenQuestionDormantTrigger,
   createGoalFollowupDueTrigger,
   createScheduledReflectionTrigger,
   createScheduledWakeTrigger,
@@ -33,7 +36,7 @@ import {
   turnEmittedHeadway,
   type AutonomySchedulerOptions,
 } from "./scheduler.js";
-import type { AutonomyWakeSource } from "./types.js";
+import type { AutonomyWakeSource, TickResult } from "./types.js";
 import {
   AUTONOMY_WAKE_OUTCOME_DETAIL_MAX_LENGTH,
   AutonomyWakesRepository,
@@ -433,6 +436,170 @@ describe("AutonomyScheduler", () => {
     await cleanup?.();
     cleanup = undefined;
   });
+
+  it.each(["ended", "expired"])(
+    "defers operational scans without consuming state until maintenance %s",
+    async (release) => {
+      const clock = new ManualClock(1_000_000);
+      const harness = await createOfflineTestHarness({ clock });
+      cleanup = harness.cleanup;
+      const watermarkRepository = new StreamWatermarkRepository({ db: harness.db, clock });
+      const writer = (sessionId: typeof DEFAULT_SESSION_ID) =>
+        new StreamWriter({ dataDir: harness.tempDir, sessionId, clock });
+      const operational = createTestDueSource("operational");
+      const contemplative = createTestDueSource("scheduled", "scheduled_wake", "contemplative");
+      const operationalScan = vi.spyOn(operational, "scan");
+      let passStartedAt: number | null = clock.now();
+      const runner = {
+        run: vi.fn().mockResolvedValue(createStructuralTurnResult({ emissionKind: "message" })),
+      };
+      const scheduler = createScheduler({
+        db: harness.db,
+        enabled: true,
+        intervalMs: 1000,
+        maxWakesPerWindow: 6,
+        clock,
+        createStreamWriter: writer,
+        watermarkRepository,
+        toolDispatcher: new ToolDispatcher({ createStreamWriter: writer, clock }),
+        turnOrchestrator: runner,
+        sources: [operational, contemplative],
+        maintenancePassStartedAt: () => passStartedAt,
+      });
+      const first = await scheduler.tick();
+      expect(first).toMatchObject({ firedEvents: 1, maintenanceHeldSources: [operational.name] });
+      expect(operationalScan).not.toHaveBeenCalled();
+      expect(watermarkRepository.get("autonomy:test:operational", DEFAULT_SESSION_ID)).toBeNull();
+      expect((await scheduler.describe()).budget.used_in_current_window).toBe(1);
+      // Repeated polls do not reset the fixed pass start, charge an operational wake, or mutate its brake.
+      const brakeBefore = watermarkRepository.get(FLEET_BRAKE_PROCESS_NAME, DEFAULT_SESSION_ID);
+      await scheduler.tick();
+      expect(operationalScan).not.toHaveBeenCalled();
+      expect(watermarkRepository.get(FLEET_BRAKE_PROCESS_NAME, DEFAULT_SESSION_ID)).toEqual(
+        brakeBefore,
+      );
+      if (release === "ended") passStartedAt = null;
+      else clock.advance(90 * 60_000);
+      await scheduler.tick();
+      expect(operationalScan).toHaveBeenCalledOnce();
+      expect(
+        watermarkRepository.get("autonomy:test:operational", DEFAULT_SESSION_ID),
+      ).not.toBeNull();
+    },
+  );
+
+  it("rechecks maintenance after a scan and graceful stop after completed bookkeeping", async () => {
+    const harness = await createOfflineTestHarness();
+    cleanup = harness.cleanup;
+    const clock = harness.clock;
+    const watermarkRepository = new StreamWatermarkRepository({ db: harness.db, clock });
+    const writer = (sessionId: typeof DEFAULT_SESSION_ID) =>
+      new StreamWriter({ dataDir: harness.tempDir, sessionId, clock });
+    let passStartedAt: number | null = null;
+    const first = createTestDueSource("first");
+    const second = createTestDueSource("second");
+    const scan = first.scan.bind(first);
+    first.scan = async () => {
+      const events = await scan();
+      passStartedAt = clock.now();
+      return events;
+    };
+    const runner = {
+      run: vi.fn().mockResolvedValue(createStructuralTurnResult({ emissionKind: "message" })),
+    };
+    const dispatcher = new ToolDispatcher({ createStreamWriter: writer, clock });
+    const preparation = vi.spyOn(dispatcher, "dispatch");
+    const scheduler = createScheduler({
+      db: harness.db,
+      enabled: true,
+      intervalMs: 1000,
+      maxWakesPerWindow: 6,
+      clock,
+      createStreamWriter: writer,
+      watermarkRepository,
+      toolDispatcher: dispatcher,
+      turnOrchestrator: runner,
+      sources: [first, second],
+      maintenancePassStartedAt: () => passStartedAt,
+    });
+    expect(await scheduler.tick()).toMatchObject({
+      firedEvents: 0,
+      events: [expect.objectContaining({ status: "maintenance_skipped" })],
+    });
+    expect(preparation).not.toHaveBeenCalled();
+    expect((await scheduler.describe()).budget.used_in_current_window).toBe(0);
+    passStartedAt = null;
+    first.scan = scan;
+    let stop: Promise<void> | undefined;
+    first.onFired = async () => {
+      stop = scheduler.stop();
+    };
+    expect(await scheduler.tick()).toMatchObject({ firedEvents: 1 });
+    await stop;
+    expect(runner.run).toHaveBeenCalledOnce();
+    expect(watermarkRepository.get("autonomy:test:first", DEFAULT_SESSION_ID)).not.toBeNull();
+    expect(watermarkRepository.get("autonomy:test:second", DEFAULT_SESSION_ID)).toBeNull();
+    expect((await scheduler.tick()).status).toBe("disabled");
+  });
+
+  it.each([
+    {
+      name: "tool.openQuestions.resolve",
+      scope: "write",
+      ok: true,
+      status: "requires_review",
+      headway: true,
+    },
+    { name: "tool.goals.retire", scope: "write", ok: true, status: "no_op", headway: true },
+    { name: "tool.journal.append", scope: "write", ok: false, status: "error", headway: false },
+    { name: "tool.episodic.search", scope: "read", ok: true, status: "ok", headway: false },
+    { name: "tool.outbound.post", scope: "write", ok: true, status: "refused", headway: false },
+  ] as const)(
+    "counts registered write headway: $name $status",
+    async ({ name, scope, ok, status, headway }) => {
+      const harness = await createOfflineTestHarness();
+      cleanup = harness.cleanup;
+      const clock = harness.clock;
+      const watermarkRepository = new StreamWatermarkRepository({ db: harness.db, clock });
+      const writer = (sessionId: typeof DEFAULT_SESSION_ID) =>
+        new StreamWriter({ dataDir: harness.tempDir, sessionId, clock });
+      const dispatcher = new ToolDispatcher({ createStreamWriter: writer, clock });
+      dispatcher.register({
+        name,
+        writeScope: scope,
+        description: "test",
+        allowedOrigins: ["autonomous"],
+        inputSchema: z.unknown(),
+        outputSchema: z.unknown(),
+        async invoke() {
+          return {};
+        },
+      });
+      const result = createStructuralTurnResult({ emissionKind: "suppressed" });
+      result.toolCalls = [
+        { callId: "write", name, ok, input: {}, output: { status }, durationMs: 1 },
+      ];
+      const scheduler = createScheduler({
+        db: harness.db,
+        enabled: true,
+        intervalMs: 1000,
+        maxWakesPerWindow: 6,
+        clock,
+        createStreamWriter: writer,
+        watermarkRepository,
+        toolDispatcher: dispatcher,
+        turnOrchestrator: { run: vi.fn().mockResolvedValue(result) },
+        fleetBrake: TEST_FLEET_BRAKE,
+        sources: [createTestDueSource()],
+      });
+      expect((await scheduler.tick()).firedEvents).toBe(1);
+      const description = await scheduler.describe();
+      expect(description.fleet_brake.empty_streak).toBe(headway ? 0 : 1);
+      expect(description.window_wakes[0]?.headway_bases).toEqual(
+        headway ? [`ok write: ${name}`] : null,
+      );
+    },
+  );
 
   it("recognizes only the two structural per-goal empty-wake payload shapes", () => {
     const baseEvent = {
@@ -1051,7 +1218,7 @@ describe("AutonomyScheduler", () => {
           dormancyCount: 3,
           actionAvailabilityKey,
         }).endMs,
-      ).toBe(Number.POSITIVE_INFINITY);
+      ).toBe(backoff!.updatedAt + 14 * 86_400_000);
     }
   });
 
@@ -1746,6 +1913,8 @@ describe("AutonomyScheduler", () => {
           },
         ],
       });
+      followupSource.dormantGoalIds = () => [goal.id];
+      executiveSource.dormantGoalIds = () => [goal.id];
       const turnRunner = {
         run: vi.fn().mockResolvedValue(createStructuralTurnResult({ emissionKind: "suppressed" })),
       };
@@ -1771,6 +1940,7 @@ describe("AutonomyScheduler", () => {
 
       const result = await scheduler.tick();
 
+      expect((await scheduler.describe()).dormant_goals).toBe(1);
       return {
         backoff: watermarkRepository.get(backoffProcessName, DEFAULT_SESSION_ID),
         followupLatch: watermarkRepository.get(
@@ -1822,11 +1992,194 @@ describe("AutonomyScheduler", () => {
           dormancyCount: 3,
           actionAvailabilityKey,
         }).endMs,
-      ).toBe(Number.POSITIVE_INFINITY);
+      ).toBe(batched.backoff!.updatedAt + 14 * 86_400_000);
     } finally {
       await Promise.all(harnesses.map((harness) => harness.cleanup()));
     }
   });
+
+  it.each([
+    { provider: true, category: "operational" as const },
+    { provider: false, category: "operational" as const },
+    { provider: true, category: "contemplative" as const },
+    { provider: false, category: "contemplative" as const },
+  ])(
+    "accounts for $category turn failures (provider=$provider)",
+    async ({ provider, category }) => {
+      const clock = new ManualClock(1_000_000);
+      const harness = await createOfflineTestHarness({ clock });
+      const createStreamWriter = (sessionId: typeof DEFAULT_SESSION_ID) =>
+        new StreamWriter({ dataDir: harness.tempDir, sessionId, clock });
+      const failure = new Error("turn failed", {
+        cause: new LLMError("arbitrary wording", {
+          code: provider ? "LLM_CALL_TIMED_OUT" : "LLM_STRUCTURED_OUTPUT_PARSE_FAILED",
+        }),
+      });
+      const turnRunner = {
+        run: vi
+          .fn()
+          .mockRejectedValueOnce(failure)
+          .mockResolvedValue(createStructuralTurnResult({ emissionKind: "suppressed" })),
+      };
+      const source = createTestDueSource(
+        "typed-failure",
+        category === "contemplative" ? "scheduled_wake" : "goal_followup_due",
+        category,
+      );
+      const scheduler = createScheduler({
+        db: harness.db,
+        enabled: true,
+        intervalMs: 1_000,
+        maxWakesPerWindow: category === "contemplative" ? 1 : 2,
+        reservedContemplativeWakesPerWindow: 1,
+        clock,
+        createStreamWriter,
+        watermarkRepository: new StreamWatermarkRepository({ db: harness.db, clock }),
+        turnOrchestrator: turnRunner,
+        toolDispatcher: new ToolDispatcher({ createStreamWriter, clock }),
+        sources: [source],
+      });
+      try {
+        expect(await scheduler.tick()).toMatchObject({ errorCount: 1 });
+        expect(await scheduler.describe()).toMatchObject({
+          budget: {
+            used_in_current_window: provider ? 0 : 1,
+            contemplative_used_in_current_window: !provider && category === "contemplative" ? 1 : 0,
+            next_budget_slot_frees_at: provider ? null : clock.now() + 3_600_001,
+            wakes_in_current_window_by_trigger: [{ wake_count: 1, outcome_counts: { error: 1 } }],
+          },
+          window_wakes: [
+            { outcome: "error", preparation_failed: false, turn_provider_failed: provider },
+          ],
+        });
+        clock.advance(30_000);
+        expect(await scheduler.tick()).toMatchObject(
+          provider ? { firedEvents: 1, budgetSkipped: 0 } : { firedEvents: 0, budgetSkipped: 1 },
+        );
+        expect(turnRunner.run).toHaveBeenCalledTimes(provider ? 2 : 1);
+        expect((await scheduler.describe()).budget.next_budget_slot_frees_at).toBe(
+          (provider ? clock.now() : clock.now() - 30_000) + 3_600_001,
+        );
+      } finally {
+        await harness.cleanup();
+      }
+    },
+  );
+
+  it.each([
+    { fleetEnabled: false, shown: [0, 1, 2] },
+    { fleetEnabled: true, shown: [0, 1, 2] },
+    { fleetEnabled: false, shown: [1] },
+    { fleetEnabled: false, shown: [] },
+  ])(
+    "runs one prepared turn for three dormant questions (fleet governor enabled=%s)",
+    async ({ fleetEnabled, shown }) => {
+      const clock = new ManualClock(1_000_000);
+      const harness = await createOfflineTestHarness({ clock });
+      const watermarkRepository = new StreamWatermarkRepository({ db: harness.db, clock });
+      const questions = Array.from({ length: 3 }, (_, index) =>
+        harness.openQuestionsRepository.add({
+          question: `Question ${index}`,
+          urgency: 0.5,
+          source: "user",
+          provenance: { kind: "system" },
+          last_touched: clock.now() - 100_000 + index,
+        }),
+      );
+      // The oldest question predates the fleet anchor; only the third is fresh.
+      setFleetBrakeState(watermarkRepository, clock, {
+        empty_streak: 5,
+        streak_anchor_ts: questions[1]!.last_touched,
+        last_wake_ts: clock.now(),
+        bypass_count: 2,
+      });
+      const source = createOpenQuestionDormantTrigger({
+        openQuestionsRepository: harness.openQuestionsRepository,
+        watermarkRepository,
+        dormantMs: 50_000,
+        clock,
+      });
+      const createStreamWriter = (sessionId: typeof DEFAULT_SESSION_ID) =>
+        new StreamWriter({ dataDir: harness.tempDir, sessionId, clock });
+      const dispatcher = new ToolDispatcher({ createStreamWriter, clock });
+      const dispatch = vi.spyOn(dispatcher, "dispatch").mockResolvedValue({
+        callId: "prep",
+        toolName: "tool.episodic.search",
+        ok: true,
+        output: { episodes: [] },
+        durationMs: 1,
+      });
+      const turnRunner = {
+        run: vi.fn().mockResolvedValue({
+          ...createStructuralTurnResult({ emissionKind: "suppressed" }),
+          shownOpenQuestionIds: shown.map((index) => questions[index]!.id),
+        }),
+      };
+      const scheduler = createScheduler({
+        db: harness.db,
+        enabled: true,
+        intervalMs: 1_000,
+        maxWakesPerWindow: 1,
+        fleetBrake: { ...DEFAULT_FLEET_BRAKE_OPTIONS, enabled: fleetEnabled },
+        clock,
+        createStreamWriter,
+        watermarkRepository,
+        turnOrchestrator: turnRunner,
+        toolDispatcher: dispatcher,
+        sources: [source],
+      });
+      try {
+        expect(await scheduler.tick()).toMatchObject({ firedEvents: 1, fleetCooldownSkipped: 0 });
+        expect(turnRunner.run).toHaveBeenCalledTimes(1);
+        expect(dispatch.mock.calls.map(([input]) => input.input)).toEqual(
+          questions.map((question) => ({ query: question.question, limit: 5 })),
+        );
+        const payload = turnRunner.run.mock.calls[0]![0].autonomyTrigger.payload;
+        expect(payload.additional_questions).toHaveLength(2);
+        expect(
+          payload.additional_questions.every((question: Record<string, unknown>) =>
+            Array.isArray(question.related_episodes),
+          ),
+        ).toBe(true);
+        expect(
+          [payload, ...payload.additional_questions].map((question) => question.last_touched),
+        ).toEqual(questions.map((question) => question.last_touched));
+        for (const [index, question] of questions.entries()) {
+          if (!shown.includes(index)) {
+            expect(harness.openQuestionsRepository.get(question.id)?.last_ruminated_at).toBeNull();
+            expect(
+              watermarkRepository.get(
+                `autonomy:open-question-dormant:${question.id}:${question.last_touched}`,
+                DEFAULT_SESSION_ID,
+              ),
+            ).toBeNull();
+            continue;
+          }
+          expect(harness.openQuestionsRepository.get(question.id)).toMatchObject({
+            last_touched: question.last_touched,
+            last_ruminated_at: clock.now(),
+            unresolved_rumination_ticks: 1,
+          });
+          expect(
+            watermarkRepository.get(
+              `autonomy:open-question-dormant:${question.id}:${question.last_touched}`,
+              DEFAULT_SESSION_ID,
+            ),
+          ).toMatchObject({ lastTs: question.last_touched });
+        }
+        expect(await scheduler.describe()).toMatchObject({
+          budget: { used_in_current_window: 1 },
+          fleet_brake: {
+            enabled: fleetEnabled,
+            ...(fleetEnabled ? { empty_streak: 6, bypass_count: 3 } : {}),
+          },
+        });
+        expect((await scheduler.tick()).firedEvents).toBe(0);
+      } finally {
+        await harness.cleanup();
+      }
+    },
+  );
 
   it("fires due events once and respects trigger watermarks", async () => {
     const clock = new ManualClock(1_000_000);
@@ -2886,7 +3239,10 @@ describe("AutonomyScheduler", () => {
         toolDispatcher: new ToolDispatcher({ createStreamWriter, clock }),
         sources: [createTestDueSource("error-execution-counts")],
       });
-      expect(await scheduler.tick()).toMatchObject({ errorCount: 1 });
+      expect(await scheduler.tick()).toMatchObject({
+        errorCount: 1,
+        events: [expect.objectContaining({ errorName: "Error" })],
+      });
       expect(wakeRepository.listSince(0, 1)[0]).toMatchObject({
         outcome: "error",
         finalizer_rounds: recorded ? 2 : null,
@@ -2919,15 +3275,13 @@ describe("AutonomyScheduler", () => {
         new StreamWriter({ dataDir: harness.tempDir, sessionId, clock }),
       watermarkRepository,
       turnOrchestrator: {
-        run: vi
-          .fn()
-          .mockResolvedValue(
-            createStructuralTurnResult({
-              emissionKind: "suppressed",
-              finalizerRounds: 2,
-              stallRetries: 3,
-            }),
-          ),
+        run: vi.fn().mockResolvedValue(
+          createStructuralTurnResult({
+            emissionKind: "suppressed",
+            finalizerRounds: 2,
+            stallRetries: 3,
+          }),
+        ),
       },
       toolDispatcher: new ToolDispatcher({
         createStreamWriter: (sessionId) =>
@@ -2942,12 +3296,55 @@ describe("AutonomyScheduler", () => {
     expect(result.events[0]).toMatchObject({
       status: "bookkeeping_error",
       outcomeSummary: expect.stringContaining(originalError.message),
+      errorName: "AutonomyBookkeepingError",
     });
     expect(wakeRepository.listSince(0, 1)[0]).toMatchObject({
       outcome: "interrupted",
       outcome_detail: expect.stringContaining(originalError.message),
       finalizer_rounds: 2,
       stall_retries: 3,
+    });
+  });
+
+  it("names the failure behind a preparation error in the stored outcome detail", async () => {
+    const clock = new ManualClock(1_000_000);
+    const harness = await createOfflineTestHarness({ clock });
+    cleanup = harness.cleanup;
+    const wakeRepository = new AutonomyWakesRepository({ db: harness.db, clock });
+    const turnRunner = {
+      run: vi.fn().mockResolvedValue(createStructuralTurnResult({ emissionKind: "suppressed" })),
+    };
+    const scheduler = createScheduler({
+      db: harness.db,
+      wakeRepository,
+      enabled: true,
+      intervalMs: 1_000,
+      maxWakesPerWindow: 6,
+      clock,
+      createStreamWriter: (sessionId) =>
+        new StreamWriter({ dataDir: harness.tempDir, sessionId, clock }),
+      watermarkRepository: new StreamWatermarkRepository({ db: harness.db, clock }),
+      turnOrchestrator: turnRunner,
+      // Nothing is registered, so the source's preparation dispatch fails. The
+      // wrapper sentence is the same for every preparation failure of this
+      // source: without the cause the record cannot tell them apart.
+      toolDispatcher: new ToolDispatcher({
+        createStreamWriter: (sessionId) =>
+          new StreamWriter({ dataDir: harness.tempDir, sessionId, clock }),
+        clock,
+      }),
+      sources: [createTestDueSource("preparation-cause-event", "scheduled_reflection")],
+    });
+
+    expect(await scheduler.tick()).toMatchObject({
+      errorCount: 1,
+      events: [expect.objectContaining({ errorName: "AutonomySourcePreparationError" })],
+    });
+    expect(turnRunner.run).not.toHaveBeenCalled();
+    expect(wakeRepository.listSince(0, 1)[0]).toMatchObject({
+      outcome: "error",
+      outcome_detail:
+        "Autonomous source preparation failed: AutonomySourcePreparationError: Autonomy source scheduled_reflection could not prepare due events; caused by Unknown tool",
     });
   });
 
@@ -3081,40 +3478,550 @@ describe("AutonomyScheduler", () => {
     ).resolves.toMatchObject({ errorCount: 1 });
   });
 
-  it("passes the configured preparation-tool timeout to the dispatcher", async () => {
-    const clock = new ManualClock(1_000_000);
+  it.each([undefined, 45_000])(
+    "passes preparation-tool timeout %s to the dispatcher",
+    async (prepToolTimeoutMs) => {
+      const clock = new ManualClock(1_000_000);
+      const harness = await createOfflineTestHarness({ clock });
+      cleanup = harness.cleanup;
+      const dispatcher = new ToolDispatcher({
+        createStreamWriter: (sessionId) =>
+          new StreamWriter({ dataDir: harness.tempDir, sessionId, clock }),
+        clock,
+      });
+      dispatcher.register(
+        createCommitmentsListTool({
+          listCommitments: () => [],
+        }),
+      );
+      const dispatch = vi.spyOn(dispatcher, "dispatch");
+      const scheduler = createScheduler({
+        db: harness.db,
+        enabled: true,
+        intervalMs: 1_000,
+        prepToolTimeoutMs,
+        maxWakesPerWindow: 6,
+        clock,
+        createStreamWriter: (sessionId) =>
+          new StreamWriter({ dataDir: harness.tempDir, sessionId, clock }),
+        watermarkRepository: new StreamWatermarkRepository({ db: harness.db, clock }),
+        turnOrchestrator: {
+          run: vi
+            .fn()
+            .mockResolvedValue(createStructuralTurnResult({ emissionKind: "suppressed" })),
+        },
+        toolDispatcher: dispatcher,
+        sources: [createTestDueSource("prep-timeout-event", "commitment_expiring")],
+      });
+
+      expect((await scheduler.tick()).firedEvents).toBe(1);
+      expect(dispatch).toHaveBeenCalledWith(
+        expect.objectContaining({ timeoutMs: prepToolTimeoutMs ?? 90_000 }),
+      );
+    },
+  );
+
+  it.each(["operational", "contemplative"] as const)(
+    "retains %s preparation failures without spending budget, with 10m-to-1h retry spacing",
+    async (sourceCategory) => {
+      const clock = new ManualClock(1_000_000);
+      const harness = await createOfflineTestHarness({ clock });
+      cleanup = harness.cleanup;
+      const wakeRepository = new AutonomyWakesRepository({ db: harness.db, clock });
+      const source = createTestDueSource(
+        "loaded-retrieval",
+        "open_question_dormant",
+        sourceCategory,
+      );
+      const [event] = await source.scan();
+      source.scan = vi.fn(async () => [
+        {
+          ...event!,
+          id: `loaded-retrieval:${clock.now()}`,
+          payload: { question: "What remains open?" },
+        },
+      ]);
+      const dispatcher = new ToolDispatcher({
+        createStreamWriter: (sessionId) =>
+          new StreamWriter({ dataDir: harness.tempDir, sessionId, clock }),
+        clock,
+      });
+      const dispatch = vi.spyOn(dispatcher, "dispatch").mockResolvedValue({
+        callId: "prep",
+        toolName: "tool.episodic.search",
+        ok: false,
+        error: "retrieval timed out",
+        durationMs: 90_000,
+      });
+      const turnRunner = {
+        run: vi.fn().mockResolvedValue(createStructuralTurnResult({ emissionKind: "message" })),
+      };
+      const options = {
+        db: harness.db,
+        wakeRepository,
+        enabled: true,
+        intervalMs: 60_000,
+        maxWakesPerWindow: 1,
+        budgetWindowMs: 86_400_000,
+        reservedContemplativeWakesPerWindow: sourceCategory === "contemplative" ? 1 : 0,
+        clock,
+        createStreamWriter: (sessionId: typeof DEFAULT_SESSION_ID) =>
+          new StreamWriter({ dataDir: harness.tempDir, sessionId, clock }),
+        watermarkRepository: new StreamWatermarkRepository({ db: harness.db, clock }),
+        turnOrchestrator: turnRunner,
+        toolDispatcher: dispatcher,
+        sources: [source],
+      };
+      const scheduler = createScheduler(options);
+      expect(await scheduler.tick()).toMatchObject({ sourceErrorCount: 1, budgetSkipped: 0 });
+      let failures = 1;
+      for (const delay of [600_000, 1_200_000, 2_400_000, 3_600_000, 3_600_000]) {
+        clock.advance(delay - 1);
+        expect((await scheduler.tick()).events).toEqual([]);
+        expect(dispatch).toHaveBeenCalledTimes(failures);
+        clock.advance(1);
+        expect(await scheduler.tick()).toMatchObject({ sourceErrorCount: 1, budgetSkipped: 0 });
+        failures += 1;
+      }
+      expect(turnRunner.run).not.toHaveBeenCalled();
+      expect(wakeRepository.countSince(0)).toBe(failures);
+      expect(
+        wakeRepository
+          .listSince(0, failures)
+          .every((wake) => wake.preparation_failed && wake.outcome === "error"),
+      ).toBe(true);
+      expect(await scheduler.describe()).toMatchObject({
+        budget: {
+          used_in_current_window: 0,
+          contemplative_used_in_current_window: 0,
+          next_budget_slot_frees_at: null,
+          wakes_in_current_window_by_trigger: [
+            { wake_count: failures, outcome_counts: { error: failures } },
+          ],
+        },
+        fleet_brake: {
+          window_outcomes: { error: failures },
+          window_error_reasons: { total: failures },
+        },
+        window_wakes: Array.from({ length: failures }, () =>
+          expect.objectContaining({ outcome: "error", preparation_failed: true }),
+        ),
+      });
+
+      // Recover on this scheduler and source after escalation reached its cap.
+      clock.advance(3_600_000);
+      dispatch.mockResolvedValueOnce({
+        callId: "prep",
+        toolName: "tool.episodic.search",
+        ok: true,
+        output: { episodes: [] },
+        durationMs: 1,
+      });
+      expect(await scheduler.tick()).toMatchObject({ firedEvents: 1, budgetSkipped: 0 });
+      expect(await scheduler.describe()).toMatchObject({
+        budget: {
+          used_in_current_window: 1,
+          contemplative_used_in_current_window: sourceCategory === "contemplative" ? 1 : 0,
+          next_budget_slot_frees_at: clock.now() + options.budgetWindowMs + 1,
+        },
+      });
+      expect((await scheduler.tick()).budgetSkipped).toBe(1);
+
+      // Once that completed wake ages out, a new failure must restart at 10m.
+      // Expiry alone does not clear source escalation history; successful prep does.
+      clock.advance(options.budgetWindowMs + 1);
+      expect((await scheduler.tick()).sourceErrorCount).toBe(1);
+      expect(dispatch).toHaveBeenCalledTimes(failures + 2);
+      clock.advance(599_999);
+      expect((await scheduler.tick()).events).toEqual([]);
+      expect(dispatch).toHaveBeenCalledTimes(failures + 2);
+      clock.advance(1);
+      expect((await scheduler.tick()).sourceErrorCount).toBe(1);
+      expect(dispatch).toHaveBeenCalledTimes(failures + 3);
+      expect(turnRunner.run).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("preserves the last freshness bypass after prep failure and admits its retry during cooldown", async () => {
+    const clock = new ManualClock(2_400_000);
     const harness = await createOfflineTestHarness({ clock });
     cleanup = harness.cleanup;
+    const watermarkRepository = new StreamWatermarkRepository({ db: harness.db, clock });
+    const wakeRepository = new AutonomyWakesRepository({ db: harness.db, clock });
+    setFleetBrakeState(watermarkRepository, clock, {
+      empty_streak: 5,
+      streak_anchor_ts: clock.now() - 1_000,
+      last_wake_ts: clock.now(),
+      bypass_count: 2,
+    });
+    const fleetBefore = watermarkRepository.get(FLEET_BRAKE_PROCESS_NAME, DEFAULT_SESSION_ID);
+    const source = createPersistentDueSource({
+      watermarkRepository,
+      eventIds: ["fresh-question"],
+      sourceName: "open_question_dormant",
+      stateTs: () => clock.now(),
+      payload: () => ({ question: "What remains open?" }),
+    });
     const dispatcher = new ToolDispatcher({
       createStreamWriter: (sessionId) =>
         new StreamWriter({ dataDir: harness.tempDir, sessionId, clock }),
       clock,
     });
-    dispatcher.register(
-      createCommitmentsListTool({
-        listCommitments: () => [],
-      }),
+    const dispatch = vi
+      .spyOn(dispatcher, "dispatch")
+      .mockResolvedValueOnce({
+        callId: "prep",
+        toolName: "tool.episodic.search",
+        ok: false,
+        error: "retrieval timed out",
+        durationMs: 90_000,
+      })
+      .mockResolvedValue({
+        callId: "prep",
+        toolName: "tool.episodic.search",
+        ok: true,
+        output: { episodes: [] },
+        durationMs: 1,
+      });
+    const turnRunner = {
+      run: vi.fn().mockResolvedValue(createStructuralTurnResult({ emissionKind: "suppressed" })),
+    };
+    // Direct construction intentionally retains the production fleet brake.
+    const scheduler = new AutonomyScheduler({
+      enabled: true,
+      intervalMs: 60_000,
+      maxWakesPerWindow: 1,
+      budgetWindowMs: 86_400_000,
+      clock,
+      wakeRepository,
+      watermarkRepository,
+      createStreamWriter: (sessionId) =>
+        new StreamWriter({ dataDir: harness.tempDir, sessionId, clock }),
+      turnOrchestrator: turnRunner,
+      toolDispatcher: dispatcher,
+      sources: [source],
+    });
+    expect(await scheduler.describe()).toMatchObject({
+      fleet_brake: {
+        enabled: true,
+        bypass_count: 2,
+        freshness_bypass_cap: 3,
+        cooldown_until: clock.now() + 1_800_000,
+      },
+    });
+    expect(await scheduler.tick()).toMatchObject({
+      sourceErrorCount: 1,
+      fleetCooldownSkipped: 0,
+      budgetSkipped: 0,
+    });
+    expect(turnRunner.run).not.toHaveBeenCalled();
+    expect(watermarkRepository.get(FLEET_BRAKE_PROCESS_NAME, DEFAULT_SESSION_ID)).toEqual(
+      fleetBefore,
     );
-    const dispatch = vi.spyOn(dispatcher, "dispatch");
+    expect(wakeRepository.countSince(0)).toBe(1);
+    expect(wakeRepository.countSince(0, { excludePreparationFailures: true })).toBe(0);
+    expect(wakeRepository.listSince(0, 1)[0]).toMatchObject({
+      outcome: "error",
+      preparation_failed: true,
+    });
+    expect(await scheduler.describe()).toMatchObject({
+      budget: { used_in_current_window: 0 },
+      fleet_brake: { bypass_count: 2 },
+    });
+    clock.advance(599_999);
+    expect((await scheduler.tick()).events).toEqual([]);
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    clock.advance(1);
+    expect((await scheduler.describe()).fleet_brake.cooldown_until).toBeGreaterThan(clock.now());
+    expect(await scheduler.tick()).toMatchObject({
+      firedEvents: 1,
+      sourceErrorCount: 0,
+      fleetCooldownSkipped: 0,
+      budgetSkipped: 0,
+    });
+    expect(dispatch).toHaveBeenCalledTimes(2);
+    expect(turnRunner.run).toHaveBeenCalledTimes(1);
+    expect(wakeRepository.countSince(0)).toBe(2);
+    expect(wakeRepository.countSince(0, { excludePreparationFailures: true })).toBe(1);
+    expect(await scheduler.describe()).toMatchObject({
+      budget: { used_in_current_window: 1 },
+      fleet_brake: { empty_streak: 6, bypass_count: 3 },
+    });
+  });
+
+  it.each([
+    {
+      kind: "wrapped transport",
+      failure: new LLMError("任意の文言", { code: "LLM_CALL_TIMED_OUT" }),
+      globalCircuit: true,
+    },
+    {
+      kind: "unwrapped streamed provider",
+      failure: new Anthropic.APIError(undefined, {}, "任意の文言", undefined, "overloaded_error"),
+      globalCircuit: false,
+    },
+  ])(
+    "preserves the last freshness bypass after a $kind failure while retaining error brakes",
+    async ({ failure, globalCircuit }) => {
+      const clock = new ManualClock(2_400_000);
+      const harness = await createOfflineTestHarness({ clock });
+      cleanup = harness.cleanup;
+      const watermarkRepository = new StreamWatermarkRepository({ db: harness.db, clock });
+      const wakeRepository = new AutonomyWakesRepository({ db: harness.db, clock });
+      const failedAt = clock.now();
+      setFleetBrakeState(watermarkRepository, clock, {
+        empty_streak: 5,
+        streak_anchor_ts: failedAt - 1_000,
+        last_wake_ts: failedAt,
+        error_streak: 2,
+        last_error_ts: failedAt - 1_000,
+        bypass_count: 2,
+      });
+      const source = createPersistentDueSource({
+        watermarkRepository,
+        eventIds: ["provider-recovery"],
+        sourceName: "open_question_dormant",
+        stateTs: () => failedAt,
+        payload: () => ({ question: "What remains open?" }),
+      });
+      const createStreamWriter = (sessionId: typeof DEFAULT_SESSION_ID) =>
+        new StreamWriter({ dataDir: harness.tempDir, sessionId, clock });
+      const dispatcher = new ToolDispatcher({ createStreamWriter, clock });
+      vi.spyOn(dispatcher, "dispatch").mockResolvedValue({
+        callId: "prep",
+        toolName: "tool.episodic.search",
+        ok: true,
+        output: { episodes: [] },
+        durationMs: 1,
+      });
+      const turnRunner = {
+        run: vi
+          .fn()
+          .mockRejectedValueOnce(failure)
+          .mockResolvedValue(createStructuralTurnResult({ emissionKind: "suppressed" })),
+      };
+      // Keep the production fleet governor enabled, with only one bypass left.
+      const scheduler = new AutonomyScheduler({
+        enabled: true,
+        intervalMs: 60_000,
+        maxWakesPerWindow: 1,
+        budgetWindowMs: 86_400_000,
+        clock,
+        wakeRepository,
+        watermarkRepository,
+        createStreamWriter,
+        turnOrchestrator: turnRunner,
+        toolDispatcher: dispatcher,
+        sources: [source],
+      });
+      expect(await scheduler.tick()).toMatchObject({
+        errorCount: 1,
+        fleetCooldownSkipped: 0,
+        budgetSkipped: 0,
+      });
+      expect(wakeRepository.listSince(0, 1)[0]).toMatchObject({
+        outcome: "error",
+        preparation_failed: false,
+        turn_provider_failed: true,
+      });
+      expect(await scheduler.describe()).toMatchObject({
+        budget: { used_in_current_window: 0, next_budget_slot_frees_at: null },
+        fleet_brake: {
+          enabled: true,
+          bypass_count: 2,
+          error_streak: globalCircuit ? 3 : 2,
+          error_paused_until: globalCircuit ? failedAt + 300_000 : null,
+        },
+      });
+
+      clock.advance(29_999);
+      expect((await scheduler.tick()).events).toEqual([]);
+      expect(turnRunner.run).toHaveBeenCalledTimes(1);
+      clock.advance(1);
+      if (globalCircuit) {
+        expect(await scheduler.tick()).toMatchObject({ errorCircuitSkipped: 1, firedEvents: 0 });
+        expect(turnRunner.run).toHaveBeenCalledTimes(1);
+        clock.advance(270_000);
+      }
+      expect((await scheduler.describe()).fleet_brake.cooldown_until).toBeGreaterThan(clock.now());
+      expect(await scheduler.tick()).toMatchObject({
+        firedEvents: 1,
+        budgetSkipped: 0,
+        fleetCooldownSkipped: 0,
+        errorCircuitSkipped: 0,
+      });
+      expect(turnRunner.run).toHaveBeenCalledTimes(2);
+      expect(wakeRepository.countSince(0)).toBe(2);
+      expect(wakeRepository.countSince(0, { excludeTurnProviderFailures: true })).toBe(1);
+      expect(await scheduler.describe()).toMatchObject({
+        budget: { used_in_current_window: 1 },
+        fleet_brake: { empty_streak: 6, error_streak: 0, bypass_count: 3 },
+      });
+    },
+  );
+
+  it("keeps a long retrieval preparation single-flight and counts every refused interval fire", async () => {
+    const clock = new ManualClock(1_000_000);
+    const harness = await createOfflineTestHarness({ clock });
+    cleanup = harness.cleanup;
+    const source = createTestDueSource("slow-question", "open_question_dormant");
+    const [event] = await source.scan();
+    source.scan = vi
+      .fn()
+      .mockResolvedValue([{ ...event!, payload: { question: "What remains open?" } }]);
+    source.buildTurn = vi.fn(source.buildTurn);
+    const relatedEpisodes = [{ id: "ep_aaaaaaaaaaaaaaaa", narrative: "Full retrieval result" }];
+    let finishPreparation!: (value: Awaited<ReturnType<ToolDispatcher["dispatch"]>>) => void;
+    const dispatcher = new ToolDispatcher({
+      createStreamWriter: (sessionId) =>
+        new StreamWriter({ dataDir: harness.tempDir, sessionId, clock }),
+      clock,
+    });
+    const dispatch = vi.spyOn(dispatcher, "dispatch").mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishPreparation = resolve;
+        }),
+    );
+    const turnRunner = {
+      run: vi.fn().mockResolvedValue(createStructuralTurnResult({ emissionKind: "message" })),
+    };
+    let intervalCallback!: () => void;
     const scheduler = createScheduler({
       db: harness.db,
       enabled: true,
-      intervalMs: 1_000,
-      prepToolTimeoutMs: 45_000,
+      intervalMs: 10_000,
+      maxWakesPerWindow: 1,
+      clock,
+      createStreamWriter: (sessionId) =>
+        new StreamWriter({ dataDir: harness.tempDir, sessionId, clock }),
+      watermarkRepository: new StreamWatermarkRepository({ db: harness.db, clock }),
+      turnOrchestrator: turnRunner,
+      toolDispatcher: dispatcher,
+      sources: [source],
+      setIntervalFn: ((callback: () => void) => {
+        intervalCallback = callback;
+        return 1;
+      }) as unknown as typeof setInterval,
+      clearIntervalFn: vi.fn(),
+    });
+    scheduler.start();
+    const tick = scheduler.tick();
+    await vi.waitFor(() => expect(dispatch).toHaveBeenCalledTimes(1));
+    for (let fire = 0; fire < 8; fire += 1) {
+      clock.advance(10_000);
+      intervalCallback();
+    }
+    expect(turnRunner.run).not.toHaveBeenCalled();
+    expect(source.scan).toHaveBeenCalledTimes(1);
+    expect(await scheduler.describe()).toMatchObject({
+      tick_in_flight: true,
+      dropped_interval_fires: { since_interval_armed: 8, current_tick: 8 },
+      budget: { used_in_current_window: 1 },
+    });
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        timeoutMs: 90_000,
+        toolName: "tool.episodic.search",
+        input: { query: "What remains open?", limit: 5 },
+      }),
+    );
+    finishPreparation({
+      callId: "prep",
+      toolName: "tool.episodic.search",
+      ok: true,
+      output: { episodes: relatedEpisodes },
+      durationMs: 80_000,
+    });
+    expect((await tick).firedEvents).toBe(1);
+    expect(source.buildTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: { question: "What remains open?", related_episodes: relatedEpisodes },
+      }),
+    );
+    expect(turnRunner.run).toHaveBeenCalledTimes(1);
+    expect(await scheduler.describe()).toMatchObject({
+      tick_in_flight: false,
+      dropped_interval_fires: { since_interval_armed: 8, current_tick: null },
+    });
+    await scheduler.stop();
+  });
+
+  // What the in-flight clause on a non-autonomous page may claim: the refused
+  // fire is a tick that cannot start, not a wake -- the in-flight tick starts
+  // its next admitted wake itself, with the flag still true.
+  it("starts the next admitted wake inside a tick whose interval fires are refused", async () => {
+    const clock = new ManualClock(1_000_000);
+    const harness = await createOfflineTestHarness({ clock });
+    cleanup = harness.cleanup;
+    const goalSource = createTestDueSource();
+    goalSource.scan = vi.fn(goalSource.scan);
+    const conditionSource = createTestDueSource("condition-1", "commitment_revoked");
+    conditionSource.scan = vi.fn().mockResolvedValue([
+      {
+        id: "condition-1",
+        sourceName: "commitment_revoked",
+        sourceType: "trigger",
+        watermarkProcessName: "autonomy:test:condition-1",
+        sortTs: 2_000,
+        payload: { commitment_id: "cmt_aaaaaaaaaaaaaaaa" },
+      },
+    ]);
+    let finishFirstTurn!: (result: TurnResult) => void;
+    const inFlightWhenSecondTurnStarted: boolean[] = [];
+    let scheduler!: AutonomyScheduler;
+    const turnRunner = {
+      run: vi
+        .fn()
+        .mockImplementationOnce(
+          () =>
+            new Promise<TurnResult>((resolve) => {
+              finishFirstTurn = resolve;
+            }),
+        )
+        .mockImplementationOnce(async () => {
+          inFlightWhenSecondTurnStarted.push((await scheduler.describe()).tick_in_flight);
+          return createStructuralTurnResult({ emissionKind: "message" });
+        }),
+    };
+    let intervalCallback!: () => void;
+    scheduler = createScheduler({
+      db: harness.db,
+      enabled: true,
+      intervalMs: 10_000,
       maxWakesPerWindow: 6,
       clock,
       createStreamWriter: (sessionId) =>
         new StreamWriter({ dataDir: harness.tempDir, sessionId, clock }),
       watermarkRepository: new StreamWatermarkRepository({ db: harness.db, clock }),
-      turnOrchestrator: {
-        run: vi.fn().mockResolvedValue(createStructuralTurnResult({ emissionKind: "suppressed" })),
-      },
-      toolDispatcher: dispatcher,
-      sources: [createTestDueSource("prep-timeout-event", "commitment_expiring")],
+      turnOrchestrator: turnRunner,
+      toolDispatcher: new ToolDispatcher({
+        createStreamWriter: (sessionId) =>
+          new StreamWriter({ dataDir: harness.tempDir, sessionId, clock }),
+        clock,
+      }),
+      sources: [goalSource, conditionSource],
+      setIntervalFn: ((callback: () => void) => {
+        intervalCallback = callback;
+        return 1;
+      }) as unknown as typeof setInterval,
+      clearIntervalFn: vi.fn(),
     });
-
-    expect((await scheduler.tick()).firedEvents).toBe(1);
-    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 45_000 }));
+    scheduler.start();
+    const tick = scheduler.tick();
+    await vi.waitFor(() => expect(turnRunner.run).toHaveBeenCalledTimes(1));
+    clock.advance(10_000);
+    intervalCallback();
+    expect(await scheduler.describe()).toMatchObject({
+      tick_in_flight: true,
+      dropped_interval_fires: { since_interval_armed: 1, current_tick: 1 },
+    });
+    finishFirstTurn(createStructuralTurnResult({ emissionKind: "message" }));
+    expect(await tick).toMatchObject({ firedEvents: 2, droppedIntervalFires: 1 });
+    expect(turnRunner.run).toHaveBeenCalledTimes(2);
+    expect(inFlightWhenSecondTurnStarted).toEqual([true]);
+    expect(goalSource.scan).toHaveBeenCalledTimes(1);
+    await scheduler.stop();
   });
 
   it("respects maxWakesPerWindow", async () => {
@@ -3527,6 +4434,64 @@ describe("AutonomyScheduler", () => {
       expect(turnRunner.run).toHaveBeenCalledTimes(1);
     },
   );
+
+  it("admits every due event in one tick when the ceiling is nowhere near", async () => {
+    const clock = new ManualClock(1_000_000);
+    const harness = await createOfflineTestHarness({ clock });
+    cleanup = harness.cleanup;
+    const watermarkRepository = new StreamWatermarkRepository({ db: harness.db, clock });
+    const turnRunner = {
+      run: vi.fn().mockResolvedValue(createStructuralTurnResult({ emissionKind: "suppressed" })),
+    };
+    const createStreamWriter = (sessionId: typeof DEFAULT_SESSION_ID) =>
+      new StreamWriter({ dataDir: harness.tempDir, sessionId, clock });
+    const dispatcher = new ToolDispatcher({ createStreamWriter, clock });
+    dispatcher.register(
+      createIdentityEventsListForCognitionTool({
+        listEvents: (options) => harness.identityService.listEvents(options),
+      }),
+    );
+    const scheduler = createScheduler({
+      db: harness.db,
+      enabled: true,
+      intervalMs: 1_000,
+      maxWakesPerWindow: 10,
+      fleetBrake: TEST_FLEET_BRAKE,
+      clock,
+      createStreamWriter,
+      watermarkRepository,
+      turnOrchestrator: turnRunner,
+      toolDispatcher: dispatcher,
+      sources: [
+        createPersistentDueSource({
+          watermarkRepository,
+          eventIds: ["reflection-event"],
+          sourceName: "scheduled_reflection",
+          sourceCategory: "contemplative",
+          sortTs: () => 15,
+        }),
+        createPersistentDueSource({
+          watermarkRepository,
+          eventIds: ["z-earlier", "c-later"],
+          sortTs: (_id, index) => [5, 20][index]!,
+        }),
+      ],
+    });
+
+    const result = await scheduler.tick();
+
+    // Admission order decides who waits at any budget state, not only at the
+    // ceiling: the freshest source-minted stamp is admitted last with seven
+    // slots free, so its wait is the turns ahead of it inside this one tick
+    // rather than a refusal or a later tick.
+    expect(result).toMatchObject({ firedEvents: 3, budgetSkipped: 0, errorCount: 0 });
+    expect(result.events.map((event) => [event.id, event.status])).toEqual([
+      ["z-earlier", "fired"],
+      ["reflection-event", "fired"],
+      ["c-later", "fired"],
+    ]);
+    expect(turnRunner.run).toHaveBeenCalledTimes(3);
+  });
 
   it("checks persisted wake history when a fresh scheduler enforces budget", async () => {
     const clock = new ManualClock(1_000_000);
@@ -4225,7 +5190,7 @@ describe("AutonomyScheduler", () => {
         expect(onError).toHaveBeenCalledWith(expect.objectContaining({ cause: preparationError }));
       }
 
-      for (const elapsed of [1_000, 28_999]) {
+      for (const elapsed of [1_000, 598_999]) {
         clock.advance(elapsed);
         expect((await scheduler.tick()).events).toEqual([]);
         expect(trainOfThoughtRepository.get).toHaveBeenCalledTimes(1);
@@ -4942,6 +5907,18 @@ describe("AutonomyScheduler", () => {
       firedEvents: 1,
       errorCount: 2,
       sourceErrorCount: 2,
+      sourceErrors: [
+        {
+          sourceName: "goal_followup_due",
+          error: expect.stringContaining("goal_followup_due repository unavailable"),
+          errorName: "AutonomySourcePreparationError",
+        },
+        {
+          sourceName: "commitment_expiring",
+          error: expect.stringContaining("commitment_expiring repository unavailable"),
+          errorName: "AutonomySourcePreparationError",
+        },
+      ],
       errorCircuitSkipped: 0,
     });
     expect(first.events[0]).toMatchObject({
@@ -4955,6 +5932,7 @@ describe("AutonomyScheduler", () => {
 
     const second = await scheduler.tick();
     expect(second.sourceErrorCount).toBe(0);
+    expect(second.sourceErrors ?? []).toEqual([]);
     expect(second.errorCircuitSkipped).toBe(0);
   });
 
@@ -5181,6 +6159,124 @@ describe("AutonomyScheduler", () => {
       error_streak: 10,
       bypass_count: 3,
     });
+  });
+
+  it("drains delayed fleet error notifications on graceful stop after the tick completes", async () => {
+    const clock = new ManualClock(2_600_000);
+    const harness = await createOfflineTestHarness({ clock });
+    cleanup = harness.cleanup;
+    const watermarkRepository = new StreamWatermarkRepository({ db: harness.db, clock });
+    watermarkRepository.set(FLEET_BRAKE_PROCESS_NAME, DEFAULT_SESSION_ID, {
+      lastTs: clock.now(),
+      lastEntryId: "malformed-fleet-state",
+      metadata: { empty_streak: "invalid" },
+    });
+    let finishReport!: () => void;
+    const report = new Promise<void>((resolve) => {
+      finishReport = resolve;
+    });
+    const onError = vi.fn(async () => await report);
+    const createStreamWriter = (sessionId: typeof DEFAULT_SESSION_ID) =>
+      new StreamWriter({ dataDir: harness.tempDir, sessionId, clock });
+    const scheduler = createScheduler({
+      db: harness.db,
+      enabled: true,
+      intervalMs: 1_000,
+      maxWakesPerWindow: 20,
+      fleetBrake: TEST_FLEET_BRAKE,
+      clock,
+      createStreamWriter,
+      watermarkRepository,
+      turnOrchestrator: {
+        run: vi.fn().mockResolvedValue(createStructuralTurnResult({ emissionKind: "suppressed" })),
+      },
+      toolDispatcher: new ToolDispatcher({ createStreamWriter, clock }),
+      sources: [
+        createPersistentDueSource({ watermarkRepository, eventIds: ["delayed-fleet-error"] }),
+      ],
+    });
+    scheduler.setObserver({ onError });
+    let stopped = false;
+    let stopping: Promise<void> | undefined;
+    try {
+      await scheduler.tick();
+      expect(onError).toHaveBeenCalledOnce();
+      stopping = scheduler.stop().then(() => {
+        stopped = true;
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(stopped).toBe(false);
+      finishReport();
+      await stopping;
+      expect(stopped).toBe(true);
+    } finally {
+      finishReport();
+      await (stopping ?? scheduler.stop());
+    }
+  });
+
+  it("drains an independent fleet report after the active tick rejects", async () => {
+    const clock = new ManualClock(2_600_000);
+    const harness = await createOfflineTestHarness({ clock });
+    cleanup = harness.cleanup;
+    const watermarkRepository = new StreamWatermarkRepository({ db: harness.db, clock });
+    watermarkRepository.set(FLEET_BRAKE_PROCESS_NAME, DEFAULT_SESSION_ID, {
+      lastTs: clock.now(),
+      lastEntryId: "malformed-fleet-state",
+      metadata: { empty_streak: "invalid" },
+    });
+    let finishReport!: () => void;
+    const report = new Promise<void>((resolve) => {
+      finishReport = resolve;
+    });
+    let failAppend!: (error: Error) => void;
+    const append = new Promise<never>((_resolve, reject) => {
+      failAppend = reject;
+    });
+    const onError = vi.fn(async () => await report);
+    const createStreamWriter = (sessionId: typeof DEFAULT_SESSION_ID) => {
+      const writer = new StreamWriter({ dataDir: harness.tempDir, sessionId, clock });
+      vi.spyOn(writer, "append").mockImplementation(async () => await append);
+      return writer;
+    };
+    const scheduler = createScheduler({
+      db: harness.db,
+      enabled: true,
+      intervalMs: 1_000,
+      maxWakesPerWindow: 20,
+      fleetBrake: TEST_FLEET_BRAKE,
+      clock,
+      createStreamWriter,
+      watermarkRepository,
+      turnOrchestrator: { run: vi.fn() },
+      toolDispatcher: new ToolDispatcher({ createStreamWriter, clock }),
+      sources: [
+        createPersistentDueSource({ watermarkRepository, eventIds: ["failed-wake-append"] }),
+      ],
+    });
+    scheduler.setObserver({ onError });
+    const failure = new Error("wake append failed");
+    const tick = scheduler.tick().catch((error: unknown) => error);
+    await vi.waitFor(() => expect(onError).toHaveBeenCalledOnce());
+    let stopped = false;
+    const stopping = scheduler
+      .stop()
+      .catch((error: unknown) => error)
+      .finally(() => {
+        stopped = true;
+      });
+    try {
+      failAppend(failure);
+      expect(await tick).toBe(failure);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(stopped).toBe(false);
+      finishReport();
+      expect(await stopping).toMatchObject({ errors: [failure] });
+    } finally {
+      finishReport();
+      failAppend(failure);
+      await stopping;
+    }
   });
 
   it("reports malformed fleet metadata once and self-heals on bookkeeping", async () => {
@@ -5892,6 +6988,13 @@ describe("AutonomyScheduler", () => {
       clearIntervalFn: vi.fn(),
     });
 
+    const observedTicks: TickResult[] = [];
+    scheduler.setObserver({
+      onTick: (result) => {
+        observedTicks.push(result);
+      },
+    });
+
     scheduler.start();
     await expect(scheduler.describe()).resolves.toMatchObject({
       interval_ms: 1_000,
@@ -5948,11 +7051,25 @@ describe("AutonomyScheduler", () => {
       expect((await scheduler.describe()).tick_in_flight).toBe(false);
     });
 
+    // The completing tick carries its own overrun out to the observer, which is
+    // the only record of it that outlives the process: the page can only show
+    // the count to a turn that happens to read while the freeze is still on.
+    expect(observedTicks).toHaveLength(1);
+    expect(observedTicks[0]?.droppedIntervalFires).toBe(3);
+
     // The running total survives the tick that earned it; the per-tick count
     // goes null rather than holding a figure that would read as a live cost.
     await expect(scheduler.describe()).resolves.toMatchObject({
       dropped_interval_fires: { since_interval_armed: 3, current_tick: null },
     });
+
+    // The next tick reports its own overrun, not the previous tick's.
+    clock.advance(1_000);
+    intervalCallback?.();
+    await vi.waitFor(() => {
+      expect(observedTicks).toHaveLength(2);
+    });
+    expect(observedTicks[1]?.droppedIntervalFires).toBe(0);
 
     await scheduler.stop();
     await expect(scheduler.describe()).resolves.toMatchObject({
@@ -6478,6 +7595,7 @@ describe("AutonomyScheduler", () => {
   it.each(["scan", "prepare"])(
     "resets recovered %s failure history after an empty scan",
     async (failureStage) => {
+      const initialBackoffMs = failureStage === "prepare" ? 600_000 : 30_000;
       const clock = new ManualClock(1_000_000);
       const harness = await createOfflineTestHarness({ clock });
       cleanup = harness.cleanup;
@@ -6517,17 +7635,28 @@ describe("AutonomyScheduler", () => {
         sources: [source],
       });
 
-      expect((await scheduler.tick()).sourceErrorCount).toBe(1);
-      clock.advance(30_000);
+      expect(await scheduler.tick()).toMatchObject({
+        sourceErrorCount: 1,
+        sourceErrors: [
+          {
+            sourceName: "scheduled_wake",
+            error: expect.stringContaining(`${failureStage} failed`),
+            errorName: "AutonomySourcePreparationError",
+          },
+        ],
+      });
+      clock.advance(initialBackoffMs);
       phase = "empty";
-      expect(await scheduler.tick()).toMatchObject({ events: [], sourceErrorCount: 0 });
+      const recovered = await scheduler.tick();
+      expect(recovered).toMatchObject({ events: [], sourceErrorCount: 0 });
+      expect(recovered.sourceErrors ?? []).toEqual([]);
       expect(source.scan).toHaveBeenCalledTimes(2);
 
       clock.advance(1_000);
       phase = "error";
       expect((await scheduler.tick()).sourceErrorCount).toBe(1);
       phase = "due";
-      clock.advance(29_999);
+      clock.advance(initialBackoffMs - 1);
       expect((await scheduler.tick()).events).toEqual([]);
       expect(source.scan).toHaveBeenCalledTimes(3);
       expect(turnRunner.run).not.toHaveBeenCalled();
@@ -6585,7 +7714,7 @@ describe("AutonomyScheduler", () => {
     });
     expect((await scheduler.tick()).sourceErrorCount).toBe(1);
 
-    clock.advance(30_000);
+    clock.advance(600_000);
     empty = true;
     expect((await scheduler.tick()).events).toEqual([]);
     expect(source.scan).toHaveBeenCalledTimes(3);

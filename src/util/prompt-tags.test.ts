@@ -1,6 +1,32 @@
 import { describe, expect, it } from "vitest";
 
-import { escapeReservedBorgTags, stripToolCallScaffolding } from "./prompt-tags.js";
+import * as ids from "./ids.js";
+import {
+  escapeReservedBorgTags,
+  scrubMemoryRecordInternalIds,
+  stripToolCallScaffolding,
+} from "./prompt-tags.js";
+
+describe("scrubMemoryRecordInternalIds", () => {
+  it("covers every canonical ID helper, including IDs adjacent to non-Latin text", () => {
+    for (const helper of Object.values(ids)) {
+      if (typeof helper !== "object" || helper === null || !("pattern" in helper)) continue;
+      const id = helper.create();
+      expect(
+        scrubMemoryRecordInternalIds(`已完成${id}，无需继续；检查${id}完了。`),
+        helper.prefix,
+      ).toBe("已完成[internal_id]，无需继续；检查[internal_id]完了。");
+    }
+    expect(
+      scrubMemoryRecordInternalIds("已完成12345678-abcd-1234-abcd-123456789abc，无需继续"),
+    ).toBe("已完成[internal_id]，无需继续");
+  });
+
+  it("preserves ordinary numbers, timestamps, and malformed ID tokens", () => {
+    const text = `8 checks at 2026-09-19T01:02:03.000Z (1789789323000); ${ids.createGoalId()}x`;
+    expect(scrubMemoryRecordInternalIds(text)).toBe(text);
+  });
+});
 
 describe("escapeReservedBorgTags", () => {
   it("neutralizes forged borg_* open and close tags, case-insensitively", () => {

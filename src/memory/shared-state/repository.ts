@@ -191,7 +191,7 @@ function requiredWriteStateKey(value: unknown, operationType: string): string {
   return value;
 }
 
-function mapEntryRow(row: Record<string, unknown>): SharedStateEntry {
+export function mapEntryRow(row: Record<string, unknown>): SharedStateEntry {
   const parsed = sharedStateEntrySchema.safeParse({
     id: row.id,
     audience_entity_id: row.audience_entity_id,
@@ -234,7 +234,7 @@ function mapEntryRow(row: Record<string, unknown>): SharedStateEntry {
   return parsed.data;
 }
 
-function mapArtifactRow(
+export function mapArtifactRow(
   row: Record<string, unknown>,
   entries: readonly SharedStateEntry[],
 ): SharedStateArtifact {
@@ -319,10 +319,8 @@ export class SharedStateRepository {
     }
 
     const excludeAudienceEntityId = input.excludeAudienceEntityId ?? null;
-    const audiencePredicate =
-      excludeAudienceEntityId === null ? "" : "AND audience_entity_id != ?";
-    const args =
-      excludeAudienceEntityId === null ? [limit] : [excludeAudienceEntityId, limit];
+    const audiencePredicate = excludeAudienceEntityId === null ? "" : "AND audience_entity_id != ?";
+    const args = excludeAudienceEntityId === null ? [limit] : [excludeAudienceEntityId, limit];
     const rows = this.db
       .prepare(
         `

@@ -65,7 +65,10 @@ export function executiveFocusGoalStaleBackoffCooldownMs(input: {
   return Math.max(input.baseCooldownMs, capped);
 }
 
+const GOAL_DORMANCY_MS = 14 * 24 * 60 * 60 * 1_000;
+
 export type GoalStaleBackoffState = {
+  dormant: boolean;
   endMs: number | null;
   actionAvailabilityChanged: boolean;
 };
@@ -80,21 +83,21 @@ export function goalStaleBackoffState(input: {
   actionAvailabilityKey?: string | null;
 }): GoalStaleBackoffState {
   if (input.watermark === null) {
-    return { endMs: null, actionAvailabilityChanged: false };
+    return { endMs: null, actionAvailabilityChanged: false, dormant: false };
   }
 
   if (input.lastProgressTs !== null && input.lastProgressTs >= input.watermark.updatedAt) {
-    return { endMs: null, actionAvailabilityChanged: false };
+    return { endMs: null, actionAvailabilityChanged: false, dormant: false };
   }
 
   const metadata = readExecutiveFocusGoalStaleBackoffMetadata(input.watermark);
 
-  // Empty-wake dormancy is otherwise infinite. A newly rendered, structurally
+  // Empty-wake dormancy lasts fourteen days. A newly rendered, structurally
   // executable action path invalidates the old brake once; the next empty wake
   // stamps the new key. Null never releases dormancy, so an unavailable action
   // cannot generate retry churn.
   if (metadata.empty_count <= 0) {
-    return { endMs: null, actionAvailabilityChanged: false };
+    return { endMs: null, actionAvailabilityChanged: false, dormant: false };
   }
 
   if (metadata.empty_count >= input.dormancyCount) {
@@ -104,12 +107,14 @@ export function goalStaleBackoffState(input: {
       metadata.action_availability_key !== input.actionAvailabilityKey;
 
     return {
-      endMs: actionAvailabilityChanged ? null : Number.POSITIVE_INFINITY,
+      dormant: !actionAvailabilityChanged,
+      endMs: actionAvailabilityChanged ? null : input.watermark.updatedAt + GOAL_DORMANCY_MS,
       actionAvailabilityChanged,
     };
   }
 
   return {
+    dormant: false,
     endMs:
       input.watermark.updatedAt +
       executiveFocusGoalStaleBackoffCooldownMs({

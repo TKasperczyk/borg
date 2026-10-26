@@ -128,7 +128,7 @@ function rowFromSkill(skill: SkillRecord): SkillSqlRow {
   };
 }
 
-function skillFromRow(row: Record<string, unknown>): SkillRecord {
+export function skillFromRow(row: Record<string, unknown>): SkillRecord {
   const parsed = skillSchema.safeParse({
     id: row.id,
     applies_when: row.applies_when,
@@ -302,7 +302,7 @@ function serializeProceduralContextMetadata(
     : serializeJsonValue(proceduralContextMetadataSchema.parse(context));
 }
 
-function proceduralEvidenceFromRow(row: Record<string, unknown>): ProceduralEvidenceRecord {
+export function proceduralEvidenceFromRow(row: Record<string, unknown>): ProceduralEvidenceRecord {
   const proceduralContext = parseProceduralContextColumn(row.procedural_context);
   const parsed = proceduralEvidenceSchema.safeParse({
     id: row.id,
@@ -342,7 +342,7 @@ function proceduralEvidenceFromRow(row: Record<string, unknown>): ProceduralEvid
   return parsed.data;
 }
 
-function skillContextStatsFromRow(row: Record<string, unknown>): SkillContextStatsRecord {
+export function skillContextStatsFromRow(row: Record<string, unknown>): SkillContextStatsRecord {
   const proceduralContext = parseProceduralContextMetadataColumn(row.procedural_context_json);
   const parsed = skillContextStatsSchema.safeParse({
     skill_id: row.skill_id,

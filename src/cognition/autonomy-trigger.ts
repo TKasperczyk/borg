@@ -99,12 +99,108 @@ function carriesTruncatedIdentityEventChange(payload: Record<string, unknown>): 
   });
 }
 
-const AUTONOMY_TRIGGER_EXCERPT_NOTICE =
-  `excerpt_notice: borg_autonomy_trigger content is mechanically bounded to ${AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS} chars; ` +
-  `each recent identity event's old-to-new change excerpt is bounded to ${IDENTITY_EVENT_COGNITION_CHANGE_EXCERPT_MAX_CHARS} chars. ` +
-  "Head+tail excerpts are not summaries, and omitted characters remain available in the source records.";
+function autonomyTriggerExcerptNotice(maxChars: number): string {
+  return (
+    `excerpt_notice: borg_autonomy_trigger content is mechanically bounded to ${maxChars} chars; ` +
+    `each recent identity event's old-to-new change excerpt is bounded to ${IDENTITY_EVENT_COGNITION_CHANGE_EXCERPT_MAX_CHARS} chars. ` +
+    "Head+tail excerpts are not summaries, and omitted characters remain available in the source records."
+  );
+}
 
-function excerptPayloadText(value: unknown, maxChars: number): unknown {
+// Disclosure labels stay whole at every depth. So does an open question's id, the handle any
+// action on it takes, and its own text: it is the subject of the wake that carries it, and the
+// ruminations reader returns question text only beside a note, so for a question with no notes
+// an excerpt here can leave it unread. The evidence attached to the question absorbs the cut
+// instead.
+function keepsWhole(
+  record: Record<string, unknown>,
+  key: string,
+  keepQuestionText: boolean,
+): boolean {
+  return (
+    key === "disclosure" ||
+    key === "disclosure_label" ||
+    (key === "open_question_id" && typeof record.open_question_id === "string") ||
+    (keepQuestionText && key === "question" && typeof record.open_question_id === "string")
+  );
+}
+
+function isPresentedQuestion(value: unknown): value is Record<string, unknown> & {
+  related_episodes: unknown[];
+} {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    typeof (value as Record<string, unknown>).open_question_id === "string" &&
+    Array.isArray((value as Record<string, unknown>).related_episodes)
+  );
+}
+
+function relatedEpisodeCount(payload: Record<string, unknown>): number {
+  const additional = Array.isArray(payload.additional_questions)
+    ? payload.additional_questions
+    : [];
+  return [payload, ...additional]
+    .filter(isPresentedQuestion)
+    .reduce((total, question) => total + question.related_episodes.length, 0);
+}
+
+// The ids a resolution can cite as evidence: each related episode's own id, its source stream
+// entries and its citations.
+function relatedEpisodeHandleChars(payload: Record<string, unknown>): number {
+  const additional = Array.isArray(payload.additional_questions)
+    ? payload.additional_questions
+    : [];
+  const handles = [payload, ...additional]
+    .filter(isPresentedQuestion)
+    .flatMap((question) => question.related_episodes)
+    .flatMap((episode) => {
+      if (episode === null || typeof episode !== "object" || Array.isArray(episode)) {
+        return [];
+      }
+      const record = episode as Record<string, unknown>;
+      const citations = Array.isArray(record.citation_chain) ? record.citation_chain : [];
+      return [
+        record.id,
+        ...(Array.isArray(record.source_stream_ids) ? record.source_stream_ids : []),
+        ...citations.map((citation) =>
+          citation !== null && typeof citation === "object"
+            ? (citation as Record<string, unknown>).id
+            : undefined,
+        ),
+      ];
+    });
+  return handles.reduce<number>(
+    (longest, handle) => (typeof handle === "string" ? Math.max(longest, handle.length) : longest),
+    0,
+  );
+}
+
+// Removes `count` related episodes whole from the end of the payload: the last presented
+// question's lowest-ranked episode first, the primary question's last.
+function omitTrailingRelatedEpisodes(
+  payload: Record<string, unknown>,
+  count: number,
+): Record<string, unknown> {
+  let remaining = count;
+  const trim = (question: unknown): unknown => {
+    if (remaining === 0 || !isPresentedQuestion(question)) {
+      return question;
+    }
+    const kept = Math.max(0, question.related_episodes.length - remaining);
+    remaining -= question.related_episodes.length - kept;
+    return { ...question, related_episodes: question.related_episodes.slice(0, kept) };
+  };
+  const additional = payload.additional_questions;
+  return trim(
+    Array.isArray(additional)
+      ? { ...payload, additional_questions: [...additional].reverse().map(trim).reverse() }
+      : payload,
+  ) as Record<string, unknown>;
+}
+
+function excerptPayloadText(value: unknown, maxChars: number, keepQuestionText: boolean): unknown {
   if (typeof value === "string") {
     const marker = "[ELIDED]";
     if (value.length <= Math.max(marker.length, maxChars)) {
@@ -115,19 +211,20 @@ function excerptPayloadText(value: unknown, maxChars: number): unknown {
   }
 
   if (Array.isArray(value)) {
-    return value.map((entry) => excerptPayloadText(entry, maxChars));
+    return value.map((entry) => excerptPayloadText(entry, maxChars, keepQuestionText));
   }
 
   if (value === null || typeof value !== "object") {
     return value;
   }
 
+  const record = value as Record<string, unknown>;
   return Object.fromEntries(
-    Object.entries(value).map(([key, entry]) => [
+    Object.entries(record).map(([key, entry]) => [
       key,
-      key === "disclosure" || key === "disclosure_label"
+      keepsWhole(record, key, keepQuestionText)
         ? entry
-        : excerptPayloadText(entry, maxChars),
+        : excerptPayloadText(entry, maxChars, keepQuestionText),
     ]),
   );
 }
@@ -163,51 +260,116 @@ function excerptIdentityEvent(event: unknown, maxChars: number): unknown {
   };
 }
 
-function boundAutonomyTriggerContext(context: AutonomyTriggerContext): string {
-  const rendered = renderAutonomyTriggerContext(context);
+function boundAutonomyTriggerContext(
+  context: AutonomyTriggerContext,
+  maxChars: number,
+): RenderedAutonomyTriggerContext {
+  const originalQuestions = [
+    context.payload,
+    ...(Array.isArray(context.payload.additional_questions)
+      ? context.payload.additional_questions
+      : []),
+  ];
+  // Compare retained structured fields with their source values; never inspect serialized text.
+  const presentation = (
+    payload: Record<string, unknown>,
+    text: string,
+  ): RenderedAutonomyTriggerContext => ({
+    text,
+    shownOpenQuestionIds: [
+      payload,
+      ...(Array.isArray(payload.additional_questions) ? payload.additional_questions : []),
+    ].flatMap((row) => {
+      if (row === null || typeof row !== "object") return [];
+      const question = row as Record<string, unknown>;
+      return typeof question.open_question_id === "string" &&
+        typeof question.question === "string" &&
+        originalQuestions.some(
+          (original) =>
+            original !== null &&
+            typeof original === "object" &&
+            original.open_question_id === question.open_question_id &&
+            original.question === question.question,
+        )
+        ? [question.open_question_id]
+        : [];
+    }),
+  });
+  const rendered = presentation(context.payload, renderAutonomyTriggerContext(context));
   const nestedExcerptWasTruncated = carriesTruncatedIdentityEventChange(context.payload);
-  if (!nestedExcerptWasTruncated && rendered.length <= AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS) {
+  if (!nestedExcerptWasTruncated && rendered.text.length <= maxChars) {
     return rendered;
   }
 
   const events = context.payload.recent_identity_events;
   let eventCount = Array.isArray(events) ? events.length : 0;
   let omittedPayloadFields = 0;
+  let omittedRelatedEpisodes = 0;
+  let keepQuestionText = true;
   const retainedPayload = { ...context.payload };
-  const render = (maxChars: number): string => {
+  const render = (stringBudget: number): RenderedAutonomyTriggerContext => {
+    const source = omitTrailingRelatedEpisodes(retainedPayload, omittedRelatedEpisodes);
     const payload = Object.fromEntries(
-      Object.entries(retainedPayload).map(([key, value]) => [
+      Object.entries(source).map(([key, value]) => [
         key,
         key === "recent_identity_events" && Array.isArray(events)
-          ? events.slice(0, eventCount).map((event) => excerptIdentityEvent(event, maxChars))
-          : key === "disclosure" || key === "disclosure_label"
+          ? events.slice(0, eventCount).map((event) => excerptIdentityEvent(event, stringBudget))
+          : keepsWhole(source, key, keepQuestionText)
             ? value
-            : excerptPayloadText(value, maxChars),
+            : excerptPayloadText(value, stringBudget, keepQuestionText),
       ]),
     );
     const notice = [
-      AUTONOMY_TRIGGER_EXCERPT_NOTICE,
+      autonomyTriggerExcerptNotice(maxChars),
       Array.isArray(events)
         ? `recent_identity_events_omitted: ${events.length - eventCount}.`
         : null,
+      omittedRelatedEpisodes > 0 ? `related_episodes_omitted: ${omittedRelatedEpisodes}.` : null,
       omittedPayloadFields > 0 ? `payload_fields_omitted: ${omittedPayloadFields}.` : null,
     ]
       .filter((part) => part !== null)
       .join(" ");
     // The planner applies a smaller head+tail crop to this block. Keep the
     // bounding and omission notice on the first line so that crop retains it.
-    return `${notice}\n${renderAutonomyTriggerContext({ ...context, payload })}`;
+    return presentation(
+      payload,
+      `${notice}\n${renderAutonomyTriggerContext({ ...context, payload })}`,
+    );
   };
 
   const uncut = render(Number.POSITIVE_INFINITY);
-  if (uncut.length <= AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS) {
+  if (uncut.text.length <= maxChars) {
     return uncut;
   }
 
   // Reserve every selected event's metadata before spending any room on text.
   // If metadata alone exceeds the cap, exclude an explicitly counted suffix.
   let bounded = render(0);
-  while (bounded.length > AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS && eventCount > 0) {
+  if (bounded.text.length > maxChars) {
+    // The questions' related episodes leave whole, from the end, while that can still let the
+    // question text fit beside the labels and structure that stay whole. Question text that
+    // cannot is excerpted before any whole field is dropped.
+    omittedRelatedEpisodes = relatedEpisodeCount(retainedPayload);
+    if (render(0).text.length <= maxChars) {
+      omittedRelatedEpisodes = 0;
+      while (bounded.text.length > maxChars) {
+        omittedRelatedEpisodes += 1;
+        bounded = render(0);
+      }
+    } else {
+      omittedRelatedEpisodes = 0;
+      keepQuestionText = false;
+      bounded = render(0);
+    }
+  }
+  // Preserve whole questions where possible: related episodes leave before any question field. They leave together:
+  // episodes that only fit at a zero text budget would leave every excerpt, the questions'
+  // included, almost empty.
+  if (bounded.text.length > maxChars && relatedEpisodeCount(retainedPayload) > 0) {
+    omittedRelatedEpisodes = relatedEpisodeCount(retainedPayload);
+    bounded = render(0);
+  }
+  while (bounded.text.length > maxChars && eventCount > 0) {
     eventCount -= 1;
     bounded = render(0);
   }
@@ -216,20 +378,35 @@ function boundAutonomyTriggerContext(context: AutonomyTriggerContext): string {
   const otherFields = Object.keys(retainedPayload).filter(
     (key) => key !== "recent_identity_events",
   );
-  while (bounded.length > AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS && otherFields.length > 0) {
+  while (bounded.text.length > maxChars && otherFields.length > 0) {
     delete retainedPayload[otherFields.pop()!];
     omittedPayloadFields += 1;
     bounded = render(0);
+  }
+  // An episode whose ids are excerpted cannot be cited, so episodes leave whole, from the end,
+  // while that can still let the shared budget reach their longest id.
+  const handleChars = relatedEpisodeHandleChars(retainedPayload);
+  if (handleChars > 0 && render(handleChars).text.length > maxChars) {
+    const omittedBefore = omittedRelatedEpisodes;
+    omittedRelatedEpisodes = relatedEpisodeCount(retainedPayload);
+    if (render(handleChars).text.length <= maxChars) {
+      omittedRelatedEpisodes = omittedBefore;
+      while (render(handleChars).text.length > maxChars) {
+        omittedRelatedEpisodes += 1;
+      }
+    } else {
+      omittedRelatedEpisodes = omittedBefore;
+    }
   }
 
   // Price the final serialization, including JSON escapes, calendar siblings,
   // domain notes, and the notice. Short values use only the room they need.
   let low = 0;
-  let high = AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS;
+  let high = maxChars;
   while (low <= high) {
     const candidateBudget = Math.floor((low + high) / 2);
     const candidate = render(candidateBudget);
-    if (candidate.length <= AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS) {
+    if (candidate.text.length <= maxChars) {
       bounded = candidate;
       low = candidateBudget + 1;
     } else {
@@ -239,16 +416,9 @@ function boundAutonomyTriggerContext(context: AutonomyTriggerContext): string {
   return bounded;
 }
 
-// A dormant-question wake's event id is the question paired with the same stamp
-// its sort_ts reports, and that pair is what the scheduler latches -- so the
-// event is one-shot per dormancy, and an old sort_ts means the question has
-// stood unwritten that long rather than that it has been waking me all along.
-// Nothing in the rendered block says so: the block shows a date eight days back
-// on a wake that fired today and looks like recurrence. The offline rumination
-// loop's bookkeeping rides in the payload for the same reason -- the wake is not
-// that loop's selector and cannot report its own passes as offline work.
+// Each presented question keeps its own dormancy latch and disclosure label.
 const OPEN_QUESTION_DORMANCY_DOMAIN_NOTE =
-  "note on this dormant-question wake: last_touched is the dormancy anchor this trigger measures against, and my event_id pairs the question with that same stamp, which is what gets latched once the wake completes. So this event cannot wake me a second time -- only a later write that moves last_touched mints a new stamp and a new event -- and an old sort_ts is how long the question has stood at that stamp, never a count of how often it has already woken me. Not every write moves it: the offline loop's rumination bookkeeping does not, and a question rendered into a context section is not written at all. A wake that fails before it completes leaves the pair unlatched and can return. unresolved_rumination_ticks and last_ruminated_at are that offline loop's own record under its own selection, which this wake neither feeds nor writes: on a question that is still open, a null last_ruminated_at means no offline pass has been written against it since it was opened.";
+  "note on this dormant-question wake: up to three questions share this wake. Each last_touched is that question's dormancy anchor, never a count of how often it has already woken me. Completion latches only questions whose id and text were shown whole on a finalizer page at that stamp and updates its rumination count and time; a failure leaves the pair unlatched and can return. A latched question cannot wake me a second time until a later write moves last_touched. Rumination stamps include offline passes and completed dormant-question wakes; null means neither has been recorded.";
 
 function carriesOpenQuestionDormancy(payload: Record<string, unknown>): boolean {
   return typeof payload.open_question_id === "string" && typeof payload.last_touched === "number";
@@ -282,6 +452,21 @@ function renderAutonomyTriggerContext(context: AutonomyTriggerContext): string {
     .join("\n");
 }
 
-export function formatAutonomyTriggerContext(context: AutonomyTriggerContext): string {
-  return boundAutonomyTriggerContext(context);
+export function formatAutonomyTriggerContext(
+  context: AutonomyTriggerContext,
+  maxChars = AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS,
+): string {
+  return renderAutonomyTriggerPresentation(context, maxChars).text;
+}
+
+export type RenderedAutonomyTriggerContext = {
+  text: string;
+  shownOpenQuestionIds: string[];
+};
+
+export function renderAutonomyTriggerPresentation(
+  context: AutonomyTriggerContext,
+  maxChars = AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS,
+): RenderedAutonomyTriggerContext {
+  return boundAutonomyTriggerContext(context, maxChars);
 }

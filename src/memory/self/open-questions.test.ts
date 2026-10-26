@@ -57,7 +57,12 @@ describe("OpenQuestionsRepository", () => {
     }
   });
 
-  async function openVectorFixture(embeddingClient: EmbeddingClient) {
+  async function openVectorFixture(
+    embeddingClient: EmbeddingClient,
+    onEmbeddingFailure?: ConstructorParameters<
+      typeof OpenQuestionsRepository
+    >[0]["onEmbeddingFailure"],
+  ) {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-open-questions-"));
     const store = new LanceDbStore({
       uri: join(tempDir, "lancedb"),
@@ -73,6 +78,7 @@ describe("OpenQuestionsRepository", () => {
       db,
       table,
       embeddingClient,
+      onEmbeddingFailure,
       clock: new FixedClock(10_000),
     });
 
@@ -87,6 +93,37 @@ describe("OpenQuestionsRepository", () => {
       table,
     };
   }
+
+  it.each(["synchronous", "asynchronous"])(
+    "retains a %s embedding reporter failure without failing the question mutation",
+    async (mode) => {
+      const failure = new Error("embedding reporter unavailable");
+      const log = vi.spyOn(console, "error").mockImplementation(() => {});
+      const { repository } = await openVectorFixture(new MapEmbeddingClient(new Map()), () => {
+        if (mode === "synchronous") throw failure;
+        return Promise.reject(failure);
+      });
+      try {
+        expect(() =>
+          repository.add({
+            question: "An embedding failure must retain its reporting outcome",
+            urgency: 0.4,
+            source: "user",
+            provenance: { kind: "manual" },
+          }),
+        ).not.toThrow();
+        await expect(repository.waitForPendingEmbeddings()).rejects.toMatchObject({
+          errors: [failure],
+        });
+        expect(log).toHaveBeenCalled();
+        await expect(repository.waitForPendingEmbeddings()).rejects.toMatchObject({
+          errors: [failure],
+        });
+      } finally {
+        log.mockRestore();
+      }
+    },
+  );
 
   it("dedupes by normalized full question text and related ids", () => {
     const clock = new FixedClock(10_000);
@@ -140,6 +177,50 @@ describe("OpenQuestionsRepository", () => {
     expect(touched.last_touched).toBe(12_000);
     expect(resolved.status).toBe("resolved");
     expect(bumped.urgency).toBeLessThanOrEqual(1);
+
+    db.close();
+  });
+
+  it("counts every status in the enum, including the ones the table holds no rows of", () => {
+    const db = openDatabase(":memory:", {
+      migrations: selfMigrations,
+    });
+    const repository = new OpenQuestionsRepository({
+      db,
+      clock: new FixedClock(10_000),
+    });
+    const episodeId = createEpisodeId();
+
+    expect(repository.countByStatus()).toEqual({ open: 0, resolved: 0, abandoned: 0 });
+
+    const first = repository.add({
+      question: "What is Atlas doing?",
+      urgency: 0.4,
+      related_episode_ids: [episodeId],
+      source: "user",
+    });
+    const second = repository.add({
+      question: "Where did the rollout stall?",
+      urgency: 0.5,
+      related_episode_ids: [episodeId],
+      source: "user",
+    });
+    repository.add({
+      question: "Who else saw the stall?",
+      urgency: 0.6,
+      related_episode_ids: [episodeId],
+      source: "user",
+    });
+
+    // Two rows leave the open set by different doors; the third stays. A status with no rows still
+    // has to print, because a caller cannot tell a key this query forgot from a measured zero.
+    repository.resolve(first.id, {
+      resolution_evidence_episode_ids: [episodeId],
+      resolution_note: "Atlas completed the rollout.",
+    });
+    repository.abandon(second.id, "Superseded by the incident review.");
+
+    expect(repository.countByStatus()).toEqual({ open: 1, resolved: 1, abandoned: 1 });
 
     db.close();
   });
@@ -230,17 +311,65 @@ describe("OpenQuestionsRepository", () => {
         "The second pass narrowed the live tension.",
         "The first pass kept the question open.",
       ]);
+      // The count is over the record, not over the page: a caller holding a one-row tail still
+      // learns there are two, which is the only thing that tells a tail from the whole of it.
+      expect(repository.countRuminations(question.id)).toBe(2);
+      expect(repository.countRuminations(connected.id)).toBe(0);
     } finally {
       db.close();
     }
   });
 
-  // Four consecutive resolutions read back with last_ruminated_at null, which is
-  // readable as "nothing ever ruminated on these". It is not: both terminal writes
-  // clear the active-open lifecycle in the same statement that sets the status, so
-  // the null is that write's own doing and carries no history. The notes are the
-  // record that survives it, so pin both halves in one place.
-  it("clears the rumination lifecycle on terminal writes while the notes survive", () => {
+  it("reads a merge pointer only from the tombstone key minted for that row", () => {
+    const db = openDatabase(":memory:", {
+      migrations: selfMigrations,
+    });
+    const repository = new OpenQuestionsRepository({
+      db,
+      clock: new FixedClock(10_000),
+    });
+
+    try {
+      const primary = repository.add({
+        question: "Which question survives the merge?",
+        urgency: 0.5,
+        source: "reflection",
+        provenance: manualProvenance,
+      });
+      const duplicate = repository.add({
+        question: "Is this the same question asked twice?",
+        urgency: 0.5,
+        source: "reflection",
+        provenance: manualProvenance,
+      });
+      const untouched = repository.add({
+        question: "What was never merged?",
+        urgency: 0.5,
+        source: "reflection",
+        provenance: manualProvenance,
+      });
+
+      repository.mergeDuplicate(primary.id, duplicate.id, {}, "Merged into the primary.");
+
+      expect(repository.mergeTombstonePrimaryId(duplicate.id)).toBe(primary.id);
+      // A content key is not a pointer, and neither is a row that does not exist.
+      expect(repository.mergeTombstonePrimaryId(primary.id)).toBeNull();
+      expect(repository.mergeTombstonePrimaryId(untouched.id)).toBeNull();
+
+      // update() recomputes dedupe_key from the row's content, so a tombstone key can be replaced
+      // by one that parses but names a different duplicate. That is not this row's pointer.
+      db.prepare("UPDATE open_questions SET dedupe_key = ? WHERE id = ?").run(
+        `merged:${primary.id}:into:${untouched.id}`,
+        duplicate.id,
+      );
+
+      expect(repository.mergeTombstonePrimaryId(duplicate.id)).toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("retains abandonment rumination evidence while resolution clears the active lifecycle", () => {
     const db = openDatabase(":memory:", {
       migrations: selfMigrations,
     });
@@ -283,11 +412,16 @@ describe("OpenQuestionsRepository", () => {
         resolution_note: "The evidence settled it.",
         resolution_evidence_episode_ids: [createEpisodeId()],
       });
-      const afterAbandon = repository.abandon(abandoned.id, "No traction.");
+      const afterAbandon = repository.abandon(abandoned.id, "stale_no_traction");
 
-      for (const record of [afterResolve, afterAbandon]) {
-        expect(record.unresolved_rumination_ticks).toBe(0);
-        expect(record.last_ruminated_at).toBeNull();
+      expect(afterResolve.unresolved_rumination_ticks).toBe(0);
+      expect(afterResolve.last_ruminated_at).toBeNull();
+      for (const record of [afterAbandon, repository.get(abandoned.id)]) {
+        expect(record).toMatchObject({
+          abandoned_reason: "stale_no_traction",
+          unresolved_rumination_ticks: 3,
+          last_ruminated_at: 10_000,
+        });
       }
 
       for (const question of [resolved, abandoned]) {
@@ -923,6 +1057,52 @@ describe("OpenQuestionsRepository", () => {
           .findByHandles({ streamEntryIds: [], episodeIds: [episodeId] })
           .map((question) => question.id),
       ).toEqual([high.id, touchedTie.id, untouchedTie.id, low.id]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("finds a closed row whose only handles are semantic node ids", () => {
+    const db = openDatabase(":memory:", {
+      migrations: selfMigrations,
+    });
+    const repository = new OpenQuestionsRepository({
+      db,
+      clock: new FixedClock(10_000),
+    });
+    const nodeId = createSemanticNodeId();
+    const unrelatedNodeId = createSemanticNodeId();
+    const dismissed = repository.add({
+      question: "Do the two claims about the schedule contradict each other?",
+      urgency: 0.5,
+      related_semantic_node_ids: [nodeId, createSemanticNodeId()],
+      source: "contradiction",
+    });
+    const stillOpen = repository.add({
+      question: "¿Sigue abierta la otra contradicción sobre el horario?",
+      urgency: 0.9,
+      related_semantic_node_ids: [nodeId],
+      source: "contradiction",
+    });
+    const lifecycle = ["resolved", "abandoned"] as const;
+
+    repository.abandon(dismissed.id, "stale_no_traction");
+
+    try {
+      expect(
+        repository
+          .findByHandles({ semanticNodeIds: [nodeId], statuses: lifecycle })
+          .map((question) => question.id),
+      ).toEqual([dismissed.id]);
+      expect(
+        repository.findByHandles({ streamEntryIds: [], episodeIds: [], statuses: lifecycle }),
+      ).toEqual([]);
+      expect(
+        repository.findByHandles({ semanticNodeIds: [unrelatedNodeId], statuses: lifecycle }),
+      ).toEqual([]);
+      expect(
+        repository.findByHandles({ semanticNodeIds: [nodeId] }).map((question) => question.id),
+      ).toEqual([stillOpen.id, dismissed.id]);
     } finally {
       db.close();
     }

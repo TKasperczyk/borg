@@ -161,7 +161,8 @@ describe("open question dormant trigger", () => {
     });
 
     const events = await trigger.scan();
-    const payloads = new Map(events.map((event) => [event.payload.open_question_id, event.payload]));
+    const questions = [events[0]!.payload, ...(events[0]!.payload.additional_questions ?? [])];
+    const payloads = new Map(questions.map((question) => [question.open_question_id, question]));
 
     // A question no offline pass has reached says so on its face rather than
     // arriving indistinguishable from one the loop has worked repeatedly.
@@ -183,6 +184,69 @@ describe("open question dormant trigger", () => {
     );
 
     expect(rendered).toContain('"last_ruminated_at": null');
-    expect(rendered).toContain("no offline pass has been written against it since it was opened");
+    expect(rendered).toContain("null means neither has been recorded");
+  });
+  it("caps a due batch at three and atomically stamps every presented question", async () => {
+    const clock = new ManualClock(1_000_000);
+    const harness = await createOfflineTestHarness({ clock });
+    cleanup = harness.cleanup;
+    const watermarkRepository = new StreamWatermarkRepository({ db: harness.db, clock });
+    const questions = Array.from({ length: 4 }, (_, index) =>
+      harness.openQuestionsRepository.add({
+        question: `未解決の問い ${index}`,
+        urgency: 0.5,
+        source: "user",
+        provenance: { kind: "system" },
+        last_touched: clock.now() - 100_000 + index,
+      }),
+    );
+    const trigger = createOpenQuestionDormantTrigger({
+      openQuestionsRepository: harness.openQuestionsRepository,
+      watermarkRepository,
+      dormantMs: 50_000,
+      clock,
+    });
+    const events = await trigger.scan();
+    expect(events).toHaveLength(1);
+    const event = events[0]!;
+    expect(event.sortTs).toBe(questions[0]!.last_touched);
+    expect(event.stateTs).toBe(questions[2]!.last_touched);
+    const presented = [event.payload, ...(event.payload.additional_questions ?? [])];
+    expect(presented.map((question) => question.open_question_id)).toEqual(
+      questions.slice(0, 3).map((question) => question.id),
+    );
+    const prompt = formatAutonomyTriggerContext(trigger.buildTurn(event).autonomyTrigger!);
+    for (const question of questions.slice(0, 3)) expect(prompt).toContain(question.question);
+    expect(prompt).not.toContain(questions[3]!.question);
+    expect(harness.openQuestionsRepository.get(questions[0]!.id)?.last_ruminated_at).toBeNull();
+
+    // A failed commit leaves the entire batch due, including its first member.
+    expect(() =>
+      watermarkRepository.runInTransaction(() => {
+        trigger.commitFired!(event, {
+          shownOpenQuestionIds: questions.slice(0, 3).map((question) => question.id),
+        });
+        throw new Error("commit interrupted");
+      }),
+    ).toThrow("commit interrupted");
+    expect((await trigger.scan())[0]!.payload.open_question_id).toBe(questions[0]!.id);
+    expect(harness.openQuestionsRepository.get(questions[0]!.id)?.last_ruminated_at).toBeNull();
+    watermarkRepository.runInTransaction(() =>
+      trigger.commitFired!(event, {
+        shownOpenQuestionIds: questions.slice(0, 3).map((question) => question.id),
+      }),
+    );
+    for (const question of questions.slice(0, 3)) {
+      expect(harness.openQuestionsRepository.get(question.id)).toMatchObject({
+        last_ruminated_at: clock.now(),
+        unresolved_rumination_ticks: 1,
+      });
+      // The tick comes with no rumination note: the ledger and ruminator copy count these wakes.
+      expect(harness.openQuestionsRepository.countRuminations(question.id)).toBe(0);
+    }
+    expect(harness.openQuestionsRepository.get(questions[3]!.id)?.last_ruminated_at).toBeNull();
+    expect((await trigger.scan()).map((remaining) => remaining.payload.open_question_id)).toEqual([
+      questions[3]!.id,
+    ]);
   });
 });

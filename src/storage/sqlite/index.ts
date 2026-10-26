@@ -363,7 +363,11 @@ function reconcileMigrationIds(db: SqliteDatabase, migrations: readonly Migratio
   reconcile.immediate();
 }
 
-function runMigrations(db: SqliteDatabase, migrations: readonly Migration[]): void {
+export function runMigrations(
+  db: SqliteDatabase,
+  migrations: readonly Migration[],
+  appliedAt = Date.now(),
+): void {
   validateMigrations(migrations);
   ensureMigrationTable(db);
   reconcileMigrationIds(db, migrations);
@@ -385,7 +389,7 @@ function runMigrations(db: SqliteDatabase, migrations: readonly Migration[]): vo
         migration.up(db);
       }
 
-      insertMigration.run(migration.id, migration.name, Date.now());
+      insertMigration.run(migration.id, migration.name, appliedAt);
     });
 
     applyMigration();

@@ -7,8 +7,10 @@ import {
   type StreamBacklogResponseTo,
   type TaskEventResponseTo,
   type StreamWatermarkRepository,
+  type StreamEntryIndexRepository,
 } from "../../stream/index.js";
 import { BorgError, CognitionError } from "../../util/errors.js";
+import { FailureReportTracker } from "../../util/failure-reports.js";
 import { type Clock, SystemClock } from "../../util/clock.js";
 import type { SessionId, StreamEntryId } from "../../util/ids.js";
 import type { ChatResponseWatermarkCoordinator } from "./chat-response-watermark.js";
@@ -16,16 +18,6 @@ import type { AnsweredStreamWindow } from "../../stream/answered-window.js";
 export type { AnsweredStreamWindow } from "../../stream/answered-window.js";
 
 const EPISODIC_PROCESS_NAME = "episodic-extractor";
-const ANSWERED_WINDOW_INTERVENING_CONTEXT_KINDS = new Set<StreamEntry["kind"]>([
-  "agent_msg",
-  "agent_suppressed",
-  "perception",
-  "internal_event",
-]);
-const ANSWERED_WINDOW_UNWATERMARKED_PREFIX_CONTEXT_KINDS = new Set<StreamEntry["kind"]>([
-  "user_msg",
-  ...ANSWERED_WINDOW_INTERVENING_CONTEXT_KINDS,
-]);
 type TimeoutHandle = ReturnType<typeof setTimeout>;
 type SetTimeoutFn = (callback: () => void, delayMs: number) => TimeoutHandle;
 type ClearTimeoutFn = (handle: TimeoutHandle) => void;
@@ -63,6 +55,7 @@ export type StreamIngestionCoordinatorOptions = {
     "compareCursors" | "cursorEntryIndex" | "reconcile"
   >;
   dataDir: string;
+  entryIndex?: StreamEntryIndexRepository;
   /**
    * Minimum number of new stream entries past the watermark required before
    * live extraction fires. Defaults to 2 (one user/agent pair). Below this,
@@ -122,9 +115,9 @@ export type IngestOptions = {
    */
   clampToChatResponseWatermark?: boolean;
   /**
-   * Exact answered window for a terminal response to a drained stream backlog
-   * batch. This bypasses raw contiguous cursor ingestion so interleaved
-   * unanswered user_msg entries stay out of the chunk.
+   * Bound ingestion by a drained stream backlog batch's terminal response.
+   * Every entry past the ingestion watermark through that terminal enters the
+   * pass; response_to still identifies which messages the terminal answered.
    */
   answeredWindow?: AnsweredStreamWindow;
 };
@@ -173,7 +166,6 @@ type AnsweredWindowReadResult =
   | {
       status: "ready";
       entriesForPass: StreamEntry[];
-      includeUnwatermarkedPrefix: boolean;
       reachedTerminal: boolean;
       sinceCursor?: StreamCursor;
     }
@@ -300,6 +292,7 @@ export class StreamIngestionCoordinator {
   private readonly trackedSessions = new Set<SessionId>();
   private readonly shutdownPendingDrain = new Set<SessionId>();
   private closePromise: Promise<void> | null = null;
+  private readonly failureReports = new FailureReportTracker("stream ingestion failure");
 
   constructor(private readonly options: StreamIngestionCoordinatorOptions) {
     this.clock = options.clock ?? new SystemClock();
@@ -767,6 +760,7 @@ export class StreamIngestionCoordinator {
     const reader = new StreamReader({
       dataDir: this.options.dataDir,
       sessionId,
+      entryIndex: this.options.entryIndex,
     });
     const entries: StreamEntry[] = [];
 
@@ -889,6 +883,7 @@ export class StreamIngestionCoordinator {
     const reader = new StreamReader({
       dataDir: this.options.dataDir,
       sessionId,
+      entryIndex: this.options.entryIndex,
     });
 
     try {
@@ -951,7 +946,6 @@ export class StreamIngestionCoordinator {
       return {
         status: "ready",
         entriesForPass,
-        includeUnwatermarkedPrefix,
         reachedTerminal: true,
         ...(resumeOptions.sinceCursor === undefined
           ? {}
@@ -968,7 +962,6 @@ export class StreamIngestionCoordinator {
       return {
         status: "ready",
         entriesForPass,
-        includeUnwatermarkedPrefix,
         reachedTerminal: false,
         ...(resumeOptions.sinceCursor === undefined
           ? {}
@@ -986,9 +979,12 @@ export class StreamIngestionCoordinator {
     const terminalEntry = terminalEntries[0];
 
     if (terminalEntry === undefined) {
-      throw new CognitionError("Answered ingestion window references a missing stream entry", {
-        code: "ANSWERED_INGESTION_WINDOW_ENTRY_MISSING",
-      });
+      throw new CognitionError(
+        `Answered ingestion window references a missing stream entry: terminal ${answeredWindow.terminalCursor.entryId} is not readable from the stream`,
+        {
+          code: "ANSWERED_INGESTION_WINDOW_ENTRY_MISSING",
+        },
+      );
     }
 
     if (
@@ -1003,45 +999,6 @@ export class StreamIngestionCoordinator {
     return {
       status: "already_processed",
     };
-  }
-
-  private answeredWindowEntryIds(input: {
-    answeredWindow: AnsweredBacklogWindow;
-    entriesThroughTerminal: readonly StreamEntry[];
-    includeUnwatermarkedPrefix: boolean;
-  }): StreamEntryId[] {
-    const requiredEntryIds = new Set<StreamEntryId>([
-      ...input.answeredWindow.responseTo.source_entry_ids,
-      input.answeredWindow.terminalCursor.entryId,
-    ]);
-    const firstAnsweredSourceEntryId = input.answeredWindow.responseTo.source_entry_ids[0];
-    let reachedAnsweredWindow = !input.includeUnwatermarkedPrefix;
-    const seenEntryIds = new Set<StreamEntryId>();
-    const entryIds: StreamEntryId[] = [];
-
-    for (const entry of input.entriesThroughTerminal) {
-      if (entry.id === firstAnsweredSourceEntryId) {
-        reachedAnsweredWindow = true;
-      }
-
-      const shouldInclude = reachedAnsweredWindow
-        ? requiredEntryIds.has(entry.id) ||
-          ANSWERED_WINDOW_INTERVENING_CONTEXT_KINDS.has(entry.kind)
-        : ANSWERED_WINDOW_UNWATERMARKED_PREFIX_CONTEXT_KINDS.has(entry.kind);
-
-      if (!shouldInclude) {
-        continue;
-      }
-
-      if (seenEntryIds.has(entry.id)) {
-        continue;
-      }
-
-      seenEntryIds.add(entry.id);
-      entryIds.push(entry.id);
-    }
-
-    return entryIds;
   }
 
   private async ingestAnsweredWindow(
@@ -1082,6 +1039,11 @@ export class StreamIngestionCoordinator {
           },
         });
 
+        await this.options.entryProcessor?.process({
+          sessionId,
+          entries: windowEntries.entriesForPass,
+        });
+
         this.options.watermarkRepository.set(EPISODIC_PROCESS_NAME, sessionId, {
           lastTs: lastProcessedEntry.timestamp,
           lastEntryId: lastProcessedEntry.id,
@@ -1094,36 +1056,18 @@ export class StreamIngestionCoordinator {
         };
       }
 
-      const entriesById = new Map(windowEntries.entriesForPass.map((entry) => [entry.id, entry]));
-      const requiredEntryIds = [
-        ...answeredWindow.responseTo.source_entry_ids,
-        answeredWindow.terminalCursor.entryId,
-      ];
-      const missingEntryId = requiredEntryIds.find((entryId) => !entriesById.has(entryId));
-
-      if (missingEntryId !== undefined) {
-        throw new CognitionError("Answered ingestion window references a missing stream entry", {
-          code: "ANSWERED_INGESTION_WINDOW_ENTRY_MISSING",
-        });
-      }
-
-      const entryIds = this.answeredWindowEntryIds({
-        answeredWindow,
-        entriesThroughTerminal: windowEntries.entriesForPass,
-        includeUnwatermarkedPrefix: windowEntries.includeUnwatermarkedPrefix,
-      });
+      // Advancing a contiguous watermark requires consuming the whole prefix. The
+      // terminal's response_to records answered messages without dropping other
+      // entries that arrived before or during the answer. Sources already below
+      // the watermark were consumed by an earlier pass and need not be re-read.
+      const entryIds = windowEntries.entriesForPass.map((entry) => entry.id);
       const extractionResult = await this.options.extractor.extractFromStream({
         session: sessionId,
         entryIds,
       });
-      // The processor sees exactly the answered-window entries the extractor
-      // consumed (resolved through entriesById; presence was validated above).
-      const processedEntries = entryIds
-        .map((entryId) => entriesById.get(entryId))
-        .filter((entry): entry is NonNullable<typeof entry> => entry !== undefined);
       await this.options.entryProcessor?.process({
         sessionId,
-        entries: processedEntries,
+        entries: windowEntries.entriesForPass,
       });
 
       this.options.watermarkRepository.set(EPISODIC_PROCESS_NAME, sessionId, {
@@ -1137,11 +1081,7 @@ export class StreamIngestionCoordinator {
         extractionResult,
       };
     } catch (error) {
-      try {
-        await this.options.onError?.(error, sessionId);
-      } catch {
-        // Best-effort.
-      }
+      await this.failureReports.report(() => this.options.onError?.(error, sessionId));
 
       return {
         ran: false,
@@ -1258,11 +1198,7 @@ export class StreamIngestionCoordinator {
         extractionResult,
       };
     } catch (error) {
-      try {
-        await this.options.onError?.(error, sessionId);
-      } catch {
-        // Best-effort.
-      }
+      await this.failureReports.report(() => this.options.onError?.(error, sessionId));
 
       return {
         ran: false,
@@ -1288,6 +1224,7 @@ export class StreamIngestionCoordinator {
     }
 
     this.closePromise = (async () => {
+      const errors: unknown[] = [];
       while (true) {
         const sessionIds = new Set<SessionId>([
           ...this.trackedSessions,
@@ -1298,11 +1235,11 @@ export class StreamIngestionCoordinator {
         ]);
 
         if (sessionIds.size === 0) {
-          return;
+          break;
         }
 
-        await Promise.all(
-          [...sessionIds].map((sessionId) => {
+        const results = await Promise.allSettled(
+          [...sessionIds].map(async (sessionId) => {
             const active = this.inFlight.get(sessionId);
             const settlingPass =
               active === undefined ? this.flushSettlingPass(sessionId) : undefined;
@@ -1315,6 +1252,9 @@ export class StreamIngestionCoordinator {
             );
           }),
         );
+        for (const result of results) {
+          if (result.status === "rejected") errors.push(result.reason);
+        }
 
         const hasOutstanding = [...sessionIds].some(
           (sessionId) =>
@@ -1325,9 +1265,15 @@ export class StreamIngestionCoordinator {
         );
 
         if (!hasOutstanding) {
-          return;
+          break;
         }
       }
+      try {
+        await this.failureReports.flush();
+      } catch (error) {
+        errors.push(error);
+      }
+      if (errors.length > 0) throw new AggregateError(errors, "Stream ingestion failed to drain");
     })();
 
     return this.closePromise;

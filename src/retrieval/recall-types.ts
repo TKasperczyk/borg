@@ -4,6 +4,7 @@ import type {
   OpenQuestionId,
   SemanticEdgeId,
   SemanticNodeId,
+  SessionId,
   StreamEntryId,
   AttachmentId,
   ImagePerceptionId,
@@ -13,6 +14,7 @@ import type {
   CommitmentEnforcementClass,
 } from "../memory/commitments/index.js";
 import type { MemoryDisclosureLabel } from "./recall-context.js";
+import type { StreamEntryKind } from "../stream/types.js";
 
 export const RECALL_INTENT_KINDS = [
   "raw_text",
@@ -112,6 +114,25 @@ export type EvidenceItem = {
   imageOriginFrame?: string;
   citationType?: "original_image" | "generated_perception_text" | "parent_user_message";
   imageUnavailableReason?: "budget" | "inactive";
+  // Set where a row holds one stream entry's text (raw-stream hits, single-entry
+  // warm recalls): the recalled entry's own kind and instant. This
+  // payload is verbatim stream content, so a recalled entry that quotes a
+  // rendered block arrives byte-identical to that block -- and every other
+  // field on the row (score, disclosure, stream id) is true of both cases. The
+  // ledger's sibling lane already resolves an actor onto its
+  // `retrieved_raw_stream_evidence` rows; the verification lane renders the
+  // same text with neither an author nor a date, so nothing on it separates
+  // recalled prose from a live surface. Carried here because the constructing
+  // site holds the whole StreamEntry and drops both.
+  streamEntryKind?: StreamEntryKind;
+  streamEntryAtMs?: number;
+  // Same reason, one field further: the ledger's raw-stream lane resolves scope and
+  // actor out of the builder's entry map, which holds this session's reverse scan plus
+  // recalled episodes' citation chains -- and a recalled entry is often in neither. The
+  // miss is silent, because the values a miss produces (`global`, `memory`) are also
+  // values a determined lookup produces. The session is on the entry this item was
+  // built from; carry it so the lane has a second source rather than a default.
+  streamEntrySessionId?: SessionId;
   disclosureLabel?: MemoryDisclosureLabel;
   commitment_enforcement_class?: CommitmentEnforcementClass;
   commitment_critical_domain?: CommitmentCriticalDomain | null;

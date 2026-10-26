@@ -166,6 +166,22 @@ function commitmentIdsForViolations(
   return violations.map((violation) => violation.commitment_id);
 }
 
+function violationTracePayload(
+  tracer: TurnTracer,
+  violations: CommitmentCheckResult["violations"],
+) {
+  return tracer.includePayloads
+    ? {
+        violations: violations.map((violation) => ({
+          commitment_id: violation.commitment_id,
+          reason: violation.reason,
+          confidence: violation.confidence,
+          violating_span_or_topic: violation.violating_span_or_topic ?? null,
+        })),
+      }
+    : {};
+}
+
 export class CommitmentGuardRunner {
   constructor(private readonly options: CommitmentGuardRunnerOptions) {}
 
@@ -201,6 +217,9 @@ export class CommitmentGuardRunner {
       detectionModel: this.options.detectionModel,
       rewriteModel: this.options.rewriteModel,
       entityRepository: this.options.entityRepository,
+      tracer: this.options.tracer,
+      turnId: input.turnId,
+      sessionId: input.sessionId,
     });
     const commitmentCheckerUserMessage = isAutonomousLikeTurnOrigin(input.origin)
       ? input.userMessage
@@ -235,6 +254,7 @@ export class CommitmentGuardRunner {
         const wouldHaveVerdict = commitmentCheckVerdict(shadowCheck);
 
         this.options.tracer.emit("commitment_guard.shadow_observation", {
+          ...violationTracePayload(this.options.tracer, shadowCheck.violations),
           turnId: input.turnId,
           ...(input.sessionId === undefined ? {} : { session_id: input.sessionId }),
           mode: "shadow",
@@ -253,6 +273,7 @@ export class CommitmentGuardRunner {
 
         if (mode === "enforce") {
           this.options.tracer.emit("commitment_guard.advisory_violation_observed", {
+            ...violationTracePayload(this.options.tracer, shadowCheck.violations),
             turnId: input.turnId,
             ...(input.sessionId === undefined ? {} : { session_id: input.sessionId }),
             mode: "enforce",
@@ -276,6 +297,7 @@ export class CommitmentGuardRunner {
 
       if (this.options.tracer.enabled) {
         this.options.tracer.emit("commitment_check.completed", {
+          ...violationTracePayload(this.options.tracer, shadowCheck?.violations ?? []),
           turnId: input.turnId,
           ...(input.sessionId === undefined ? {} : { session_id: input.sessionId }),
           mode,
@@ -338,6 +360,7 @@ export class CommitmentGuardRunner {
 
         if (this.options.tracer.enabled) {
           this.options.tracer.emit("commitment_guard.regeneration_failed", {
+            ...violationTracePayload(this.options.tracer, commitmentCheck.violations),
             turnId: input.turnId,
             ...(input.sessionId === undefined ? {} : { session_id: input.sessionId }),
             mode: "enforce",
@@ -373,6 +396,7 @@ export class CommitmentGuardRunner {
 
         if (this.options.tracer.enabled) {
           this.options.tracer.emit("commitment_guard.regeneration_requested", {
+            ...violationTracePayload(this.options.tracer, commitmentCheck.violations),
             turnId: input.turnId,
             ...(input.sessionId === undefined ? {} : { session_id: input.sessionId }),
             mode: "enforce",
@@ -396,6 +420,7 @@ export class CommitmentGuardRunner {
       effectiveCommitmentCheck.emission.kind === "message"
     ) {
       this.options.tracer.emit("commitment_guard.regeneration_succeeded", {
+        ...violationTracePayload(this.options.tracer, []),
         turnId: input.turnId,
         ...(input.sessionId === undefined ? {} : { session_id: input.sessionId }),
         mode: "enforce",
@@ -409,6 +434,7 @@ export class CommitmentGuardRunner {
 
     if (this.options.tracer.enabled && effectiveCommitmentCheck.emission.kind === "suppressed") {
       this.options.tracer.emit("commitment_guard.enforce_suppression", {
+        ...violationTracePayload(this.options.tracer, effectiveCommitmentCheck.violations),
         turnId: input.turnId,
         ...(input.sessionId === undefined ? {} : { session_id: input.sessionId }),
         mode: "enforce",
@@ -431,6 +457,7 @@ export class CommitmentGuardRunner {
       effectiveCommitmentCheck.emission.kind === "message"
     ) {
       this.options.tracer.emit("commitment_guard.enforce_rewrite", {
+        ...violationTracePayload(this.options.tracer, effectiveCommitmentCheck.violations),
         turnId: input.turnId,
         ...(input.sessionId === undefined ? {} : { session_id: input.sessionId }),
         mode: "enforce",
@@ -448,6 +475,7 @@ export class CommitmentGuardRunner {
 
     if (this.options.tracer.enabled) {
       this.options.tracer.emit("commitment_check.completed", {
+        ...violationTracePayload(this.options.tracer, effectiveCommitmentCheck.violations),
         turnId: input.turnId,
         ...(input.sessionId === undefined ? {} : { session_id: input.sessionId }),
         mode,
