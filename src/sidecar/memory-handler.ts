@@ -419,11 +419,12 @@ const episodeExclusionsSchema = z
     {
       episode_ids: z.array(episodeIdSchema).max(100).optional().default([]),
       source_stream_ids: z.array(streamEntryIdSchema).max(100).optional().default([]),
+      source_session_ids: z.array(sessionIdSchema).max(100).optional().default([]),
     },
     {
       error: (issue) =>
         issue.code === "unrecognized_keys"
-          ? `Unsupported exclusion fields: ${issue.keys.join(", ")}. Use exclude.episode_ids or exclude.source_stream_ids; free-text exclusions are not supported.`
+          ? `Unsupported exclusion fields: ${issue.keys.join(", ")}. Use exclude.episode_ids, exclude.source_stream_ids or exclude.source_session_ids; free-text exclusions are not supported.`
           : undefined,
     },
   )
@@ -1040,16 +1041,31 @@ function projectAutobiographicalRecallForResponse(
 }
 
 // Only stored record/provenance IDs may exclude a candidate. Titles and narratives
-// are evidence for the model, never deterministic recall predicates.
-function episodeMatchesExclusions(episode: Episode, exclusions?: EpisodeExclusions): boolean {
+// are evidence for the model, never deterministic recall predicates. A source
+// session is read from the stream index; an unindexed source matches no session.
+function episodeExclusionMatcher(
+  stream: Pick<Borg["stream"], "lookupSessionIds">,
+  episodes: readonly Episode[],
+  exclusions?: EpisodeExclusions,
+): (episode: Episode) => boolean {
   if (exclusions === undefined) {
-    return false;
+    return () => false;
   }
 
-  return (
+  const sourceSessionIds =
+    exclusions.source_session_ids.length === 0
+      ? new Map<StreamEntryId, SessionId>()
+      : stream.lookupSessionIds(episodes.flatMap((episode) => episode.source_stream_ids));
+
+  return (episode) =>
     exclusions.episode_ids.includes(episode.id) ||
-    episode.source_stream_ids.some((id) => exclusions.source_stream_ids.includes(id))
-  );
+    episode.source_stream_ids.some((id) => {
+      if (exclusions.source_stream_ids.includes(id)) {
+        return true;
+      }
+      const sessionId = sourceSessionIds.get(id);
+      return sessionId !== undefined && exclusions.source_session_ids.includes(sessionId);
+    });
 }
 
 function createPublicDisclosureProjector(
@@ -3176,12 +3192,14 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
                     limit: venueSearchLimit,
                   })
                 : [];
+              const isExcludedVenueEpisode = episodeExclusionMatcher(
+                borg.stream,
+                venueCandidates.map((candidate) => candidate.episode),
+                parsed.data.exclude,
+              );
               const venueRecent = projectEpisodeHitsForResponse(
                 venueCandidates
-                  .filter(
-                    (candidate) =>
-                      !episodeMatchesExclusions(candidate.episode, parsed.data.exclude),
-                  )
+                  .filter((candidate) => !isExcludedVenueEpisode(candidate.episode))
                   .slice(0, venueLimit)
                   .map((candidate) => ({
                     episode: candidate.episode,
@@ -3326,9 +3344,12 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
                           strictTimeRange: false,
                         }),
                   });
-                  const eligible = recalled.filter(
-                    (hit) => !episodeMatchesExclusions(hit.episode, parsed.data.exclude),
+                  const isExcludedEpisode = episodeExclusionMatcher(
+                    borg.stream,
+                    recalled.map((hit) => hit.episode),
+                    parsed.data.exclude,
                   );
+                  const eligible = recalled.filter((hit) => !isExcludedEpisode(hit.episode));
                   // The period to prefer: an explicit time_range, else the cue the planner resolved
                   // from FOCUS, which is the range a caller with its own parser used to send.
                   const actedCue: TemporalCue | null =
@@ -4125,8 +4146,13 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
                       ...recallOptions,
                       timeRange: parsedRecall.data.time_range,
                     });
+              const isExcludedEpisode = episodeExclusionMatcher(
+                borg.stream,
+                recalledResult.episodes.map((hit) => hit.episode),
+                parsedRecall.data.exclude,
+              );
               const included = recalledResult.episodes
-                .filter((hit) => !episodeMatchesExclusions(hit.episode, parsedRecall.data.exclude))
+                .filter((hit) => !isExcludedEpisode(hit.episode))
                 .slice(0, limit);
               const topRawScore =
                 included.length === 0 ? null : Math.max(...included.map((hit) => hit.rawScore));

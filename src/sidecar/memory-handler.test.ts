@@ -128,6 +128,7 @@ type Recorder = {
     activeOnly?: boolean;
   }>;
   streamHydrationError?: Error;
+  sessionLookupCalls: Array<readonly StreamEntryId[]>;
   resolvedExternalSenders: unknown[];
   resolvedExternalEntities: unknown[];
   lookedUpExternalSenders: Array<{ source: string; externalId: string }>;
@@ -398,6 +399,15 @@ function stubBorg(rec: Recorder): Borg {
           ids.flatMap((id) => {
             const entry = rec.indexedStreamEntries.get(id);
             return entry === undefined ? [] : [[id, entry] as const];
+          }),
+        );
+      },
+      lookupSessionIds: (ids: readonly StreamEntryId[]) => {
+        rec.sessionLookupCalls.push(ids);
+        return new Map(
+          ids.flatMap((id) => {
+            const entry = rec.indexedStreamEntries.get(id);
+            return entry === undefined ? [] : [[id, entry.session_id] as const];
           }),
         );
       },
@@ -834,6 +844,7 @@ function recordingPool(): { pool: MemoryPool; rec: Recorder } {
     appendManyCalls: [],
     indexedStreamEntries: new Map(),
     streamHydrateCalls: [],
+    sessionLookupCalls: [],
     resolvedExternalSenders: [],
     resolvedExternalEntities: [],
     lookedUpExternalSenders: [],
@@ -6875,6 +6886,124 @@ describe("memory sidecar handler", () => {
       { episodeId: firstIncluded.id, score: 0.91 },
       { episodeId: secondIncluded.id, score: 0.91 },
     ]);
+    expect(rec.sessionLookupCalls).toEqual([]);
+  });
+
+  it("excludes episodes with any source indexed in an excluded session before the limit", async () => {
+    const { pool, rec } = recordingPool();
+    const base = await start(pool);
+    const excludedSession = parseSessionId("default");
+    const chatSession = createSessionId();
+    const indexEntry = (sessionId: SessionId): StreamEntryId => {
+      const id = createStreamEntryId();
+      rec.indexedStreamEntries.set(id, {
+        id,
+        kind: "user_msg",
+        content: "Indexed source",
+        timestamp: 1_000,
+        session_id: sessionId,
+        turn_status: "active",
+        sender_entity_id: null,
+        reply_target_entity_id: null,
+        compressed: false,
+      });
+      return id;
+    };
+    const excludedOnly = testEpisode(createEpisodeId(), {
+      source_stream_ids: [indexEntry(excludedSession)],
+      shared: true,
+    });
+    const excludedMixed = testEpisode(createEpisodeId(), {
+      source_stream_ids: [indexEntry(chatSession), indexEntry(excludedSession)],
+      shared: true,
+    });
+    const chatOnly = testEpisode(createEpisodeId(), {
+      source_stream_ids: [indexEntry(chatSession)],
+      shared: true,
+    });
+    const unindexed = testEpisode(createEpisodeId(), {
+      source_stream_ids: [createStreamEntryId()],
+      shared: true,
+    });
+    const overflow = testEpisode(createEpisodeId(), {
+      source_stream_ids: [indexEntry(chatSession)],
+      shared: true,
+    });
+    const candidates = [excludedOnly, excludedMixed, chatOnly, unindexed, overflow];
+    rec.recallEpisodes = candidates;
+    rec.venueEpisodes = candidates;
+    const exclude = { source_session_ids: [excludedSession] };
+    const contextIdentity = {
+      tenant: "acme",
+      session: "session-exclusions",
+      sender: { operator: false, external_id: "alice", display_name: "Alice" },
+      conversation: { external_id: "conversation", type: "personal", name: "Alice" },
+    };
+
+    const recallResponse = await post(
+      base,
+      "/memory/recall",
+      { tenant: "acme", query: "technology", limit: 2, exclude },
+      TOKEN,
+    );
+    const recallPayload = (await recallResponse.json()) as { episodes: Array<{ id: string }> };
+
+    expect(recallResponse.status).toBe(200);
+    expect(recallPayload.episodes.map((episode) => episode.id)).toEqual([chatOnly.id, unindexed.id]);
+    expect(rec.lastRecallLimit).toBe(6);
+    expect(rec.retrievalRecords).toEqual([
+      { episodeId: chatOnly.id, score: 0.91 },
+      { episodeId: unindexed.id, score: 0.91 },
+    ]);
+    expect(rec.sessionLookupCalls).toEqual([
+      candidates.flatMap((episode) => episode.source_stream_ids),
+    ]);
+
+    rec.retrievalRecords.length = 0;
+    rec.sessionLookupCalls.length = 0;
+
+    const contextResponse = await post(
+      base,
+      "/memory/context",
+      {
+        ...contextIdentity,
+        context_turns: [],
+        focus: "technology",
+        limit: 2,
+        sections: ["episodes", "venue_recent"],
+        venue_since: 0,
+        venue_limit: 2,
+        exclude,
+      },
+      TOKEN,
+    );
+    const contextPayload = (await contextResponse.json()) as {
+      episodes: Array<{ id: string }>;
+      venue_recent: Array<{ id: string }>;
+    };
+
+    expect(contextResponse.status).toBe(200);
+    expect(contextPayload.episodes.map((episode) => episode.id)).toEqual([
+      chatOnly.id,
+      unindexed.id,
+    ]);
+    expect(contextPayload.venue_recent.map((episode) => episode.id)).toEqual([
+      chatOnly.id,
+      unindexed.id,
+    ]);
+    expect(rec.retrievalRecords).toEqual([
+      { episodeId: chatOnly.id, score: 0.91 },
+      { episodeId: unindexed.id, score: 0.91 },
+    ]);
+    expect(rec.sessionLookupCalls).toHaveLength(2);
+
+    const invalidResponse = await post(
+      base,
+      "/memory/recall",
+      { tenant: "acme", query: "technology", exclude: { source_session_ids: ["conversation"] } },
+      TOKEN,
+    );
+    expect(invalidResponse.status).toBe(400);
   });
 
   it.each(["/memory/context", "/memory/recall"])(
@@ -6909,6 +7038,7 @@ describe("memory sidecar handler", () => {
         expect(body.error).toContain(Object.keys(exclude)[0]);
         expect(body.error).toContain("episode_ids");
         expect(body.error).toContain("source_stream_ids");
+        expect(body.error).toContain("source_session_ids");
       }
       expect(rec.tenants).toEqual([]);
     },

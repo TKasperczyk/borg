@@ -505,12 +505,18 @@ returns HTTP 400 and must be corrected by the caller.
   filters strictly by `occurred_at`; if it returns no hits, the sidecar retries once without the
   range and sets `episodes_time_range_fallback: true`. Each endpoint needs only one client request.
   The `venue_recent` section ignores `time_range` (it uses its own `venue_since` constraint).
-- `exclude: {"episode_ids": ["ep_..."], "source_stream_ids": ["strm_..."]}` optional
-  (each array defaults to empty, at most 100 validated IDs). An episode is excluded only if its
-  own ID is listed or any of its stored `source_stream_ids` is listed. Applied before `limit`:
+- `exclude: {"episode_ids": ["ep_..."], "source_stream_ids": ["strm_..."],
+  "source_session_ids": ["sess_..." | "default"]}` optional (each array defaults to empty, at most
+  100 validated IDs). An episode is excluded only if its own ID is listed, any of its stored
+  `source_stream_ids` is listed, or any of those sources is indexed in a listed session (the
+  stream entry index; a source without an index row matches no session). Applied before `limit`:
   the sidecar over-fetches (3x limit, bounded), then removes these explicit records. This applies
   to both `episodes` and `venue_recent`; an episode combining sources is excluded if any source
   matches. For protocol events, callers can use the entry ID returned by the task-event endpoint.
+  Session IDs are the `session` values `append-turn` returns; the legacy `/memory/remember`
+  writer (no `scope`) appends to the tenant's out-of-conversation `default` session, so
+  `"source_session_ids": ["default"]` keeps those records, and consolidations built from them,
+  out of a conversation's recall.
   No title, narrative, tag, or language interpretation is performed.
   The strict schema rejects the former `title_prefixes` and `narrative_markers` fields with HTTP
   400 naming the structural replacements. Clients using strings such as `decision=` must migrate

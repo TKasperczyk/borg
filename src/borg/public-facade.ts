@@ -249,6 +249,8 @@ export type BorgStreamFacade = {
     streamEntryIds: readonly StreamEntryId[],
     options?: { budgetMs?: number; activeOnly?: boolean },
   ): Promise<Map<StreamEntryId, StreamEntry>>;
+  // Index-only lookup of the session each entry is stored in; unindexed ids are absent.
+  lookupSessionIds(streamEntryIds: readonly StreamEntryId[]): Map<StreamEntryId, SessionId>;
 };
 
 export type BorgEpisodicFacade = {
