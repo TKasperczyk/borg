@@ -17,6 +17,14 @@ keeps generating with its own model. A separate identifier-only reply guard make
 The sidecar populates sessions, audiences and activity events on the write path and assembles
 these sections through `/memory/context`. Sol's full turn pipeline keeps its existing behavior.
 
+The optional live observatory producer follows [the observatory event contract](observatory-events.md).
+Set `OBSERVATORY_BASE_URL` and `OBSERVATORY_TOKEN` to enable background event delivery; without a
+base URL it is disabled. Batching and bounds are configured with `OBSERVATORY_FLUSH_MS` (250),
+`OBSERVATORY_MAX_BATCH` (100, at most 500), `OBSERVATORY_QUEUE_CAP` (5000), and
+`OBSERVATORY_TIMEOUT_MS` (2000). Inbox, recall, guard and job events are tenant-scoped; the runner
+sends `X-Observatory-Turn-Id`, which callers forward on sidecar requests. Trace payloads follow the
+existing `/memory/trace` payload setting. Emission never waits for the dashboard on a request path.
+
 ## Identity model (borg concepts -> Microsoft Teams)
 
 - Session = team-agent thread key, exactly the `session` value already sent on append-turn
@@ -497,12 +505,18 @@ returns HTTP 400 and must be corrected by the caller.
   filters strictly by `occurred_at`; if it returns no hits, the sidecar retries once without the
   range and sets `episodes_time_range_fallback: true`. Each endpoint needs only one client request.
   The `venue_recent` section ignores `time_range` (it uses its own `venue_since` constraint).
-- `exclude: {"episode_ids": ["ep_..."], "source_stream_ids": ["strm_..."]}` optional
-  (each array defaults to empty, at most 100 validated IDs). An episode is excluded only if its
-  own ID is listed or any of its stored `source_stream_ids` is listed. Applied before `limit`:
+- `exclude: {"episode_ids": ["ep_..."], "source_stream_ids": ["strm_..."],
+  "source_session_ids": ["sess_..." | "default"]}` optional (each array defaults to empty, at most
+  100 validated IDs). An episode is excluded only if its own ID is listed, any of its stored
+  `source_stream_ids` is listed, or any of those sources is indexed in a listed session (the
+  stream entry index; a source without an index row matches no session). Applied before `limit`:
   the sidecar over-fetches (3x limit, bounded), then removes these explicit records. This applies
   to both `episodes` and `venue_recent`; an episode combining sources is excluded if any source
   matches. For protocol events, callers can use the entry ID returned by the task-event endpoint.
+  Session IDs are the `session` values `append-turn` returns; the legacy `/memory/remember`
+  writer (no `scope`) appends to the tenant's out-of-conversation `default` session, so
+  `"source_session_ids": ["default"]` keeps those records, and consolidations built from them,
+  out of a conversation's recall.
   No title, narrative, tag, or language interpretation is performed.
   The strict schema rejects the former `title_prefixes` and `narrative_markers` fields with HTTP
   400 naming the structural replacements. Clients using strings such as `decision=` must migrate
@@ -954,6 +968,9 @@ retrieval pass); the sidecar uses it in two ways:
   { since, until, label, source: "planner_temporal_cue" } }, evidence: [ { id, kind, group,
   occurred_at, relative_age, text, source_episode_ids, disclosure } ], hidden_count, truncated_count }`
   (`hidden_count` is always 0; `truncated_count` counts eligible rows omitted by the row cap).
+  Each row's `disclosure` is the same public projection the episodes and `venue_recent` rows carry
+  (`class`, `origin_audience_names`, `private_to_names`, `private_to_current_sender`,
+  `private_to_current_audience`), so a client renders every section's labels the same way.
   The outer window is always the last seven days. A cue extending earlier adds `additional_window`
   with its own range and label; overlap is covered by the recent window and gaps are not recalled.
   Recent rows retain priority within the same caps, and each row's `occurred_at` places it in its band.

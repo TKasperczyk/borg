@@ -43,6 +43,7 @@ export type TurnTraceEventName =
   | "retrieval.raw_query"
   | "retrieval.completed"
   | "retrieval.intent_candidates"
+  | "retrieval.lane_settled"
   | "observed_event_recall.degraded"
   | "observed_event_embedding_backfill.started"
   | "observed_event_embedding_backfill.completed"
@@ -174,6 +175,7 @@ export type TurnTraceEventName =
   | "episodic_extractor.skipped"
   | "semantic_node.status.transitioned"
   | "sidecar.append_projection.degraded"
+  | "sidecar.append_turn.completed"
   | "maintenance_snapshot.completed"
   | "storage.optimize.completed"
   | "commitment_guard.shadow_observation"
@@ -272,7 +274,7 @@ export class NoopTracer implements TurnTracer {
 
 export const NOOP_TRACER = new NoopTracer();
 
-const PAYLOAD_GATED_TRACE_KEYS = new Set([
+export const PAYLOAD_GATED_TRACE_KEYS: ReadonlySet<string> = new Set([
   "candidate_description",
   "candidate_texts",
   "chunk_text",

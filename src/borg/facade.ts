@@ -730,6 +730,15 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
           budgetMs: options.budgetMs,
           activeOnly: options.activeOnly,
         }),
+      lookupSessionIds: (streamEntryIds: readonly StreamEntryId[]) => {
+        const records = deps.entryIndex.lookupMany(streamEntryIds);
+        return new Map(
+          streamEntryIds.flatMap((id) => {
+            const record = records.get(id);
+            return record === undefined ? [] : [[id, record.session_id] as const];
+          }),
+        );
+      },
     },
     episodic: {
       rememberForTenant: (input) => getTenantFactRememberer().remember(input),

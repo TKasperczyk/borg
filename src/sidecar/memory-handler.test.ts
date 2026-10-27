@@ -20,6 +20,8 @@ import {
   type MemoryPool,
 } from "./memory-handler.js";
 import { MemoryTraceRegistry } from "./memory-trace.js";
+import { ObservatoryEmitter, type ObservatoryEvent } from "./observatory/emitter.js";
+import { ObservatoryTracerSink } from "./observatory/tracer.js";
 import { ServedMemoryContextRegistry } from "./served-memory-context.js";
 import { ManualClock } from "../util/clock.js";
 import {
@@ -126,6 +128,7 @@ type Recorder = {
     activeOnly?: boolean;
   }>;
   streamHydrationError?: Error;
+  sessionLookupCalls: Array<readonly StreamEntryId[]>;
   resolvedExternalSenders: unknown[];
   resolvedExternalEntities: unknown[];
   lookedUpExternalSenders: Array<{ source: string; externalId: string }>;
@@ -396,6 +399,15 @@ function stubBorg(rec: Recorder): Borg {
           ids.flatMap((id) => {
             const entry = rec.indexedStreamEntries.get(id);
             return entry === undefined ? [] : [[id, entry] as const];
+          }),
+        );
+      },
+      lookupSessionIds: (ids: readonly StreamEntryId[]) => {
+        rec.sessionLookupCalls.push(ids);
+        return new Map(
+          ids.flatMap((id) => {
+            const entry = rec.indexedStreamEntries.get(id);
+            return entry === undefined ? [] : [[id, entry.session_id] as const];
           }),
         );
       },
@@ -832,6 +844,7 @@ function recordingPool(): { pool: MemoryPool; rec: Recorder } {
     appendManyCalls: [],
     indexedStreamEntries: new Map(),
     streamHydrateCalls: [],
+    sessionLookupCalls: [],
     resolvedExternalSenders: [],
     resolvedExternalEntities: [],
     lookedUpExternalSenders: [],
@@ -971,6 +984,105 @@ async function requestRaw(
 }
 
 describe("memory sidecar handler", () => {
+  it("correlates recall and append events with the dashboard enabled and /memory/trace disabled", async () => {
+    const { rec } = recordingPool();
+    const events: ObservatoryEvent[] = [];
+    const observatory = new ObservatoryEmitter({
+      config: { enabled: true, baseUrl: "http://observatory", token: "secret", flushMs: 10_000, maxBatch: 100, queueCap: 5000, timeoutMs: 2000 },
+      fetchFn: async (_url, init) => {
+        events.push(...(JSON.parse(String(init?.body)) as { events: ObservatoryEvent[] }).events);
+        return new Response(null, { status: 202 });
+      },
+    });
+    const observatoryTracer = new ObservatoryTracerSink({ emitter: observatory, includePayloads: false });
+    const borg = stubBorg(rec);
+    borg.guardReply = async (input) => {
+      observatoryTracer.tracerFor("acme").emit("internal_identifier_guard.completed", {
+        turnId: input.turnId, session_id: input.sessionId,
+      });
+      return { kind: "message", content: input.response };
+    };
+    const recall = borg.episodic.recallForCognition;
+    borg.episodic.recallForCognition = async (query, options) => {
+      observatoryTracer.tracerFor("acme").emit("retrieval.started", {
+        turnId: options?.traceTurnId ?? "missing-correlation", query,
+      });
+      return recall(query, options);
+    };
+    const pool: MemoryPool = { listTenantIds: async () => ["acme"], withTenant: async (_tenant, fn) => fn(borg) };
+    try {
+      const base = await start(pool, TOKEN, { observatory, observatoryTracer });
+      const headers = { "content-type": "application/json", "x-borg-token": TOKEN, "x-observatory-turn-id": "turn_external_attempt" };
+      const identity = { tenant: "acme", session: "acme::thread", ...TRANSPORT_IDENTITY };
+      const response = await fetch(`${base}/memory/context`, {
+        method: "POST", headers,
+        body: JSON.stringify({ ...identity, sections: ["episodes"], focus: "private query", context_turns: [] }),
+      });
+      expect(response.status).toBe(200);
+      const body = await response.json() as { episodes: unknown[]; degraded: boolean; context_id: string };
+      expect(rec.lastRecallTraceTurnId).toMatch(/^sidecar_recall:acme:/);
+      const guard = await fetch(`${base}/memory/guard-reply`, {
+        method: "POST", headers,
+        body: JSON.stringify({ ...identity, context_id: body.context_id, response: "reply" }),
+      });
+      expect(guard.status).toBe(200);
+      await guard.json();
+      const append = await fetch(`${base}/memory/append-turn`, {
+        method: "POST", headers, body: JSON.stringify({ ...identity, user: "hello", assistant: "reply" }),
+      });
+      expect(append.status).toBe(200);
+      await append.json();
+      await observatory.shutdown();
+      expect(events.find((event) => event.kind === "trace.retrieval.started")).toMatchObject({
+        turn_id: "turn_external_attempt", data: { trace_turn_id: rec.lastRecallTraceTurnId },
+      });
+      expect(events.find((event) => event.kind === "trace.retrieval.started")?.data).not.toHaveProperty("query");
+      expect(events.find((event) => event.kind === "recall.request" && event.phase === "end")).toMatchObject({
+        turn_id: "turn_external_attempt", data: { episode_count: body.episodes.length, degraded: body.degraded, hidden_episode_count: 0 },
+      });
+      expect(events.filter((event) => event.kind === "recall.phase" && event.phase === "end").map((event) => event.data?.phase))
+        .toEqual(["identity", "context_sections", "episodes"]);
+      expect(events.find((event) => event.kind === "trace.sidecar.append_turn.completed")?.turn_id).toBe("turn_external_attempt");
+      expect(events.find((event) => event.kind === "guard.reply")).toMatchObject({
+        phase: "end", turn_id: "turn_external_attempt", data: { verdict: "pass", reason: "" },
+      });
+      expect(events.find((event) => event.kind === "trace.internal_identifier_guard.completed")?.turn_id).toBe("turn_external_attempt");
+      expect(events.find((event) => event.kind === "job.ingestion" && event.phase === "end")).toMatchObject({
+        turn_id: "turn_external_attempt", data: { processed_entries: 2, ran: true },
+      });
+    } finally { await observatory.shutdown(); }
+  });
+
+  it("reports legacy recall degradation exactly as served and contains a failing stage hook", async () => {
+    const { pool, rec } = recordingPool();
+    rec.recallError = new EmbeddingError("embedding unavailable");
+    const events: ObservatoryEvent[] = [];
+    const observatory = new ObservatoryEmitter({
+      config: { enabled: true, baseUrl: "http://observatory", token: "secret", flushMs: 10_000, maxBatch: 100, queueCap: 5000, timeoutMs: 2000 },
+      fetchFn: async (_url, init) => {
+        events.push(...(JSON.parse(String(init?.body)) as { events: ObservatoryEvent[] }).events);
+        return new Response(null, { status: 202 });
+      },
+    });
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const base = await start(pool, TOKEN, { observatory });
+      const response = await post(base, "/memory/recall", { tenant: "acme", query: "hello" }, TOKEN);
+      const body = await response.json() as { degraded_reason: string };
+      expect(response.status).toBe(200);
+      await observatory.shutdown();
+      expect(events.find((event) => event.kind === "recall.request" && event.phase === "end")).toMatchObject({
+        status: "degraded", data: { degraded: true, degraded_reason: body.degraded_reason, episode_count: 0 },
+      });
+      const brokenBase = await start(pool, TOKEN, {
+        observatory: { emit() { throw new Error("observer"); }, stage() { throw new Error("observer"); } },
+      });
+      const stillDegraded = await post(brokenBase, "/memory/recall", { tenant: "acme", query: "hello" }, TOKEN);
+      expect(stillDegraded.status).toBe(200);
+      await stillDegraded.json();
+    } finally { await observatory.shutdown(); log.mockRestore(); }
+  });
+
   it("projects private-to membership by entity identity even when sender display names match", async () => {
     const { pool, rec } = recordingPool();
     const fixture = stubBorg(rec);
@@ -6360,6 +6472,16 @@ describe("memory sidecar handler", () => {
       groupLabel: "Open questions considered",
       text: "question=combined from two private sessions",
     };
+    const someoneElse = "ent_someoneelse0001" as EntityId;
+    rec.entities.push({
+      id: someoneElse,
+      canonical_name: "Bob",
+      aliases: [],
+      kind: "person",
+      borg_role: null,
+      name_provenance: "transport_sender",
+      created_at: 1,
+    });
     const someoneElsesRow: AutobiographicalRecallEvidenceItem = {
       ...publicRow,
       id: "activity:evt_private",
@@ -6369,8 +6491,8 @@ describe("memory sidecar handler", () => {
       text: "activity_kind=user_contact participant=Bob",
       disclosureLabel: {
         disclosureClass: "self_private",
-        originAudienceEntityIds: ["ent_someoneelse0001" as EntityId],
-        privateToEntityIds: ["ent_someoneelse0001" as EntityId],
+        originAudienceEntityIds: [someoneElse],
+        privateToEntityIds: [someoneElse],
         publicToEntityIds: [],
       },
       sourceEpisodeIds: [],
@@ -6464,10 +6586,13 @@ describe("memory sidecar handler", () => {
         }),
         expect.objectContaining({
           id: someoneElsesRow.id,
-          disclosure: expect.objectContaining({
+          disclosure: {
             class: "self_private",
-            private_to_entity_ids: someoneElsesRow.disclosureLabel.privateToEntityIds,
-          }),
+            origin_audience_names: ["Bob"],
+            private_to_names: ["Bob"],
+            private_to_current_sender: false,
+            private_to_current_audience: false,
+          },
         }),
       ],
       hidden_count: 0,
@@ -6774,6 +6899,124 @@ describe("memory sidecar handler", () => {
       { episodeId: firstIncluded.id, score: 0.91 },
       { episodeId: secondIncluded.id, score: 0.91 },
     ]);
+    expect(rec.sessionLookupCalls).toEqual([]);
+  });
+
+  it("excludes episodes with any source indexed in an excluded session before the limit", async () => {
+    const { pool, rec } = recordingPool();
+    const base = await start(pool);
+    const excludedSession = parseSessionId("default");
+    const chatSession = createSessionId();
+    const indexEntry = (sessionId: SessionId): StreamEntryId => {
+      const id = createStreamEntryId();
+      rec.indexedStreamEntries.set(id, {
+        id,
+        kind: "user_msg",
+        content: "Indexed source",
+        timestamp: 1_000,
+        session_id: sessionId,
+        turn_status: "active",
+        sender_entity_id: null,
+        reply_target_entity_id: null,
+        compressed: false,
+      });
+      return id;
+    };
+    const excludedOnly = testEpisode(createEpisodeId(), {
+      source_stream_ids: [indexEntry(excludedSession)],
+      shared: true,
+    });
+    const excludedMixed = testEpisode(createEpisodeId(), {
+      source_stream_ids: [indexEntry(chatSession), indexEntry(excludedSession)],
+      shared: true,
+    });
+    const chatOnly = testEpisode(createEpisodeId(), {
+      source_stream_ids: [indexEntry(chatSession)],
+      shared: true,
+    });
+    const unindexed = testEpisode(createEpisodeId(), {
+      source_stream_ids: [createStreamEntryId()],
+      shared: true,
+    });
+    const overflow = testEpisode(createEpisodeId(), {
+      source_stream_ids: [indexEntry(chatSession)],
+      shared: true,
+    });
+    const candidates = [excludedOnly, excludedMixed, chatOnly, unindexed, overflow];
+    rec.recallEpisodes = candidates;
+    rec.venueEpisodes = candidates;
+    const exclude = { source_session_ids: [excludedSession] };
+    const contextIdentity = {
+      tenant: "acme",
+      session: "session-exclusions",
+      sender: { operator: false, external_id: "alice", display_name: "Alice" },
+      conversation: { external_id: "conversation", type: "personal", name: "Alice" },
+    };
+
+    const recallResponse = await post(
+      base,
+      "/memory/recall",
+      { tenant: "acme", query: "technology", limit: 2, exclude },
+      TOKEN,
+    );
+    const recallPayload = (await recallResponse.json()) as { episodes: Array<{ id: string }> };
+
+    expect(recallResponse.status).toBe(200);
+    expect(recallPayload.episodes.map((episode) => episode.id)).toEqual([chatOnly.id, unindexed.id]);
+    expect(rec.lastRecallLimit).toBe(6);
+    expect(rec.retrievalRecords).toEqual([
+      { episodeId: chatOnly.id, score: 0.91 },
+      { episodeId: unindexed.id, score: 0.91 },
+    ]);
+    expect(rec.sessionLookupCalls).toEqual([
+      candidates.flatMap((episode) => episode.source_stream_ids),
+    ]);
+
+    rec.retrievalRecords.length = 0;
+    rec.sessionLookupCalls.length = 0;
+
+    const contextResponse = await post(
+      base,
+      "/memory/context",
+      {
+        ...contextIdentity,
+        context_turns: [],
+        focus: "technology",
+        limit: 2,
+        sections: ["episodes", "venue_recent"],
+        venue_since: 0,
+        venue_limit: 2,
+        exclude,
+      },
+      TOKEN,
+    );
+    const contextPayload = (await contextResponse.json()) as {
+      episodes: Array<{ id: string }>;
+      venue_recent: Array<{ id: string }>;
+    };
+
+    expect(contextResponse.status).toBe(200);
+    expect(contextPayload.episodes.map((episode) => episode.id)).toEqual([
+      chatOnly.id,
+      unindexed.id,
+    ]);
+    expect(contextPayload.venue_recent.map((episode) => episode.id)).toEqual([
+      chatOnly.id,
+      unindexed.id,
+    ]);
+    expect(rec.retrievalRecords).toEqual([
+      { episodeId: chatOnly.id, score: 0.91 },
+      { episodeId: unindexed.id, score: 0.91 },
+    ]);
+    expect(rec.sessionLookupCalls).toHaveLength(2);
+
+    const invalidResponse = await post(
+      base,
+      "/memory/recall",
+      { tenant: "acme", query: "technology", exclude: { source_session_ids: ["conversation"] } },
+      TOKEN,
+    );
+    expect(invalidResponse.status).toBe(400);
   });
 
   it.each(["/memory/context", "/memory/recall"])(
@@ -6808,6 +7051,7 @@ describe("memory sidecar handler", () => {
         expect(body.error).toContain(Object.keys(exclude)[0]);
         expect(body.error).toContain("episode_ids");
         expect(body.error).toContain("source_stream_ids");
+        expect(body.error).toContain("source_session_ids");
       }
       expect(rec.tenants).toEqual([]);
     },

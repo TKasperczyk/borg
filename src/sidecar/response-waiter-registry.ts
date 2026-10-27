@@ -38,6 +38,12 @@ export type ResponseWaiterRegistryOptions = {
   generatingTtlMs?: number;
   maxGeneratingEntries?: number;
   maxTerminalTombstones?: number;
+  observer?: (event: {
+    tenant: string;
+    sessionId: SessionId;
+    entryId: StreamEntryId;
+    action: "registered" | "generating" | "resolved" | "timeout" | "cancelled";
+  }) => void;
 };
 
 const DEFAULT_GENERATING_TTL_MS = 130_000;
@@ -111,6 +117,8 @@ export class ResponseWaiterRegistry {
     this.pruneLifecycleState();
     const key = waiterKey(input.tenant, input.sessionId, input.entryId);
     if (input.seenGenerating !== true && this.generating.has(key)) {
+      this.observe(input, "registered");
+      this.observe(input, "generating");
       return { promise: Promise.resolve({ status: "generating" }), cancel() {} };
     }
     const lease = this.options.acquireTenantLease?.(input.tenant);
@@ -118,7 +126,7 @@ export class ResponseWaiterRegistry {
     const promise = new Promise<InboxAwaitResponse>((resolve) => {
       settle = resolve;
     });
-    const timer = setTimeout(() => removeAndResolve({ status: "pending" }), input.timeoutMs);
+    const timer = setTimeout(() => removeAndResolve({ status: "pending" }, "timeout"), input.timeoutMs);
     timer.unref?.();
     const waiter: Waiter = {
       acceptGenerating: input.seenGenerating !== true,
@@ -130,7 +138,11 @@ export class ResponseWaiterRegistry {
     this.waiters.set(key, bucket);
     let settled = false;
 
-    const removeAndResolve = (response: InboxAwaitResponse) => {
+    const removeAndResolve = (
+      response: InboxAwaitResponse,
+      action: "timeout" | "cancelled" | "resolved" | "generating" =
+        response.status === "pending" ? "cancelled" : response.status === "generating" ? "generating" : "resolved",
+    ) => {
       if (settled) {
         return;
       }
@@ -142,8 +154,10 @@ export class ResponseWaiterRegistry {
       }
       lease?.release();
       settle(response);
+      if (response.status !== "generating") this.observe(input, action);
     };
     waiter.resolve = removeAndResolve;
+    this.observe(input, "registered");
 
     return {
       promise,
@@ -170,6 +184,7 @@ export class ResponseWaiterRegistry {
       if (!this.generating.has(key)) {
         this.generating.set(key, now + this.generatingTtlMs);
         this.trimLifecycleMap(this.generating, this.maxGeneratingEntries);
+        this.observe({ tenant: input.tenant, sessionId: input.sessionId, entryId }, "generating");
       }
       const bucket = this.waiters.get(key);
       if (bucket === undefined) {
@@ -224,6 +239,21 @@ export class ResponseWaiterRegistry {
       count += bucket.size;
     }
     return count;
+  }
+
+  private observe(
+    input: { tenant: string; sessionId: SessionId; entryId: StreamEntryId },
+    action: "registered" | "generating" | "resolved" | "timeout" | "cancelled",
+  ): void {
+    try {
+      this.options.observer?.({ tenant: input.tenant, sessionId: input.sessionId, entryId: input.entryId, action });
+    } catch (error) {
+      try {
+        console.error("Response waiter observer failed", { error_name: error instanceof Error ? error.name : typeof error });
+      } catch {
+        // Logging is an observer too.
+      }
+    }
   }
 
   private pruneLifecycleState(now = this.clock.now()): void {

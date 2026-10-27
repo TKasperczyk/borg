@@ -79,7 +79,7 @@ export type BacklogTerminalServiceOptions = {
   createStreamWriter: (sessionId: SessionId) => Pick<StreamWriter, "append" | "close">;
   coordinator: ChatResponseWatermarkCoordinator;
   streamIngestionCoordinator?: Pick<StreamIngestionCoordinator, "ingest">;
-  onTerminalCommitted?: (terminalEntry: StreamEntry) => void;
+  onTerminalCommitted?: (terminalEntry: StreamEntry, details?: { sealed: boolean }) => void;
 };
 
 function requiredEntryIndex(record: StreamEntryIndexRecord, code: string): number {
@@ -585,7 +585,7 @@ export class BacklogTerminalService {
     } finally {
       if (terminalEntry !== undefined) {
         try {
-          this.options.onTerminalCommitted?.(terminalEntry);
+          this.options.onTerminalCommitted?.(terminalEntry, { sealed: !exactIngestion });
         } catch (error) {
           console.error("Backlog terminal commit observer failed", error);
         }

@@ -254,6 +254,7 @@ describe("BacklogTerminalService", () => {
       ).rejects.toThrow("advance failed");
 
       expect(onTerminalCommitted).toHaveBeenCalledTimes(1);
+      expect(onTerminalCommitted).toHaveBeenCalledWith(expect.anything(), { sealed: false });
       await expect(waiter.promise).resolves.toMatchObject({
         status: "answered",
         reply: "committed",

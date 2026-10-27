@@ -155,6 +155,18 @@ import { MAX_INBOX_REPLY_ACTIVITY_RECONCILE_LIMIT } from "../cognition/ingestion
 import { taskEventSchema } from "../stream/types.js";
 import { agentDeliveryAckSchema } from "../cognition/ingestion/agent-deliveries.js";
 import type { DeliveryWaiterRegistry } from "./delivery-waiter-registry.js";
+import { compositeTracer, type TurnTraceData, type TurnTraceEventName } from "../tracing/tracer.js";
+import {
+  emitObservatoryEvent,
+  startObservatoryStage,
+  endObservatoryStage,
+  reportObservatoryObserverError,
+  type ObservatoryObserver,
+  type ObservatoryRefs,
+  type ObservatoryStage,
+  type ObservatoryStageInput,
+} from "./observatory/emitter.js";
+import type { ObservatoryTracerSink } from "./observatory/tracer.js";
 
 // Mirror of BorgPool's DEFAULT_TENANT_ID_PATTERN so the handler returns a clean
 // 400 for a malformed tenant id at the boundary, rather than relying on (and
@@ -198,6 +210,8 @@ export type MemoryHandlerOptions = {
   recencyPrior?: EpisodeRecencyPrior;
   recallSemanticVariantCount?: number;
   traceRegistry?: MemoryTraceRegistry;
+  observatory?: ObservatoryObserver;
+  observatoryTracer?: ObservatoryTracerSink;
   servedContexts?: ServedMemoryContextRegistry;
   maintenanceCoordinator?: Pick<
     MemoryMaintenanceCoordinator,
@@ -291,16 +305,24 @@ class RecallDeadlineExceeded extends Error {
 // Mirrors the pipeline's expansion guard: the abandoned search keeps running
 // and is left to settle on its own (its rejection swallowed) while the caller
 // gets an answer within the deadline.
-async function raceRecallDeadline<T>(search: () => Promise<T>, deadlineAt: number): Promise<T> {
+async function raceRecallDeadline<T>(
+  search: () => Promise<T>,
+  deadlineAt: number,
+  observation?: { emitter?: ObservatoryObserver; event: ObservatoryStageInput },
+): Promise<T> {
   const deadlineMs = deadlineAt - Date.now();
-  if (deadlineMs <= 0) throw new RecallDeadlineExceeded(0);
-  if (!Number.isFinite(deadlineAt)) return search();
-  const pending = search();
-
+  const stage = observation === undefined ? undefined : startObservatoryStage(observation.emitter, {
+    ...observation.event,
+    data: { ...observation.event.data, budget_ms: Number.isFinite(deadlineMs) ? Math.max(0, deadlineMs) : null },
+  });
   let timer: ReturnType<typeof setTimeout> | undefined;
-  pending.catch(() => undefined);
+  let phaseError: unknown;
 
   try {
+    if (deadlineMs <= 0) throw new RecallDeadlineExceeded(0);
+    if (!Number.isFinite(deadlineAt)) return await search();
+    const pending = search();
+    pending.catch(() => undefined);
     return await Promise.race([
       pending,
       new Promise<never>((_, reject) => {
@@ -308,10 +330,17 @@ async function raceRecallDeadline<T>(search: () => Promise<T>, deadlineAt: numbe
         timer.unref?.();
       }),
     ]);
+  } catch (error) {
+    phaseError = error;
+    throw error;
   } finally {
     if (timer !== undefined) {
       clearTimeout(timer);
     }
+    endObservatoryStage(stage, {
+      error: phaseError,
+      status: phaseError instanceof RecallDeadlineExceeded ? "degraded" : phaseError === undefined ? "ok" : "error",
+    });
   }
 }
 
@@ -390,11 +419,12 @@ const episodeExclusionsSchema = z
     {
       episode_ids: z.array(episodeIdSchema).max(100).optional().default([]),
       source_stream_ids: z.array(streamEntryIdSchema).max(100).optional().default([]),
+      source_session_ids: z.array(sessionIdSchema).max(100).optional().default([]),
     },
     {
       error: (issue) =>
         issue.code === "unrecognized_keys"
-          ? `Unsupported exclusion fields: ${issue.keys.join(", ")}. Use exclude.episode_ids or exclude.source_stream_ids; free-text exclusions are not supported.`
+          ? `Unsupported exclusion fields: ${issue.keys.join(", ")}. Use exclude.episode_ids, exclude.source_stream_ids or exclude.source_session_ids; free-text exclusions are not supported.`
           : undefined,
     },
   )
@@ -972,6 +1002,7 @@ function temporalCueRange(
 
 function projectAutobiographicalRecallForResponse(
   recall: AutobiographicalRecallResult,
+  projectDisclosure: ReturnType<typeof createPublicDisclosureProjector>,
 ): Record<string, unknown> {
   const eligible = recall.evidence.filter((item) => SIDECAR_AUTOBIOGRAPHICAL_KINDS.has(item.kind));
   const included = eligible.slice(0, MAX_AUTOBIOGRAPHICAL_ROWS);
@@ -998,12 +1029,7 @@ function projectAutobiographicalRecallForResponse(
       relative_age: item.relativeAge,
       text: item.text,
       source_episode_ids: [...item.sourceEpisodeIds],
-      disclosure: {
-        class: item.disclosureLabel.disclosureClass,
-        origin_audience_entity_ids: [...item.disclosureLabel.originAudienceEntityIds],
-        private_to_entity_ids: [...item.disclosureLabel.privateToEntityIds],
-        public_to_entity_ids: [...item.disclosureLabel.publicToEntityIds],
-      },
+      disclosure: projectDisclosure(item.disclosureLabel),
     })),
     hidden_count: 0,
     truncated_count: eligible.length - included.length,
@@ -1011,16 +1037,31 @@ function projectAutobiographicalRecallForResponse(
 }
 
 // Only stored record/provenance IDs may exclude a candidate. Titles and narratives
-// are evidence for the model, never deterministic recall predicates.
-function episodeMatchesExclusions(episode: Episode, exclusions?: EpisodeExclusions): boolean {
+// are evidence for the model, never deterministic recall predicates. A source
+// session is read from the stream index; an unindexed source matches no session.
+function episodeExclusionMatcher(
+  stream: Pick<Borg["stream"], "lookupSessionIds">,
+  episodes: readonly Episode[],
+  exclusions?: EpisodeExclusions,
+): (episode: Episode) => boolean {
   if (exclusions === undefined) {
-    return false;
+    return () => false;
   }
 
-  return (
+  const sourceSessionIds =
+    exclusions.source_session_ids.length === 0
+      ? new Map<StreamEntryId, SessionId>()
+      : stream.lookupSessionIds(episodes.flatMap((episode) => episode.source_stream_ids));
+
+  return (episode) =>
     exclusions.episode_ids.includes(episode.id) ||
-    episode.source_stream_ids.some((id) => exclusions.source_stream_ids.includes(id))
-  );
+    episode.source_stream_ids.some((id) => {
+      if (exclusions.source_stream_ids.includes(id)) {
+        return true;
+      }
+      const sessionId = sourceSessionIds.get(id);
+      return sessionId !== undefined && exclusions.source_session_ids.includes(sessionId);
+    });
 }
 
 function createPublicDisclosureProjector(
@@ -1448,12 +1489,28 @@ async function appendDirectiveAdminEvent(input: {
   return entry;
 }
 
-function scheduleIngestion(pool: MemoryPool, tenant: string, session: SessionId): void {
-  void pool
-    .withTenant(tenant, (borg) => borg.episodic.ingest({ session }))
-    .catch((error: unknown) => {
-      console.error(`memory-sidecar: background ingestion failed for tenant "${tenant}"`, error);
+function scheduleIngestion(
+  pool: MemoryPool, tenant: string, session: SessionId,
+  observatory?: ObservatoryObserver, turnId?: string,
+): void {
+  void (async () => {
+    const stage = startObservatoryStage(observatory, {
+      tenant, kind: "job.ingestion", turn_id: turnId, refs: { sidecar_session_id: session },
     });
+    try {
+      const result = await pool.withTenant(tenant, (borg) => borg.episodic.ingest({ session }));
+      endObservatoryStage(stage, {
+        error: result.error,
+        status: result.error !== undefined ? "error" : result.ran ? "ok" : "skipped",
+        data: { processed_entries: result.processedEntries, ran: result.ran },
+      });
+    } catch (error) {
+      endObservatoryStage(stage, { error, data: { processed_entries: 0, ran: false } });
+      console.error("memory-sidecar: background ingestion failed", {
+        tenant, error_name: error instanceof Error ? error.name : typeof error,
+      });
+    }
+  })();
 }
 
 function sendEmbeddingBankUnavailable(res: ServerResponse, error: unknown): boolean {
@@ -1468,8 +1525,23 @@ function sendEmbeddingBankUnavailable(res: ServerResponse, error: unknown): bool
 }
 
 export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandler {
-  const { pool, token, traceRegistry, maintenanceCoordinator, inboxWaiters, deliveryWaiters } =
+  const { pool, token, traceRegistry, maintenanceCoordinator, inboxWaiters, deliveryWaiters, observatory, observatoryTracer } =
     options;
+  const sendUnobserved = send;
+  const registerTrace = (tenant: string, traceTurnId: string, turnId?: string): void => {
+    try {
+      observatoryTracer?.register(tenant, traceTurnId, turnId);
+    } catch (error) {
+      reportObservatoryObserverError("handler.trace.register", error);
+    }
+  };
+  const emitSidecarTrace = (tenant: string, event: TurnTraceEventName, data: TurnTraceData): void => {
+    try {
+      compositeTracer([traceRegistry?.tracerFor(tenant), observatoryTracer?.tracerFor(tenant)]).emit(event, data);
+    } catch (error) {
+      reportObservatoryObserverError("handler.trace.emit", error);
+    }
+  };
   const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
   const maxRecallLimit = options.maxRecallLimit ?? DEFAULT_MAX_RECALL_LIMIT;
   const recallDeadlineMs = options.recallDeadlineMs ?? DEFAULT_RECALL_DEADLINE_MS;
@@ -1526,6 +1598,14 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
   };
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const requestStartedAt = Date.now();
+    const turnHeader = req.headers["x-observatory-turn-id"];
+    const observatoryTurnId = typeof turnHeader === "string" && /^turn_[a-zA-Z0-9_-]{1,128}$/.test(turnHeader)
+      ? turnHeader : undefined;
+    let requestStage: ObservatoryStage | undefined;
+    let requestError: unknown;
+    let observedTenant: string | undefined;
+    let observedRefs: ObservatoryRefs = {};
     // One budget starts before parsing, identity resolution, and activity ranking.
     // Leave response headroom inside it rather than adding time after recall.
     const requestDeadlineAt =
@@ -1536,6 +1616,37 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
           Math.min(MEMORY_RESPONSE_HEADROOM_MS, recallDeadlineMs / 10);
     const method = req.method ?? "GET";
     const { rawPath, searchParams } = parseRawRequestTarget(req.url ?? "/");
+    // Observe the actual response projection, including all degraded/error exits.
+    const send = (target: ServerResponse, status: number, payload: unknown): void => {
+      try {
+        const record = payload !== null && typeof payload === "object"
+          ? payload as Record<string, unknown> : {};
+        endObservatoryStage(requestStage, {
+          status: record.degraded === true ? "degraded" : status >= 400 ? "error" : "ok",
+          error: requestError,
+          refs: { ...observedRefs, context_id: typeof record.context_id === "string" ? record.context_id : observedRefs.context_id },
+          data: {
+            degraded: record.degraded === true,
+            degraded_reason: record.degraded_reason ?? "",
+            episode_count: Array.isArray(record.episodes) ? record.episodes.length : 0,
+            abstained: record.abstained === true,
+            hidden_episode_count: record.hidden_episode_count ?? 0,
+          },
+        });
+        if (observedTenant !== undefined && rawPath === "/memory/guard-reply") {
+          emitObservatoryEvent(observatory, {
+            tenant: observedTenant, kind: "guard.reply", phase: "end",
+            turn_id: observatoryTurnId, refs: observedRefs,
+            duration_ms: Math.max(0, Date.now() - requestStartedAt),
+            status: status >= 400 ? "error" : "ok",
+            data: { verdict: record.verdict, reason: Array.isArray(record.reasons) ? record.reasons.join("; ") : record.error },
+          });
+        }
+      } catch (error) {
+        reportObservatoryObserverError("handler.response", error);
+      }
+      sendUnobserved(target, status, payload);
+    };
 
     if (method === "GET" && rawPath === "/healthz") {
       send(res, 200, { ok: true });
@@ -1820,6 +1931,15 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
             },
             { exclusive: true },
           );
+          if (result.status === "enqueued") emitObservatoryEvent(observatory, {
+            tenant: input.tenant, kind: "inbox.enqueued", phase: "point",
+            refs: { thread_id: input.session, sidecar_session_id: result.sessionId,
+              entry_id: result.streamEntryId, external_message_id: input.external_message_id },
+            conversation: input.conversation,
+            actor: { external_id: input.sender.external_id, display_name: input.sender.display_name },
+            data: { external_message_id: input.external_message_id, mentioned: input.flags.mentioned,
+              quotes_bot: input.flags.quotes_bot, sender_bot: input.sender.bot, text_preview: input.text },
+          });
           send(res, 200, {
             status: result.status,
             sidecar_session_id: result.sessionId,
@@ -2675,6 +2795,26 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
       return;
     }
 
+    observedTenant = tenant;
+    if (rawPath === "/memory/context" || rawPath === "/memory/recall") {
+      requestStage = startObservatoryStage(observatory, {
+        tenant, kind: "recall.request", ts: requestStartedAt, turn_id: observatoryTurnId,
+        data: {
+          route: rawPath,
+          sections: rawPath === "/memory/recall" ? ["episodes"] : body.sections ?? DEFAULT_MEMORY_CONTEXT_SECTIONS,
+          focus_present: typeof body.focus === "string" && body.focus.length > 0,
+          deadline_ms: recallDeadlineMs,
+        },
+      });
+    }
+    const recallPhase = (phase: "identity" | "context_sections" | "episodes" | "autobiographical") => ({
+      emitter: observatory,
+      event: {
+        tenant, kind: "recall.phase", turn_id: observatoryTurnId, refs: observedRefs,
+        parent_span_id: requestStage?.spanId, data: { phase },
+      },
+    });
+
     try {
       if (rawPath === "/memory/forget") {
         const parsed = forgetBodySchema.safeParse(body);
@@ -2702,6 +2842,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
           return;
         }
         const session = sessionFromCaller(parsed.data.session);
+        observedRefs = { sidecar_session_id: session, thread_id: parsed.data.session, context_id: parsed.data.context_id };
         const identity = await pool.withTenant(
           tenant,
           (borg) =>
@@ -2726,7 +2867,8 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
               ? candidate
               : undefined;
           const reasons: string[] = snapshot === undefined ? ["context_snapshot_miss"] : [];
-          const turnId = parsed.data.context_id || nextRecallTraceTurnId(tenant);
+          const turnId = nextRecallTraceTurnId(tenant);
+          registerTrace(tenant, turnId, observatoryTurnId);
           const emission = await borg.guardReply({
             turnId,
             sessionId: session,
@@ -2746,7 +2888,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
           });
           const verdict = emission.kind === "suppressed" ? "blocked" : "pass";
           if (emission.kind === "suppressed") reasons.push(emission.reason);
-          traceRegistry?.tracerFor(tenant).emit("sidecar.guard_reply.completed", {
+          emitSidecarTrace(tenant, "sidecar.guard_reply.completed", {
             turnId,
             session_id: session,
             verdict,
@@ -2800,6 +2942,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
                 venueLimit * EPISODE_OVERFETCH_MULTIPLIER,
               );
         const session = sessionFromCaller(parsed.data.session);
+        observedRefs = { sidecar_session_id: session, thread_id: parsed.data.session };
         const identity = await raceRecallDeadline(
           () =>
             pool.withTenant(
@@ -2845,6 +2988,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
               { exclusive: true },
             ),
           requestDeadlineAt,
+          recallPhase("identity"),
         );
         const nowMs = Date.now();
         const context = await raceRecallDeadline(
@@ -3044,12 +3188,14 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
                     limit: venueSearchLimit,
                   })
                 : [];
+              const isExcludedVenueEpisode = episodeExclusionMatcher(
+                borg.stream,
+                venueCandidates.map((candidate) => candidate.episode),
+                parsed.data.exclude,
+              );
               const venueRecent = projectEpisodeHitsForResponse(
                 venueCandidates
-                  .filter(
-                    (candidate) =>
-                      !episodeMatchesExclusions(candidate.episode, parsed.data.exclude),
-                  )
+                  .filter((candidate) => !isExcludedVenueEpisode(candidate.episode))
                   .slice(0, venueLimit)
                   .map((candidate) => ({
                     episode: candidate.episode,
@@ -3099,6 +3245,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
               };
             }),
           requestDeadlineAt,
+          recallPhase("context_sections"),
         );
         const degradations: RetrievalDegradation[] = [];
         let episodes: ReturnType<typeof projectEpisodeHitsForResponse> = [];
@@ -3113,7 +3260,8 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
           const recallFocus = parsed.data.focus!;
           const contextTurns = parsed.data.context_turns!;
           const traceTurnId =
-            traceRegistry === undefined ? undefined : nextRecallTraceTurnId(tenant);
+            traceRegistry === undefined && observatoryTracer === undefined ? undefined : nextRecallTraceTurnId(tenant);
+          if (traceTurnId !== undefined) registerTrace(tenant, traceTurnId, observatoryTurnId);
 
           try {
             const recallResult = await raceRecallDeadline(
@@ -3192,9 +3340,12 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
                           strictTimeRange: false,
                         }),
                   });
-                  const eligible = recalled.filter(
-                    (hit) => !episodeMatchesExclusions(hit.episode, parsed.data.exclude),
+                  const isExcludedEpisode = episodeExclusionMatcher(
+                    borg.stream,
+                    recalled.map((hit) => hit.episode),
+                    parsed.data.exclude,
                   );
+                  const eligible = recalled.filter((hit) => !isExcludedEpisode(hit.episode));
                   // The period to prefer: an explicit time_range, else the cue the planner resolved
                   // from FOCUS, which is the range a caller with its own parser used to send.
                   const actedCue: TemporalCue | null =
@@ -3246,6 +3397,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
                   };
                 }),
               requestDeadlineAt,
+              recallPhase("episodes"),
             );
 
             servedEpisodes = recallResult.servedEpisodes;
@@ -3316,9 +3468,16 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
                     );
                     return recall === null
                       ? null
-                      : projectAutobiographicalRecallForResponse(recall);
+                      : projectAutobiographicalRecallForResponse(
+                          recall,
+                          createPublicDisclosureProjector(borg.entities, {
+                            senderEntityId: identity.senderEntityId,
+                            currentAudienceEntityId: identity.audienceEntity.id,
+                          }),
+                        );
                   }),
                 Math.min(requestDeadlineAt, Date.now() + remainingMs),
+                recallPhase("autobiographical"),
               );
             } catch (error) {
               noteDegradation(
@@ -3678,6 +3837,9 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
         }
         const sessionRaw = parsedIdentity.data.session;
         const session = sessionFromCaller(sessionRaw);
+        observedRefs = { sidecar_session_id: session, thread_id: sessionRaw };
+        const appendTraceTurnId = nextRecallTraceTurnId(tenant);
+        registerTrace(tenant, appendTraceTurnId, observatoryTurnId);
         const sender = {
           externalId: parsedIdentity.data.sender.external_id,
           displayName: parsedIdentity.data.sender.display_name,
@@ -3898,8 +4060,8 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
                 error,
               );
               const projectionErrorCode = errorCode(error);
-              traceRegistry?.tracerFor(tenant).emit("sidecar.append_projection.degraded", {
-                turnId: `sidecar_append:${lastProjectionEntryId}`,
+              emitSidecarTrace(tenant, "sidecar.append_projection.degraded", {
+                turnId: appendTraceTurnId,
                 session_id: session,
                 reason: "awareness_projection_failed",
                 error_code:
@@ -3912,6 +4074,11 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
           },
           { exclusive: true },
         );
+        emitSidecarTrace(tenant, "sidecar.append_turn.completed", {
+          turnId: appendTraceTurnId,
+          session_id: session,
+          source_stream_entry_ids: entries.map((entry) => entry.id),
+        });
         send(res, 200, {
           ok: true,
           session,
@@ -3920,7 +4087,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
             kind: entry.kind,
           })),
         });
-        scheduleIngestion(pool, tenant, session);
+        scheduleIngestion(pool, tenant, session, observatory, observatoryTurnId);
         return;
       }
 
@@ -3942,7 +4109,8 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
             limit * EPISODE_OVERFETCH_MULTIPLIER,
           )
         : limit;
-      const traceTurnId = traceRegistry === undefined ? undefined : nextRecallTraceTurnId(tenant);
+      const traceTurnId = traceRegistry === undefined && observatoryTracer === undefined ? undefined : nextRecallTraceTurnId(tenant);
+      if (traceTurnId !== undefined) registerTrace(tenant, traceTurnId, observatoryTurnId);
       const degradations: RetrievalDegradation[] = [];
       let hits;
       let episodesTimeRangeFallback = false;
@@ -3980,8 +4148,13 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
                       ...recallOptions,
                       timeRange: parsedRecall.data.time_range,
                     });
+              const isExcludedEpisode = episodeExclusionMatcher(
+                borg.stream,
+                recalledResult.episodes.map((hit) => hit.episode),
+                parsedRecall.data.exclude,
+              );
               const included = recalledResult.episodes
-                .filter((hit) => !episodeMatchesExclusions(hit.episode, parsedRecall.data.exclude))
+                .filter((hit) => !isExcludedEpisode(hit.episode))
                 .slice(0, limit);
               const topRawScore =
                 included.length === 0 ? null : Math.max(...included.map((hit) => hit.rawScore));
@@ -4004,6 +4177,7 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
               };
             }),
           requestDeadlineAt,
+          recallPhase("episodes"),
         );
       } catch (error) {
         if (!(error instanceof RecallDeadlineExceeded)) {
@@ -4054,7 +4228,11 @@ export function createMemoryHandler(options: MemoryHandlerOptions): RequestHandl
         episodes: hits.projected,
       });
     } catch (error) {
-      if (sendEmbeddingBankUnavailable(res, error)) return;
+      requestError = error;
+      if (error instanceof EmbeddingBankError) {
+        send(res, 503, { error: "tenant unavailable", code: error.code, degraded: true, degraded_reason: error.message });
+        return;
+      }
       if (error instanceof RecallDeadlineExceeded) {
         send(res, 503, {
           error: "memory context deadline exceeded",

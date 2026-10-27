@@ -119,7 +119,7 @@ describe("Borg.enqueueMessage", () => {
         borgInternals<{
           deps: {
             chatResponseCatchUpWorker: {
-              onPendingSession(sessionId: unknown, pendingAt: number): void;
+              onPendingSession(sessionId: unknown, pendingAt: number, entryId?: string): void;
             };
           };
         }>(borg).deps.chatResponseCatchUpWorker,
@@ -197,7 +197,7 @@ describe("Borg.enqueueMessage", () => {
       expect(internal.deps.entryIndex.lookupBySourceMessageKey(sourceMessageKey)?.entry_id).toBe(
         first.streamEntryId,
       );
-      expect(notify).toHaveBeenCalledWith(sessionId, entries[0]?.timestamp);
+      expect(notify).toHaveBeenCalledWith(sessionId, entries[0]?.timestamp, first.streamEntryId);
       expect(activityRows).toEqual([
         {
           kind: "user_contact",

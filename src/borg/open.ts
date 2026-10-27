@@ -390,7 +390,11 @@ export async function openBorgDependencies(
             cause: error instanceof Error ? error.message : String(error),
           });
         } finally {
-          catchUpWorker?.onPendingSession(event.sessionId, event.pendingAt);
+          catchUpWorker?.onPendingSession(
+            event.sessionId,
+            event.pendingAt,
+            event.entries.find((entry) => entry.kind === "user_msg")?.id,
+          );
         }
       },
       clock,
@@ -520,6 +524,7 @@ export async function openBorgDependencies(
           }),
       coordinator: chatResponseWatermarkCoordinator,
       prefixBuilder: chatResponseBacklogPrefixBuilder,
+      observer: options.inbox?.observer,
       entryIndex: repositories.entryIndex,
       repairSessionStreamEntryIndex,
       ...(catchUpRunner === undefined ? { turnOrchestrator } : { runner: catchUpRunner }),

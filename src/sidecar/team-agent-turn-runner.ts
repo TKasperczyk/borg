@@ -11,8 +11,16 @@ import { buildInboxReplyActivityProjection } from "../memory/activity/inbox-repl
 import type { EntityRepository } from "../memory/commitments/index.js";
 import type { SessionsRepository } from "../sessions/index.js";
 import type { Clock } from "../util/clock.js";
-import type { EntityId } from "../util/ids.js";
+import { createIdHelpers, type EntityId } from "../util/ids.js";
 import { jsonValueSchema } from "../util/json-value.js";
+import {
+  startObservatoryStage,
+  endObservatoryStage,
+  reportObservatoryObserverError,
+  type ObservatoryObserver,
+} from "./observatory/emitter.js";
+
+const observatoryTurnIds = createIdHelpers<"ObservatoryTurnId">("turn");
 
 export const teamsInboxTransportMetadataSchema = z
   .object({
@@ -67,21 +75,68 @@ export type TeamAgentTurnRunnerOptions = {
     entryIds: ChatResponseCatchUpRunInput["inboundBatch"]["entryIds"];
   }) => void;
   fetchFn?: typeof fetch;
+  observatory?: ObservatoryObserver;
+  onAttempt?: (turnId: string, input: ChatResponseCatchUpRunInput) => void;
 };
 
 export class TeamAgentTurnRunner implements ChatResponseCatchUpRunner {
   private readonly fetchFn: typeof fetch;
+  private readonly attempts = new Map<string, { count: number; expiresAt: number }>();
 
   constructor(private readonly options: TeamAgentTurnRunnerOptions) {
     this.fetchFn = options.fetchFn ?? fetch;
   }
 
   async run(input: ChatResponseCatchUpRunInput): Promise<void> {
+    const turnId = observatoryTurnIds.create();
+    let attempt = 1;
+    try {
+      input.onAttempt?.(turnId);
+      this.options.onAttempt?.(turnId, input);
+      if (this.options.observatory !== undefined) {
+        const now = this.options.clock.now();
+        for (const [key, value] of this.attempts) {
+          if (value.expiresAt > now) break;
+          this.attempts.delete(key);
+        }
+        const key = JSON.stringify([input.sessionId, input.inboundBatch.entryIds]);
+        attempt = (this.attempts.get(key)?.count ?? 0) + 1;
+        this.attempts.delete(key);
+        this.attempts.set(key, { count: attempt, expiresAt: now + 60 * 60_000 });
+        while (this.attempts.size > 5_000) {
+          const oldest = this.attempts.keys().next().value;
+          if (oldest === undefined) break;
+          this.attempts.delete(oldest);
+        }
+      }
+    } catch (error) {
+      reportObservatoryObserverError("runner.attempt", error);
+    }
+    const common = {
+      tenant: this.options.tenant,
+      kind: "inbox.runner.call",
+      turn_id: turnId,
+      refs: { sidecar_session_id: input.sessionId, entry_ids: input.inboundBatch.entryIds },
+    };
+    const skipped = (sealedReason?: string): void => {
+      const stage = startObservatoryStage(this.options.observatory, {
+        ...common,
+        data: { runs_full_turn: false, message_count: input.inboundBatch.entryIds.length, attempt },
+      });
+      endObservatoryStage(stage, {
+        status: "skipped",
+        data: {
+          sealed_reason: sealedReason,
+          terminal_kind: sealedReason === undefined ? undefined : "agent_observed",
+        },
+      });
+    };
     const existing = this.options.terminal.findTerminalCoveringEntry({
       sessionId: input.sessionId,
       entryId: input.inboundBatch.entryIds[input.inboundBatch.entryIds.length - 1]!,
     });
     if (existing.status === "found") {
+      skipped();
       return;
     }
 
@@ -99,6 +154,7 @@ export class TeamAgentTurnRunner implements ChatResponseCatchUpRunner {
         sourceEntryIds: input.inboundBatch.entryIds,
         reason: "Legacy inbox backlog sealed because transport metadata is unavailable",
       });
+      skipped("transport_metadata_unavailable");
       return;
     }
     const transportMetadata = metadata.map((parsed) => {
@@ -116,6 +172,7 @@ export class TeamAgentTurnRunner implements ChatResponseCatchUpRunner {
         sessionId: input.sessionId,
         staleBefore,
       });
+      skipped("stale");
       return;
     }
 
@@ -173,59 +230,80 @@ export class TeamAgentTurnRunner implements ChatResponseCatchUpRunner {
       }
     }
 
-    const response = await this.fetchFn(new URL("/v1/chat/observe", this.options.baseUrl), {
-      method: "POST",
-      redirect: "error",
-      signal: AbortSignal.timeout(this.options.timeoutMs),
-      headers: {
-        authorization: `Bearer ${this.options.apiToken}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(requestBody),
+    const stage = startObservatoryStage(this.options.observatory, {
+      ...common,
+      refs: { ...common.refs, thread_id: firstMetadata.thread_id },
+      conversation: requestBody.conversation,
+      data: { runs_full_turn: runsFullTurn, message_count: messages.length, attempt },
     });
+    let httpStatus: number | undefined;
+    try {
+      const response = await this.fetchFn(new URL("/v1/chat/observe", this.options.baseUrl), {
+        method: "POST",
+        redirect: "error",
+        signal: AbortSignal.timeout(this.options.timeoutMs),
+        headers: {
+          authorization: `Bearer ${this.options.apiToken}`,
+          "content-type": "application/json",
+          "X-Observatory-Turn-Id": turnId,
+        },
+        body: JSON.stringify(requestBody),
+      });
+      httpStatus = response.status;
 
-    if (response.status >= 400 && response.status < 500) {
-      await this.options.terminal.appendBacklogTerminal({
+      if (response.status >= 400 && response.status < 500) {
+        endObservatoryStage(stage, {
+          status: "error",
+          data: { http_status: httpStatus, action: "silent", terminal_kind: "agent_observed" },
+        });
+        await this.options.terminal.appendBacklogTerminal({
+          sessionId: input.sessionId,
+          sourceEntryIds: input.inboundBatch.entryIds,
+          terminal: {
+            kind: "agent_observed",
+            reason: `Team Agent rejected inbox batch with HTTP ${response.status}`,
+          },
+        });
+        return;
+      }
+      if (!response.ok) {
+        throw new Error(`Team Agent observe failed with HTTP ${response.status}`);
+      }
+
+      let raw: unknown;
+      try {
+        raw = JSON.parse(await response.text()) as unknown;
+      } catch (error) {
+        throw new Error("Team Agent observe returned malformed JSON", { cause: error });
+      }
+      const parsed = teamAgentObserveResponseSchema.safeParse(raw);
+      if (!parsed.success) {
+        throw new Error("Team Agent observe returned an invalid 2xx response", {
+          cause: parsed.error,
+        });
+      }
+
+      const terminal =
+        parsed.data.action === "reply"
+          ? ({ kind: "agent_msg", content: parsed.data.content } as const)
+          : ({
+              kind: "agent_observed",
+              reason: parsed.data.reason ?? "Team Agent stayed silent",
+            } as const);
+      endObservatoryStage(stage, {
+        data: { http_status: httpStatus, action: parsed.data.action, terminal_kind: terminal.kind },
+      });
+      const appended = await this.options.terminal.appendBacklogTerminal({
         sessionId: input.sessionId,
         sourceEntryIds: input.inboundBatch.entryIds,
-        terminal: {
-          kind: "agent_observed",
-          reason: `Team Agent rejected inbox batch with HTTP ${response.status}`,
-        },
+        terminal,
       });
-      return;
-    }
-    if (!response.ok) {
-      throw new Error(`Team Agent observe failed with HTTP ${response.status}`);
-    }
-
-    let raw: unknown;
-    try {
-      raw = JSON.parse(await response.text()) as unknown;
+      if (terminal.kind === "agent_msg") {
+        this.projectReplyActivity(input.sessionId, appended);
+      }
     } catch (error) {
-      throw new Error("Team Agent observe returned malformed JSON", { cause: error });
-    }
-    const parsed = teamAgentObserveResponseSchema.safeParse(raw);
-    if (!parsed.success) {
-      throw new Error("Team Agent observe returned an invalid 2xx response", {
-        cause: parsed.error,
-      });
-    }
-
-    const terminal =
-      parsed.data.action === "reply"
-        ? ({ kind: "agent_msg", content: parsed.data.content } as const)
-        : ({
-            kind: "agent_observed",
-            reason: parsed.data.reason ?? "Team Agent stayed silent",
-          } as const);
-    const appended = await this.options.terminal.appendBacklogTerminal({
-      sessionId: input.sessionId,
-      sourceEntryIds: input.inboundBatch.entryIds,
-      terminal,
-    });
-    if (terminal.kind === "agent_msg") {
-      this.projectReplyActivity(input.sessionId, appended);
+      endObservatoryStage(stage, { status: "error", error, data: { http_status: httpStatus } });
+      throw error;
     }
   }
 
