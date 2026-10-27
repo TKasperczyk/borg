@@ -1,5 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
-import { goalScoringText, buildSelfScoringFeatureSet } from "./scoring-features.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  goalScoringText,
+  buildSelfScoringFeatureSet,
+  clearGoalScoringElisionTraceCache,
+  GOAL_SCORING_ELISION_TRACE_MAX_ENTRIES,
+} from "./scoring-features.js";
 import { createOfflineTestHarness } from "../offline/test-support.js";
 import { ManualClock } from "../util/clock.js";
 import { StreamWatermarkRepository } from "../stream/watermark.js";
@@ -7,8 +12,12 @@ import { createExecutiveFocusDueTrigger } from "../autonomy/triggers/executive-f
 import { createGoalFollowupDueTrigger } from "../autonomy/triggers/goal-followup-due.js";
 import { TurnSelfContextBuilder } from "../cognition/self/turn-self-context.js";
 import { NOOP_TRACER } from "../tracing/tracer.js";
+import { createGoalId } from "../util/ids.js";
 
 describe("goal scoring byte budget", () => {
+  beforeEach(clearGoalScoringElisionTraceCache);
+  afterEach(clearGoalScoringElisionTraceCache);
+
   it("retains the newest opaque notes in chronological order and hits the byte cap exactly", () => {
     expect(
       goalScoringText({ description: "goal", progress_notes: "old-middle-NEW" }, 15),
@@ -30,6 +39,116 @@ describe("goal scoring byte budget", () => {
       elidedBytes: 9,
     });
   });
+  it("reports each goal and byte-size tuple once across callers and turns", async () => {
+    const h = await createOfflineTestHarness();
+    try {
+      const first = h.goalsRepository.add({
+        description: "goal",
+        progressNotes: "old-middle-NEW",
+        priority: 10,
+        provenance: { kind: "manual" },
+      });
+      const second = { ...first, id: createGoalId() };
+      const emit = vi.fn();
+      const input = {
+        embeddingClient: h.embeddingClient,
+        goals: [first, second],
+        activeValues: [],
+        maxInputBytes: 15,
+      };
+      await buildSelfScoringFeatureSet(input);
+      await buildSelfScoringFeatureSet({ ...input, tracer: NOOP_TRACER });
+      for (const turnId of [
+        "autonomy:executive_focus_due",
+        "autonomy:goal_followup_due",
+        "turn_1",
+        "turn_2",
+      ]) {
+        await buildSelfScoringFeatureSet({ ...input, tracer: { emit }, turnId });
+      }
+      expect(emit).toHaveBeenCalledTimes(2);
+      for (const [index, goal] of [first, second].entries()) {
+        expect(emit).toHaveBeenNthCalledWith(index + 1, "retrieval.degraded", {
+          turnId: "autonomy:executive_focus_due",
+          subsystem: "scoring_features",
+          reason: "goal_scoring_text_elided",
+          goal_id: goal.id,
+          max_input_bytes: 15,
+          originalBytes: 19,
+          renderedBytes: 15,
+          elidedBytes: 4,
+          descriptionElidedBytes: 0,
+          progressElidedBytes: 4,
+        });
+      }
+      const changed = { ...first, progress_notes: first.progress_notes + "新" };
+      await buildSelfScoringFeatureSet({ ...input, goals: [changed], tracer: { emit } });
+      expect(emit).toHaveBeenCalledTimes(3);
+      expect(emit).toHaveBeenLastCalledWith(
+        "retrieval.degraded",
+        expect.objectContaining({
+          goal_id: first.id,
+          originalBytes: 22,
+          renderedBytes: 15,
+          elidedBytes: 7,
+        }),
+      );
+      await buildSelfScoringFeatureSet({ ...input, maxInputBytes: 14, tracer: { emit } });
+      expect(emit).toHaveBeenCalledTimes(5);
+      expect(emit).toHaveBeenLastCalledWith(
+        "retrieval.degraded",
+        expect.objectContaining({
+          goal_id: second.id,
+          originalBytes: 19,
+          renderedBytes: 14,
+        }),
+      );
+      await buildSelfScoringFeatureSet({ ...input, tracer: { emit } });
+      expect(emit).toHaveBeenCalledTimes(5);
+    } finally {
+      await h.cleanup();
+    }
+  });
+
+  it("evicts the oldest elision tuple when the process-wide bound is reached", async () => {
+    const h = await createOfflineTestHarness();
+    try {
+      const goal = h.goalsRepository.add({
+        description: "goal",
+        progressNotes: "old-middle-NEW",
+        priority: 10,
+        provenance: { kind: "manual" },
+      });
+      const goals = Array.from({ length: GOAL_SCORING_ELISION_TRACE_MAX_ENTRIES + 1 }, () => ({
+        ...goal,
+        id: createGoalId(),
+      }));
+      const emit = vi.fn();
+      const input = {
+        embeddingClient: h.embeddingClient,
+        goals,
+        activeValues: [],
+        maxInputBytes: 15,
+        tracer: { emit },
+      };
+      await buildSelfScoringFeatureSet(input);
+      expect(emit).toHaveBeenCalledTimes(goals.length);
+      emit.mockClear();
+      await buildSelfScoringFeatureSet({ ...input, goals: [goals.at(-1)!] });
+      expect(emit).not.toHaveBeenCalled();
+      await buildSelfScoringFeatureSet({ ...input, goals: [goals[0]!] });
+      expect(emit).toHaveBeenCalledTimes(1);
+      expect(emit).toHaveBeenLastCalledWith(
+        "retrieval.degraded",
+        expect.objectContaining({
+          goal_id: goals[0]!.id,
+        }),
+      );
+    } finally {
+      await h.cleanup();
+    }
+  });
+
   it("all three production callers use the same effective transport budget and report elision", async () => {
     const embeddingClient = {
       maxInputBytes: 20,

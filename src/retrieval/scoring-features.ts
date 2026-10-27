@@ -4,6 +4,15 @@ import type { TurnTracer } from "../tracing/tracer.js";
 import { toWellFormedUtf16 } from "../util/utf16-boundary.js";
 import { utf8SafePrefix, utf8SafeSuffix } from "../util/utf8-boundary.js";
 
+export const GOAL_SCORING_ELISION_TRACE_MAX_ENTRIES = 1_000;
+// Shared across scans and turns. FIFO eviction bounds process memory; an evicted
+// tuple can be reported again. Only structural ids and byte counts are retained.
+const reportedGoalScoringElisions = new Set<string>();
+
+export function clearGoalScoringElisionTraceCache(): void {
+  reportedGoalScoringElisions.clear();
+}
+
 export type RetrievalScoringFeatures = {
   goalVectors: readonly Float32Array[];
   primaryGoalVector?: Float32Array;
@@ -72,7 +81,7 @@ export async function buildSelfScoringFeatureSet(input: {
   goals: readonly GoalRecord[];
   activeValues: readonly Pick<ValueRecord, "label" | "description">[];
   maxInputBytes?: number | undefined;
-  tracer?: Pick<TurnTracer, "emit"> | undefined;
+  tracer?: (Pick<TurnTracer, "emit"> & Partial<Pick<TurnTracer, "enabled">>) | undefined;
   turnId?: string;
 }): Promise<SelfScoringFeatureSet> {
   const activeGoals = input.goals.filter((goal) => goal.status === "active");
@@ -83,15 +92,23 @@ export async function buildSelfScoringFeatureSet(input: {
   for (const goal of activeGoals) {
     const maxInputBytes = input.maxInputBytes ?? input.embeddingClient.maxInputBytes;
     const { text, ...budget } = goalScoringText(goal, maxInputBytes);
-    if (budget.elidedBytes > 0) {
-      input.tracer?.emit("retrieval.degraded", {
-        turnId: input.turnId ?? "scoring_features",
-        subsystem: "scoring_features",
-        reason: "goal_scoring_text_elided",
-        goal_id: goal.id,
-        max_input_bytes: maxInputBytes,
-        ...budget,
-      });
+    if (budget.elidedBytes > 0 && input.tracer !== undefined && input.tracer.enabled !== false) {
+      const traceKey = JSON.stringify([goal.id, budget.originalBytes, budget.renderedBytes]);
+      if (!reportedGoalScoringElisions.has(traceKey)) {
+        input.tracer.emit("retrieval.degraded", {
+          turnId: input.turnId ?? "scoring_features",
+          subsystem: "scoring_features",
+          reason: "goal_scoring_text_elided",
+          goal_id: goal.id,
+          max_input_bytes: maxInputBytes,
+          ...budget,
+        });
+        reportedGoalScoringElisions.add(traceKey);
+        if (reportedGoalScoringElisions.size > GOAL_SCORING_ELISION_TRACE_MAX_ENTRIES) {
+          const oldestKey = reportedGoalScoringElisions.values().next().value;
+          if (oldestKey !== undefined) reportedGoalScoringElisions.delete(oldestKey);
+        }
+      }
     }
 
     if (text.length === 0) {

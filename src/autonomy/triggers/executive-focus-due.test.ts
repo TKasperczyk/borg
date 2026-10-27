@@ -1,10 +1,11 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AutonomyScheduler } from "../scheduler.js";
 import { AutonomyWakesRepository } from "../wakes-repository.js";
 import { TestEmbeddingClient, createOfflineTestHarness } from "../../offline/test-support.js";
 import type { TurnResult } from "../../cognition/index.js";
 import type { EmbeddingClient } from "../../embeddings/index.js";
+import { clearGoalScoringElisionTraceCache } from "../../retrieval/scoring-features.js";
 import { StreamWatermarkRepository, StreamWriter } from "../../stream/index.js";
 import { ToolDispatcher } from "../../tools/index.js";
 import { OUTBOUND_POST_TOOL_NAME } from "../../tools/internal/outbound-post-name.js";
@@ -23,6 +24,9 @@ import { createGoalFollowupDueTrigger } from "./goal-followup-due.js";
 
 describe("executive focus due trigger", () => {
   let cleanup: (() => Promise<void>) | undefined;
+
+  beforeEach(clearGoalScoringElisionTraceCache);
+  afterEach(clearGoalScoringElisionTraceCache);
 
   afterEach(async () => {
     await cleanup?.();
@@ -96,6 +100,33 @@ describe("executive focus due trigger", () => {
       ...overrides,
     });
   }
+
+  it("reports over-cap goal scoring once across repeated scheduler scans", async () => {
+    const embeddingClient = Object.assign(new TestEmbeddingClient(), { maxInputBytes: 20 });
+    const h = await createHarness(1_000_000, embeddingClient);
+    const goal = h.goalsRepository.add({
+      description: "目的",
+      progressNotes: "古い".repeat(20) + "新しい進捗",
+      priority: 10,
+      provenance: { kind: "manual" },
+    });
+    const emit = vi.fn();
+    const trigger = createTrigger(h, {
+      tracer: { enabled: true, includePayloads: false, emit },
+    });
+    for (let tick = 0; tick < 5; tick += 1) {
+      await trigger.scan();
+      h.clock.advance(60_000);
+    }
+    expect(
+      emit.mock.calls.filter(([, data]) => data.reason === "goal_scoring_text_elided"),
+    ).toHaveLength(1);
+    h.goalsRepository.updateProgress(goal.id, "さらに進捗", { kind: "manual" });
+    await trigger.scan();
+    expect(
+      emit.mock.calls.filter(([, data]) => data.reason === "goal_scoring_text_elided"),
+    ).toHaveLength(2);
+  });
 
   it("does not re-present a goal on score drift, expired cooldown, new steps or action topology, but accepts new input", async () => {
     const h = await createHarness();
