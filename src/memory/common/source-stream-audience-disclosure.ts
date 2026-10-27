@@ -35,7 +35,8 @@ export type DisclosureResolvedGoalTreeNode = DisclosureResolvedGoal & {
 
 export type SourceStreamAudienceDisclosureResolverOptions = {
   dataDir: string;
-  entryIndex: Pick<StreamEntryIndexRepository, "lookupMany">;
+  entryIndex: Pick<StreamEntryIndexRepository, "lookupMany"> &
+    Partial<Pick<StreamEntryIndexRepository, "annotateFrameAnomalies">>;
   sessionsRepository: Pick<SessionsRepository, "getMany">;
   entityRepository: Pick<EntityRepository, "findByNames">;
 };
@@ -199,6 +200,7 @@ export class SourceStreamAudienceDisclosureResolver {
         dataDir: this.options.dataDir,
         sessionId: indexRecord.session_id,
         byteOffset: indexRecord.byte_offset,
+        entryIndex: this.options.entryIndex,
       });
       if (entry?.id !== sourceStreamEntryId || entry.session_id !== indexRecord.session_id) {
         continue;

@@ -126,6 +126,7 @@ export class TenantFactRememberer {
         dataDir: this.options.dataDir,
         sessionId: prior.session_id,
         byteOffset: prior.byte_offset,
+        entryIndex: this.options.entryIndex,
       });
       const authorization = entry === null ? null : tenantFactAuthorizationFromEntry(entry);
       if (

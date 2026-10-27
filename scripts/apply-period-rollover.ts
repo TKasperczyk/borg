@@ -130,7 +130,7 @@ export function verifyRolloverBackup(
 ): string {
   if (!path)
     refuse("--apply requires --backup-verified <path> for an operator-verified fresh backup");
-  const backup = checkedPath(path, liveStoreConfirmed),
+  const backup = checkedPath(path, liveStoreConfirmed, dataDir),
     bank = checkedPath(dataDir, liveStoreConfirmed);
   const inside = (parent: string, child: string) => {
     const rel = relative(parent, child);

@@ -1,3 +1,4 @@
+import { renderFrameAnomalyAnnotations } from "../../../stream/frame-anomaly.js";
 import type { ActionRecord } from "../../../memory/actions/index.js";
 import type { CommitmentRecord } from "../../../memory/commitments/index.js";
 import type { GoalRecord } from "../../../memory/self/index.js";
@@ -351,7 +352,12 @@ function excerpt(content: unknown): string {
 }
 
 function sidebarLine(entry: TranscriptStreamEntry): string {
-  return `- ${entry.id} [${new Date(entry.timestamp).toISOString()}]: ${excerpt(entry.content)}`;
+  return [
+    `- ${entry.id} [${new Date(entry.timestamp).toISOString()}]: ${excerpt(entry.content)}`,
+    renderFrameAnomalyAnnotations(entry.frame_anomalies),
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 function sidebarParticipantText(

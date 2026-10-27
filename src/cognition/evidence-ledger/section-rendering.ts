@@ -1,3 +1,4 @@
+import { renderFrameAnomalyAnnotations } from "../../stream/frame-anomaly.js";
 import type {
   EvidenceLedgerEntry,
   EvidenceLedgerSection,
@@ -26,6 +27,7 @@ export function renderEntry(entry: EvidenceLedgerEntry): string {
     entry.via_retrieval === true ? "via_retrieval=true" : null,
   ].filter((part): part is string => part !== null);
   const body = [
+    renderFrameAnomalyAnnotations(entry.frame_anomalies) || null,
     entry.value === undefined ? null : `  value: ${entry.value}`,
     entry.text === undefined ? null : `  text:\n${entry.text}`,
   ].filter((part): part is string => part !== null);

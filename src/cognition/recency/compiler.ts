@@ -1,3 +1,4 @@
+import { renderFrameAnomalyAnnotations } from "../../stream/frame-anomaly.js";
 import {
   StreamReader,
   filterActiveStreamEntries,
@@ -161,7 +162,9 @@ function renderEntryContent(entry: StreamEntry): string {
     return `[borg observation: ${reason}]`;
   }
 
-  return entryContentToString(entry);
+  return [renderFrameAnomalyAnnotations(entry.frame_anomalies), entryContentToString(entry)]
+    .filter(Boolean)
+    .join("\n");
 }
 
 /**

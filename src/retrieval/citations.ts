@@ -103,6 +103,7 @@ export class CitationResolver {
           dataDir: this.options.dataDir,
           sessionId: record.session_id,
           byteOffset: record.byte_offset,
+          entryIndex: this.options.entryIndex,
         });
 
         if (entry === null) {
@@ -172,6 +173,7 @@ export class CitationResolver {
           dataDir: this.options.dataDir,
           sessionId: record.session_id,
           byteOffset: record.byte_offset,
+          entryIndex: this.options.entryIndex,
         });
 
         if (entry === null || entry.id !== record.entry_id || entry.kind !== "internal_event") {

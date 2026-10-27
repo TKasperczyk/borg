@@ -36,7 +36,6 @@ import type {
 import {
   collectInactiveStreamEntryRefs,
   getStreamDirectory,
-  isQuarantinedUserEntryMarker,
   StreamReader,
   streamEntryIsActive,
   type StreamEntry,
@@ -50,6 +49,11 @@ import {
   type StreamEntryId,
 } from "../../../util/ids.js";
 import type { TurnPhaseCoordinatorOptions } from "./types.js";
+import {
+  collectQuarantineRestorations,
+  quarantinedUserEntrySourceIds,
+} from "../../../stream/turn-status.js";
+import type { FrameAnomalyDisposition } from "./perception-phase.js";
 
 const SHARED_STATE_LEDGER_STREAM_METADATA_KEYS = [
   "stream_ids",
@@ -88,15 +92,11 @@ function collectQuarantinedSharedStateArtifactStreamEntryIds(
   entries: readonly StreamEntry[],
   ids: Set<StreamEntryId> = new Set<StreamEntryId>(),
 ): Set<StreamEntryId> {
+  const restorations = collectQuarantineRestorations(entries);
   for (const entry of entries) {
-    if (!isQuarantinedUserEntryMarker(entry)) {
-      continue;
+    for (const id of quarantinedUserEntrySourceIds(entry)) {
+      if (!restorations.get(id)?.has(entry.id)) addSharedStateArtifactAllowedStreamId(ids, id);
     }
-
-    const content = isSharedStateArtifactStreamContentRecord(entry.content) ? entry.content : {};
-
-    addSharedStateArtifactAllowedStreamId(ids, content.source_stream_entry_id);
-    addSharedStateArtifactAllowedStreamIds(ids, content.cited_stream_entry_ids);
   }
 
   return ids;
@@ -129,7 +129,7 @@ function listSharedStateArtifactStreamSessionIds(dataDir: string): SessionId[] {
 async function collectCrossSessionQuarantinedSharedStateArtifactStreamEntryIdsFromStream(
   dataDir: string,
 ): Promise<ReadonlySet<StreamEntryId>> {
-  const ids = new Set<StreamEntryId>();
+  const entries: StreamEntry[] = [];
 
   for (const sessionId of listSharedStateArtifactStreamSessionIds(dataDir)) {
     const reader = new StreamReader({
@@ -137,12 +137,10 @@ async function collectCrossSessionQuarantinedSharedStateArtifactStreamEntryIdsFr
       sessionId,
     });
 
-    for await (const entry of reader.iterate({ kinds: ["internal_event"] })) {
-      collectQuarantinedSharedStateArtifactStreamEntryIds([entry], ids);
-    }
+    for await (const entry of reader.iterate({ kinds: ["internal_event"] })) entries.push(entry);
   }
 
-  return ids;
+  return collectQuarantinedSharedStateArtifactStreamEntryIds(entries);
 }
 
 export async function collectCrossSessionQuarantinedSharedStateArtifactStreamEntryIds(
@@ -414,6 +412,7 @@ export function shouldSkipSharedStateCompile(input: {
   previousArtifact: SharedStateArtifact | null | undefined;
   perceptionMode: CognitiveMode;
   frameAnomaly: ActualFrameAnomalyClassification | null | undefined;
+  frameAnomalyDisposition?: FrameAnomalyDisposition;
   closureLoopAssessment: ClosureLoopAssessment | null | undefined;
   unsettledReconciliation?: SharedStateUnsettledReconciliationSummary | null;
 }): SharedStateCompileSkip | null {
@@ -421,7 +420,11 @@ export function shouldSkipSharedStateCompile(input: {
     input.previousArtifact,
   );
 
-  if (input.frameAnomaly !== null && input.frameAnomaly !== undefined) {
+  if (
+    input.frameAnomaly !== null &&
+    input.frameAnomaly !== undefined &&
+    input.frameAnomalyDisposition !== "annotate"
+  ) {
     return {
       reason: "quarantined_current_turn",
       previousActiveEntryCount,

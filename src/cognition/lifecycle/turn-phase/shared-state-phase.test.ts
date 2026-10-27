@@ -10,7 +10,10 @@ import {
 } from "../../../util/ids.js";
 import { listActionCandidatesForCognition } from "../../evidence-ledger/action-threads.js";
 
-import { selectCurrentAudienceSharedStateActionCandidatesForCanonicalization } from "./shared-state-phase.js";
+import {
+  shouldSkipSharedStateCompile,
+  selectCurrentAudienceSharedStateActionCandidatesForCanonicalization,
+} from "./shared-state-phase.js";
 
 function makeAction(overrides: Partial<ActionRecord> = {}): ActionRecord {
   const nowMs = overrides.updated_at ?? 1_000;
@@ -87,11 +90,7 @@ describe("shared-state action canonicalization candidates", () => {
       audience_entity_id: null,
       updated_at: 1_000,
     });
-    const actionRepository = makeRepository([
-      alicePrivateAction,
-      bobAudienceAction,
-      globalAction,
-    ]);
+    const actionRepository = makeRepository([alicePrivateAction, bobAudienceAction, globalAction]);
 
     const cognitionCandidates = listActionCandidatesForCognition({
       actionRepository,
@@ -156,3 +155,24 @@ describe("shared-state action canonicalization candidates", () => {
     );
   });
 });
+
+it.each(["annotate", "quarantine"] as const)(
+  "%s keeps cognitive compilation separate from action-policy suspicion",
+  (disposition) => {
+    const skip = shouldSkipSharedStateCompile({
+      enabled: false,
+      previousArtifact: null,
+      perceptionMode: "problem_solving",
+      frameAnomaly: {
+        status: "ok",
+        kind: "system_prompt_claim",
+        confidence: 0.92,
+        rationale: "報告への疑い",
+      },
+      frameAnomalyDisposition: disposition,
+      closureLoopAssessment: null,
+    });
+    if (disposition === "annotate") expect(skip).toBeNull();
+    else expect(skip?.reason).toBe("quarantined_current_turn");
+  },
+);

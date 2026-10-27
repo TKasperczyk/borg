@@ -1,3 +1,11 @@
+import {
+  collectQuarantineRestorations,
+  quarantinedUserEntrySourceIds,
+} from "../../../stream/turn-status.js";
+import {
+  frameAnomalyAnnotationFields,
+  frameAnomalyAnnotationFromEntry,
+} from "../../../stream/frame-anomaly.js";
 import { isQuarantinedUserEntryMarker } from "../../../stream/index.js";
 import { stringifyPromptContent } from "../../../util/token-estimate.js";
 import { commitmentReconciliationReviewDisclosureLabel } from "../../../memory/review-queue/index.js";
@@ -95,6 +103,11 @@ export function addContradictionsAndQuarantinesSection(context: BuilderSectionCo
   }
 
   if (context.input.frameAnomaly?.status === "ok") {
+    const annotations = (
+      context.input.currentUserEntries ??
+      (context.input.currentUserEntry === undefined ? [] : [context.input.currentUserEntry])
+    ).flatMap((entry) => entry.frame_anomalies ?? []);
+    const annotated = annotations.length > 0;
     addEntry(context.buckets, "contradictions_quarantines", {
       id: `frame_anomaly:${context.input.frameAnomaly.kind}`,
       source_type: "system_metadata",
@@ -102,17 +115,32 @@ export function addContradictionsAndQuarantinesSection(context: BuilderSectionCo
       actor: "system",
       trust_rank: QUARANTINE_TRUST_RANK,
       text: context.input.frameAnomaly.rationale,
+      ...frameAnomalyAnnotationFields(annotations),
+      state_metadata: { confidence: context.input.frameAnomaly.confidence },
       value: context.input.frameAnomaly.kind,
-      state: "quarantined",
-      taint: "quarantined",
+      state: annotated ? "frame_anomaly_suspected" : "quarantined",
+      taint: annotated ? "none" : "quarantined",
     });
   }
 
+  const restorations = collectQuarantineRestorations(context.streamEntries);
+  const historicalAnnotations = context.streamEntries.flatMap((entry) => {
+    const event = frameAnomalyAnnotationFromEntry(entry);
+    return [...(entry.frame_anomalies ?? []), ...(event === null ? [] : [event])];
+  });
   for (const entry of context.streamEntries) {
     if (!isQuarantinedUserEntryMarker(entry)) {
       continue;
     }
 
+    const refs = quarantinedUserEntrySourceIds(entry);
+    const restored = refs.filter((id) => restorations.get(id)?.has(entry.id));
+    const quarantined = refs.filter((id) => !restorations.get(id)?.has(entry.id));
+    const annotations = historicalAnnotations.filter(
+      (annotation) =>
+        refs.includes(annotation.source_stream_entry_id) &&
+        annotation.restores_quarantine_marker_ids.includes(entry.id),
+    );
     addEntry(context.buckets, "contradictions_quarantines", {
       id: `stream_quarantine:${entry.id}`,
       source_type: "system_metadata",
@@ -121,8 +149,19 @@ export function addContradictionsAndQuarantinesSection(context: BuilderSectionCo
       trust_rank: QUARANTINE_TRUST_RANK,
       text: stringifyPromptContent(entry.content),
       stream_index: context.resolver.streamOrderById.get(entry.id),
-      state: "quarantined",
-      taint: "quarantined",
+      state:
+        restored.length === 0
+          ? "quarantined"
+          : quarantined.length === 0
+            ? "restored_with_annotation"
+            : "partially_restored",
+      state_metadata: {
+        restored_source_stream_entry_ids: restored,
+        quarantined_source_stream_entry_ids: quarantined,
+      },
+      taint:
+        restored.length === 0 ? "quarantined" : quarantined.length === 0 ? "none" : "contested",
+      ...frameAnomalyAnnotationFields(annotations),
     });
   }
 

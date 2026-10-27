@@ -1,3 +1,4 @@
+import type { FrameAnomalyDisposition } from "./perception-phase.js";
 import { performAction, type ActionResult } from "../../turn-action/index.js";
 import type { TurnActionCoordinator } from "../../turn-action/turn-action-coordinator.js";
 import type { CorrectivePreferenceTurnService } from "../../commitments/corrective-preference-service.js";
@@ -335,6 +336,7 @@ async function compilePostResponseSharedState(input: {
   audienceEntityId: EntityId | null;
   isUserTurn: boolean;
   currentTurnFrameAnomaly: ActualFrameAnomalyClassification | null;
+  frameAnomalyDisposition?: FrameAnomalyDisposition;
   closureLoopAssessment?: ClosureLoopAssessment | null;
   activeParticipants?: readonly ActiveParticipant[];
 }): Promise<void> {
@@ -366,6 +368,7 @@ async function compilePostResponseSharedState(input: {
     openQuestions: input.retrievalPhase.retrieval.open_questions ?? [],
     pendingCorrections: input.retrievalPhase.pendingCorrections ?? [],
     frameAnomaly: input.currentTurnFrameAnomaly,
+    frameAnomalyDisposition: input.frameAnomalyDisposition,
     activeParticipants: input.activeParticipants ?? [],
     participantRoster: input.retrievalPhase.participantRoster ?? null,
     isUserTurn: input.isUserTurn,
@@ -545,6 +548,7 @@ export async function runPostGenerationPhase(input: {
   >[0]["suppressionSet"];
   isUserTurn: boolean;
   currentTurnFrameAnomaly: ActualFrameAnomalyClassification | null;
+  frameAnomalyDisposition?: FrameAnomalyDisposition;
   closureLoopAssessment?: ClosureLoopAssessment | null;
   activeParticipants?: readonly ActiveParticipant[];
   knownInternalIdentifiers?: readonly string[];
@@ -849,6 +853,7 @@ export async function runPostGenerationPhase(input: {
       audienceEntityId: input.audienceEntityId,
       isUserTurn: input.isUserTurn,
       currentTurnFrameAnomaly: input.currentTurnFrameAnomaly,
+      frameAnomalyDisposition: input.frameAnomalyDisposition,
       closureLoopAssessment: input.closureLoopAssessment ?? null,
       activeParticipants: input.activeParticipants ?? [],
     });

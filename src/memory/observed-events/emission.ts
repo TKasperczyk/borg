@@ -27,7 +27,10 @@ export function buildObservedEventRecurrenceKey(input: {
 export function buildObservedEventEmission(
   input: BuildObservedEventEmissionInput,
 ): ObservedEventRecordInput | null {
-  if (input.disposition !== "quarantine" || input.actionableFrameAnomaly === null) {
+  if (
+    (input.disposition !== "quarantine" && input.disposition !== "annotate") ||
+    input.actionableFrameAnomaly === null
+  ) {
     return null;
   }
 

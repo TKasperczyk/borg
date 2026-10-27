@@ -1,3 +1,4 @@
+import type { FrameAnomalyDisposition } from "./perception-phase.js";
 import { similarityThresholds } from "../../../config/similarity.js";
 import {
   appendCommitmentIfMissing,
@@ -144,6 +145,7 @@ export type SharedStateCompilerAssistantResponse = {
 };
 
 export type EvidenceLedgerFinalizerBuildInput = EvidenceLedgerBuildInput & {
+  frameAnomalyDisposition?: FrameAnomalyDisposition;
   globalTurnCounter?: number;
   isUserTurn: boolean;
   perception: PerceptionResult;
@@ -704,6 +706,7 @@ export async function runRetrievalPhase(input: {
   currentUserEntries?: readonly StreamEntry[];
   currentTurnAttachmentIds?: readonly AttachmentId[];
   currentTurnFrameAnomaly: ActualFrameAnomalyClassification | null;
+  frameAnomalyDisposition?: FrameAnomalyDisposition;
   closureLoopAssessment: ClosureLoopAssessment | null;
 }): Promise<TurnRetrievalPhaseResult> {
   const creatorDirectiveParticipantEntityIds = participantEntityIds({
@@ -1126,6 +1129,7 @@ export async function runRetrievalPhase(input: {
       pendingCorrections,
       pendingCommitmentReviews,
       frameAnomaly: input.currentTurnFrameAnomaly,
+      frameAnomalyDisposition: input.frameAnomalyDisposition,
       activeParticipants: input.activeParticipants,
       recentLivedExperience,
       renderRecentLivedExperience,
@@ -2119,7 +2123,9 @@ async function compileSharedStateArtifactForEvidenceLedgerResultInternal(input: 
     },
   };
   const currentTurnIsFrameAnomaly =
-    input.input.frameAnomaly !== null && input.input.frameAnomaly !== undefined;
+    input.input.frameAnomaly !== null &&
+    input.input.frameAnomaly !== undefined &&
+    input.input.frameAnomalyDisposition !== "annotate";
   const reconciliationRepositories: SharedStateReconciliationRepositories = {
     goalsRepository: input.options.goalsRepository,
     commitmentRepository: input.options.commitmentRepository,
@@ -2140,6 +2146,7 @@ async function compileSharedStateArtifactForEvidenceLedgerResultInternal(input: 
     previousArtifact,
     perceptionMode: input.input.perception.mode,
     frameAnomaly: input.input.frameAnomaly,
+    frameAnomalyDisposition: input.input.frameAnomalyDisposition,
     closureLoopAssessment: input.input.closureLoopAssessment,
     unsettledReconciliation: unsettledReconciliation?.summary ?? null,
   });

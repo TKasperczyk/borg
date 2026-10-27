@@ -1,3 +1,4 @@
+import { frameAnomalyAnnotationFields } from "../../stream/frame-anomaly.js";
 import { cloneLedgerWithSections } from "./ledger-copy.js";
 import type { EvidenceLedger, EvidenceLedgerEntry, EvidenceLedgerSectionId } from "./types.js";
 import { DisjointSet } from "../../util/disjoint-set.js";
@@ -573,6 +574,9 @@ export function dedupeEvidenceLedgerByProvenance(
       openQuestionMerge === null
         ? {
             ...canonical.entry,
+            ...frameAnomalyAnnotationFields(
+              group.flatMap((ref) => ref.entry.frame_anomalies ?? []),
+            ),
             citations: [
               ...new Set([...(canonical.entry.citations ?? []), ...citationHandles(group)]),
             ],

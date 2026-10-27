@@ -1,3 +1,4 @@
+import type { FrameAnomalyAnnotation } from "../../stream/frame-anomaly.js";
 import { z } from "zod";
 
 import type { SharedStateArtifact } from "../../memory/shared-state/types.js";
@@ -33,6 +34,7 @@ export type EvidenceLedgerActionSalienceClass =
   | "completed_recent";
 
 export type EvidenceLedgerEntry = {
+  frame_anomalies?: FrameAnomalyAnnotation[];
   id: string;
   source_type: EvidenceLedgerSourceType;
   session_scope: EvidenceLedgerSessionScope;

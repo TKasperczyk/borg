@@ -1,3 +1,4 @@
+import { frameAnomalyAnnotationFields } from "../../../stream/frame-anomaly.js";
 import { currentUserMessageStateMetadata, optionalStateMetadata } from "../entry-metadata.js";
 import { CURRENT_USER_TRUST_RANK, addEntry } from "../section-buckets.js";
 import type { BuilderSectionContext } from "../builder-context.js";
@@ -12,13 +13,21 @@ export function addCurrentUserMessageSection(context: BuilderSectionContext): vo
     actor: "user",
     trust_rank: CURRENT_USER_TRUST_RANK,
     text: context.input.currentUserMessage,
+    ...frameAnomalyAnnotationFields(
+      (
+        context.input.currentUserEntries ??
+        (context.input.currentUserEntry === undefined ? [] : [context.input.currentUserEntry])
+      ).flatMap((entry) => entry.frame_anomalies ?? []),
+    ),
     ...optionalStateMetadata(stateMetadata),
     stream_index:
       context.input.currentUserEntry === undefined
         ? undefined
         : context.resolver.streamOrderById.get(context.input.currentUserEntry.id),
     taint:
-      context.input.frameAnomaly === null || context.input.frameAnomaly === undefined
+      context.input.frameAnomaly === null ||
+      context.input.frameAnomaly === undefined ||
+      (context.input.currentUserEntry?.frame_anomalies?.length ?? 0) > 0
         ? "none"
         : "quarantined",
   });

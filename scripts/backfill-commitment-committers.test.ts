@@ -1,4 +1,12 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  linkSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -108,6 +116,25 @@ describe("commitment committer backfill", () => {
       expect(() => checkedPath(path)).toThrow("forbidden");
     },
     30_000,
+  );
+  it.each(["self", "directory_symlink", "database_symlink", "database_hardlink"])(
+    "rejects a backup alias of the target database (%s)",
+    (alias) => {
+      const f = fixture(true);
+      let backup = f.dataDir;
+      if (alias !== "self") {
+        backup = join(f.fixtureRoot, "alias-backup");
+        if (alias === "directory_symlink") symlinkSync(f.dataDir, backup, "dir");
+        else {
+          mkdirSync(backup);
+          const link = alias === "database_hardlink" ? linkSync : symlinkSync;
+          link(join(f.dataDir, "borg.db"), join(backup, "borg.db-clean"));
+        }
+      }
+      expect(() => checkedPath(f.dataDir, backup)).toThrow("backup must differ");
+      expect(() => checkedPath(join(f.dataDir, "borg.db"), backup)).toThrow("backup must differ");
+      expect(f.repo.get(f.single.id)).toEqual(f.single);
+    },
   );
   it.each(["missing", "file", "empty_directory", "database_directory"])(
     "rejects an invalid live-store backup (%s)",

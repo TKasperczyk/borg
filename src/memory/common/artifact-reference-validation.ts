@@ -2,6 +2,7 @@ import type { SqliteDatabase } from "../../storage/sqlite/index.js";
 import type { ArtifactReference } from "./artifact-reference.js";
 import { deliveredOutboundPostArtifactOutputSchema } from "./artifact-reference.js";
 import { readStreamEntryAtOffset } from "../../stream/entry-lookup.js";
+import { StreamEntryIndexRepository } from "../../stream/entry-index.js";
 import type { SessionId } from "../../util/ids.js";
 import {
   combineMemoryDisclosureLabels,
@@ -93,11 +94,13 @@ function recordedDeliveredPostExists(
     session_id: SessionId;
     byte_offset: number;
   }[];
+  const entryIndex = new StreamEntryIndexRepository({ db, dataDir });
   return rows.some((row) => {
     const entry = readStreamEntryAtOffset({
       dataDir,
       sessionId: row.session_id,
       byteOffset: row.byte_offset,
+      entryIndex,
     });
     if (
       entry?.id !== row.entry_id ||

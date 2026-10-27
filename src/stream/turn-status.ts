@@ -1,5 +1,6 @@
 import type { StreamEntry } from "./types.js";
 import { isPlainRecord } from "../util/guards.js";
+import { frameAnomalyAnnotationFromEntry } from "./frame-anomaly.js";
 
 export const ABORTED_TURN_EVENT = "aborted_turn";
 export const QUARANTINED_USER_ENTRY_EVENT = "quarantined_user_entry";
@@ -27,6 +28,17 @@ function citedStreamEntryIds(content: Record<string, unknown>): string[] {
   }
 
   return value.filter((item): item is string => typeof item === "string" && item.length > 0);
+}
+
+export function quarantinedUserEntrySourceIds(entry: StreamEntry): string[] {
+  if (!isQuarantinedUserEntryMarker(entry) || !isPlainRecord(entry.content)) return [];
+  const scalar = entry.content.source_stream_entry_id;
+  return [
+    ...new Set([
+      ...(typeof scalar === "string" && scalar.length > 0 ? [scalar] : []),
+      ...citedStreamEntryIds(entry.content),
+    ]),
+  ];
 }
 
 // The aborted-turn marker is the only record of *why* a turn died -- its content carries a
@@ -59,11 +71,33 @@ export function isQuarantinedUserEntryMarker(entry: StreamEntry): boolean {
   );
 }
 
+// Exact source/marker pairs; restoring one citation never restores its siblings.
+export function collectQuarantineRestorations(
+  entries: readonly StreamEntry[],
+): ReadonlyMap<string, ReadonlySet<string>> {
+  const restorations = new Map<string, Set<string>>();
+  for (const entry of entries) {
+    const event = frameAnomalyAnnotationFromEntry(entry);
+    for (const annotation of [
+      ...(entry.frame_anomalies ?? []),
+      ...(event === null ? [] : [event]),
+    ]) {
+      if (annotation.restores_quarantine_marker_ids.length === 0) continue;
+      const markers = restorations.get(annotation.source_stream_entry_id) ?? new Set<string>();
+      for (const id of annotation.restores_quarantine_marker_ids) markers.add(id);
+      restorations.set(annotation.source_stream_entry_id, markers);
+    }
+  }
+
+  return restorations;
+}
+
 export function collectInactiveStreamEntryRefs(
   entries: readonly StreamEntry[],
 ): InactiveStreamEntryRefs {
   const turnIds = new Set<string>();
   const streamEntryIds = new Set<string>();
+  const restorations = collectQuarantineRestorations(entries);
 
   for (const entry of entries) {
     if (!isPlainRecord(entry.content)) {
@@ -84,20 +118,11 @@ export function collectInactiveStreamEntryRefs(
       continue;
     }
 
-    // Unlike the aborted-turn branch above, quarantine does not add the turn id: it strikes
-    // the marker and the entries it cites, nothing else. The rest of that turn stays active --
-    // the perception of the struck message, the thought, and the reply -- so the record keeps
-    // an answer whose prompt is gone. The classifier rationale survives too, because
-    // perception-phase writes it twice and only this copy is a marker.
+    // Non-peer quarantine still strikes its cited entries. An explicit restoration
+    // cancels only this marker's contribution, never an abort or another strike.
     if (isQuarantinedUserEntryMarker(entry)) {
-      const sourceStreamEntryId = entry.content.source_stream_entry_id;
-
-      if (typeof sourceStreamEntryId === "string" && sourceStreamEntryId.length > 0) {
-        streamEntryIds.add(sourceStreamEntryId);
-      }
-
-      for (const streamEntryId of citedStreamEntryIds(entry.content)) {
-        streamEntryIds.add(streamEntryId);
+      for (const streamEntryId of quarantinedUserEntrySourceIds(entry)) {
+        if (!restorations.get(streamEntryId)?.has(entry.id)) streamEntryIds.add(streamEntryId);
       }
     }
   }

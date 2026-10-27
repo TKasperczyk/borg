@@ -26,7 +26,8 @@ type TerminalEntryIndex = Pick<
   | "lookupMany"
   | "lookupSessionEntriesByKind"
   | "lookupSessionStreamBacklogResponseStamps"
->;
+> &
+  Partial<Pick<StreamEntryIndexRepository, "annotateFrameAnomalies">>;
 
 export type HydratedStreamBacklogBatch = {
   sourceEntries: readonly StreamEntry[];
@@ -514,6 +515,7 @@ export class BacklogTerminalService {
       dataDir: this.options.dataDir,
       sessionId: input.sessionId,
       byteOffset: terminalRecord.byte_offset,
+      entryIndex: this.options.entryIndex,
     });
     if (terminalEntry?.response_to?.kind !== "stream_backlog") {
       return { status: "pending" };

@@ -23,7 +23,8 @@ export class TaskEventService {
         | "listSessionIdsWithTaskEvents"
         | "lookupSessionTaskEventResponseStamps"
         | "isPoisoned"
-      >;
+      > &
+        Partial<Pick<StreamEntryIndexRepository, "annotateFrameAnomalies">>;
       repairSessionStreamEntryIndex: (sessionId: SessionId) => Promise<unknown>;
       createStreamWriter: (sessionId: SessionId) => Pick<StreamWriter, "append" | "close">;
     },
@@ -36,6 +37,7 @@ export class TaskEventService {
       dataDir: this.options.dataDir,
       sessionId,
       byteOffset: record.byte_offset,
+      entryIndex: this.options.entryIndex,
     });
   }
 

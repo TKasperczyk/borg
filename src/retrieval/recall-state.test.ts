@@ -9,6 +9,10 @@ import {
   type OfflineTestHarness,
 } from "../offline/test-support.js";
 import { StreamWriter } from "../stream/index.js";
+import { FRAME_ANOMALY_ANNOTATION_EVENT } from "../stream/frame-anomaly.js";
+import { relationshipPrivateMemoryDisclosureLabel } from "../memory/common/disclosure-label.js";
+import { memoryDisclosurePayloadFields } from "../memory/common/disclosure-serializers.js";
+import { summarizeRetrievedEvidence } from "../cognition/deliberation/prompt/retrieval.js";
 import { createWorkingMemory, workingMemorySchema } from "../memory/working/index.js";
 import { FixedClock } from "../util/clock.js";
 import {
@@ -448,6 +452,108 @@ describe("retrieval recall_state", () => {
     expect(freshIndex).toBeGreaterThanOrEqual(0);
     expect(warmRawIndex).toBeGreaterThanOrEqual(0);
     expect(freshIndex).toBeLessThan(warmRawIndex);
+  });
+
+  it("carries peer annotations through fresh and warm global raw-stream recall", async () => {
+    harness = await createHarness();
+    const source = await harness.streamWriter.append({
+      kind: "user_msg",
+      content: "Atlas reporting " + "資料".repeat(400),
+    });
+    const audienceId = createEntityId();
+    const annotation = await harness.streamWriter.append({
+      kind: "internal_event",
+      content: {
+        event: FRAME_ANOMALY_ANNOTATION_EVENT,
+        version: 1,
+        source_stream_entry_id: source.id,
+        source_session_id: source.session_id,
+        source_type: "kira",
+        source_stream_entry_ids: [source.id],
+        kind: "system_prompt_claim",
+        confidence: 0.92,
+        rationale: "分類器の疑い。",
+        classifier_model: "fixture-classifier",
+        classifier_turn_id: "fixture-turn",
+        classifier_source_event_id: null,
+        restores_quarantine_marker_ids: [],
+        audience: "peer",
+        sender_entity_id: null,
+        ...memoryDisclosurePayloadFields(relationshipPrivateMemoryDisclosureLabel([audienceId])),
+        source_disclosure_label: memoryDisclosurePayloadFields(
+          relationshipPrivateMemoryDisclosureLabel([audienceId]),
+        ).disclosure_label,
+      },
+    });
+    const episode = createEpisodeFixture(
+      {
+        title: "Atlas",
+        narrative: "Atlas report",
+        participants: ["Atlas"],
+        tags: ["Atlas"],
+        source_stream_ids: [source.id],
+      },
+      [1, 0, 0, 0],
+    );
+    await harness.episodicRepository.createEpisode(episode);
+    const fresh = await harness.retrievalPipeline.recallEpisodesForCognition("Atlas", {
+      ...cognitionRecallOptions(createEntityId()),
+      entityTerms: ["Atlas"],
+      turnCounter: 1,
+      limit: 4,
+    });
+    const raw = fresh.evidence.filter(
+      (item) =>
+        item.provenance?.streamIds?.includes(source.id) &&
+        (item.source === "raw_stream" || item.source === "recent_raw_stream"),
+    );
+    expect(raw.length).toBeGreaterThan(0);
+    for (const item of raw)
+      expect(item.frame_anomalies).toEqual([
+        expect.objectContaining({
+          annotation_entry_id: annotation.id,
+          disclosure_label: {
+            disclosure_class: "relationship_private",
+            private_to_entity_ids: [audienceId],
+            origin_audience_entity_ids: [audienceId],
+            public_to_entity_ids: [],
+          },
+        }),
+      ]);
+    // A joined handle exercises warm rendering independently of the fresh
+    // singleton copies, which normal provenance compaction would retain instead.
+    const reply = await harness.streamWriter.append({ kind: "agent_msg", content: "Receipt." });
+    seedRecallHandles({
+      harness,
+      scopeKey: COGNITION_RECALL_SCOPE_KEY,
+      activeHandles: [
+        createStateHandle({ source: "raw_stream", streamIds: [source.id, reply.id] }),
+      ],
+    });
+    const warmSessionId = testSessionId();
+    const warmOptions = cognitionRecallOptions(createEntityId());
+    const recalled = await harness.retrievalPipeline.recallEpisodesForCognition(
+      "unrelated recall",
+      {
+        ...warmOptions,
+        sessionId: warmSessionId,
+        recallContext: { ...warmOptions.recallContext, currentSessionId: warmSessionId },
+        turnCounter: 2,
+        limit: 1,
+        minSimilarity: 0.99,
+      },
+    );
+    const warm = recalled.evidence.find(
+      (item) => item.source === "warm_recall" && item.provenance?.streamIds?.includes(source.id),
+    );
+    expect(warm).toBeDefined();
+    expect(warm?.frame_anomalies?.[0]?.annotation_entry_id).toBe(annotation.id);
+    expect(summarizeRetrievedEvidence("Recall", { evidence: [warm!] }, 4_000)).toContain(
+      "frame anomaly suspected: system_prompt_claim (0.92)",
+    );
+    expect(summarizeRetrievedEvidence("Recall", { evidence: [warm!] }, 4_000)).toContain(
+      "分類器の疑い。",
+    );
   });
 
   it("fails closed when rehydrating parentless warm raw-stream handles", async () => {

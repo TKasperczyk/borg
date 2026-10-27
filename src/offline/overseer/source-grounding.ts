@@ -1,3 +1,4 @@
+import { renderFrameAnomalyAnnotations } from "../../stream/frame-anomaly.js";
 import { z } from "zod";
 
 import {
@@ -512,11 +513,14 @@ export async function resolveTargetSourceBundle(
 }
 
 function entryContent(entry: StreamEntry): string {
-  if (typeof entry.content === "string") {
-    return entry.content;
-  }
-
-  return JSON.stringify(entry.content) ?? String(entry.content);
+  return [
+    renderFrameAnomalyAnnotations(entry.frame_anomalies),
+    typeof entry.content === "string"
+      ? entry.content
+      : (JSON.stringify(entry.content) ?? String(entry.content)),
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 function formatIdList(ids: readonly string[]): string {

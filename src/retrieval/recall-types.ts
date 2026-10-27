@@ -15,6 +15,7 @@ import type {
 } from "../memory/commitments/index.js";
 import type { MemoryDisclosureLabel } from "./recall-context.js";
 import type { StreamEntryKind } from "../stream/types.js";
+import type { FrameAnomalyAnnotation } from "../stream/frame-anomaly.js";
 
 export const RECALL_INTENT_KINDS = [
   "raw_text",
@@ -95,6 +96,7 @@ export type EvidenceScoreBreakdown = {
 };
 
 export type EvidenceItem = {
+  frame_anomalies?: FrameAnomalyAnnotation[];
   id: string;
   source: EvidenceSource;
   text: string;

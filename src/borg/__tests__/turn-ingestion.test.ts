@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+
+import { getSessionStreamPath, streamEntryReadSchema } from "../../stream/index.js";
 
 import {
   FakeLLMClient,
@@ -605,11 +608,22 @@ describe("Borg", () => {
       });
       await borg.close();
 
+      const persistedEntries = readFileSync(getSessionStreamPath(tempDir, sessionId), "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => streamEntryReadSchema.parse(JSON.parse(line)));
+      expect(persistedEntries).toContainEqual(
+        expect.objectContaining({
+          kind: "internal_event",
+          content: "Live stream ingestion failed: boom",
+        }),
+      );
       const failedSessionEntries = borg.stream.tail(10, {
         session: sessionId,
       });
       const defaultSessionEntries = borg.stream.tail(10);
 
+      expect(failedSessionEntries).toEqual(persistedEntries.slice(-10));
       expect(
         failedSessionEntries.some(
           (entry) =>

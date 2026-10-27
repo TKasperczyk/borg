@@ -19,6 +19,11 @@ export type ObservedEventDerivedDimensions = {
 };
 
 const OBSERVED_EVENT_DIMENSIONS_BY_DISPOSITION = {
+  annotate: {
+    stance: "noted_frame",
+    taint: "none",
+    beliefEffect: "unchanged",
+  },
   quarantine: {
     stance: "rejected_frame",
     taint: "quarantined",

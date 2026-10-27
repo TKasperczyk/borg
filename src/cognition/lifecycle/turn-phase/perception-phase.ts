@@ -27,11 +27,22 @@ import {
 import type { SessionSourceType } from "../../../sessions/index.js";
 import type { SessionId, StreamEntryId } from "../../../util/ids.js";
 import type { TurnPhaseCoordinatorOptions } from "./types.js";
+import {
+  FRAME_ANOMALY_ANNOTATION_EVENT,
+  frameAnomalyAnnotationFromEntry,
+} from "../../../stream/frame-anomaly.js";
+import {
+  combineMemoryDisclosureLabels,
+  memoryDisclosureLabelFromMetadata,
+  unknownMemoryDisclosureLabel,
+} from "../../../memory/common/disclosure-label.js";
+import { memoryDisclosurePayloadFields } from "../../../memory/common/disclosure-serializers.js";
 
 export type FrameAnomalyDisposition =
   | "none"
   | "trusted_operator_control"
   | "trusted_peer_channel"
+  | "annotate"
   | "quarantine";
 
 export type FrameAnomalyPhaseResult = {
@@ -83,6 +94,7 @@ export async function classifyFrameAnomalyPhase(input: {
   sessionSourceType: SessionSourceType | null;
   persistedUserEntryId?: StreamEntryId;
   sourceUserEntryIds?: readonly StreamEntryId[];
+  sourceUserEntries?: readonly StreamEntry[];
   streamWriter: StreamWriter;
 }): Promise<FrameAnomalyPhaseResult> {
   const sourceUserEntryIds =
@@ -162,8 +174,12 @@ export async function classifyFrameAnomalyPhase(input: {
         ? "trusted_operator_control"
         : trustedPeerChannel
           ? "trusted_peer_channel"
-          : "quarantine";
-  const actionableFrameAnomaly = disposition === "quarantine" ? actualFrameAnomaly : null;
+          : isAuthorizedFrameAnomalyPeerChannel(input)
+            ? "annotate"
+            : "quarantine";
+  // Annotation changes recall, not the existing action-authorization policy.
+  const actionableFrameAnomaly =
+    disposition === "quarantine" || disposition === "annotate" ? actualFrameAnomaly : null;
 
   traceFrameAnomalyDisposition({
     options: input.options,
@@ -176,7 +192,10 @@ export async function classifyFrameAnomalyPhase(input: {
     sessionSourceType: input.sessionSourceType,
   });
 
-  if (disposition === "quarantine" && actionableFrameAnomaly !== null) {
+  if (
+    (disposition === "quarantine" || disposition === "annotate") &&
+    actionableFrameAnomaly !== null
+  ) {
     await appendFrameAnomalyEvents({
       options: input.options,
       appendHookFailureEvent: input.appendHookFailureEvent,
@@ -185,6 +204,13 @@ export async function classifyFrameAnomalyPhase(input: {
       sessionId: input.sessionId,
       sourceUserEntryIds,
       classification: actionableFrameAnomaly,
+      annotationSources:
+        disposition === "annotate"
+          ? {
+              sourceType: input.sessionSourceType!,
+              entries: input.sourceUserEntries ?? [],
+            }
+          : undefined,
     });
   }
 
@@ -334,45 +360,114 @@ async function appendFrameAnomalyEvents(input: {
   sessionId: SessionId;
   sourceUserEntryIds: readonly StreamEntryId[];
   classification: ActualFrameAnomalyClassification;
+  annotationSources?: { sourceType: string; entries: readonly StreamEntry[] };
 }): Promise<void> {
   const scalarUserEntryId =
     input.sourceUserEntryIds.length === 1 ? input.sourceUserEntryIds[0] : undefined;
 
   try {
-    // Two rows with the same payload under two event names. Only
-    // QUARANTINED_USER_ENTRY_EVENT is a strike marker (src/stream/turn-status.ts), so the
-    // `frame_anomaly_gate` copy stays active after the quarantine takes effect -- and with it
-    // the classifier rationale, which quotes the message it struck.
-    await input.streamWriter.appendMany([
-      {
-        kind: "internal_event",
-        turn_id: input.turnId,
-        content: {
-          event: "frame_anomaly_gate",
+    if (input.annotationSources !== undefined) {
+      const sources = new Map(input.annotationSources.entries.map((entry) => [entry.id, entry]));
+      const labels = new Map(
+        input.sourceUserEntryIds.map((id) => {
+          const source = sources.get(id);
+          return [
+            id,
+            memoryDisclosureLabelFromMetadata(source?.metadata?.disclosure_label) ??
+              (source === undefined
+                ? undefined
+                : input.options.sourceStreamAudienceDisclosureResolver?.resolveStreamEntryLabel(
+                    source,
+                  )) ??
+              unknownMemoryDisclosureLabel(),
+          ] as const;
+        }),
+      );
+      // One classifier rationale can cite several sources. Its disclosure label
+      // covers the whole batch, while each target retains its original label.
+      const rationaleDisclosure = memoryDisclosurePayloadFields(
+        combineMemoryDisclosureLabels([...labels.values()]),
+      );
+      const annotations = await input.streamWriter.appendMany(
+        input.sourceUserEntryIds.map((id) => {
+          const source = sources.get(id);
+          return {
+            kind: "internal_event" as const,
+            turn_id: input.turnId,
+            content: {
+              event: FRAME_ANOMALY_ANNOTATION_EVENT,
+              version: 1,
+              source_stream_entry_id: id,
+              source_session_id: input.sessionId,
+              source_type: input.annotationSources!.sourceType,
+              source_stream_entry_ids: [...input.sourceUserEntryIds],
+              kind: input.classification.kind,
+              confidence: input.classification.confidence,
+              rationale: input.classification.rationale,
+              classifier_model: input.options.config.anthropic.models.recallExpansion,
+              classifier_turn_id: input.turnId,
+              classifier_source_event_id: null,
+              restores_quarantine_marker_ids: [],
+              audience: source?.audience ?? null,
+              sender_entity_id: source?.sender_entity_id ?? null,
+              source_disclosure_label: memoryDisclosurePayloadFields(labels.get(id)!)
+                .disclosure_label,
+              ...rationaleDisclosure,
+            },
+          };
+        }),
+      );
+      // These already-persisted source objects feed the current-turn ledger. Later
+      // reads obtain the identical annotation from the index (or JSONL replay).
+      for (const event of annotations) {
+        const annotation = frameAnomalyAnnotationFromEntry(event);
+        if (annotation === null) continue;
+        for (const source of input.annotationSources.entries) {
+          if (source.id === annotation.source_stream_entry_id) {
+            source.frame_anomalies = [...(source.frame_anomalies ?? []), annotation];
+          }
+        }
+      }
+    } else {
+      // Two rows with the same payload under two event names. Only
+      // QUARANTINED_USER_ENTRY_EVENT is a strike marker (src/stream/turn-status.ts), so the
+      // `frame_anomaly_gate` copy stays active after the quarantine takes effect -- and with it
+      // the classifier rationale, which quotes the message it struck.
+      await input.streamWriter.appendMany([
+        {
+          kind: "internal_event",
           turn_id: input.turnId,
-          ...(scalarUserEntryId === undefined ? {} : { source_stream_entry_id: scalarUserEntryId }),
-          source_stream_entry_ids: [...input.sourceUserEntryIds],
-          cited_stream_entry_ids: [...input.sourceUserEntryIds],
-          kind: input.classification.kind,
-          confidence: input.classification.confidence,
-          rationale: input.classification.rationale,
+          content: {
+            event: "frame_anomaly_gate",
+            turn_id: input.turnId,
+            ...(scalarUserEntryId === undefined
+              ? {}
+              : { source_stream_entry_id: scalarUserEntryId }),
+            source_stream_entry_ids: [...input.sourceUserEntryIds],
+            cited_stream_entry_ids: [...input.sourceUserEntryIds],
+            kind: input.classification.kind,
+            confidence: input.classification.confidence,
+            rationale: input.classification.rationale,
+          },
         },
-      },
-      {
-        kind: "internal_event",
-        turn_id: input.turnId,
-        content: {
-          event: QUARANTINED_USER_ENTRY_EVENT,
+        {
+          kind: "internal_event",
           turn_id: input.turnId,
-          ...(scalarUserEntryId === undefined ? {} : { source_stream_entry_id: scalarUserEntryId }),
-          source_stream_entry_ids: [...input.sourceUserEntryIds],
-          cited_stream_entry_ids: [...input.sourceUserEntryIds],
-          kind: input.classification.kind,
-          confidence: input.classification.confidence,
-          rationale: input.classification.rationale,
+          content: {
+            event: QUARANTINED_USER_ENTRY_EVENT,
+            turn_id: input.turnId,
+            ...(scalarUserEntryId === undefined
+              ? {}
+              : { source_stream_entry_id: scalarUserEntryId }),
+            source_stream_entry_ids: [...input.sourceUserEntryIds],
+            cited_stream_entry_ids: [...input.sourceUserEntryIds],
+            kind: input.classification.kind,
+            confidence: input.classification.confidence,
+            rationale: input.classification.rationale,
+          },
         },
-      },
-    ]);
+      ]);
+    }
 
     if (input.options.tracer.enabled) {
       input.options.tracer.emit("frame_anomaly.transitioned", {
@@ -380,6 +475,7 @@ async function appendFrameAnomalyEvents(input: {
         session_id: input.sessionId,
         kind: input.classification.kind,
         sourceStreamEntryIds: [...input.sourceUserEntryIds],
+        disposition: input.annotationSources === undefined ? "quarantine" : "annotate",
       });
     }
   } catch (error) {

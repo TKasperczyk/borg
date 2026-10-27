@@ -1,14 +1,25 @@
 import type { EntityRepository } from "../memory/commitments/repository.js";
-import { closeSync, existsSync, fstatSync, openSync, readSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, openSync, readSync, readdirSync } from "node:fs";
 
 import { type Migration, type SqliteDatabase } from "../storage/sqlite/index.js";
 import { tableExists, tableHasColumn } from "../storage/sqlite/migrations-utils.js";
 import { StorageError } from "../util/errors.js";
-import { streamEntryIdHelpers, type EntityId, type StreamEntryId } from "../util/ids.js";
+import {
+  parseSessionId,
+  streamEntryIdHelpers,
+  type EntityId,
+  type StreamEntryId,
+} from "../util/ids.js";
 import { serializeJsonValue } from "../util/json-value.js";
 import { ANSWERED_WINDOW_TERMINAL_KINDS, type AnsweredWindowEvidence } from "./answered-window.js";
 
-import { getSessionStreamPath } from "./path.js";
+import { getSessionStreamPath, getStreamDirectory } from "./path.js";
+import {
+  frameAnomalyAnnotationFromEntry,
+  frameAnomalyAnnotationFields,
+  frameAnomalyAnnotationSchema,
+  type FrameAnomalyAnnotation,
+} from "./frame-anomaly.js";
 import {
   type SessionId,
   type StreamCursor,
@@ -20,7 +31,10 @@ import {
 } from "./types.js";
 import {
   collectInactiveStreamEntryRefs,
+  collectQuarantineRestorations,
+  isAbortedTurnMarker,
   isQuarantinedUserEntryMarker,
+  quarantinedUserEntrySourceIds,
   streamEntryIsActive,
 } from "./turn-status.js";
 
@@ -172,6 +186,30 @@ export const streamEntryIndexMigrations: Migration[] = [
       ON stream_entry_index(source_message_key_source_type,
         source_message_key_source_external_id, source_message_key_external_message_id)
       WHERE kind = 'internal_event';`,
+  },
+  {
+    id: 8,
+    name: "stream_frame_anomaly_annotations",
+    up: `CREATE TABLE stream_frame_anomaly_annotations (
+      annotation_entry_id TEXT PRIMARY KEY,
+      source_stream_entry_id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      timestamp INTEGER NOT NULL,
+      annotation_json TEXT NOT NULL
+    );
+    CREATE INDEX idx_stream_frame_anomaly_source
+      ON stream_frame_anomaly_annotations(source_stream_entry_id, timestamp, annotation_entry_id);
+    CREATE INDEX idx_stream_frame_anomaly_session
+      ON stream_frame_anomaly_annotations(session_id);`,
+  },
+  {
+    id: 9,
+    name: "stream_quarantine_restoration_applications",
+    up: `CREATE TABLE stream_quarantine_restoration_applications (
+      source_stream_entry_id TEXT NOT NULL,
+      marker_entry_id TEXT NOT NULL,
+      PRIMARY KEY (source_stream_entry_id, marker_entry_id)
+    );`,
   },
 ];
 
@@ -438,30 +476,7 @@ function factsFromRecord(record: StreamEntryIndexRecord): IndexedEntryFacts {
 }
 
 function collectQuarantinedSharedStateArtifactRefs(entry: StreamEntry): StreamEntryId[] {
-  if (!isQuarantinedUserEntryMarker(entry)) {
-    return [];
-  }
-
-  const content: Record<string, unknown> =
-    entry.content !== null && typeof entry.content === "object" && !Array.isArray(entry.content)
-      ? (entry.content as Record<string, unknown>)
-      : {};
-  const refs = new Set<StreamEntryId>();
-  const addRef = (value: unknown): void => {
-    if (typeof value === "string" && streamEntryIdHelpers.is(value)) {
-      refs.add(value);
-    }
-  };
-
-  addRef(content.source_stream_entry_id);
-
-  if (Array.isArray(content.cited_stream_entry_ids)) {
-    for (const item of content.cited_stream_entry_ids) {
-      addRef(item);
-    }
-  }
-
-  return [...refs];
+  return quarantinedUserEntrySourceIds(entry).filter(streamEntryIdHelpers.is);
 }
 
 function forwardLineToString(
@@ -806,6 +821,60 @@ export class StreamEntryIndexRepository {
     }
 
     this.recordQuarantineRefs(entry);
+    const annotation = this.recordFrameAnomalyAnnotation(entry);
+    if (annotation !== null && annotation.restores_quarantine_marker_ids.length > 0) {
+      // Reuse replay's lifecycle calculation: an annotation cannot undo an abort.
+      this.rebuildSessionProjection(entry.session_id, [annotation.source_stream_entry_id]);
+    }
+  }
+
+  private recordFrameAnomalyAnnotation(entry: StreamEntry): FrameAnomalyAnnotation | null {
+    const annotation = frameAnomalyAnnotationFromEntry(entry);
+    if (annotation === null) return null;
+    this.db
+      .prepare(
+        `INSERT INTO stream_frame_anomaly_annotations
+      (annotation_entry_id, source_stream_entry_id, session_id, timestamp, annotation_json)
+      VALUES (?, ?, ?, ?, ?) ON CONFLICT(annotation_entry_id) DO NOTHING`,
+      )
+      .run(
+        entry.id,
+        annotation.source_stream_entry_id,
+        entry.session_id,
+        entry.timestamp,
+        JSON.stringify(annotation),
+      );
+    // An annotation can reverse a citation from a marker in another session too.
+    const removeRef = this.db.prepare(
+      "DELETE FROM stream_quarantine_refs WHERE marker_entry_id = ? AND referenced_entry_id = ?",
+    );
+    for (const markerId of annotation.restores_quarantine_marker_ids)
+      removeRef.run(markerId, annotation.source_stream_entry_id);
+    return annotation;
+  }
+
+  frameAnomalyAnnotations(entryId: string): FrameAnomalyAnnotation[] {
+    const rows = this.db
+      .prepare(
+        `SELECT annotation_json FROM stream_frame_anomaly_annotations
+      WHERE source_stream_entry_id = ? ORDER BY timestamp, annotation_entry_id`,
+      )
+      .all(entryId) as { annotation_json: string }[];
+    return rows.map((row) => frameAnomalyAnnotationSchema.parse(JSON.parse(row.annotation_json)));
+  }
+
+  annotateFrameAnomalies(entry: StreamEntry): StreamEntry {
+    return {
+      ...entry,
+      ...frameAnomalyAnnotationFields([
+        ...this.frameAnomalyAnnotations(entry.id),
+        ...quarantinedUserEntrySourceIds(entry).flatMap((id) =>
+          this.frameAnomalyAnnotations(id).filter((annotation) =>
+            annotation.restores_quarantine_marker_ids.includes(entry.id),
+          ),
+        ),
+      ]),
+    };
   }
 
   nextEntryIndex(sessionId: SessionId): number {
@@ -858,7 +927,12 @@ export class StreamEntryIndexRepository {
 
     const insertRefs = this.db.transaction(() => {
       for (const ref of refs) {
-        insert.run(entry.id, entry.session_id, ref, entry.timestamp);
+        if (
+          !this.frameAnomalyAnnotations(ref).some((annotation) =>
+            annotation.restores_quarantine_marker_ids.includes(entry.id),
+          )
+        )
+          insert.run(entry.id, entry.session_id, ref, entry.timestamp);
       }
     });
 
@@ -868,6 +942,7 @@ export class StreamEntryIndexRepository {
   private refreshQuarantineRefsForSession(
     entries: readonly StreamEntry[],
     sessionId: SessionId,
+    restorations = collectQuarantineRestorations(entries),
   ): void {
     const deleteSessionRefs = this.db.prepare(
       `DELETE FROM stream_quarantine_refs
@@ -885,7 +960,13 @@ export class StreamEntryIndexRepository {
 
       for (const entry of entries) {
         for (const ref of collectQuarantinedSharedStateArtifactRefs(entry)) {
-          insert.run(entry.id, sessionId, ref, entry.timestamp);
+          if (
+            !restorations.get(ref)?.has(entry.id) &&
+            !this.frameAnomalyAnnotations(ref).some((annotation) =>
+              annotation.restores_quarantine_marker_ids.includes(entry.id),
+            )
+          )
+            insert.run(entry.id, sessionId, ref, entry.timestamp);
         }
       }
     });
@@ -1320,7 +1401,49 @@ export class StreamEntryIndexRepository {
     return new Set(rows.map((row) => row.referenced_entry_id as StreamEntryId));
   }
 
-  async backfillSession(sessionId: SessionId): Promise<{ inserted: number }> {
+  async backfillSession(
+    sessionId: SessionId,
+    reactivateOnlyEntryIds?: readonly string[],
+  ): Promise<{ inserted: number }> {
+    return this.rebuildSessionProjection(sessionId, reactivateOnlyEntryIds);
+  }
+
+  private readForeignLifecycleMarkers(sessionId: SessionId): StreamEntry[] {
+    const markers: StreamEntry[] = [];
+    // Reuse the replay scanner, including its legacy schema/corrupt-line handling.
+    // Read JSONL rather than indexed offsets: a full rebuild may not have indexed
+    // the session containing a foreign strike yet. Only lifecycle records are retained.
+    for (const filename of readdirSync(getStreamDirectory(this.dataDir))) {
+      if (!filename.endsWith(".jsonl")) continue;
+      let foreignSessionId: SessionId;
+      try {
+        foreignSessionId = parseSessionId(filename.slice(0, -".jsonl".length));
+      } catch {
+        continue;
+      }
+      if (foreignSessionId === sessionId) continue;
+      const path = getSessionStreamPath(this.dataDir, foreignSessionId);
+      const fd = openSync(path, "r");
+      try {
+        scanForwardStreamEntries(fd, fstatSync(fd).size, path, this.logger, (entry) => {
+          if (
+            isAbortedTurnMarker(entry) ||
+            isQuarantinedUserEntryMarker(entry) ||
+            frameAnomalyAnnotationFromEntry(entry) !== null
+          )
+            markers.push(entry);
+        });
+      } finally {
+        closeSync(fd);
+      }
+    }
+    return markers;
+  }
+
+  private rebuildSessionProjection(
+    sessionId: SessionId,
+    reactivateOnlyEntryIds?: readonly string[],
+  ): { inserted: number } {
     const streamPath = getSessionStreamPath(this.dataDir, sessionId);
 
     if (!existsSync(streamPath)) {
@@ -1353,12 +1476,28 @@ export class StreamEntryIndexRepository {
         },
       );
 
-      this.refreshQuarantineRefsForSession(
-        scannedEntries.map((scanned) => scanned.entry),
-        sessionId,
+      const localEntries = scannedEntries.map(({ entry }) => entry);
+      const lifecycleEntries = [...localEntries, ...this.readForeignLifecycleMarkers(sessionId)];
+      const restorations = collectQuarantineRestorations(lifecycleEntries);
+      const markerSources = new Map(
+        lifecycleEntries
+          .filter(isQuarantinedUserEntryMarker)
+          .map((entry) => [entry.id as string, new Set(quarantinedUserEntrySourceIds(entry))]),
       );
+      const localEntryIds = new Set(localEntries.map((entry) => entry.id as string));
+      const globalInactiveRefs = collectInactiveStreamEntryRefs(lifecycleEntries);
+      const inactiveRefs = {
+        // Turn membership is session-scoped; explicit source handles are global.
+        turnIds: collectInactiveStreamEntryRefs(localEntries).turnIds,
+        streamEntryIds: globalInactiveRefs.streamEntryIds,
+      };
 
       const insertMissing = this.db.transaction((): number => {
+        this.refreshQuarantineRefsForSession(localEntries, sessionId, restorations);
+        this.db
+          .prepare("DELETE FROM stream_frame_anomaly_annotations WHERE session_id = ?")
+          .run(sessionId);
+        for (const { entry } of scannedEntries) this.recordFrameAnomalyAnnotation(entry);
         const insert = this.db.prepare(
           `INSERT INTO stream_entry_index (
              entry_id, session_id, byte_offset, entry_index, timestamp, kind, sender_entity_id,
@@ -1416,8 +1555,40 @@ export class StreamEntryIndexRepository {
         );
         let inserted = 0;
 
-        const inactiveRefs = collectInactiveStreamEntryRefs(
-          scannedEntries.map((scanned) => scanned.entry),
+        // An exact marker/source reversal is applied once, in the same transaction
+        // as activity. Historical annotations are not perpetual permission to
+        // reactivate a later index-only deactivation. Direct SQL active=0 has no
+        // JSONL cause, so it survives backfill but cannot survive index deletion.
+        const appliedRestoration = this.db.prepare(
+          `SELECT 1 FROM stream_quarantine_restoration_applications
+           WHERE source_stream_entry_id = ? AND marker_entry_id = ?`,
+        );
+        const pendingRestorations: { sourceId: string; markerId: string }[] = [];
+        for (const [sourceId, markerIds] of restorations) {
+          if (
+            !localEntryIds.has(sourceId) ||
+            (reactivateOnlyEntryIds !== undefined && !reactivateOnlyEntryIds.includes(sourceId))
+          )
+            continue;
+          for (const markerId of markerIds) {
+            if (
+              markerSources.get(markerId)?.has(sourceId) &&
+              appliedRestoration.get(sourceId, markerId) === undefined
+            )
+              pendingRestorations.push({ sourceId, markerId });
+          }
+        }
+        const restorableIds = new Set(pendingRestorations.map(({ sourceId }) => sourceId));
+        const previouslyInactive = new Set(
+          (
+            this.db
+              .prepare(
+                "SELECT entry_id FROM stream_entry_index WHERE session_id = ? AND active = 0",
+              )
+              .all(sessionId) as { entry_id: string }[]
+          )
+            .map((row) => row.entry_id)
+            .filter((id) => !restorableIds.has(id)),
         );
 
         for (const { entry, byteOffset, entryIndex } of scannedEntries) {
@@ -1434,7 +1605,7 @@ export class StreamEntryIndexRepository {
               entry.sender_entity_id,
               entry.turn_id ?? null,
               entry.turn_status ?? "active",
-              streamEntryIsActive(entry, inactiveRefs) ? 1 : 0,
+              streamEntryIsActive(entry, inactiveRefs) && !previouslyInactive.has(entry.id) ? 1 : 0,
               entry.receipt_pending === true ? 1 : 0,
               stampColumns.source_message_key_source_type,
               stampColumns.source_message_key_source_external_id,
@@ -1450,6 +1621,26 @@ export class StreamEntryIndexRepository {
           );
         }
 
+        // Replaying a foreign marker session must also invalidate already-indexed
+        // sources outside this session (e.g. JSONL append committed before index failure).
+        const deactivateSource = this.db.prepare(
+          "UPDATE stream_entry_index SET active = 0 WHERE entry_id = ? AND active != 0",
+        );
+        for (const sourceId of globalInactiveRefs.streamEntryIds) deactivateSource.run(sourceId);
+        const deactivateTurn = this.db.prepare(
+          "UPDATE stream_entry_index SET active = 0 WHERE session_id = ? AND turn_id = ? AND active != 0",
+        );
+        for (const marker of lifecycleEntries) {
+          if (!isAbortedTurnMarker(marker)) continue;
+          for (const turnId of collectInactiveStreamEntryRefs([marker]).turnIds)
+            deactivateTurn.run(marker.session_id, turnId);
+        }
+        const recordApplication = this.db.prepare(
+          `INSERT OR IGNORE INTO stream_quarantine_restoration_applications
+           (source_stream_entry_id, marker_entry_id) VALUES (?, ?)`,
+        );
+        for (const { sourceId, markerId } of pendingRestorations)
+          recordApplication.run(sourceId, markerId);
         return inserted;
       });
 

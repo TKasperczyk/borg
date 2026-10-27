@@ -1,4 +1,8 @@
 import { z } from "zod";
+import {
+  frameAnomalyAnnotationFields,
+  frameAnomalyAnnotationSchema,
+} from "../../stream/frame-anomaly.js";
 
 import { memoryDisclosurePayloadFields } from "../../memory/common/disclosure-serializers.js";
 import {
@@ -53,6 +57,7 @@ const episodicSearchOutputSchema = z.object({
           kind: z.string().min(1),
           timestamp: z.number().finite(),
           content: z.string(),
+          frame_anomalies: z.array(frameAnomalyAnnotationSchema).optional(),
           disclosure: z.string().min(1),
           disclosure_label: z.object({
             disclosure_class: z.enum(MEMORY_DISCLOSURE_CLASSES),
@@ -149,6 +154,7 @@ export function createEpisodicSearchTool(
                 kind: entry.kind,
                 timestamp: entry.timestamp,
                 content: summarizeCitationContent(entry.content),
+                ...frameAnomalyAnnotationFields(entry.frame_anomalies),
                 ...memoryDisclosurePayloadFields(disclosureLabel),
               })),
           };

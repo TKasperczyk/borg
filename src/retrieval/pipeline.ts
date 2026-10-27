@@ -1,3 +1,4 @@
+import { frameAnomalyAnnotationFields } from "../stream/frame-anomaly.js";
 import { similarityThresholds, type SimilarityConfigSource } from "../config/similarity.js";
 import type { AttentionWeights, TemporalCue } from "../contracts/cognitive-contracts.js";
 import {
@@ -1116,6 +1117,9 @@ export class RetrievalPipeline {
       id: `warm_recall_raw_stream_${handle.streamIds.join("_")}`,
       source: "warm_recall",
       text: orderedEntries.map((entry) => streamEntryContentToText(entry)).join("\n"),
+      ...frameAnomalyAnnotationFields(
+        orderedEntries.flatMap((entry) => entry.frame_anomalies ?? []),
+      ),
       provenance: {
         streamIds: [...handle.streamIds],
         ...(handle.parentEpisodeId === undefined
@@ -3148,6 +3152,7 @@ function streamEntryToEvidence(
     id: `evidence_raw_stream_${entry.id}_${intent.id}`,
     source,
     text: streamEntryContentToText(entry),
+    ...frameAnomalyAnnotationFields(entry.frame_anomalies),
     provenance: {
       streamIds: [entry.id],
       ...(options.parentEpisodeId === undefined

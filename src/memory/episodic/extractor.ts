@@ -1,3 +1,4 @@
+import { frameAnomalyAnnotationFields } from "../../stream/frame-anomaly.js";
 import { buildEpisodeEmbeddingText } from "./protected-lines.js";
 import type { EmbeddingClient } from "../../embeddings/index.js";
 import type { TurnTracer } from "../../tracing/tracer.js";
@@ -466,6 +467,7 @@ function buildExtractorPrompt(
       sender_entity_id: entry.sender_entity_id ?? undefined,
       sender_display_name: sender?.display_name,
       content: entry.content,
+      ...frameAnomalyAnnotationFields(entry.frame_anomalies),
       conversation: entry.conversation,
       audience:
         entry.audience === undefined

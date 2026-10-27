@@ -1,3 +1,7 @@
+import {
+  frameAnomalyAnnotationFields,
+  renderFrameAnomalyAnnotations,
+} from "../../../stream/frame-anomaly.js";
 // Summarizes episodic and semantic retrieval results for deliberation prompts.
 import type { SemanticNode } from "../../../memory/semantic/index.js";
 import { openQuestionMemoryDisclosureLabel } from "../../../memory/common/disclosure-serializers.js";
@@ -237,7 +241,11 @@ function summarizeCitationChain(result: RetrievedEpisode): string | null {
     const content =
       typeof entry.content === "string" ? entry.content : JSON.stringify(entry.content ?? null);
     const normalized = content.replace(/\s+/g, " ").trim();
-    return normalized.length > 140 ? `${normalized.slice(0, 137).trimEnd()}...` : normalized;
+    const excerpt =
+      normalized.length > 140 ? `${normalized.slice(0, 137).trimEnd()}...` : normalized;
+    return [excerpt, renderFrameAnomalyAnnotations(entry.frame_anomalies)]
+      .filter(Boolean)
+      .join("\n");
   });
 
   return snippets.length === 0 ? null : `  citations: ${snippets.join(" | ")}`;
@@ -415,6 +423,7 @@ function verificationEvidenceCandidates(
         ...(item.streamEntryAtMs === undefined
           ? {}
           : { stream_entry_at: new Date(item.streamEntryAtMs).toISOString() }),
+        ...frameAnomalyAnnotationFields(item.frame_anomalies),
         text: item.text,
         matched_terms: item.matchedTerms,
         image_label: item.imageLabel ?? null,
@@ -446,7 +455,11 @@ function verificationFallbackCandidates(
         narrative: result.episode.narrative,
         participants: result.episode.participants,
         tags: result.episode.tags,
-        citations: result.citationChain.map((entry) => ({ id: entry.id, content: entry.content })),
+        citations: result.citationChain.map((entry) => ({
+          id: entry.id,
+          content: entry.content,
+          ...frameAnomalyAnnotationFields(entry.frame_anomalies),
+        })),
       },
     };
   });
@@ -833,6 +846,9 @@ function summarizeEvidenceItem(item: EvidenceItem): string {
   return [
     `- ${item.source} [score=${item.score.toFixed(2)} intent=${item.recallIntentId}${terms}${sourceVisibility}${disclosure}]${provenance}`,
     `  ${text}`,
+    ...(item.frame_anomalies === undefined
+      ? []
+      : [renderFrameAnomalyAnnotations(item.frame_anomalies)]),
   ].join("\n");
 }
 

@@ -4,6 +4,8 @@ import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
 
 import { StreamError } from "../util/errors.js";
+import { isNodeError } from "../util/guards.js";
+import { StreamFrameAnomalyReader } from "./frame-anomaly.js";
 
 import type { StreamEntryIndexRepository } from "./entry-index.js";
 import { getSessionStreamPath } from "./path.js";
@@ -64,16 +66,17 @@ export type StreamReaderOptions = {
   sessionId?: SessionId;
   logger?: LoggerLike;
   entryIndex?: Pick<StreamEntryIndexRepository, "lookup"> &
-    Partial<Pick<StreamEntryIndexRepository, "resolveEntityReferences">>;
+    Partial<Pick<StreamEntryIndexRepository, "resolveEntityReferences" | "annotateFrameAnomalies">>;
 };
 
 export class StreamReader {
+  private readonly frameAnomalyReader = new StreamFrameAnomalyReader();
   private readonly entityRepository?: Pick<EntityRepository, "resolveReferences">;
   private readonly dataDir: string;
   private readonly sessionId: SessionId;
   private readonly logger: LoggerLike;
   private readonly entryIndex?: Pick<StreamEntryIndexRepository, "lookup"> &
-    Partial<Pick<StreamEntryIndexRepository, "resolveEntityReferences">>;
+    Partial<Pick<StreamEntryIndexRepository, "resolveEntityReferences" | "annotateFrameAnomalies">>;
 
   constructor(options: StreamReaderOptions) {
     this.entityRepository = options.entityRepository;
@@ -92,6 +95,7 @@ export class StreamReader {
       return undefined;
     }
 
+    let sourceEntry: StreamEntry;
     try {
       const raw = JSON.parse(line) as unknown;
       const parsed = streamEntryReadSchema.safeParse(raw);
@@ -101,10 +105,21 @@ export class StreamReader {
         return undefined;
       }
 
+      sourceEntry = parsed.data;
+    } catch (error) {
+      this.logger.error(`Skipping unreadable stream line in ${this.streamPath}`);
+      this.logger.error(error instanceof Error ? error.message : String(error));
+      return undefined;
+    }
+
+    try {
+      const resolved =
+        this.entityRepository?.resolveReferences(sourceEntry) ??
+        this.entryIndex?.resolveEntityReferences?.(sourceEntry) ??
+        sourceEntry;
       const entry =
-        this.entityRepository?.resolveReferences(parsed.data) ??
-        this.entryIndex?.resolveEntityReferences?.(parsed.data) ??
-        parsed.data;
+        this.entryIndex?.annotateFrameAnomalies?.(resolved) ??
+        this.frameAnomalyReader.annotate(resolved, this.streamPath);
       if (entry.entry_index !== undefined || this.entryIndex === undefined) {
         return entry;
       }
@@ -114,9 +129,13 @@ export class StreamReader {
         ? entry
         : { ...entry, entry_index: indexedEntry.entry_index };
     } catch (error) {
-      this.logger.error(`Skipping unreadable stream line in ${this.streamPath}`);
-      this.logger.error(error instanceof Error ? error.message : String(error));
-      return undefined;
+      // Stream files remain readable after Borg closes SQLite. Preserve their
+      // entries and labels via the existing JSONL projection; an index failure
+      // is not a malformed source line. Other projection failures still surface.
+      if (!isNodeError(error) || error.code !== "ERR_INVALID_STATE") throw error;
+      this.logger.error(`Stream index unavailable; reading JSONL metadata in ${this.streamPath}`);
+      this.logger.error(error.message);
+      return this.frameAnomalyReader.annotate(sourceEntry, this.streamPath);
     }
   }
 

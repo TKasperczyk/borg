@@ -3,6 +3,7 @@ import { z } from "zod";
 import { sessionIdSchema, streamEntryIdSchema } from "../util/id-schemas.js";
 import { DEFAULT_SESSION_ID, entityIdHelpers, type EntityId, type SessionId } from "../util/ids.js";
 import { jsonValueSchema, type JsonValue } from "../util/json-value.js";
+import type { FrameAnomalyAnnotation } from "./frame-anomaly.js";
 
 export { sessionIdSchema, streamEntryIdSchema };
 
@@ -139,6 +140,8 @@ export type StreamEntryMetadata = Record<string, JsonValue>;
 export type NarrativeStreamEntryKind = (typeof NARRATIVE_STREAM_ENTRY_KINDS)[number];
 export type StreamTurnStatus = z.infer<typeof streamTurnStatusSchema>;
 export type StreamEntry = Omit<z.infer<typeof streamEntrySchema>, "turn_status"> & {
+  /** Read projection of durable annotation events; never an authorization grant. */
+  frame_anomalies?: FrameAnomalyAnnotation[];
   turn_status?: StreamTurnStatus;
   /** Read-only preservation of a future stamp; never interpreted as an answered window. */
   opaque_response_to?: Record<string, JsonValue> & { kind: string };

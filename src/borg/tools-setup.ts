@@ -245,6 +245,7 @@ export function buildToolDispatcher(options: BuildToolDispatcherOptions): ToolDi
               dataDir: options.dataDir,
               sessionId: record.session_id,
               byteOffset: record.byte_offset,
+              entryIndex: options.entryIndex,
             }),
           ),
         listJournalRecords: (input) => options.trainOfThoughtRepository.listForRange(input),

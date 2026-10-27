@@ -201,7 +201,7 @@ describe("ObservedEventRepository", () => {
         stance: "accepted_frame",
         taint: "none",
         beliefEffect: "updated",
-        interactionText: "New push text must not overwrite the first rationale.",
+        interactionText: "Latest classifier rationale.",
         sourceStreamEntryIds: [secondSourceEntryId],
         now: 6_000,
       }),
@@ -217,11 +217,11 @@ describe("ObservedEventRepository", () => {
       fire_dedup_key: secondFireDedupKey,
       recurrence_count: 2,
       last_seen_at: 5_000,
-      stance: "rejected_frame",
-      taint: "quarantined",
-      belief_effect: "unchanged",
-      interaction_text: "Sol rejected the pushed social frame.",
-      source_stream_entry_ids: [firstSourceEntryId],
+      stance: "accepted_frame",
+      taint: "none",
+      belief_effect: "updated",
+      interaction_text: "Latest classifier rationale.",
+      source_stream_entry_ids: [secondSourceEntryId],
       updated_at: 6_000,
     });
     expect(repository.getByFireDedupKey(secondFireDedupKey)).toEqual(recurring);
@@ -257,7 +257,47 @@ describe("ObservedEventRepository", () => {
     db.close();
   });
 
-  it("round-trips observed events and keeps recurrence upserts first-seen stable", () => {
+  it("leaves a replay of identical source handles unchanged without a fire dedup key", () => {
+    const { db, repository } = openHarness("borg-observed-events-source-replay-");
+    const sessionId = createSessionId();
+    const sources = [createStreamEntryId(), createStreamEntryId()];
+    const input = recordInput(sessionId, { sourceStreamEntryIds: sources });
+    repository.record(recordInput(sessionId));
+    const latest = repository.record(input);
+    const changes = db.prepare("SELECT total_changes() AS count").get();
+    // Recreate the repository to prove the check uses stored identity, not a cache.
+    const restarted = new ObservedEventRepository({ db, clock: new FixedClock(10_000) });
+    for (const sourceStreamEntryIds of [
+      sources,
+      [...sources].reverse(),
+      [...sources, ...sources],
+    ]) {
+      expect(
+        restarted.record({
+          ...input,
+          sourceStreamEntryIds,
+          occurredAt: 8_000,
+          now: 9_000,
+          sessionId: createSessionId(),
+          speakerEntityId: createEntityId(),
+          audienceEntityId: createEntityId(),
+          sourceEntityId: createEntityId(),
+          interactionText: "再試行は最新の根拠を変更しません。",
+          disclosureClass: "self_private",
+          stance: "accepted_frame",
+          taint: "none",
+          beliefEffect: "updated",
+          classificationKind: "roleplay_inversion",
+        }),
+      ).toEqual(latest);
+    }
+    expect(restarted.get(latest.id)).toEqual(latest);
+    expect(latest.recurrence_count).toBe(2);
+    expect(db.prepare("SELECT total_changes() AS count").get()).toEqual(changes);
+    db.close();
+  });
+
+  it("keeps first-seen time but updates the rationale, sources, origin and labels together", () => {
     const { db, repository } = openHarness("borg-observed-events-");
     const sessionId = createSessionId();
     const sourceEntryId = createStreamEntryId();
@@ -265,6 +305,10 @@ describe("ObservedEventRepository", () => {
     const speakerEntityId = createEntityId();
     const audienceEntityId = createEntityId();
     const sourceEntityId = createEntityId();
+    const latestSessionId = createSessionId();
+    const latestSpeakerId = createEntityId();
+    const latestAudienceId = createEntityId();
+    const latestSourceId = createEntityId();
 
     const created = repository.record(
       recordInput(sessionId, {
@@ -285,11 +329,13 @@ describe("ObservedEventRepository", () => {
         taint: "none",
         beliefEffect: "updated",
         classificationKind: "roleplay_inversion",
-        interactionText: "This retry should not overwrite the first rationale.",
+        interactionText: "最新の根拠。",
+        sessionId: latestSessionId,
+        disclosureClass: "self_private",
         recurrenceKey: "session:peer:frame_assignment_claim:hidden-family",
-        speakerEntityId: createEntityId(),
-        audienceEntityId: createEntityId(),
-        sourceEntityId: createEntityId(),
+        speakerEntityId: latestSpeakerId,
+        audienceEntityId: latestAudienceId,
+        sourceEntityId: latestSourceId,
         sourceStreamEntryIds: [retrySourceEntryId],
         now: 6_000,
       }),
@@ -299,20 +345,20 @@ describe("ObservedEventRepository", () => {
     expect(repushed).toMatchObject({
       id: created.id,
       occurred_at: 1_000,
-      session_id: sessionId,
-      stance: "rejected_frame",
-      taint: "quarantined",
-      belief_effect: "unchanged",
-      classification_kind: "frame_assignment_claim",
-      disclosure_class: "social_observed",
-      interaction_text: "Sol rejected the pushed social frame.",
+      session_id: latestSessionId,
+      stance: "accepted_frame",
+      taint: "none",
+      belief_effect: "updated",
+      classification_kind: "roleplay_inversion",
+      disclosure_class: "self_private",
+      interaction_text: "最新の根拠。",
       recurrence_key: "session:peer:frame_assignment_claim:hidden-family",
       recurrence_count: 2,
       last_seen_at: 5_000,
-      speaker_entity_id: speakerEntityId,
-      audience_entity_id: audienceEntityId,
-      source_entity_id: sourceEntityId,
-      source_stream_entry_ids: [sourceEntryId],
+      speaker_entity_id: latestSpeakerId,
+      audience_entity_id: latestAudienceId,
+      source_entity_id: latestSourceId,
+      source_stream_entry_ids: [retrySourceEntryId],
       created_at: 2_000,
       updated_at: 6_000,
     });

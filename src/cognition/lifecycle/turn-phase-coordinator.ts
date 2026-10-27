@@ -1070,12 +1070,19 @@ export class TurnPhaseCoordinator {
           persistedUserEntryId,
           sourceUserEntryIds,
           streamWriter,
+          sourceUserEntries: [
+            ...new Set([
+              ...sourceUserEntries,
+              ...(persistedUserEntry == null ? [] : [persistedUserEntry]),
+            ]),
+          ],
         }),
       completedSub: summarizeFrameClassification,
     });
     const currentTurnFrameAnomaly = frameAnomalyPhase.actionableFrameAnomaly;
     if (
-      frameAnomalyPhase.disposition === "quarantine" &&
+      (frameAnomalyPhase.disposition === "quarantine" ||
+        frameAnomalyPhase.disposition === "annotate") &&
       frameAnomalyPhase.actionableFrameAnomaly !== null
     ) {
       const observedEventEmission = buildObservedEventEmission({
@@ -1346,6 +1353,7 @@ export class TurnPhaseCoordinator {
             : sourceUserEntries,
           currentTurnAttachmentIds,
           currentTurnFrameAnomaly,
+          frameAnomalyDisposition: frameAnomalyPhase.disposition,
           closureLoopAssessment,
         }),
       completedSub: summarizeRetrieval,
@@ -1432,6 +1440,7 @@ export class TurnPhaseCoordinator {
       suppressionSet,
       isUserTurn,
       currentTurnFrameAnomaly,
+      frameAnomalyDisposition: frameAnomalyPhase.disposition,
       closureLoopAssessment,
       activeParticipants,
       knownInternalIdentifiers,

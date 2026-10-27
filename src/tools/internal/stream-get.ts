@@ -1,3 +1,7 @@
+import {
+  frameAnomalyAnnotationSchema,
+  frameAnomalyAnnotationFields,
+} from "../../stream/frame-anomaly.js";
 import { z } from "zod";
 import {
   memoryDisclosureLabelMetadataSchema,
@@ -26,14 +30,13 @@ const outputSchema = z.object({
       persistence_class: z.string().nullable(),
       disclosure: z.string(),
       disclosure_label: memoryDisclosureLabelMetadataSchema,
+      frame_anomalies: z.array(frameAnomalyAnnotationSchema).optional(),
     })
     .nullable(),
 });
 
 export function createStreamGetTool(options: {
-  readEntry: (
-    id: StreamEntryId,
-  ) => Promise<{
+  readEntry: (id: StreamEntryId) => Promise<{
     entry: StreamEntry;
     active: boolean;
     disclosureLabel: MemoryDisclosureLabel;
@@ -58,6 +61,7 @@ export function createStreamGetTool(options: {
           kind: entry.kind,
           timestamp: entry.timestamp,
           text: stringifyPromptContent(entry.content),
+          ...frameAnomalyAnnotationFields(entry.frame_anomalies),
           active: result.active,
           turn_status: entry.turn_status ?? null,
           audience: entry.audience ?? null,

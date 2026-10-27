@@ -490,6 +490,19 @@ export class ObservedEventRepository {
       });
     }
 
+    const existing = this.getByRecurrenceKey(input.recurrenceKey);
+    if (existing !== null) {
+      const existingSourceIds = new Set(existing.source_stream_entry_ids);
+      // Retrying the same source occurrence is not another recurrence, even for
+      // callers without a fire key. Compare only source handles, never rationale.
+      if (
+        existingSourceIds.size === sourceStreamEntryIds.length &&
+        sourceStreamEntryIds.every((sourceId) => existingSourceIds.has(sourceId))
+      ) {
+        return existing;
+      }
+    }
+
     const now = input.now ?? this.clock.now();
     const id = input.id ?? createObservedEventId();
     const dimensions = observedEventRecordDimensionsSchema.safeParse({
@@ -518,6 +531,17 @@ export class ObservedEventRepository {
             recurrence_count = observed_events.recurrence_count + 1,
             fire_dedup_key = COALESCE(excluded.fire_dedup_key, observed_events.fire_dedup_key),
             last_seen_at = excluded.last_seen_at,
+            interaction_text = excluded.interaction_text,
+            source_stream_entry_ids = excluded.source_stream_entry_ids,
+            session_id = excluded.session_id,
+            speaker_entity_id = excluded.speaker_entity_id,
+            audience_entity_id = excluded.audience_entity_id,
+            source_entity_id = excluded.source_entity_id,
+            disclosure_class = excluded.disclosure_class,
+            stance = excluded.stance,
+            taint = excluded.taint,
+            belief_effect = excluded.belief_effect,
+            classification_kind = excluded.classification_kind,
             updated_at = excluded.updated_at
         `,
       )

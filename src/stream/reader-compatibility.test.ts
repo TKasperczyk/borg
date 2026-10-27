@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openDatabase } from "../storage/sqlite/index.js";
+import { relationshipPrivateMemoryDisclosureLabel } from "../memory/common/disclosure-label.js";
+import { memoryDisclosurePayloadFields } from "../memory/common/disclosure-serializers.js";
 import { createSessionId, createStreamEntryId } from "../util/ids.js";
 import {
   StreamEntryIndexRepository,
@@ -13,6 +15,7 @@ import {
   streamEntryIndexMigrations,
 } from "./index.js";
 import type { StreamEntryInput } from "./types.js";
+import { FRAME_ANOMALY_ANNOTATION_EVENT } from "./frame-anomaly.js";
 
 const cleanups: Array<() => void> = [];
 afterEach(() => {
@@ -37,6 +40,107 @@ function harness() {
 }
 
 describe("response stamp reader compatibility", () => {
+  it.each([false, true])(
+    "retains entries and annotation labels after SQLite closes (legacy entries: %s)",
+    async (legacy) => {
+      const h = harness();
+      const disclosure = memoryDisclosurePayloadFields(
+        relationshipPrivateMemoryDisclosureLabel([]),
+      );
+      const source = await h.writer.append({
+        kind: "user_msg",
+        content: "通常の報告です。",
+        metadata: disclosure,
+      });
+      const annotation = await h.writer.append({
+        kind: "internal_event",
+        content: {
+          event: FRAME_ANOMALY_ANNOTATION_EVENT,
+          version: 1,
+          source_stream_entry_id: source.id,
+          source_session_id: source.session_id,
+          source_type: "kira",
+          source_stream_entry_ids: [source.id],
+          kind: "frame_assignment_claim",
+          confidence: 0.92,
+          rationale: "疑わしいフレーム。",
+          classifier_model: null,
+          classifier_turn_id: null,
+          classifier_source_event_id: null,
+          restores_quarantine_marker_ids: [],
+          audience: null,
+          sender_entity_id: null,
+          ...disclosure,
+          source_disclosure_label: disclosure.disclosure_label,
+        },
+      });
+      const failure = await h.writer.append({
+        kind: "internal_event",
+        content: "Live stream ingestion failed: boom",
+      });
+      if (legacy) {
+        writeFileSync(
+          h.path,
+          [source, annotation, failure]
+            .map((entry) => JSON.stringify({ ...entry, entry_index: undefined }))
+            .join("\n") + "\n",
+        );
+      }
+      const db = openDatabase(":memory:", { migrations: streamEntryIndexMigrations });
+      const index = new StreamEntryIndexRepository({ db, dataDir: h.dataDir });
+      index.backfillSession(h.sessionId);
+      db.close();
+
+      const error = vi.fn();
+      const reader = new StreamReader({
+        dataDir: h.dataDir,
+        sessionId: h.sessionId,
+        entryIndex: index,
+        logger: { error },
+      });
+      const expected = h.reader.tail(10);
+      expect(reader.tail(10)).toEqual(expected);
+      expect(reader.scanReverse().entries).toEqual(expected);
+      const forward = [];
+      for await (const entry of reader.iterate()) forward.push(entry);
+      expect(forward).toEqual(expected);
+      expect(forward.map((entry) => entry.id)).toEqual([source.id, annotation.id, failure.id]);
+      expect(forward[0]?.frame_anomalies).toEqual([
+        expect.objectContaining({
+          annotation_entry_id: annotation.id,
+          label: "frame anomaly suspected: frame_assignment_claim (0.92)",
+          rationale: "疑わしいフレーム。",
+          disclosure_label: disclosure.disclosure_label,
+        }),
+      ]);
+      expect(error).toHaveBeenCalledWith(
+        `Stream index unavailable; reading JSONL metadata in ${h.path}`,
+      );
+    },
+  );
+
+  it("surfaces projection failures instead of dropping valid source entries", async () => {
+    const h = harness();
+    await h.writer.append({ kind: "internal_event", content: "valid event" });
+    const failure = new Error("projection is corrupt");
+    const reader = new StreamReader({
+      dataDir: h.dataDir,
+      sessionId: h.sessionId,
+      entryIndex: {
+        lookup: vi.fn(),
+        annotateFrameAnomalies: () => {
+          throw failure;
+        },
+      },
+    });
+    expect(() => reader.tail(10)).toThrow(failure);
+    expect(() => reader.scanReverse()).toThrow(failure);
+    await expect(reader.iterate().next()).rejects.toMatchObject({
+      code: "BORG_STREAM_ERROR",
+      cause: failure,
+    });
+  });
+
   it("retains unknown stamps opaquely in forward, reverse, offset and index reads while writers reject them", async () => {
     const h = harness();
     const entry = await h.writer.append({ kind: "agent_msg", content: "Future reply" });

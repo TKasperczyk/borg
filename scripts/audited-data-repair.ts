@@ -82,11 +82,38 @@ export function verifyLiveStoreOverride(backupPath: string | undefined): LiveSto
   return { backup_path: backup };
 }
 
-export function checkedPath(path: string, liveStoreConfirmed?: string): string {
+export function checkedPath(
+  path: string,
+  liveStoreConfirmed?: string,
+  targetBankPath?: string,
+): string {
   const override = verifyLiveStoreOverride(liveStoreConfirmed);
   if (override === null) rejectLivePath(path);
   const result = realpathSync(resolve(path));
   if (override === null) rejectLivePath(result);
+  else {
+    // A backup must be a different database, including symlink and hard-link aliases.
+    // Backup-inspection callers supply their actual target bank separately.
+    // Other file callers compare the checked file directly.
+    const checkedTarget = targetBankPath === undefined ? result : realpathSync(targetBankPath);
+    const target = statSync(checkedTarget).isDirectory()
+      ? join(checkedTarget, "borg.db")
+      : checkedTarget;
+    if (existsSync(target) && statSync(target).isFile()) {
+      const targetPath = realpathSync(target);
+      const targetStat = statSync(targetPath);
+      for (const name of ["borg.db", "borg.db-clean"]) {
+        const backup = join(override.backup_path, name);
+        if (!existsSync(backup) || !statSync(backup).isFile()) continue;
+        const backupStat = statSync(backup);
+        if (
+          realpathSync(backup) === targetPath ||
+          (backupStat.dev === targetStat.dev && backupStat.ino === targetStat.ino)
+        )
+          refuse("--live-store-confirmed backup must differ from the target database");
+      }
+    }
+  }
   return result;
 }
 

@@ -1,3 +1,7 @@
+import {
+  frameAnomalyAnnotationFields,
+  renderFrameAnomalyAnnotations,
+} from "../../stream/frame-anomaly.js";
 import { type TranscriptStreamEntry } from "../../stream/index.js";
 import { estimatePromptTokens, stringifyPromptContent } from "../../util/token-estimate.js";
 import { undeliveredDraftFromContent } from "../generation/types.js";
@@ -32,11 +36,21 @@ function estimateTranscriptTokens(entries: readonly TranscriptStreamEntry[]): nu
     return 0;
   }
 
-  return estimatePromptTokens(entries.map((entry) => transcriptPromptText(entry)).join("\n"));
+  return estimatePromptTokens(
+    entries
+      .map((entry) =>
+        [renderFrameAnomalyAnnotations(entry.frame_anomalies), transcriptPromptText(entry)]
+          .filter(Boolean)
+          .join("\n"),
+      )
+      .join("\n"),
+  );
 }
 
 function estimateTranscriptEntryTokens(entry: TranscriptStreamEntry): number {
-  return estimatePromptTokens(transcriptPromptText(entry));
+  return estimatePromptTokens(
+    transcriptPromptText(entry) + renderFrameAnomalyAnnotations(entry.frame_anomalies),
+  );
 }
 
 function transcriptPromptText(entry: TranscriptStreamEntry): string {
@@ -60,6 +74,7 @@ function transcriptRawEntry(
     actor: actorForStreamEntry(entry),
     trust_rank: TRANSCRIPT_TRUST_RANK,
     text: transcriptPromptText(entry),
+    ...frameAnomalyAnnotationFields(entry.frame_anomalies),
     stream_index: resolver.streamOrderById.get(entry.id),
     state: transcriptState(entry),
     ...optionalStateMetadata(stateMetadata),

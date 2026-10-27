@@ -1,3 +1,4 @@
+import { frameAnomalyAnnotationFields } from "../../../stream/frame-anomaly.js";
 import type { BuilderSectionContext } from "../builder-context.js";
 import {
   actorForStreamEntry,
@@ -80,6 +81,7 @@ export function addRetrievedRawStreamEvidenceSection(context: BuilderSectionCont
         actor,
         trust_rank: RAW_STREAM_TRUST_RANK,
         text: item.text,
+        ...frameAnomalyAnnotationFields(item.frame_anomalies),
         value: item.source,
         ...(streamIndex === undefined ? {} : { stream_index: streamIndex }),
         state: appendMemoryDisclosureState({
@@ -124,6 +126,7 @@ export function addRetrievedStructuredEvidenceSection(context: BuilderSectionCon
             ? IMAGE_PERCEPTION_TRUST_RANK
             : RAW_STREAM_TRUST_RANK,
       text: item.text,
+      ...frameAnomalyAnnotationFields(item.frame_anomalies),
       value: item.source,
       state: evidenceItemState(item),
       state_metadata: evidenceItemProvenanceMetadata(item),

@@ -247,14 +247,14 @@ describe("selectObservedEventIntrospection", () => {
         speakerEntityId: speakerA,
       }),
     );
-    repository.record(
-      recordInput(sessionId, {
-        occurredAt: NOW_MS - 20_000,
-        interactionText: "retry should not replace first rationale",
-        recurrenceKey: "session:speaker-a:recurring",
-        speakerEntityId: speakerA,
-      }),
-    );
+    const recurrence = recordInput(sessionId, {
+      occurredAt: NOW_MS - 20_000,
+      interactionText: "latest recurrence rationale",
+      recurrenceKey: "session:speaker-a:recurring",
+      speakerEntityId: speakerA,
+    });
+    const latest = repository.record(recurrence);
+    expect(repository.record({ ...recurrence, now: NOW_MS + 10_000 })).toEqual(latest);
 
     const rows = await selectObservedEventIntrospection({
       repository,
@@ -264,7 +264,7 @@ describe("selectObservedEventIntrospection", () => {
     });
 
     expect(rows.map((row) => row.interactionText)).toEqual([
-      "recurring rationale",
+      "latest recurrence rationale",
       "recent 0",
       "recent 1",
       "recent 2",
@@ -274,9 +274,9 @@ describe("selectObservedEventIntrospection", () => {
     expect(rows.map((row) => row.interactionText)).not.toContain(
       "outside the social-memory window",
     );
-    expect(rows.find((row) => row.interactionText === "recurring rationale")?.text).toContain(
-      "Observed 2 times",
-    );
+    expect(
+      rows.find((row) => row.interactionText === "latest recurrence rationale")?.text,
+    ).toContain("Observed 2 times");
 
     db.close();
   });

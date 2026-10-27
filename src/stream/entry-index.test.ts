@@ -4,6 +4,9 @@ import { tmpdir } from "node:os";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { memoryDisclosurePayloadFields } from "../memory/common/disclosure-serializers.js";
+import { unknownMemoryDisclosureLabel } from "../memory/common/disclosure-label.js";
+import { FRAME_ANOMALY_ANNOTATION_EVENT } from "./frame-anomaly.js";
 import { openDatabase } from "../storage/sqlite/index.js";
 import { ManualClock } from "../util/clock.js";
 import { createEntityId, createSessionId, createStreamEntryId } from "../util/ids.js";
@@ -80,7 +83,7 @@ describe("stream entry index", () => {
       const indexes = upgradedDb.prepare("PRAGMA index_list('stream_entry_index')").all();
 
       expect(upgradedDb.listAppliedMigrations().map((migration) => migration.id)).toEqual([
-        1, 2, 3, 4, 5, 6, 7,
+        1, 2, 3, 4, 5, 6, 7, 8, 9,
       ]);
       expect(indexes).toEqual(
         expect.arrayContaining([
@@ -1197,6 +1200,163 @@ describe("stream entry index", () => {
         turn_id: "turn-aborted",
       });
       expect(entryIndex.lookupEntriesById([marker.id]).get(marker.id)?.active).toBe(false);
+      const flags = db
+        .prepare("SELECT entry_id, active FROM stream_entry_index ORDER BY entry_id")
+        .all();
+      await entryIndex.backfillSession(DEFAULT_SESSION_ID);
+      expect(
+        db.prepare("SELECT entry_id, active FROM stream_entry_index ORDER BY entry_id").all(),
+      ).toEqual(flags);
+      db.exec("DELETE FROM stream_entry_index");
+      await entryIndex.backfillSession(DEFAULT_SESSION_ID);
+      expect(
+        db.prepare("SELECT entry_id, active FROM stream_entry_index ORDER BY entry_id").all(),
+      ).toEqual(flags);
+    } finally {
+      writer.close();
+      db.close();
+    }
+  });
+
+  it("replays all sessions' strikes and exact reversals independent of reconstruction order", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "borg-global-invalidation-"));
+    tempDirs.push(dataDir);
+    const db = openDatabase(join(dataDir, "borg.db"), { migrations: streamEntryIndexMigrations });
+    const index = new StreamEntryIndexRepository({ db, dataDir });
+    const foreignSession = createSessionId();
+    const local = new StreamWriter({ dataDir, entryIndex: index });
+    const foreign = new StreamWriter({ dataDir, sessionId: foreignSession, entryIndex: index });
+    // This writer simulates a committed foreign append whose indexing did not run.
+    const unindexedForeign = new StreamWriter({ dataDir, sessionId: foreignSession });
+    try {
+      const source = await local.append({
+        kind: "user_msg",
+        content: "両方のマーカーから参照される記録",
+      });
+      const sibling = await local.append({
+        kind: "user_msg",
+        content: "A sibling struck only by the foreign marker",
+      });
+      const abortedSource = await local.append({
+        kind: "user_msg",
+        content: "A foreign abort explicitly names this source",
+      });
+      const innocent = await local.append({
+        kind: "user_msg",
+        content: "Same turn handle in a different session",
+        turn_id: "session-scoped-turn",
+      });
+      const foreignTurn = await foreign.append({
+        kind: "user_msg",
+        content: "Foreign turn",
+        turn_id: "session-scoped-turn",
+      });
+      const ownStrike = await local.append({
+        kind: "internal_event",
+        content: { event: QUARANTINED_USER_ENTRY_EVENT, cited_stream_entry_ids: [source.id] },
+      });
+      const foreignStrike = await unindexedForeign.append({
+        kind: "internal_event",
+        content: {
+          event: QUARANTINED_USER_ENTRY_EVENT,
+          cited_stream_entry_ids: [source.id, sibling.id],
+        },
+      });
+      await unindexedForeign.append({
+        kind: "internal_event",
+        content: {
+          event: "aborted_turn",
+          turn_id: "session-scoped-turn",
+          aborted_stream_entry_ids: [abortedSource.id],
+        },
+      });
+      expect(index.lookup(sibling.id)?.active).toBe(true);
+      await index.backfillSession(foreignSession);
+      expect(index.lookup(sibling.id)?.active).toBe(false);
+      expect(index.lookup(abortedSource.id)?.active).toBe(false);
+      expect(index.lookup(foreignTurn.id)?.active).toBe(false);
+      expect(index.lookup(innocent.id)?.active).toBe(true);
+      for (const [marker, expectedActive] of [
+        [ownStrike, false],
+        [foreignStrike, true],
+      ] as const) {
+        await local.append({
+          kind: "internal_event",
+          content: {
+            event: FRAME_ANOMALY_ANNOTATION_EVENT,
+            version: 1,
+            source_stream_entry_id: source.id,
+            source_session_id: DEFAULT_SESSION_ID,
+            source_type: "kira",
+            source_stream_entry_ids: [source.id],
+            kind: "system_prompt_claim",
+            confidence: 0.92,
+            rationale: "構造化された疑いの注記",
+            classifier_model: null,
+            classifier_turn_id: null,
+            classifier_source_event_id: marker.id,
+            restores_quarantine_marker_ids: [marker.id],
+            audience: null,
+            sender_entity_id: null,
+            ...memoryDisclosurePayloadFields(unknownMemoryDisclosureLabel()),
+            source_disclosure_label: memoryDisclosurePayloadFields(unknownMemoryDisclosureLabel())
+              .disclosure_label,
+          },
+        });
+        expect(index.lookup(source.id)?.active).toBe(expectedActive);
+        const expectedFlags = db
+          .prepare("SELECT entry_id, active FROM stream_entry_index ORDER BY entry_id")
+          .all();
+        for (const order of [
+          [DEFAULT_SESSION_ID, foreignSession],
+          [foreignSession, DEFAULT_SESSION_ID],
+        ]) {
+          for (const sessionId of order) await index.backfillSession(sessionId);
+          expect(
+            db.prepare("SELECT entry_id, active FROM stream_entry_index ORDER BY entry_id").all(),
+          ).toEqual(expectedFlags);
+          // Discard all derived projections and application receipts, just as on a new bank.
+          db.exec(
+            "DELETE FROM stream_entry_index; DELETE FROM stream_quarantine_refs; DELETE FROM stream_frame_anomaly_annotations; DELETE FROM stream_quarantine_restoration_applications;",
+          );
+          for (const sessionId of order) await index.backfillSession(sessionId);
+          expect(
+            db.prepare("SELECT entry_id, active FROM stream_entry_index ORDER BY entry_id").all(),
+          ).toEqual(expectedFlags);
+          expect(index.lookup(source.id)?.active).toBe(expectedActive);
+          expect(index.lookup(sibling.id)?.active).toBe(false);
+          expect(index.lookup(abortedSource.id)?.active).toBe(false);
+          expect(index.lookup(innocent.id)?.active).toBe(true);
+          expect(index.quarantinedSharedStateArtifactRefs().has(source.id)).toBe(!expectedActive);
+        }
+      }
+    } finally {
+      local.close();
+      foreign.close();
+      unindexedForeign.close();
+      db.close();
+    }
+  });
+
+  it("preserves index-only invalidations on startup, but cannot invent their missing JSONL cause after index loss", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-index-only-invalidation-"));
+    tempDirs.push(tempDir);
+    const db = openDatabase(join(tempDir, "borg.db"), { migrations: streamEntryIndexMigrations });
+    const entryIndex = new StreamEntryIndexRepository({ db, dataDir: tempDir });
+    const writer = new StreamWriter({ dataDir: tempDir, entryIndex });
+    try {
+      const entry = await writer.append({
+        kind: "user_msg",
+        content: "External index-only invalidation",
+      });
+      db.prepare("UPDATE stream_entry_index SET active = 0 WHERE entry_id = ?").run(entry.id);
+      await entryIndex.backfillSession(DEFAULT_SESSION_ID);
+      expect(entryIndex.lookup(entry.id)?.active).toBe(false);
+      // This unsupported direct SQL edit predates annotations. No stream marker
+      // exists, so a reconstruction from only JSONL cannot know the invalidation.
+      db.exec("DELETE FROM stream_entry_index");
+      await entryIndex.backfillSession(DEFAULT_SESSION_ID);
+      expect(entryIndex.lookup(entry.id)?.active).toBe(true);
     } finally {
       writer.close();
       db.close();
