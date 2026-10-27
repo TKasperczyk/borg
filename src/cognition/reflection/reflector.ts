@@ -59,9 +59,17 @@ import {
   type ActionState,
   type ActionStateTimestampField,
 } from "../../memory/actions/index.js";
-import type { WorkingMemory } from "../../memory/working/index.js";
+import type {
+  WorkingMemory,
+  WorkingMemoryStore,
+  PendingActionProjectionResult,
+  PendingActionSessionLock,
+} from "../../memory/working/index.js";
+import { pendingActionResolutionId } from "../../memory/working/index.js";
+import { workingSessionIdSchema } from "../../memory/working/types.js";
+import { selfPrivateMemoryDisclosureLabel } from "../../memory/common/disclosure-label.js";
 import {
-  createActionId,
+  pendingActionIdHelpers,
   type ActionId,
   type EntityId,
   type EpisodeId,
@@ -85,7 +93,6 @@ import { TURN_REFLECTION_SYSTEM_PROMPT } from "../prompts/reflector.js";
 import {
   intentRecordSchema,
   isAutonomousLikeTurnOrigin,
-  type IntentRecord,
   type PerceptionResult,
   type TurnOrigin,
 } from "../types.js";
@@ -104,6 +111,7 @@ export type ReflectionContext = {
   userMessage: string;
   perception?: PerceptionResult;
   workingMemory: WorkingMemory;
+  pendingActionProjection?: PendingActionProjectionResult;
   selfSnapshot: SelfSnapshot;
   deliberationResult: DeliberationResult;
   actionResult: ActionResult;
@@ -130,6 +138,9 @@ export type ReflectionContext = {
 
 export type ReflectionEffects = {
   createdActionIds: ActionId[];
+  // Committed under another session's lock; wake rollback must leave these
+  // actions intact, including when their origin's JSON cleanup is deferred.
+  committedCrossSessionActionIds?: ActionId[];
   createdExecutiveStepIds: ExecutiveStepId[];
   createdOpenQuestionIds: OpenQuestionId[];
   updatedExecutiveSteps: ExecutiveStep[];
@@ -243,6 +254,8 @@ const retiredGoalSchema = z.object({
 });
 
 const reflectionIntentUpdateSchema = intentRecordSchema.extend({
+  session_id: workingSessionIdSchema,
+  pending_action_id: z.string().refine((value): boolean => pendingActionIdHelpers.is(value)),
   actor: z
     .enum(["user", "borg"])
     .describe(
@@ -520,79 +533,6 @@ function isProgressOnlyGoalPatch(patch: Record<string, unknown>): boolean {
   );
 }
 
-function intentKey(intent: IntentRecord): string {
-  return JSON.stringify([
-    intent.description.trim().toLowerCase(),
-    intent.next_action === null ? null : intent.next_action.trim().toLowerCase(),
-  ]);
-}
-
-// Returns the key of the held pending action an update resolves, or null.
-// A null next_action on the update identifies nothing beyond the description,
-// so it resolves by description when exactly one held key carries it.
-function heldIntentKeyForUpdate(
-  pendingActions: readonly IntentRecord[],
-  update: IntentRecord,
-): string | null {
-  const key = intentKey(update);
-  const pendingKeys = new Set(pendingActions.map((intent) => intentKey(intent)));
-
-  if (pendingKeys.has(key)) {
-    return key;
-  }
-
-  if (update.next_action !== null) {
-    return null;
-  }
-
-  const description = update.description.trim().toLowerCase();
-  const sameDescriptionKeys = new Set(
-    pendingActions
-      .filter((intent) => intent.description.trim().toLowerCase() === description)
-      .map((intent) => intentKey(intent)),
-  );
-
-  return sameDescriptionKeys.size === 1 ? [...sameDescriptionKeys][0]! : null;
-}
-
-function selectResolvedIntentKeys(
-  pendingActions: readonly IntentRecord[],
-  updates: readonly ReflectionOutput["intent_updates"][number][],
-): Set<string> {
-  const resolved = new Set<string>();
-
-  for (const update of updates) {
-    const key = heldIntentKeyForUpdate(pendingActions, update);
-
-    if (key !== null) {
-      resolved.add(key);
-    }
-  }
-
-  return resolved;
-}
-
-function selectResolvedIntentUpdates(
-  pendingActions: readonly IntentRecord[],
-  updates: readonly ReflectionOutput["intent_updates"][number][],
-): ReflectionOutput["intent_updates"] {
-  const selected: ReflectionOutput["intent_updates"] = [];
-  const selectedKeys = new Set<string>();
-
-  for (const update of updates) {
-    const key = heldIntentKeyForUpdate(pendingActions, update);
-
-    if (key === null || selectedKeys.has(key)) {
-      continue;
-    }
-
-    selected.push(update);
-    selectedKeys.add(key);
-  }
-
-  return selected;
-}
-
 type IntentUpdateActionState = "completed" | "not_done";
 
 function actionStateFromIntentStatus(
@@ -789,7 +729,9 @@ export type ReflectorOptions = {
   skillRepository?: SkillRepository;
   proceduralEvidenceRepository?: ProceduralEvidenceRepository;
   executiveStepsRepository?: ExecutiveStepsRepository;
-  actionRepository?: Pick<ActionRepository, "add">;
+  actionRepository?: Pick<ActionRepository, "add"> & Partial<Pick<ActionRepository, "get">>;
+  workingMemoryStore?: WorkingMemoryStore;
+  sessionLock?: PendingActionSessionLock;
   tracer?: TurnTracer;
 };
 
@@ -807,6 +749,41 @@ export class Reflector {
   }
 
   async reflect(context: ReflectionContext, streamWriter: StreamWriter): Promise<ReflectionResult> {
+    const store = this.options.workingMemoryStore;
+    const sessionLock = this.options.sessionLock;
+    const originSessionId = context.workingMemory.session_id;
+    const projection =
+      context.pendingActionProjection ??
+      (store !== undefined && sessionLock !== undefined
+        ? await store.projectPendingActions({
+            current: context.workingMemory,
+            turnId: context.turnId,
+            sessionLock,
+            currentAudienceEntityId: context.audienceEntityId,
+            includeOtherSessions: isAutonomousLikeTurnOrigin(context.origin),
+          })
+        : {
+            degraded: [],
+            completed_pending_cleanup: [],
+            actions: context.workingMemory.pending_actions.flatMap((action) =>
+              action.pending_action_id === undefined
+                ? []
+                : [
+                    {
+                      ...action,
+                      pending_action_id: action.pending_action_id,
+                      session_id: originSessionId,
+                      audience_entity_id: context.audienceEntityId ?? null,
+                      ...memoryDisclosurePayloadFields(
+                        selfPrivateMemoryDisclosureLabel(
+                          context.audienceEntityId == null ? [] : [context.audienceEntityId],
+                        ),
+                      ),
+                    },
+                  ],
+            ),
+          });
+    context = { ...context, pendingActionProjection: projection };
     const reflectionProvenance = buildReflectionProvenance(context.retrievedEpisodes);
     const effects = emptyReflectionEffects();
     let reflectionOutput = emptyReflectionOutput();
@@ -971,18 +948,9 @@ export class Reflector {
     };
     const suppressIntentUpdatesForFrameAnomaly =
       context.frameAnomaly !== null && context.frameAnomaly !== undefined;
-    const intentUpdates =
-      isAutonomousTurn || suppressIntentUpdatesForFrameAnomaly
-        ? []
-        : reflectionOutput.intent_updates;
-
-    if (isAutonomousTurn && reflectionOutput.intent_updates.length > 0) {
-      await this.appendReflectorInternalEvent(streamWriter, {
-        hook: "reflector_intent_update_dropped",
-        reason: "autonomous_turn",
-        count: reflectionOutput.intent_updates.length,
-      });
-    }
+    const intentUpdates = suppressIntentUpdatesForFrameAnomaly
+      ? []
+      : reflectionOutput.intent_updates;
 
     if (suppressIntentUpdatesForFrameAnomaly && reflectionOutput.intent_updates.length > 0) {
       const frameAnomalyKind = context.frameAnomaly?.kind ?? "unknown";
@@ -996,31 +964,108 @@ export class Reflector {
       this.emitIntentUpdateSuppressed(context, reflectionOutput.intent_updates.length);
     }
 
-    const resolvedIntentKeys = selectResolvedIntentKeys(
-      context.workingMemory.pending_actions,
-      intentUpdates,
-    );
-    const resolvedIntentUpdates = selectResolvedIntentUpdates(
-      context.workingMemory.pending_actions,
-      intentUpdates,
-    );
-    const unmatchedIntentUpdates = intentUpdates.filter(
-      (update) => heldIntentKeyForUpdate(context.workingMemory.pending_actions, update) === null,
-    );
-
-    if (unmatchedIntentUpdates.length > 0) {
-      this.emitIntentUpdateUnmatched(context, unmatchedIntentUpdates);
-    }
-
-    await this.persistActionRecords(context, resolvedIntentUpdates, streamWriter, effects);
-
-    if (resolvedIntentKeys.size > 0) {
-      nextWorkingMemory = {
-        ...nextWorkingMemory,
-        pending_actions: nextWorkingMemory.pending_actions.filter(
-          (intent) => !resolvedIntentKeys.has(intentKey(intent)),
-        ),
+    const resolvedOwnIds = new Set<string>();
+    const handled = new Set<string>();
+    for (const update of intentUpdates) {
+      const key = JSON.stringify([update.session_id, update.pending_action_id]);
+      if (handled.has(key)) continue;
+      handled.add(key);
+      const projected = projection.actions.find(
+        (action) =>
+          action.session_id === update.session_id &&
+          action.pending_action_id === update.pending_action_id,
+      );
+      const alreadyCompleted =
+        this.options.actionRepository?.get?.(pendingActionResolutionId(update)) != null;
+      if (projected === undefined && !alreadyCompleted) {
+        this.emitIntentUpdateUnmatched(context, [update]);
+        continue;
+      }
+      const updateEffects =
+        update.session_id === originSessionId ? effects : emptyReflectionEffects();
+      const apply = async (
+        action: import("../../memory/working/index.js").PendingActionRecord,
+      ): Promise<boolean> => {
+        const actionId = pendingActionResolutionId(update);
+        if (this.options.actionRepository?.get?.(actionId) != null) return true;
+        if (projected === undefined) return false;
+        const before = updateEffects.createdActionIds.length;
+        await this.persistActionRecords(
+          {
+            ...context,
+            audienceEntityId: projected.audience_entity_id,
+            ...(update.session_id === originSessionId
+              ? {}
+              : { audienceIsGroup: false, senderEntityId: null }),
+          },
+          [{ ...update, description: action.description, next_action: action.next_action }],
+          streamWriter,
+          updateEffects,
+        );
+        return (
+          this.options.actionRepository === undefined ||
+          updateEffects.createdActionIds.length > before
+        );
       };
+      const outcome =
+        store !== undefined && sessionLock !== undefined
+          ? await store.resolvePendingAction({
+              sessionId: update.session_id,
+              turnId: context.turnId,
+              pendingActionId: update.pending_action_id,
+              lockedSessionId: originSessionId,
+              sessionLock,
+              apply,
+              // Local completions retain their row and a durable provisional
+              // marker until turn commit. Other sessions commit independently.
+              persist: update.session_id !== originSessionId,
+            })
+          : update.session_id === originSessionId &&
+              (alreadyCompleted || (projected !== undefined && (await apply(projected))))
+            ? "applied"
+            : "failed";
+      if (outcome === "applied" && update.session_id === originSessionId)
+        resolvedOwnIds.add(update.pending_action_id);
+      if (
+        (outcome === "applied" || outcome === "applied_cleanup_pending") &&
+        update.session_id !== originSessionId &&
+        updateEffects.createdActionIds.length > 0
+      ) {
+        effects.committedCrossSessionActionIds ??= [];
+        effects.committedCrossSessionActionIds.push(...updateEffects.createdActionIds);
+      }
+      if (context.turnId !== undefined)
+        this.options.tracer?.emit("reflector.intent_update.completed", {
+          turnId: context.turnId,
+          session_id: update.session_id,
+          pending_action_id: update.pending_action_id,
+          outcome,
+        });
+    }
+    const resolvedLocalRows =
+      store !== undefined && sessionLock !== undefined && resolvedOwnIds.size > 0
+        ? store
+            .load(originSessionId)
+            .pending_actions.filter((action) => resolvedOwnIds.has(action.pending_action_id ?? ""))
+        : [];
+    nextWorkingMemory = {
+      ...nextWorkingMemory,
+      pending_actions: nextWorkingMemory.pending_actions.flatMap((intent) => {
+        if (!resolvedOwnIds.has(intent.pending_action_id ?? "")) return [intent];
+        const persisted = resolvedLocalRows.find(
+          (action) => action.pending_action_id === intent.pending_action_id,
+        );
+        return persisted === undefined ? [] : [persisted];
+      }),
+    };
+    // Keep marked rows even if the action-result snapshot predates the update.
+    for (const action of resolvedLocalRows) {
+      if (
+        !nextWorkingMemory.pending_actions.some(
+          (candidate) => candidate.pending_action_id === action.pending_action_id,
+        )
+      )
+        nextWorkingMemory.pending_actions.push(action);
     }
 
     // Sprint 56: trait evidence is the assistant turn that demonstrated
@@ -1327,7 +1372,7 @@ export class Reflector {
 
     for (const update of updates) {
       const state = actionStateFromIntentStatus(update.status);
-      const id = createActionId();
+      const id = pendingActionResolutionId(update);
       const actor =
         update.actor === "user" && context.audienceIsGroup === true
           ? context.senderEntityId
@@ -1759,8 +1804,8 @@ export class Reflector {
       reason: "no_matching_pending_action",
       count: updates.length,
       updates: updates.map((update) => ({
-        description: update.description,
-        next_action: update.next_action,
+        session_id: update.session_id,
+        pending_action_id: update.pending_action_id,
         status: update.status,
       })),
     });
@@ -2134,7 +2179,7 @@ export class Reflector {
 
   private async runReflectionJudgment(context: ReflectionContext): Promise<ReflectionOutput> {
     const pendingProceduralAttempts = context.workingMemory.pending_procedural_attempts ?? [];
-    const pendingActions = context.workingMemory.pending_actions;
+    const pendingActions = context.pendingActionProjection?.actions ?? [];
     const isAutonomousTurn = isAutonomousLikeTurnOrigin(context.origin);
     const hasUserVisibleTurnPayload =
       !isAutonomousTurn &&
@@ -2155,7 +2200,7 @@ export class Reflector {
     if (
       this.llmClient === undefined ||
       this.model === undefined ||
-      (isAutonomousTurn && !hasExecutiveWork) ||
+      (isAutonomousTurn && !hasExecutiveWork && pendingActions.length === 0) ||
       !hasReflectionWork
     ) {
       return emptyReflectionOutput();
@@ -2191,6 +2236,9 @@ export class Reflector {
                   origin: context.origin ?? "user",
                   pending_procedural_attempts: pendingProceduralAttempts,
                   pending_actions: pendingActions,
+                  pending_actions_degraded: context.pendingActionProjection?.degraded ?? [],
+                  completed_pending_cleanup:
+                    context.pendingActionProjection?.completed_pending_cleanup ?? [],
                   current_trait_vocabulary: currentTraitVocabularyForReflection(
                     context.selfSnapshot.traits,
                   ),

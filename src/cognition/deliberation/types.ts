@@ -271,6 +271,7 @@ export type DeliberationContext = {
   selectedSkill?: SkillSelectionResult | null;
   entityRepository?: EntityRepository;
   workingMemory: WorkingMemory;
+  pendingActionProjection?: import("../../memory/working/index.js").PendingActionProjectionResult;
   turnMechanismEvidence?: TurnMechanismEvidence;
   recentCompletedActions?: readonly ActionRecord[];
   /**

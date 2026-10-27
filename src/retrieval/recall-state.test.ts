@@ -1493,7 +1493,9 @@ describe("retrieval recall_state", () => {
       (item) => item.source === "warm_recall" && item.provenance?.edgeId === edge.id,
     );
 
-    expect(warmEdge?.text).toContain("Alice private warm support");
+    expect(warmEdge?.text).toContain(
+      `${root.id} --supports--> ${privateSupport.id}: Alice private warm support`,
+    );
     expect(warmEdge?.source_episode_ids).toEqual([privateEpisode.id, publicEpisode.id]);
     expect(warmEdge?.disclosureLabel).toEqual({
       disclosureClass: "relationship_private",

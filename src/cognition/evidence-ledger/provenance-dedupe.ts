@@ -134,14 +134,13 @@ const OBJECT_ID_PREFIXES = [
 
 // A retrieved row's metadata names the object it renders next to the evidence that object rests on
 // (an episode row also carries its source stream ids), so the most specific id present is the object.
-// A semantic-edge recall row renders the node the edge reached; read as the edge, it absorbed the
-// graph row that renders the edge's relation, so the node outranks the edge.
+// Edge recalls carry the directed relation themselves; two edges reaching one node are distinct.
 const RETRIEVED_OBJECT_ID_KEYS = [
   ["open_question_id", "open_question"],
   ["commitment_id", "commitment"],
   ["image_perception_id", "image_perception"],
-  ["node_id", "semantic_node"],
   ["edge_id", "semantic_edge"],
+  ["node_id", "semantic_node"],
   ["episode_id", "episode"],
 ] as const;
 
@@ -413,6 +412,14 @@ function directFoldGroups(group: readonly LedgerEntryRef[]): LedgerEntryRef[][] 
     ];
 
     for (const ref of candidates) {
+      // Relations are distinct evidence, even when edges reach the same node or
+      // cite the same episode. Only another rendering of this edge can fold.
+      if (
+        (ref.object?.startsWith("semantic_edge:") ||
+          canonical.object?.startsWith("semantic_edge:")) &&
+        ref.object !== canonical.object
+      )
+        continue;
       if (!placed.has(ref) && !isProvenanceDedupeProtected(ref)) {
         folded.add(ref);
         placed.add(ref);
@@ -683,7 +690,8 @@ export function foldedEntryKeysWithEvidenceOffPage(
   );
   const restsOnPage = ({ row, canonical }: { row: Row; canonical: Row }) =>
     [...row.sourceHandles].every(
-      (handle) => handle === row.object || canonical.sourceHandles.has(handle) || onPage.has(handle),
+      (handle) =>
+        handle === row.object || canonical.sourceHandles.has(handle) || onPage.has(handle),
     );
 
   for (let grew = true; grew; ) {
@@ -705,8 +713,7 @@ export function foldedEntryKeysWithEvidenceOffPage(
 
   const offPage = folds.filter(
     (fold) =>
-      (fold.row.object === null || fold.row.object !== fold.canonical.object) &&
-      !restsOnPage(fold),
+      (fold.row.object === null || fold.row.object !== fold.canonical.object) && !restsOnPage(fold),
   );
   const offPageKeys = new Set(offPage.map((fold) => fold.key));
   const offPageObjects = new Set(offPage.flatMap((fold) => fold.row.object ?? []));

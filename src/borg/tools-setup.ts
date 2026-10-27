@@ -40,11 +40,17 @@ import type {
   SemanticNodeRepository,
   SemanticWalkStep,
 } from "../memory/semantic/index.js";
-import { readStreamEntryAtOffset, type StreamEntryIndexRepository } from "../stream/index.js";
+import {
+  hydrateStreamEntriesById,
+  readStreamEntryAtOffset,
+  type StreamEntryIndexRepository,
+} from "../stream/index.js";
 import {
   ToolDispatcher,
   createCommitmentsListTool,
   createEpisodicRecentTool,
+  createEpisodicGetTool,
+  createStreamGetTool,
   createEpisodicSearchTool,
   createGoalsRetireTool,
   createGoalsBlockTool,
@@ -172,6 +178,29 @@ export function buildToolDispatcher(options: BuildToolDispatcherOptions): ToolDi
   });
 
   toolDispatcher
+    .register(createEpisodicGetTool({ episodicRepository: options.episodicRepository }))
+    .register(
+      createStreamGetTool({
+        readEntry: async (id) => {
+          const record = options.entryIndex.lookupMany([id]).get(id);
+          if (record === undefined) return null;
+          const entries = await hydrateStreamEntriesById({
+            dataDir: options.dataDir,
+            sessionId: record.session_id,
+            streamEntryIds: [id],
+            entryIndex: options.entryIndex,
+          });
+          const entry = entries.get(id);
+          if (entry === undefined) return null;
+          return {
+            entry,
+            active: record.active,
+            disclosureLabel:
+              options.sourceStreamAudienceDisclosureResolver.resolveStreamEntryLabel(entry),
+          };
+        },
+      }),
+    )
     .register(
       createEpisodicSearchTool({
         searchEpisodes: async (query, limit, context) => {

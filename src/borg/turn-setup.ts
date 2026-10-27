@@ -152,6 +152,8 @@ export function buildTurnOrchestrator(options: BuildTurnOrchestratorOptions): Tu
     llmFactory: options.llmFactory,
     createReflector: (llmClient) =>
       new Reflector({
+        workingMemoryStore: options.workingMemoryStore,
+        sessionLock: options.sessionLock,
         clock: options.clock,
         llmClient,
         model: options.config.anthropic.models.background,

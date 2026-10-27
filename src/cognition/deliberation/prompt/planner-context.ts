@@ -1111,6 +1111,10 @@ type LivedOpenLoop = {
   text: string;
   disclosure: MemoryDisclosureLabel;
   sourceStreamIndex: number | null;
+  originSessionId?: string;
+  pendingActionId?: string;
+  restoredFromAction?: { action_id: string; turn_id: string };
+  completingAction?: { action_id: string; turn_id: string };
 };
 
 function autobiographicalRecallEntries(context: DeliberationContext): EvidenceLedgerEntry[] {
@@ -1162,22 +1166,38 @@ function currentOpenQuestionLoops(context: DeliberationContext): LivedOpenLoop[]
 
 function workingIntentLoops(context: DeliberationContext): LivedOpenLoop[] {
   const loops: LivedOpenLoop[] = [];
-  for (const [index, intent] of context.workingMemory.pending_actions.entries()) {
+  const intents = context.pendingActionProjection?.actions ?? context.workingMemory.pending_actions;
+  for (const [index, intent] of intents.entries()) {
+    const sessionId =
+      "session_id" in intent ? String(intent.session_id) : context.workingMemory.session_id;
+    const id = intent.pending_action_id ?? `legacy:${index}`;
     loops.push({
-      structuralKey: `working_intent:${index}`,
-      id: `working_intent:${index + 1}`,
+      structuralKey: `working_intent:${sessionId}:${id}`,
+      id: `working_intent:${sessionId}:${id}`,
+      originSessionId: sessionId,
+      pendingActionId: id,
+      ...(intent.restored_from_action === undefined
+        ? {}
+        : { restoredFromAction: intent.restored_from_action }),
+      ...(intent.completing_action?.phase !== "provisional"
+        ? {}
+        : { completingAction: intent.completing_action }),
       kind: "working_intent",
-      status: "pending",
+      status: intent.completing_action?.phase === "provisional" ? "completion_pending" : "pending",
       outcome: "pending",
       occurredAt: intent.created_at ?? context.workingMemory.updated_at,
       text: [intent.description, intent.next_action]
         .filter((value): value is string => value !== null)
         .join(" | "),
-      disclosure: selfPrivateMemoryDisclosureLabel(
-        context.audienceEntityId === null || context.audienceEntityId === undefined
-          ? []
-          : [context.audienceEntityId],
-      ),
+      disclosure:
+        ("disclosure_label" in intent
+          ? memoryDisclosureLabelFromMetadata(intent.disclosure_label)
+          : null) ??
+        selfPrivateMemoryDisclosureLabel(
+          context.audienceEntityId === null || context.audienceEntityId === undefined
+            ? []
+            : [context.audienceEntityId],
+        ),
       sourceStreamIndex: null,
     });
   }
@@ -1309,7 +1329,28 @@ export function renderLivedExperienceDigest(context: DeliberationContext): Rende
   const renderedDecisionGroups = allDecisionGroups.slice(0, PLANNER_LIVED_DECISION_LIMIT);
   const renderedActivityEntries = activityEntries.slice(0, activityCap);
   const allOpenLoops = autonomousOpenLoops(context);
-  const renderedOpenLoops = allOpenLoops.slice(0, PLANNER_AUTONOMOUS_OPEN_LOOP_LIMIT);
+  const workingIntents = allOpenLoops
+    .filter((loop) => loop.kind === "working_intent")
+    .sort((a, b) => a.id.localeCompare(b.id));
+  // Reserve five of the twenty slots. Advance by five each wake so overflow
+  // cannot remain permanently behind questions or newer intentions.
+  const intentOffset =
+    workingIntents.length === 0
+      ? 0
+      : (context.workingMemory.turn_counter * 5) % workingIntents.length;
+  const rotatedIntents = [
+    ...workingIntents.slice(intentOffset),
+    ...workingIntents.slice(0, intentOffset),
+  ];
+  const otherLoops = allOpenLoops.filter((loop) => loop.kind !== "working_intent");
+  const intentSlots = Math.min(
+    workingIntents.length,
+    Math.max(5, PLANNER_AUTONOMOUS_OPEN_LOOP_LIMIT - otherLoops.length),
+  );
+  const renderedOpenLoops = [
+    ...rotatedIntents.slice(0, intentSlots),
+    ...otherLoops.slice(0, PLANNER_AUTONOMOUS_OPEN_LOOP_LIMIT - intentSlots),
+  ];
   let truncationCount = 0;
   const decisionRows = renderedDecisionGroups.map((group) => {
     const representative = group.representative;
@@ -1352,7 +1393,15 @@ export function renderLivedExperienceDigest(context: DeliberationContext): Rende
   const openLoopRows = renderedOpenLoops.map((loop) => {
     const text = headTailPlannerExcerpt(loop.text, PLANNER_LIVED_EXPERIENCE_FIELD_CHARS);
     truncationCount += text.truncated ? 1 : 0;
-    return `<open_loop_row id="${escapeXmlAttribute(loop.id)}" kind="${loop.kind}" status="${escapeXmlAttribute(loop.status)}" outcome="${escapeXmlAttribute(loop.outcome)}" occurred_at="${loop.occurredAt === 0 ? "unknown" : new Date(loop.occurredAt).toISOString()}" stream_index="${loop.sourceStreamIndex ?? "none"}" disclosure="${escapeXmlAttribute(renderedDisclosure(loop.disclosure))}" text_exact="${!text.truncated}" text_included_chars="${text.renderedChars}" text_total_chars="${text.totalChars}">${escapeXmlText(text.text)}</open_loop_row>`;
+    const rollbackAttributes =
+      loop.restoredFromAction === undefined
+        ? ""
+        : ` restored_from_action_id="${escapeXmlAttribute(loop.restoredFromAction.action_id)}" rollback_turn_id="${escapeXmlAttribute(loop.restoredFromAction.turn_id)}"`;
+    const completionAttributes =
+      loop.completingAction === undefined
+        ? ""
+        : ` completing_action_id="${escapeXmlAttribute(loop.completingAction.action_id)}" completion_turn_id="${escapeXmlAttribute(loop.completingAction.turn_id)}"`;
+    return `<open_loop_row id="${escapeXmlAttribute(loop.id)}" kind="${loop.kind}"${loop.originSessionId === undefined ? "" : ` session_id="${escapeXmlAttribute(loop.originSessionId)}" pending_action_id="${escapeXmlAttribute(loop.pendingActionId ?? "none")}"`}${rollbackAttributes}${completionAttributes} status="${escapeXmlAttribute(loop.status)}" outcome="${escapeXmlAttribute(loop.outcome)}" occurred_at="${loop.occurredAt === 0 ? "unknown" : new Date(loop.occurredAt).toISOString()}" stream_index="${loop.sourceStreamIndex ?? "none"}" disclosure="${escapeXmlAttribute(renderedDisclosure(loop.disclosure))}" text_exact="${!text.truncated}" text_included_chars="${text.renderedChars}" text_total_chars="${text.totalChars}">${escapeXmlText(text.text)}</open_loop_row>`;
   });
   const decisionOmitted = Math.max(0, allDecisionGroups.length - decisionRows.length);
   const activityOmitted = Math.max(0, activityEntries.length - activityRows.length);
@@ -1368,7 +1417,17 @@ export function renderLivedExperienceDigest(context: DeliberationContext): Rende
       ...(autonomous
         ? [
             "  <autonomous_selection_policy>Structurally open questions, pending/unknown/failed outbound attempts, pending/unknown actions, and pending working intents are selected before completed-activity volume. No payload language is inspected to decide openness.</autonomous_selection_policy>",
-            `  <open_loops cap="${PLANNER_AUTONOMOUS_OPEN_LOOP_LIMIT}" omitted="${openLoopOmitted}">`,
+            `  <open_loops cap="${PLANNER_AUTONOMOUS_OPEN_LOOP_LIMIT}" omitted="${openLoopOmitted}" working_intents_total="${workingIntents.length}" working_intents_omitted="${workingIntents.length - intentSlots}" working_intents_rotation="${intentOffset}">`,
+            ...(context.pendingActionProjection?.degraded.length
+              ? [
+                  `    <working_intents_degraded retry="next_turn">${escapeXmlText(JSON.stringify(context.pendingActionProjection.degraded))}</working_intents_degraded>`,
+                ]
+              : []),
+            ...(context.pendingActionProjection?.completed_pending_cleanup?.length
+              ? [
+                  `    <completed_pending_cleanup>${escapeXmlText(JSON.stringify(context.pendingActionProjection.completed_pending_cleanup))}</completed_pending_cleanup>`,
+                ]
+              : []),
             ...openLoopRows.map((row) => `    ${row}`),
             "  </open_loops>",
           ]

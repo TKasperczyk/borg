@@ -195,7 +195,7 @@ function createEmptyReflectionResponse() {
   };
 }
 
-function createIntentUpdateReflectionResponse(description: string) {
+function createIntentUpdateReflectionResponse(description: string, sessionId = DEFAULT_SESSION_ID) {
   return {
     text: "",
     input_tokens: 4,
@@ -211,6 +211,8 @@ function createIntentUpdateReflectionResponse(description: string) {
           trait_demonstrations: [],
           intent_updates: [
             {
+              session_id: sessionId,
+              pending_action_id: "pact_0000000000000000",
               description,
               next_action: null,
               actor: "borg",
@@ -3418,7 +3420,7 @@ describe("TurnOrchestrator evidence ledger", () => {
     }
   });
 
-  it("adds the evidence ledger as a finalizer-only block and omits no-op compaction traces", async () => {
+  it("adds the evidence ledger as a finalizer-only block and traces deferred raw provenance compaction", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
     const tracePath = join(tempDir, "trace.jsonl");
@@ -3457,7 +3459,7 @@ describe("TurnOrchestrator evidence ledger", () => {
       );
       expect(finalizerSystem).toContain("Current session says Marta is the tutor.");
       expect(finalizerSystem).not.toContain("<borg_retrieved_evidence>");
-      expect(compactTraceEvent).toBeUndefined();
+      expect(compactTraceEvent).toMatchObject({ deduped_entry_count: 1 });
       expect(traceEvent).toMatchObject({
         event: "evidence_ledger.completed",
         transcript_included: true,
@@ -6672,6 +6674,8 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
                 trait_demonstrations: [],
                 intent_updates: [
                   {
+                    session_id: DEFAULT_SESSION_ID,
+                    pending_action_id: "pact_0000000000000000",
                     description: "Check deployment state",
                     next_action: null,
                     actor: "borg",
@@ -6758,23 +6762,25 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
         ...workingMemory,
         pending_actions: [
           {
+            pending_action_id: "pact_0000000000000000",
             description: "Check deployment state",
             next_action: null,
           },
         ],
         updated_at: clock.now(),
       });
-      vi.spyOn(internal.deps.workingMemoryStore, "save").mockImplementation((memory) => {
+      vi.spyOn(internal.deps.workingMemoryStore, "save").mockImplementation((memory, options) => {
         if (
           !threwAfterReflection &&
           memory.turn_counter > 0 &&
-          memory.pending_actions.length === 0
+          memory.pending_actions.some((action) => action.completing_action !== undefined) &&
+          internal.deps.actionRepository.list({ state: "completed" }).length > 0
         ) {
           threwAfterReflection = true;
           throw new Error(failedReason);
         }
 
-        return originalSave(memory);
+        return originalSave(memory, options);
       });
 
       await expect(
@@ -6785,6 +6791,11 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       ).rejects.toThrow(failedReason);
 
       expect(internal.deps.actionRepository.list({ limit: 10 })).toEqual([]);
+      expect(
+        internal.deps.workingMemoryStore.load(DEFAULT_SESSION_ID).pending_actions,
+      ).toMatchObject([
+        { pending_action_id: "pact_0000000000000000", description: "Check deployment state" },
+      ]);
       expect(internal.deps.executiveStepsRepository.list(goal.id)).toEqual([]);
       expect(internal.deps.goalsRepository.get(goal.id)?.progress_notes).toBeNull();
       expect(internal.deps.openQuestionsRepository.get(question.id)).toMatchObject({
@@ -6859,7 +6870,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       const nextWorkingMemory = internal.deps.workingMemoryStore.load("default" as never);
 
       expect(slot?.state).toBe("quarantined");
-      expect(nextWorkingMemory.pending_actions).toEqual([
+      expect(nextWorkingMemory.pending_actions).toMatchObject([
         {
           description: "Track whether Tom raises the planning comment with your partner directly",
           next_action: "Ask your partner if Tom brings it up",
@@ -7056,7 +7067,10 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
           createGoalPromotionResponse([]),
           createNoCreatorDirectiveResponse(),
           createEmitAnswerResponse("Borg is the name I will use."),
-          createIntentUpdateReflectionResponse("Track the operator naming update"),
+          createIntentUpdateReflectionResponse(
+            "Track the operator naming update",
+            operatorSessionId,
+          ),
         ],
       });
       const borg = await openTestBorg(tempDir, llm, clock, new TestEmbeddingClient(), {
@@ -7101,6 +7115,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
           ...workingMemory,
           pending_actions: [
             {
+              pending_action_id: "pact_0000000000000000",
               description: "Track the operator naming update",
               next_action: null,
             },

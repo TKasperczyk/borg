@@ -1008,6 +1008,16 @@ function makeAutonomousRelationalContext(): DeliberationContext {
         menuSummary: "Read the most recent episodic memories.",
       },
       {
+        name: "tool.episodic.get",
+        menuSummary:
+          "Read the full text of one episodic record by id; use when an excerpt was cut. Includes provenance, lifecycle, and disclosure labels.",
+      },
+      {
+        name: "tool.stream.get",
+        menuSummary:
+          "Read the full text of one stream record by id; use when an excerpt was cut. Includes origin, lifecycle, and disclosure labels.",
+      },
+      {
         name: "tool.episodic.search",
         menuSummary: "Search episodic memory by relevance.",
       },

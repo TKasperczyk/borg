@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import type { CommitmentRecord } from "../../../memory/commitments/index.js";
+import { memoryDisclosurePayloadFields } from "../../../memory/common/disclosure-serializers.js";
+import { selfPrivateMemoryDisclosureLabel } from "../../../memory/common/disclosure-label.js";
+import { pendingActionResolutionId } from "../../../memory/working/index.js";
 import {
   buildCompactPlannerLedgerPrompt,
   type EvidenceLedger,
@@ -902,6 +905,108 @@ describe("compact planner context", () => {
     expect(lived.match(/<activity_row /g)).toHaveLength(4);
     expect(lived.indexOf("<open_loops ")).toBeLessThan(lived.indexOf("<firings_and_activity "));
   });
+
+  it("reserves intention slots, rotates overflow, and reports origins and omissions", () => {
+    const origin = createSessionId();
+    const audience = createEntityId();
+    const pending = Array.from({ length: 12 }, (_, i) => ({
+      pending_action_id: `pact_${String(i).padStart(16, "0")}`,
+      session_id: origin,
+      description: `後で確認 ${i}`,
+      next_action: null,
+      audience_entity_id: audience,
+      ...memoryDisclosurePayloadFields(selfPrivateMemoryDisclosureLabel([audience])),
+    }));
+    const source = context({
+      turnOrigin: "autonomous",
+      pendingActionProjection: { actions: pending, degraded: [], completed_pending_cleanup: [] },
+      evidenceLedger: {
+        ...evidenceLedger(),
+        sections: [
+          {
+            id: "autobiographical_recall",
+            label: "Recall",
+            entries: Array.from(
+              { length: 25 },
+              (_, i) =>
+                ({
+                  id: `outbound:${i}`,
+                  source_type: "assistant_stream",
+                  session_scope: "global",
+                  actor: "assistant",
+                  trust_rank: 80,
+                  text: "waiting",
+                  state_metadata: { source_kind: "outbound_attempt", outcome: "unknown" },
+                }) as EvidenceLedgerEntry,
+            ),
+          },
+        ],
+      } as EvidenceLedger,
+    });
+    const texts = [0, 1].map((turn_counter) =>
+      allSystemText(build({ ...source, workingMemory: { ...source.workingMemory, turn_counter } })),
+    );
+    for (const text of texts) {
+      expect(text.match(/<open_loop_row /g)).toHaveLength(20);
+      expect(text.match(/kind="working_intent"/g)).toHaveLength(5);
+      expect(text).toContain('working_intents_omitted="7"');
+      expect(text).toContain(`session_id="${origin}"`);
+      expect(text).toContain(`origin_audience=${audience}`);
+    }
+    expect(texts[0]).toContain(`pending_action_id="${pending[0]!.pending_action_id}"`);
+    expect(texts[1]).not.toContain(`pending_action_id="${pending[0]!.pending_action_id}"`);
+    expect(texts[1]).toContain(`pending_action_id="${pending[5]!.pending_action_id}"`);
+  });
+
+  it.each(["rollback", "completion"])(
+    "presents a pending intention with its %s marker and disclosure label",
+    (phase) => {
+      const sessionId = createSessionId();
+      const pendingActionId = "pact_0000000000000000";
+      const actionId = pendingActionResolutionId({
+        session_id: sessionId,
+        pending_action_id: pendingActionId,
+      });
+      const text = allSystemText(
+        build(
+          context({
+            turnOrigin: "autonomous",
+            pendingActionProjection: {
+              actions: [
+                {
+                  session_id: sessionId,
+                  pending_action_id: pendingActionId,
+                  description: "確認を再開",
+                  next_action: null,
+                  audience_entity_id: null,
+                  ...(phase === "rollback"
+                    ? { restored_from_action: { action_id: actionId, turn_id: "aborted-wake" } }
+                    : {
+                        completing_action: {
+                          action_id: actionId,
+                          turn_id: "pending-wake",
+                          phase: "provisional" as const,
+                        },
+                      }),
+                  ...memoryDisclosurePayloadFields(selfPrivateMemoryDisclosureLabel([])),
+                },
+              ],
+              degraded: [],
+              completed_pending_cleanup: [],
+            },
+          }),
+        ),
+      );
+      expect(text).toContain(
+        phase === "rollback"
+          ? `restored_from_action_id="${actionId}" rollback_turn_id="aborted-wake"`
+          : `completing_action_id="${actionId}" completion_turn_id="pending-wake"`,
+      );
+      if (phase === "completion") expect(text).toContain('status="completion_pending"');
+      expect(text).toContain("確認を再開");
+      expect(text).toContain("self_private");
+    },
+  );
 
   it("names each lane's cap and its own omission, and caps completed activity lower on a wake", () => {
     const completed = Array.from({ length: 12 }, (_, index) =>
@@ -2295,7 +2400,10 @@ describe("compact planner context", () => {
   });
 
   it("keeps every presented dormant question's id on the planner surface when labels outgrow its cap", () => {
-    const audience = Array.from({ length: 8 }, (_, index) => `ent_${String(index).padStart(16, "h")}`);
+    const audience = Array.from(
+      { length: 8 },
+      (_, index) => `ent_${String(index).padStart(16, "h")}`,
+    );
     const label = {
       disclosure: `disclosure_class=self_private origin_audience=${audience.join(",")} private-to=${audience.join(",")}; I can use this internally; I do not disclose it to the current audience unless authorized`,
       disclosure_label: {
@@ -2326,7 +2434,11 @@ describe("compact planner context", () => {
       event_id: `${ids[0]}:${NOW_MS - 86_400_000}`,
       sort_ts: NOW_MS - 86_400_000,
       payload: {
-        ...question(ids[0]!, `Czy to pole coś zapisuje? ${"Gdzie to widać? ".repeat(15)}`, 86_400_000),
+        ...question(
+          ids[0]!,
+          `Czy to pole coś zapisuje? ${"Gdzie to widać? ".repeat(15)}`,
+          86_400_000,
+        ),
         additional_questions: [
           question(ids[1]!, `この問いは計画に届くか。${"どの欄か。".repeat(30)}`, 86_300_000),
           question(ids[2]!, `Did the plan see this one? ${"Which page? ".repeat(20)}`, 86_200_000),

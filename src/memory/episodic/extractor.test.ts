@@ -2367,7 +2367,7 @@ describe("episodic extractor", () => {
     const workingMemory = workingMemoryStore.load(DEFAULT_SESSION_ID);
 
     expect(slot?.state).toBe("quarantined");
-    expect(workingMemory.pending_actions).toEqual([
+    expect(workingMemory.pending_actions).toMatchObject([
       {
         description: "Track whether Tom raises the planning comment with your partner directly",
         next_action: "Ask your partner if Tom brings up the planning comment",

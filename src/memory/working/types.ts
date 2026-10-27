@@ -8,11 +8,13 @@ import {
 } from "../../contracts/cognitive-contracts.js";
 import { affectiveSignalSchema } from "../affective/types.js";
 import { proceduralContextSchema } from "../procedural/context.js";
+import { actionIdSchema } from "../actions/types.js";
 import {
   entityIdHelpers,
   episodeIdHelpers,
   isSessionId,
   parseSessionId,
+  pendingActionIdHelpers,
   skillIdHelpers,
   streamEntryIdHelpers,
   type EntityId,
@@ -194,8 +196,23 @@ export const discourseStateSchema = z
   })
   .strict();
 
+const pendingActionTurnMarkerSchema = z
+  .object({ action_id: actionIdSchema, turn_id: z.string().min(1) })
+  .strict();
+
 export const pendingActionRecordSchema = intentRecordSchema.extend({
+  pending_action_id: z
+    .string()
+    .refine((value): boolean => pendingActionIdHelpers.is(value))
+    .optional(),
   created_at: z.number().finite().optional(),
+  // A rollback restored this intention before deleting its provisional action.
+  // Completion cleanup must preserve it until locked recovery finishes.
+  restored_from_action: pendingActionTurnMarkerSchema.optional(),
+  // The row stays durable until the turn's commit decision is durable too.
+  completing_action: pendingActionTurnMarkerSchema
+    .extend({ phase: z.enum(["provisional", "committed"]) })
+    .optional(),
 });
 
 // Sprint 53: pending procedural attempts are now a bounded list, not one

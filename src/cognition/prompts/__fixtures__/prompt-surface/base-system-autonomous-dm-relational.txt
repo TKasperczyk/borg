@@ -276,6 +276,8 @@ So when my current knowledge differs from what those past decisions assumed, I r
 - tool.goals.block: Block an attempted but unavailable goal with a named blocker and reason.
 - tool.goals.unblock: Unblock a goal with my reason, preserving its history.
 - tool.episodic.recent: Read the most recent episodic memories.
+- tool.episodic.get: Read the full text of one episodic record by id; use when an excerpt was cut. Includes provenance, lifecycle, and disclosure labels.
+- tool.stream.get: Read the full text of one stream record by id; use when an excerpt was cut. Includes origin, lifecycle, and disclosure labels.
 - tool.episodic.search: Search episodic memory by relevance.
 - tool.semantic.walk: Walk semantic memory from a known node.
 - tool.promptSurface.changes: Review structural prompt-surface changes.

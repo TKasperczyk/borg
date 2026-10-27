@@ -28,7 +28,7 @@ import type { ReflectionEffects } from "../reflection/index.js";
 import type { TurnTracer } from "../../tracing/tracer.js";
 
 export type TurnLifecycleTrackerOptions = {
-  workingMemoryStore: Pick<WorkingMemoryStore, "recordPendingActionMerges" | "save">;
+  workingMemoryStore: Pick<WorkingMemoryStore, "recordPendingActionMerges" | "load" | "save">;
   actionRepository: Pick<ActionRepository, "delete">;
   executiveStepsRepository: Pick<ExecutiveStepsRepository, "delete" | "restore">;
   goalsRepository: Pick<GoalsRepository, "remove" | "restore">;
@@ -81,6 +81,7 @@ export class TurnLifecycleTracker {
   private readonly updatedEpisodeStats: EpisodeStats[] = [];
   private readonly appliedSlotNegations: RelationalSlot[] = [];
   private pendingActionMergeCount = 0;
+  private turnCommitted = false;
 
   constructor(private readonly options: TurnLifecycleTrackerOptions) {}
 
@@ -173,21 +174,68 @@ export class TurnLifecycleTracker {
     sessionId?: SessionId;
   }): Promise<AbortCleanupFailure[]> {
     const failures: AbortCleanupFailure[] = [];
+    if (this.turnCommitted) return failures;
+    const sessionId = input.sessionId ?? this.initialWorkingMemory?.session_id;
+    const persisted: WorkingMemory[] = [];
+    await this.bestEffort(
+      failures,
+      "read_working_memory",
+      sessionId === undefined ? [] : [sessionId],
+      (id) => id,
+      (id) => persisted.push(this.options.workingMemoryStore.load(id)),
+    );
+    if (failures.length > 0) {
+      this.traceAbortCleanupFailures({ ...input, failures });
+      return failures;
+    }
+    if (
+      persisted.some((state) =>
+        state.pending_actions.some(
+          (action) =>
+            action.completing_action?.turn_id === input.turnId &&
+            action.completing_action.phase === "committed",
+        ),
+      )
+    )
+      return failures;
 
+    // Reflection retains local pending rows with durable completion markers.
+    // Restore the rest of working memory (including pre-action merge/cap changes)
+    // while switching this turn's markers to rollback before deleting actions.
+    const restoredWorkingMemory: WorkingMemory[] = [];
     await this.bestEffort(
       failures,
       "restore_working_memory",
       this.initialWorkingMemory === null ? [] : [this.initialWorkingMemory],
       (workingMemory) => input.sessionId ?? workingMemory.session_id,
-      (workingMemory) => this.options.workingMemoryStore.save(workingMemory),
+      (workingMemory) => {
+        restoredWorkingMemory.push(
+          this.options.workingMemoryStore.save(workingMemory, {
+            pendingActionTurn: { turnId: input.turnId, outcome: "rollback" },
+          }),
+        );
+      },
     );
 
+    // A failed write leaves the forward marker and row intact for locked recovery.
     await this.bestEffort(
       failures,
       "delete_action",
-      this.createdActionIds,
+      this.initialWorkingMemory === null || restoredWorkingMemory.length > 0
+        ? this.createdActionIds
+        : [],
       (actionId) => actionId,
       (actionId) => this.options.actionRepository.delete(actionId),
+    );
+
+    // Clear markers only after deletion; failed deletes keep their durable marker
+    // for recovery under a subsequent holder of the origin session lock.
+    await this.bestEffort(
+      failures,
+      "clear_pending_rollback_markers",
+      this.createdActionIds.length === 0 ? [] : restoredWorkingMemory,
+      (workingMemory) => workingMemory.session_id,
+      (workingMemory) => this.options.workingMemoryStore.save(workingMemory),
     );
 
     await this.bestEffort(
@@ -275,7 +323,55 @@ export class TurnLifecycleTracker {
     return failures;
   }
 
-  commitTurnState(): void {
+  commitTurnState(input: { turnId: string; sessionId: SessionId }): void {
+    const store = this.options.workingMemoryStore;
+    const current = store.load(input.sessionId);
+    const pending = current.pending_actions.filter(
+      (action) => action.completing_action?.turn_id === input.turnId,
+    );
+    if (pending.length > 0) {
+      let committed: WorkingMemory;
+      try {
+        // The durable decision precedes cleanup, so a crash cannot turn a
+        // committed completion back into an orphaned provisional action.
+        committed = store.save(current, {
+          pendingActionTurn: { turnId: input.turnId, outcome: "commit" },
+        });
+      } catch (error) {
+        // A writer/trace callback may throw after the atomic write succeeded.
+        // Only the persisted decision can tell us whether rollback is still safe.
+        committed = store.load(input.sessionId);
+        if (
+          !pending.every((action) =>
+            committed.pending_actions.some(
+              (candidate) =>
+                candidate.pending_action_id === action.pending_action_id &&
+                candidate.completing_action?.turn_id === input.turnId &&
+                candidate.completing_action.phase === "committed",
+            ),
+          )
+        )
+          throw error;
+      }
+      this.turnCommitted = true;
+      try {
+        store.save(committed);
+      } catch (error) {
+        // Commit has happened. Retain the action and let the next locked write
+        // finish row cleanup; this failure must not enter turn rollback.
+        try {
+          this.options.tracer?.emit("working_memory.degraded", {
+            turnId: input.turnId,
+            session_id: input.sessionId,
+            operation: "pending_action_commit_cleanup",
+            reason: "WORKING_MEMORY_SAVE_FAILED",
+          });
+        } catch {
+          // Observability failure cannot undo a durable commit decision.
+        }
+      }
+    }
+    this.turnCommitted = true;
     this.options.workingMemoryStore.recordPendingActionMerges(this.pendingActionMergeCount);
   }
 }

@@ -24,7 +24,7 @@ describe("performAction", () => {
     });
 
     expect(result.intents).toEqual([]);
-    expect(result.workingMemory.pending_actions).toEqual([
+    expect(result.workingMemory.pending_actions).toMatchObject([
       {
         description: "Existing intent",
         next_action: "keep this one",
@@ -53,7 +53,10 @@ describe("performAction", () => {
         next_action: "check the rollout after tests finish",
       },
     ]);
-    expect(result.workingMemory.pending_actions).toEqual(result.intents);
+    expect(result.workingMemory.pending_actions).toMatchObject(result.intents);
+    expect(result.workingMemory.pending_actions[0]?.pending_action_id).toMatch(
+      /^pact_[a-z0-9]{16}$/,
+    );
   });
 
   it("rejects planner items without next actions", async () => {
@@ -76,7 +79,7 @@ describe("performAction", () => {
     });
 
     expect(result.intents).toEqual([]);
-    expect(result.workingMemory.pending_actions).toEqual([]);
+    expect(result.workingMemory.pending_actions).toMatchObject([]);
     expect(rejected).toEqual([
       expect.objectContaining({
         reason: "missing_next_action",
@@ -124,7 +127,10 @@ describe("performAction", () => {
         next_action: "Ask Tom tomorrow about the Valencia tutor",
       },
     ]);
-    expect(result.workingMemory.pending_actions).toEqual(result.intents);
+    expect(result.workingMemory.pending_actions).toMatchObject(result.intents);
+    expect(result.workingMemory.pending_actions[0]?.pending_action_id).toMatch(
+      /^pact_[a-z0-9]{16}$/,
+    );
     expect(rejected).toEqual([
       expect.objectContaining({
         reason: "belief claim",
@@ -160,6 +166,6 @@ describe("performAction", () => {
       reason: "generation_gate",
     });
     expect(result.intents).toEqual([]);
-    expect(result.workingMemory.pending_actions).toEqual([]);
+    expect(result.workingMemory.pending_actions).toMatchObject([]);
   });
 });

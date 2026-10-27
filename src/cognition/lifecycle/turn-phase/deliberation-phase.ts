@@ -9,7 +9,11 @@ import type { ActualFrameAnomalyClassification } from "../../frame-anomaly/index
 import type { ActiveParticipant, ParticipantProfileContext } from "../../participants.js";
 import type { ParticipantRoster } from "../../perception/index.js";
 import type { RecencyMessage } from "../../recency/index.js";
-import { isUserTurnOrigin, type PerceptionResult } from "../../types.js";
+import {
+  isUserTurnOrigin,
+  isAutonomousLikeTurnOrigin,
+  type PerceptionResult,
+} from "../../types.js";
 import type { LLMClient } from "../../../llm/index.js";
 import type { BorgUserContentBlock } from "../../../attachments/index.js";
 import type { EntityId, SessionId } from "../../../util/ids.js";
@@ -161,6 +165,17 @@ export async function runDeliberationPhase(input: {
       selectedSkill: input.retrievalPhase.selectedSkill,
       entityRepository: input.options.entityRepository,
       workingMemory: input.workingMemory,
+      pendingActionProjection:
+        isAutonomousLikeTurnOrigin(input.turnInput.origin) &&
+        input.options.sessionLock !== undefined
+          ? await input.options.workingMemoryStore.projectPendingActions({
+              current: input.workingMemory,
+              turnId: input.turnId,
+              sessionLock: input.options.sessionLock,
+              currentAudienceEntityId: input.audienceEntityId,
+              includeOtherSessions: true,
+            })
+          : undefined,
       turnMechanismEvidence: input.retrievalPhase.turnMechanismEvidence,
       recentCompletedActions:
         input.options.postGenerationGuardRunner.listRecentCompletedActionsForCognition(

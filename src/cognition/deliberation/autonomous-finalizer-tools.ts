@@ -7,14 +7,17 @@ import { exposesOutboundTool, type TurnOrigin } from "../types.js";
 export const LIVE_TURN_READ_FINALIZER_TOOL_NAMES = [
   "tool.ownRecords.list",
   "tool.openQuestions.ruminations",
+  "tool.episodic.get",
+  "tool.stream.get",
 ] as const;
 
 export const LIVE_TURN_READ_FINALIZER_TOOL_MENU = [
   "<borg_live_turn_read_tools>",
   "Read tools available inside every live turn, including ordinary user turns:",
+  "- tool.episodic.get and tool.stream.get: Read the full text of one record by id; use when an excerpt was cut. The record carries origin and disclosure labels.",
   `- tool.ownRecords.list: Browse my own durable thoughts, journal, and goal dispositions globally by inclusive origin-time range; the optional session filter applies to thoughts and journal. ${OWN_RECORDS_PAGE_END_CLAIM}`,
   "- tool.openQuestions.ruminations: Browse the rumination notes my offline mind-maintenance wrote against my open questions, by inclusive created-at range and optionally one question id. A note outlives its question, so this reaches ones I later resolved and ones the loop abandoned for me -- which it does only on a pass where it did not ask me, when a question's still-open passes reach the no-traction threshold and no episode created after it cites it; nothing else in my turn carries those notes, and a pass can write none, so an empty range counts notes, not passes.",
-  "I may use these at my own initiative when I need to check what I thought or noticed at an earlier time. They are structural time-range browses, not text search.",
+  "I may use these at my own initiative when I need to check what I thought or noticed at an earlier time. They read records by id or browse structural time ranges.",
   "</borg_live_turn_read_tools>",
 ].join("\n");
 
@@ -28,6 +31,8 @@ export const AUTONOMOUS_INTERIOR_FINALIZER_TOOL_NAMES = [
   "tool.goals.unblock",
   "tool.episodic.recent",
   "tool.episodic.search",
+  "tool.episodic.get",
+  "tool.stream.get",
   "tool.semantic.walk",
   "tool.promptSurface.changes",
   "tool.scheduledWakes.create",

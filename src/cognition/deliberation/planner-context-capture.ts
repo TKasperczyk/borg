@@ -550,11 +550,21 @@ function projectWorkingMemory(context: DeliberationContext) {
   const mechanismEvidence = context.turnMechanismEvidence;
   return {
     focus: working.hot_entities[0] ?? null,
+    turn_counter: working.turn_counter,
     pendingActionCount: working.pending_actions.length,
     pending_actions: working.pending_actions.map((action) => ({
+      ...(action.pending_action_id === undefined
+        ? {}
+        : { pending_action_id: action.pending_action_id }),
       description: action.description,
       next_action: action.next_action,
       ...(action.created_at === undefined ? {} : { created_at: action.created_at }),
+      ...(action.restored_from_action === undefined
+        ? {}
+        : { restored_from_action: { ...action.restored_from_action } }),
+      ...(action.completing_action === undefined
+        ? {}
+        : { completing_action: { ...action.completing_action } }),
     })),
     updated_at: working.updated_at,
     pendingProceduralAttemptCount: working.pending_procedural_attempts.length,
@@ -707,6 +717,9 @@ export function captureCompactPlannerContext(context: DeliberationContext) {
     participantProfiles: context.participantProfiles?.map(projectParticipantProfile),
     selectedSkill: projectSelectedSkill(context.selectedSkill),
     workingMemory: projectWorkingMemory(context),
+    ...(context.pendingActionProjection === undefined
+      ? {}
+      : { pendingActionProjection: context.pendingActionProjection }),
     turnMechanismEvidence: projectTurnMechanismEvidence(context.turnMechanismEvidence),
     affectiveTrajectory: context.affectiveTrajectory?.map((entry) => ({
       ts: entry.ts,
@@ -1032,7 +1045,7 @@ function restoreCompactPlannerContext(context: CompactPlannerContextCapture): De
     },
     workingMemory: {
       session_id: context.sessionId,
-      turn_counter: 0,
+      turn_counter: working.turn_counter ?? 0,
       hot_entities: working.focus === null ? [] : [working.focus],
       pending_actions:
         working.pending_actions === undefined

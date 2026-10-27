@@ -39,16 +39,7 @@ export function addRetrievedRawStreamEvidenceSection(context: BuilderSectionCont
 
     const itemStreamIds = item.provenance?.streamIds ?? [];
 
-    // If every stream ID this retrieval item points to is already in the
-    // current_session_transcript section, skip emitting the duplicate
-    // retrieved_raw_stream_evidence row. The transcript renders the same
-    // underlying content with higher trust rank.
-    if (
-      itemStreamIds.length > 0 &&
-      itemStreamIds.every((id) => context.transcript.rawStreamIds.has(id))
-    ) {
-      continue;
-    }
+    // Keep the recalled copy until compaction knows which transcript rows survived.
 
     // Both of the next two resolve out of the builder's entry map, and a recalled entry
     // is frequently not in it. Neither miss is visible on the row: the miss answers

@@ -2313,16 +2313,12 @@ describe("EvidenceLedgerBuilder", () => {
         persistence_class: "assistant_self_report",
       }),
     ]);
-    // Sprint 8d.6.3: the retrieved raw stream item points at a stream id
-    // already covered by the current_session_transcript section, so the
-    // duplicate retrieved_raw_stream_evidence row is dropped. The
-    // underlying assistantEntry is rendered exactly once (in the
-    // transcript section above), with persistence_class preserved.
+    // Keep the raw copy until cap-aware provenance compaction.
     expect(
       ledger.sections
         .find((section) => section.id === "retrieved_raw_stream_evidence")
         ?.entries.find((entry) => entry.id === "retrieved_stream:raw-current"),
-    ).toBeUndefined();
+    ).toMatchObject({ persistence_class: "assistant_self_report" });
     expect(
       ledger.sections.find((section) => section.id === "action_states")?.entries[0],
     ).toMatchObject({
@@ -2434,7 +2430,7 @@ describe("EvidenceLedgerBuilder", () => {
       ledger.sections
         .find((section) => section.id === "retrieved_raw_stream_evidence")
         ?.entries.find((entry) => entry.id === "retrieved_stream:retrieved-suppressed-draft"),
-    ).toBeUndefined();
+    ).toBeDefined();
   });
 
   it("renders open cross-scope commitment reviews as labeled contested cognition evidence", async () => {
@@ -5615,7 +5611,7 @@ describe("EvidenceLedgerBuilder", () => {
       actor: "assistant",
       persistence_class: "assistant_self_report",
     });
-    expect(rawEntry).toBeUndefined();
+    expect(rawEntry).toMatchObject({ persistence_class: "assistant_self_report" });
 
     expect(userEntry.kind).toBe("user_msg");
   });
@@ -5727,12 +5723,10 @@ describe("EvidenceLedgerBuilder", () => {
     });
     const allEntries = ledger.sections.flatMap((section) => section.entries);
 
-    // Sprint 8d.6.3: raw-all-current points at currentEntry.id which is
-    // already in the current_session_transcript section, so it is deduped.
-    // Its scope info still appears -- on the transcript entry itself.
+    // Builder keeps recalled raw evidence even when the session scan saw it.
     expect(
       allEntries.find((entry) => entry.id === "retrieved_stream:raw-all-current"),
-    ).toBeUndefined();
+    ).toMatchObject({ source_type: "current_session_stream", session_scope: "current_session" });
     expect(
       allEntries.find((entry) => entry.id === `current_session_stream:${currentEntry.id}`),
     ).toMatchObject({
@@ -5831,10 +5825,9 @@ describe("EvidenceLedgerBuilder", () => {
     },
   );
 
-  it("dedupes retrieved raw stream evidence against current_session_transcript by stream id", async () => {
-    // Sprint 8d.6.3 regression: same underlying stream entry must not
-    // appear twice (once in transcript, once in retrieved_raw_stream_evidence).
-    // v36/v37 finalizer prompts had ~25k duplicate tokens from this class.
+  it("retains retrieved raw stream evidence for later cap-aware compaction", async () => {
+    // Keep both candidates here; compaction folds raw evidence only after it
+    // knows which transcript rows survived the tail cap.
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
     const writer = new StreamWriter({
@@ -5887,7 +5880,7 @@ describe("EvidenceLedgerBuilder", () => {
       ?.entries.find((entry) => entry.id === "retrieved_stream:raw-duplicate");
 
     expect(transcriptEntry).toBeDefined();
-    expect(retrievedEntry).toBeUndefined();
+    expect(retrievedEntry).toBeDefined();
   });
 
   it("excludes all catch-up batch source ids from transcript duplication", async () => {

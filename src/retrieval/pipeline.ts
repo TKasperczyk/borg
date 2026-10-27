@@ -1225,7 +1225,7 @@ export class RetrievalPipeline {
     return {
       id: `warm_recall_semantic_edge_${edge.id}`,
       source: "warm_recall",
-      text: `${node.label}: ${node.description}`,
+      text: `${edge.from_node_id} --${edge.relation}--> ${edge.to_node_id}: ${node.label}: ${node.description}`,
       provenance: {
         edgeId: edge.id,
         nodeId: node.id,
@@ -2983,7 +2983,7 @@ function semanticRetrievalToEvidence(
     return {
       id: `evidence_semantic_edge_${edgeId ?? hit.node.id}_${intent.id}`,
       source: "semantic_edge",
-      text: `${hit.node.label}: ${hit.node.description}`,
+      text: `${edge === undefined ? "" : `${edge.from_node_id} --${edge.relation}--> ${edge.to_node_id}: `}${hit.node.label}: ${hit.node.description}`,
       provenance: {
         ...(edgeId === undefined ? {} : { edgeId }),
         nodeId: hit.node.id,

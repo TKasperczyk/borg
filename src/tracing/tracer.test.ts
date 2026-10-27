@@ -693,6 +693,7 @@ describe("TurnTracer", () => {
       "evidence_ledger.reverse_scan",
       "turn_phase.started",
       "turn_phase.completed",
+      "evidence_ledger.compaction.completed",
       "evidence_ledger.completed",
       "evidence_ledger.built",
       "turn_phase.completed",

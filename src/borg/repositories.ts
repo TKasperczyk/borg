@@ -619,6 +619,10 @@ export async function buildBorgRepositories(
   applyCorrectionReview = (item) => correctionService.applyCorrectionReview(item);
   const workingMemoryStore = new WorkingMemoryStore({
     entityRepository,
+    actionRepository,
+    tracer: options.tracer,
+    audienceForSession: (sessionId) =>
+      sessionsRepository.getMany([sessionId])[0]?.audience_entity_id ?? null,
     similarityConfig: config,
     dataDir: config.dataDir,
     clock,

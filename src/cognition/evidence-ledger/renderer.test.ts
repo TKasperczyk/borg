@@ -1182,14 +1182,14 @@ describe("compactEvidenceLedger", () => {
     expect(compacted.traceSummary.dedupedEntryCount).toBe(1);
   });
 
-  it("keeps the graph row that renders an edge's relation beside the recall row that reached its node", () => {
+  it("folds only the same edge while keeping its relation distinct from a bare node", () => {
     const ledger = makeLedger();
 
     section(ledger, "prior_session_memory").entries.push(
       syntheticEntry({
         id: "retrieved_evidence:evidence_semantic_edge_seme_e_recall",
         source_type: "semantic_node",
-        text: "Reached node: what the reached node says.",
+        text: "semn_from --supports--> semn_to: Reached node: what the reached node says.",
         trust_rank: 30,
         state_metadata: { node_id: "semn_to", edge_id: "seme_e" },
       }),
@@ -1221,10 +1221,87 @@ describe("compactEvidenceLedger", () => {
       ]),
     ).toEqual([
       ["retrieved_evidence:evidence_semantic_edge_seme_e_recall", ["ep_e", "semn_to", "seme_e"]],
-      ["semantic_edge:seme_e", undefined],
+      ["semantic_node:semn_to", undefined],
     ]);
     expect(compacted.traceSummary.dedupedEntryCount).toBe(1);
   });
+
+  it.each([1, 2])(
+    "keeps recalled raw text exactly once with a transcript tail cap of %i",
+    (cap) => {
+      const ledger = makeLedger();
+      section(ledger, "current_session_transcript").entries.push(
+        ...["strm_a", "strm_z"].map((id) =>
+          syntheticEntry({
+            id: `current_session_stream:${id}`,
+            source_type: "current_session_stream",
+            text: `Exact source ${id}`,
+            trust_rank: 95,
+          }),
+        ),
+      );
+      section(ledger, "retrieved_raw_stream_evidence").entries.push(
+        syntheticEntry({
+          id: "retrieved_stream:strm_a",
+          source_type: "current_session_stream",
+          text: "Exact source strm_a",
+          trust_rank: 95,
+          state_metadata: { stream_ids: ["strm_a"] },
+        }),
+      );
+      const result = compactEvidenceLedger(ledger, {
+        targetTokens: 4_000,
+        hardCapTokens: 5_000,
+        sectionOptions: { current_session_transcript: { maxEntries: cap, maxTokens: 2_000 } },
+      });
+      expect(
+        result.ledger.sections
+          .flatMap((s) => s.entries)
+          .filter((e) => e.text === "Exact source strm_a"),
+      ).toHaveLength(1);
+      expect(section(result.ledger, "retrieved_raw_stream_evidence").entries).toHaveLength(
+        cap === 1 ? 1 : 0,
+      );
+      expect(estimateEvidenceLedgerPromptTokens(result.ledger)).toBeLessThanOrEqual(5_000);
+    },
+  );
+
+  it.each([false, true])(
+    "keeps two relations to one node when the graph is absent or cut (%s)",
+    (cutGraph) => {
+      const ledger = makeLedger();
+      for (const [edge, relation] of [
+        ["seme_a", "supports"],
+        ["seme_b", "contradicts"],
+      ]) {
+        section(ledger, "retrieved_memory_evidence").entries.push(
+          syntheticEntry({
+            id: `retrieved_evidence:${edge}`,
+            source_type: "semantic_node",
+            text: `semn_from --${relation}--> semn_to: node text`,
+            state_metadata: { node_id: "semn_to", edge_id: edge },
+          }),
+        );
+        if (cutGraph)
+          section(ledger, "semantic_graph").entries.push(
+            syntheticEntry({
+              id: `semantic_edge:${edge}`,
+              source_type: "semantic_edge",
+              text: relation,
+              state_metadata: { edge_id: edge, node_id: "semn_to" },
+            }),
+          );
+      }
+      const result = compactEvidenceLedger(ledger, {
+        targetTokens: 4_000,
+        hardCapTokens: 5_000,
+        sectionOptions: { semantic_graph: { maxEntries: 0, maxTokens: 0 } },
+      });
+      const rows = result.ledger.sections.flatMap((s) => s.entries);
+      expect(rows.filter((row) => row.text?.includes("--supports-->"))).toHaveLength(1);
+      expect(rows.filter((row) => row.text?.includes("--contradicts-->"))).toHaveLength(1);
+    },
+  );
 
   it("leaves a duplicate on the page when the cap cuts the row it would fold into", () => {
     const ledger = makeLedger();

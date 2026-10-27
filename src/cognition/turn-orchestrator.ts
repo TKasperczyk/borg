@@ -395,6 +395,7 @@ export class TurnOrchestrator {
       tracer: this.tracer,
     });
     this.turnPhaseCoordinator = new TurnPhaseCoordinator({
+      sessionLock: this.sessionLock,
       config: options.config,
       embeddingClient: options.embeddingClient,
       episodicRepository: options.episodicRepository,
@@ -592,7 +593,7 @@ export class TurnOrchestrator {
               lifecycleTracker,
             }),
           );
-          lifecycleTracker.commitTurnState();
+          lifecycleTracker.commitTurnState({ turnId, sessionId });
           terminalOutcome =
             result.terminalOutcome ??
             (result.path === "suppressed" ? "suppressed_action" : "reflected");

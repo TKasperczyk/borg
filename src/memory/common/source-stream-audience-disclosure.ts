@@ -11,6 +11,8 @@ import { dedupePreservingOrder } from "../../util/collections.js";
 import type { CommitmentId, EntityId, GoalId, SessionId, StreamEntryId } from "../../util/ids.js";
 import {
   memoryDisclosureLabelMetadata,
+  relationshipPrivateMemoryDisclosureLabel,
+  selfPrivateMemoryDisclosureLabel,
   type MemoryDisclosureLabel,
   type MemoryDisclosureLabelMetadata,
 } from "./disclosure-label.js";
@@ -161,6 +163,19 @@ function labelWithResolvedOrigin(
 
 export class SourceStreamAudienceDisclosureResolver {
   constructor(private readonly options: SourceStreamAudienceDisclosureResolverOptions) {}
+
+  resolveStreamEntryLabel(entry: StreamEntry): MemoryDisclosureLabel {
+    const audienceId =
+      entry.audience === undefined
+        ? this.options.sessionsRepository.getMany([entry.session_id])[0]?.audience_entity_id
+        : this.options.entityRepository.findByNames([entry.audience]).get(entry.audience);
+    const origin = audienceId == null ? [] : [audienceId];
+    return entry.kind === "user_msg" ||
+      entry.kind === "agent_msg" ||
+      entry.kind === "user_image_attachment"
+      ? relationshipPrivateMemoryDisclosureLabel(origin)
+      : selfPrivateMemoryDisclosureLabel(origin);
+  }
 
   resolveLabels(
     input: ResolveCommitmentGoalDisclosureLabelsInput,

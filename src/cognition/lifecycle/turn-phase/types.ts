@@ -126,6 +126,7 @@ export type TurnPhaseCoordinatorOptions = {
   > &
     Partial<Pick<SemanticNodeRepository, "getMany">>;
   workingMemoryStore: WorkingMemoryStore;
+  sessionLock?: import("../../../memory/working/index.js").PendingActionSessionLock;
   entityRepository: EntityRepository;
   socialRepository: SocialRepository;
   relationalSlotRepository: RelationalSlotRepository;

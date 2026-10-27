@@ -100,6 +100,7 @@ export const commitmentIdHelpers = createIdHelpers<"CommitmentId">("cmt");
 export const creatorDirectiveIdHelpers = createIdHelpers<"CreatorDirectiveId">("cdir");
 export const entityIdHelpers = createIdHelpers<"EntityId">("ent");
 export const actionIdHelpers = createIdHelpers<"ActionId">("act");
+export const pendingActionIdHelpers = createIdHelpers<"PendingActionId">("pact");
 export const relationalSlotIdHelpers = createIdHelpers<"RelationalSlotId">("rslot");
 export const sharedStateEntryIdHelpers = createIdHelpers<"SharedStateEntryId">("dart");
 export const consolidationFamilyIdHelpers = createIdHelpers<"ConsolidationFamilyId">("cfam");

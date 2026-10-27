@@ -12,6 +12,8 @@ export { toAnthropicToolDefinitions } from "./anthropic.js";
 export {
   createCommitmentsListTool,
   createEpisodicRecentTool,
+  createEpisodicGetTool,
+  createStreamGetTool,
   createEpisodicSearchTool,
   createGoalsRetireTool,
   createGoalsBlockTool,

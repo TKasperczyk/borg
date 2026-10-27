@@ -1,8 +1,12 @@
 export {
   WorkingMemoryStore,
+  pendingActionResolutionId,
   mergePendingActionsBySimilarity,
   type RelationalSlotPendingActionSanitization,
   type WorkingMemoryStoreOptions,
+  type PendingActionProjection,
+  type PendingActionProjectionResult,
+  type PendingActionSessionLock,
 } from "./store.js";
 export {
   PENDING_PROCEDURAL_ATTEMPT_TTL_TURNS,

@@ -654,6 +654,8 @@ describe("runFinalizer emission tools", () => {
       fakeTool("tool.ownRecords.list", ["autonomous", "deliberator"]),
       fakeTool("tool.openQuestions.ruminations", ["autonomous", "deliberator"]),
       fakeTool("tool.journal.append", ["autonomous"]),
+      fakeTool("tool.episodic.get", ["autonomous", "deliberator"]),
+      fakeTool("tool.stream.get", ["autonomous", "deliberator"]),
     ]);
 
     const names = resolveFinalizerNonTerminalTools({
@@ -662,7 +664,16 @@ describe("runFinalizer emission tools", () => {
     }).map((tool) => tool.name);
 
     expect(names).toContain("tool.openQuestions.ruminations");
+    expect(names).toContain("tool.episodic.get");
+    expect(names).toContain("tool.stream.get");
     expect(new Set(names).size).toBe(names.length);
+    const conversational = resolveFinalizerNonTerminalTools({ dispatcher, turnOrigin: "user" }).map(
+      (tool) => tool.name,
+    );
+    expect(conversational).toEqual(
+      expect.arrayContaining(["tool.episodic.get", "tool.stream.get"]),
+    );
+    expect(new Set(conversational).size).toBe(conversational.length);
   });
 
   it("exposes prompt-surface changes only to autonomous finalizer interiors", () => {

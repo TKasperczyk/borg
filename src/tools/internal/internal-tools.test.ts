@@ -36,6 +36,7 @@ import { ManualClock } from "../../util/clock.js";
 import { estimatePromptTokens } from "../../util/token-estimate.js";
 import {
   createAttachmentId,
+  createConsolidationFamilyId,
   createEntityId,
   createEpisodeId,
   createScheduledWakeId,
@@ -298,6 +299,159 @@ describe("internal tools", () => {
     });
     expect(result.episodes[0]?.narrative.length).toBeLessThanOrEqual(400);
     expect(result.episodes[0]?.narrative).toContain("The team traced the retrieval path");
+  });
+
+  it("reads one full episode or indexed stream record across sessions with disclosure labels", async () => {
+    const harness = await createOfflineTestHarness();
+    try {
+      const alice = harness.entityRepository.resolve("Alice");
+      const bob = harness.entityRepository.resolve("Bob");
+      const sessionId = createSessionId();
+      const fullText = "条件と具体例。".repeat(150) + "最後の例外も保持する。";
+      const entryIndex = new StreamEntryIndexRepository({
+        db: harness.db,
+        dataDir: harness.tempDir,
+      });
+      const writer = new StreamWriter({
+        dataDir: harness.tempDir,
+        sessionId,
+        entryIndex,
+        clock: harness.clock,
+      });
+      const entry = await writer.append({ kind: "user_msg", content: fullText, audience: "Bob" });
+      const episode = await harness.episodicRepository.createEpisode(
+        createEpisodeFixture({
+          narrative: fullText,
+          audience_entity_id: bob,
+          shared: false,
+          source_stream_ids: [entry.id],
+        }),
+      );
+      const dispatcher = createHarnessToolDispatcher(harness);
+      const readEpisode = await dispatcher.dispatch({
+        toolName: "tool.episodic.get",
+        input: { episode_id: episode.id },
+        origin: "autonomous",
+        sessionId: DEFAULT_SESSION_ID,
+        audienceEntityId: alice,
+      });
+      expect(readEpisode).toMatchObject({
+        ok: true,
+        output: {
+          episode: {
+            id: episode.id,
+            narrative: fullText,
+            source_stream_ids: [entry.id],
+            lineage: episode.lineage,
+            archived: false,
+            lifecycle_status: "active",
+            disclosure: expect.stringContaining("relationship_private"),
+            disclosure_label: { private_to_entity_ids: [bob] },
+          },
+        },
+      });
+      const readStream = await dispatcher.dispatch({
+        toolName: "tool.stream.get",
+        input: { stream_entry_id: entry.id },
+        origin: "deliberator",
+        sessionId: DEFAULT_SESSION_ID,
+        audienceEntityId: alice,
+      });
+      expect(readStream).toMatchObject({
+        ok: true,
+        output: {
+          entry: {
+            id: entry.id,
+            session_id: sessionId,
+            text: fullText,
+            active: true,
+            disclosure: expect.stringContaining("relationship_private"),
+            disclosure_label: { private_to_entity_ids: [bob] },
+          },
+        },
+      });
+      const familyId = createConsolidationFamilyId();
+      const summary = await harness.episodicRepository.createEpisode(
+        createEpisodeFixture({
+          episode_kind: "consolidation_version",
+          consolidation_family_id: familyId,
+          consolidation_coverage_hash: "fixture-coverage",
+          audience_entity_id: bob,
+          shared: false,
+        }),
+      );
+      harness.db
+        .prepare(
+          `INSERT INTO consolidation_families
+        (family_id, current_version_episode_id, coverage_hash, policy_version, created_at, updated_at)
+        VALUES (?, ?, ?, 1, ?, ?)`,
+        )
+        .run(familyId, summary.id, "fixture-coverage", harness.clock.now(), harness.clock.now());
+      harness.db
+        .prepare(
+          `INSERT INTO consolidation_members
+        (family_id, raw_episode_id, source_stream_ids_json, added_by_version_episode_id)
+        VALUES (?, ?, ?, ?)`,
+        )
+        .run(familyId, episode.id, JSON.stringify(episode.source_stream_ids), summary.id);
+      expect(await harness.episodicRepository.get(episode.id)).toBeNull();
+      expect(
+        await dispatcher.dispatch({
+          toolName: "tool.episodic.get",
+          input: { episode_id: episode.id },
+          origin: "autonomous",
+          sessionId: DEFAULT_SESSION_ID,
+          audienceEntityId: alice,
+        }),
+      ).toMatchObject({
+        ok: true,
+        output: {
+          episode: {
+            narrative: fullText,
+            archived: false,
+            lifecycle_status: "inactive",
+            disclosure_label: { private_to_entity_ids: [bob] },
+          },
+        },
+      });
+      harness.episodicRepository.archiveEpisode(episode.id, {
+        caller: "internal-tools.test",
+        reason: "lifecycle fixture",
+        process: "curator",
+      });
+      expect(
+        await dispatcher.dispatch({
+          toolName: "tool.episodic.get",
+          input: { episode_id: episode.id },
+          origin: "autonomous",
+          sessionId: DEFAULT_SESSION_ID,
+        }),
+      ).toMatchObject({
+        ok: true,
+        output: {
+          episode: {
+            narrative: fullText,
+            archived: true,
+            lifecycle_status: "archived",
+          },
+        },
+      });
+      for (const [toolName, input, field] of [
+        ["tool.episodic.get", { episode_id: createEpisodeId() }, "episode"],
+        ["tool.stream.get", { stream_entry_id: createStreamEntryId() }, "entry"],
+      ] as const) {
+        expect(
+          await dispatcher.dispatch({
+            toolName,
+            input,
+            origin: "autonomous",
+            sessionId: DEFAULT_SESSION_ID,
+          }),
+        ).toMatchObject({ ok: true, output: { [field]: null } });
+      }
+    } finally {
+      await harness.cleanup();
+    }
   });
 
   it("recalls episodic search globally with disclosure labels", async () => {

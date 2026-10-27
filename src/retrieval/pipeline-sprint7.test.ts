@@ -616,7 +616,9 @@ describe("RetrievalPipeline Sprint 7 scoring", () => {
       (item) => item.source === "semantic_edge" && item.provenance?.edgeId === edge.id,
     );
 
-    expect(edgeEvidence?.text).toContain("Alice Private Support");
+    expect(edgeEvidence?.text).toContain(
+      `${root.id} --supports--> ${privateSupport.id}: Alice Private Support`,
+    );
     expect(edgeEvidence?.source_episode_ids).toEqual([privateEpisode.id, publicEpisode.id]);
     expect(edgeEvidence?.disclosureLabel).toEqual({
       disclosureClass: "relationship_private",

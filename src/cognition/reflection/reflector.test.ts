@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { SuppressionSet } from "../attention/index.js";
 import { Reflector, type ReflectorOptions } from "./reflector.js";
+import { WorkingMemoryStore } from "../../memory/working/index.js";
+import { SessionLock } from "../session-lock.js";
 import { TurnSelfContextBuilder } from "../self/turn-self-context.js";
 import type { EmbeddingClient } from "../../embeddings/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
@@ -32,6 +34,7 @@ import {
   createExecutiveStepId,
   createOpenQuestionId,
   createScheduledWakeId,
+  createSessionId,
   createStreamEntryId,
   createTraitId,
 } from "../../util/ids.js";
@@ -80,6 +83,8 @@ function createReflectionResponse(
     skill_actually_applied?: boolean;
   }> = [],
   intentUpdates: Array<{
+    session_id?: string;
+    pending_action_id?: string;
     description: string;
     next_action: string | null;
     actor: "user" | "borg";
@@ -145,7 +150,11 @@ function createReflectionResponse(
             ...outcome,
           })),
           trait_demonstrations: traitDemonstrations,
-          intent_updates: intentUpdates,
+          intent_updates: intentUpdates.map((update) => ({
+            session_id: DEFAULT_SESSION_ID,
+            pending_action_id: "pact_zzzzzzzzzzzzzzzz",
+            ...update,
+          })),
           step_outcomes: stepOutcomes,
           proposed_steps: proposedSteps,
           open_questions: openQuestions,
@@ -451,7 +460,11 @@ function createExecutiveReflectionContext(input: {
   origin?: "user" | "autonomous";
   goal: ReturnType<GoalsRepository["add"]>;
   nextStep?: ReturnType<ExecutiveStepsRepository["add"]> | null;
-  pendingIntents?: Array<{ description: string; next_action: string | null }>;
+  pendingIntents?: Array<{
+    description: string;
+    next_action: string | null;
+    pending_action_id?: string;
+  }>;
 }) {
   const pendingIntents = input.pendingIntents ?? [];
   const workingMemory = {
@@ -780,7 +793,7 @@ describe("reflector", () => {
     expect(harness.executiveStepsRepository.get(step.id)?.status).toBe("done");
   });
 
-  it("does not apply intent updates from autonomous reflection", async () => {
+  it("applies handle-addressed intent updates from autonomous reflection", async () => {
     const harness = await createExecutiveReflectionHarness();
     cleanup.push(harness.cleanup);
     const goal = harness.goalsRepository.add({
@@ -789,6 +802,7 @@ describe("reflector", () => {
       provenance: { kind: "manual" },
     });
     const pendingIntent = {
+      pending_action_id: "pact_0000000000000000",
       description: "Ask the user to review Apollo readiness",
       next_action: "Ask for review",
     };
@@ -836,7 +850,7 @@ describe("reflector", () => {
       harness.writer,
     );
 
-    expect(reflected.pending_actions).toEqual([pendingIntent]);
+    expect(reflected.pending_actions).toEqual([]);
     expect(
       new StreamReader({
         dataDir: harness.tempDir,
@@ -848,7 +862,7 @@ describe("reflector", () => {
             entry.kind === "internal_event" &&
             (entry.content as { hook?: string }).hook === "reflector_intent_update_dropped",
         ),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it.each([
@@ -2354,13 +2368,249 @@ describe("reflector", () => {
     expect(harness.goalsRepository.get(goal.id)?.progress_notes).toBeNull();
   });
 
+  it.each(["happy", "save_failure", "insert_failure"])(
+    "reflects cross-session intentions once with action-first recovery (%s)",
+    async (scenario) => {
+      const origin = createSessionId();
+      const audience = createEntityId();
+      const id = "pact_0000000000000001";
+      const response = createReflectionResponse(
+        [],
+        [],
+        [
+          {
+            session_id: origin,
+            pending_action_id: id,
+            description: "Paraphrase is not a matching key",
+            next_action: null,
+            actor: "borg",
+            status: "completed",
+            evidence: "The wake completed the check.",
+          },
+        ],
+      );
+      const llm = new FakeLLMClient({ responses: [response, response, response] });
+      const harness = await createOfflineTestHarness({ llmClient: llm });
+      cleanup.push(harness.cleanup);
+      const store = new WorkingMemoryStore({
+        dataDir: harness.tempDir,
+        clock: harness.clock,
+        actionRepository: harness.actionRepository,
+        audienceForSession: (s) => (s === origin ? audience : null),
+      });
+      const sessionLock = new SessionLock({ dataDir: harness.tempDir });
+      const current = store.save(createWorkingMemoryFixture());
+      const malformed = createSessionId();
+      writeFileSync(join(harness.tempDir, "working", `${malformed}.json`), "invalid JSON");
+      store.save(
+        createWorkingMemoryFixture({
+          session_id: origin,
+          pending_actions: [
+            { pending_action_id: id, description: "次の自律起動で確認", next_action: "詳細を確認" },
+          ],
+        }),
+      );
+      const tracer = new CaptureTracer();
+      const reflector = createHarnessReflector(harness, {
+        clock: harness.clock,
+        llmClient: llm,
+        model: "haiku",
+        workingMemoryStore: store,
+        sessionLock,
+        tracer,
+      });
+      const context = {
+        ...createOpenQuestionReflectionContext(),
+        origin: "autonomous" as const,
+        turnId: "pending-recovery",
+        workingMemory: current,
+        currentTurnStreamEntryIds: [
+          (
+            await harness.streamWriter.append({
+              kind: "thought",
+              content: "The wake completed the check.",
+            })
+          ).id,
+        ],
+      };
+      const originalAdd = harness.actionRepository.add.bind(harness.actionRepository);
+      const add = vi.spyOn(harness.actionRepository, "add");
+      add.mockImplementation((...args) => {
+        expect(sessionLock.isHeld(origin)).toBe(true);
+        expect(store.load(origin).pending_actions).toHaveLength(1);
+        return originalAdd(...args);
+      });
+      const projection = await store.projectPendingActions({
+        current,
+        sessionLock,
+        includeOtherSessions: true,
+      });
+      expect(projection.degraded).toEqual([malformed]);
+      if (scenario === "save_failure") {
+        vi.spyOn(store, "save").mockImplementationOnce(() => {
+          throw new Error("injected foreign JSON save failure");
+        });
+        const failed = await reflector.reflect(context, harness.streamWriter);
+        expect(failed.effects.committedCrossSessionActionIds).toHaveLength(1);
+        expect(failed.effects.createdActionIds).toEqual([]);
+        expect(add).toHaveBeenCalledTimes(1);
+        expect(store.load(origin).pending_actions).toHaveLength(1);
+        expect(sessionLock.isHeld(origin)).toBe(false);
+        expect(
+          (await store.projectPendingActions({ current, sessionLock, includeOtherSessions: true }))
+            .completed_pending_cleanup,
+        ).toHaveLength(1);
+      } else if (scenario === "insert_failure") {
+        add.mockImplementationOnce(() => {
+          throw new Error("injected insert failure");
+        });
+        const failed = await reflector.reflect(context, harness.streamWriter);
+        expect(failed.effects.committedCrossSessionActionIds ?? []).toEqual([]);
+        expect(store.load(origin).pending_actions).toHaveLength(1);
+        expect(harness.actionRepository.list({ state: "completed" })).toEqual([]);
+      }
+      const first = await reflector.reflect(
+        { ...context, pendingActionProjection: projection },
+        harness.streamWriter,
+      );
+      const second = await reflector.reflect(
+        { ...context, pendingActionProjection: projection },
+        harness.streamWriter,
+      );
+      expect(first.effects.committedCrossSessionActionIds ?? []).toHaveLength(
+        scenario === "save_failure" ? 0 : 1,
+      );
+      // The origin commit is independent: a later wake rollback only deletes
+      // createdActionIds and must leave this resolved origin and action intact.
+      expect(first.effects.createdActionIds).toEqual([]);
+      expect(second.effects.createdActionIds).toEqual([]);
+      expect(second.effects.committedCrossSessionActionIds ?? []).toEqual([]);
+      expect(
+        tracer.events
+          .filter(
+            (event) =>
+              event.event === "reflector.intent_update.completed" &&
+              event.data.pending_action_id === id,
+          )
+          .map((event) => event.data.outcome),
+      ).toEqual([
+        ...(scenario === "save_failure"
+          ? ["applied_cleanup_pending"]
+          : scenario === "insert_failure"
+            ? ["failed"]
+            : []),
+        "applied",
+        "applied",
+      ]);
+      expect(add).toHaveBeenCalledTimes(scenario === "insert_failure" ? 2 : 1);
+      expect(store.load(origin).pending_actions).toEqual([]);
+      expect(store.load(DEFAULT_SESSION_ID)).toEqual(current);
+      expect(harness.actionRepository.list({ state: "completed" })).toMatchObject([
+        { description: "次の自律起動で確認", audience_entity_id: audience },
+      ]);
+      const prompt = JSON.parse(llm.requests[0]!.messages[0]!.content as string);
+      expect(prompt.pending_actions_degraded).toEqual([malformed]);
+      expect(prompt.pending_actions).toMatchObject([
+        {
+          session_id: origin,
+          pending_action_id: id,
+          disclosure: expect.any(String),
+          disclosure_label: { origin_audience_entity_ids: [audience] },
+        },
+      ]);
+    },
+  );
+
+  it("retains a local completion marker and pending row throughout reflection", async () => {
+    const id = "pact_0000000000000002";
+    const response = createReflectionResponse(
+      [],
+      [],
+      [
+        {
+          session_id: DEFAULT_SESSION_ID,
+          pending_action_id: id,
+          description: "A paraphrase is not an identity key",
+          next_action: null,
+          actor: "borg",
+          status: "completed",
+          evidence: "確認済み",
+        },
+      ],
+    );
+    const llm = new FakeLLMClient({ responses: [response, response] });
+    const harness = await createOfflineTestHarness({ llmClient: llm });
+    cleanup.push(harness.cleanup);
+    const store = new WorkingMemoryStore({
+      dataDir: harness.tempDir,
+      actionRepository: harness.actionRepository,
+    });
+    const sessionLock = new SessionLock({ dataDir: harness.tempDir });
+    const current = store.save(
+      createWorkingMemoryFixture({
+        pending_actions: [{ pending_action_id: id, description: "確認を完了", next_action: null }],
+      }),
+    );
+    const reflector = createHarnessReflector(harness, {
+      clock: harness.clock,
+      llmClient: llm,
+      model: "haiku",
+      workingMemoryStore: store,
+      sessionLock,
+    });
+    const context = {
+      ...createOpenQuestionReflectionContext(),
+      origin: "autonomous" as const,
+      turnId: "local-completion",
+      workingMemory: current,
+      currentTurnStreamEntryIds: [
+        (await harness.streamWriter.append({ kind: "thought", content: "確認済み" })).id,
+      ],
+    };
+    const originalAdd = harness.actionRepository.add.bind(harness.actionRepository);
+    const add = vi.spyOn(harness.actionRepository, "add").mockImplementation((...args) => {
+      expect(sessionLock.isHeld(DEFAULT_SESSION_ID)).toBe(true);
+      expect(store.load(DEFAULT_SESSION_ID).pending_actions[0]?.completing_action).toMatchObject({
+        turn_id: context.turnId,
+        phase: "provisional",
+        action_id: args[0].id,
+      });
+      return originalAdd(...args);
+    });
+    const lease = await sessionLock.acquire(DEFAULT_SESSION_ID);
+    try {
+      const first = await reflector.reflect(context, harness.streamWriter);
+      expect(first.effects.createdActionIds).toHaveLength(1);
+      expect(first.effects.committedCrossSessionActionIds ?? []).toEqual([]);
+      expect(first.workingMemory.pending_actions).toHaveLength(1);
+      expect(first.workingMemory.pending_actions[0]?.completing_action?.phase).toBe("provisional");
+      store.save(first.workingMemory);
+      expect(store.load(DEFAULT_SESSION_ID).pending_actions).toHaveLength(1);
+      const second = await reflector.reflect(
+        { ...context, workingMemory: first.workingMemory },
+        harness.streamWriter,
+      );
+      expect(second.effects.createdActionIds).toEqual([]);
+      expect(second.workingMemory.pending_actions).toHaveLength(1);
+      expect(add).toHaveBeenCalledTimes(1);
+    } finally {
+      await lease?.release();
+    }
+  });
+
   it("clears completed and abandoned pending actions and persists action records", async () => {
-    const pendingIntents: Array<{ description: string; next_action: string | null }> = [
+    const pendingIntents: Array<{
+      description: string;
+      next_action: string | null;
+      pending_action_id?: string;
+    }> = [
       {
+        pending_action_id: "pact_0000000000000000",
         description: "Check the Atlas rollout after tests finish",
         next_action: "review deploy status",
       },
       {
+        pending_action_id: "pact_0000000000000001",
         description: "Open a new incident if rollout fails",
         next_action: "create incident",
       },
@@ -2480,23 +2730,32 @@ describe("reflector", () => {
         provenance_stream_entry_ids: currentTurnStreamEntryIds,
       }),
     ]);
-    expect(tracer.events).toContainEqual({
-      event: "reflector.intent_update.completed",
-      data: {
-        turnId: "turn_intent_updates",
-        created_durable_actions_count: 2,
-        by_state: {
-          completed: 1,
-          not_done: 1,
-        },
-        working_memory_pending_resolved_count: 2,
-      },
-    });
+    expect(
+      tracer.events
+        .filter(
+          (event) =>
+            event.event === "reflector.intent_update.completed" &&
+            event.data["created_durable_actions_count"] !== undefined,
+        )
+        .map((event) => event.data),
+    ).toEqual([
+      expect.objectContaining({
+        created_durable_actions_count: 1,
+        by_state: { completed: 1, not_done: 0 },
+        working_memory_pending_resolved_count: 1,
+      }),
+      expect.objectContaining({
+        created_durable_actions_count: 1,
+        by_state: { completed: 0, not_done: 1 },
+        working_memory_pending_resolved_count: 1,
+      }),
+    ]);
     expect(llm.requests[0]?.messages[0]?.content).toContain("pending_actions");
   });
 
   it("persists group-chat user intent updates on the sender entity", async () => {
     const pendingIntent = {
+      pending_action_id: "pact_0000000000000000",
       description: "Book the Alhambra visit",
       next_action: "reserve tickets",
     };
@@ -2585,8 +2844,13 @@ describe("reflector", () => {
   });
 
   it("suppresses intent update action records for frame-anomalous turns", async () => {
-    const pendingIntents: Array<{ description: string; next_action: string | null }> = [
+    const pendingIntents: Array<{
+      description: string;
+      next_action: string | null;
+      pending_action_id?: string;
+    }> = [
       {
+        pending_action_id: "pact_0000000000000000",
         description: "Check the Atlas rollout after tests finish",
         next_action: "review deploy status",
       },
@@ -2700,6 +2964,7 @@ describe("reflector", () => {
   it("traces the reflection call when its response carries no tool call", async () => {
     const pendingIntents = [
       {
+        pending_action_id: "pact_0000000000000000",
         description: "Check the Atlas rollout after tests finish",
         next_action: "review deploy status",
       },
@@ -2788,8 +3053,13 @@ describe("reflector", () => {
   });
 
   it("traces an intent update that matches no held pending action", async () => {
-    const pendingIntents: Array<{ description: string; next_action: string | null }> = [
+    const pendingIntents: Array<{
+      description: string;
+      next_action: string | null;
+      pending_action_id?: string;
+    }> = [
       {
+        pending_action_id: "pact_0000000000000000",
         description: "Check the Atlas rollout after tests finish",
         next_action: "review deploy status",
       },
@@ -2879,8 +3149,8 @@ describe("reflector", () => {
         count: 1,
         updates: [
           {
-            description: "Check the Atlas rollout after the tests finish",
-            next_action: "review deploy status",
+            session_id: DEFAULT_SESSION_ID,
+            pending_action_id: "pact_zzzzzzzzzzzzzzzz",
             status: "completed",
           },
         ],
@@ -2893,20 +3163,29 @@ describe("reflector", () => {
 
   it.each([
     {
-      name: "resolves a null next_action update to the one held action with its description",
+      name: "resolves by handle even when the model changes description and omits next_action",
       pendingIntents: [
         {
+          pending_action_id: "pact_0000000000000000",
           description: "Den Atlas-Rollout nach den Tests prüfen",
           next_action: "Deploy-Status ansehen",
         },
         {
+          pending_action_id: "pact_0000000000000001",
           description: "Open a new incident if rollout fails",
           next_action: "create incident",
         },
       ],
-      updates: [{ description: "  Den Atlas-Rollout nach den Tests prüfen ", next_action: null }],
+      updates: [
+        {
+          pending_action_id: "pact_0000000000000000",
+          description: "違う言い回し",
+          next_action: null,
+        },
+      ],
       expectedPending: [
         {
+          pending_action_id: "pact_0000000000000001",
           description: "Open a new incident if rollout fails",
           next_action: "create incident",
         },
@@ -2915,16 +3194,22 @@ describe("reflector", () => {
       expectedRejectedCount: 0,
     },
     {
-      name: "records a null next_action update and an exact update for one held action once",
+      name: "records duplicate writes to one handle once",
       pendingIntents: [
         {
+          pending_action_id: "pact_0000000000000000",
           description: "Check the Atlas rollout after tests finish",
           next_action: "review deploy status",
         },
       ],
       updates: [
-        { description: "Check the Atlas rollout after tests finish", next_action: null },
         {
+          pending_action_id: "pact_0000000000000000",
+          description: "Check the Atlas rollout after tests finish",
+          next_action: null,
+        },
+        {
+          pending_action_id: "pact_0000000000000000",
           description: "Check the Atlas rollout after tests finish",
           next_action: "review deploy status",
         },
@@ -2934,24 +3219,34 @@ describe("reflector", () => {
       expectedRejectedCount: 0,
     },
     {
-      name: "leaves a null next_action update unmatched when two held actions share its description",
+      name: "rejects an unknown handle even when descriptions are identical",
       pendingIntents: [
         {
+          pending_action_id: "pact_0000000000000000",
           description: "ロールアウトを確認する",
           next_action: "デプロイ状況を見る",
         },
         {
+          pending_action_id: "pact_0000000000000001",
           description: "ロールアウトを確認する",
           next_action: "ログを読む",
         },
       ],
-      updates: [{ description: "ロールアウトを確認する", next_action: null }],
+      updates: [
+        {
+          pending_action_id: "pact_0000000000000099",
+          description: "ロールアウトを確認する",
+          next_action: null,
+        },
+      ],
       expectedPending: [
         {
+          pending_action_id: "pact_0000000000000000",
           description: "ロールアウトを確認する",
           next_action: "デプロイ状況を見る",
         },
         {
+          pending_action_id: "pact_0000000000000001",
           description: "ロールアウトを確認する",
           next_action: "ログを読む",
         },

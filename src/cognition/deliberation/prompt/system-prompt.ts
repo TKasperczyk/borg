@@ -1187,7 +1187,11 @@ function buildUntrustedBasePromptSections(
     },
     {
       tag: "borg_working_state",
-      content: summarizeWorkingMemory(context.workingMemory, context.turnOrigin),
+      content: summarizeWorkingMemory(
+        context.workingMemory,
+        context.turnOrigin,
+        context.pendingActionProjection,
+      ),
     },
     {
       tag: "borg_recent_completed_actions",
@@ -2948,6 +2952,7 @@ function workingStateMoodProvenance(turnOrigin: DeliberationContext["turnOrigin"
 function summarizeWorkingMemory(
   workingMemory: WorkingMemory,
   turnOrigin: DeliberationContext["turnOrigin"] = undefined,
+  pendingProjection?: DeliberationContext["pendingActionProjection"],
 ): string {
   // Phase E: working memory no longer caches raw agent self-talk
   // (recent_thoughts) or transient planner scratchpad. Recent dialogue
@@ -2976,7 +2981,31 @@ function summarizeWorkingMemory(
     workingStateMoodProvenance(turnOrigin),
   ];
 
-  if (workingMemory.pending_actions.length > 0) {
+  if (pendingProjection !== undefined) {
+    const ordered = [...pendingProjection.actions].sort(
+      (a, b) =>
+        a.session_id.localeCompare(b.session_id) ||
+        a.pending_action_id.localeCompare(b.pending_action_id),
+    );
+    const offset = ordered.length === 0 ? 0 : (workingMemory.turn_counter * 5) % ordered.length;
+    const selected = [...ordered.slice(offset), ...ordered.slice(0, offset)].slice(0, 8);
+    lines.push(
+      `<pending_actions total="${ordered.length}" omitted="${ordered.length - selected.length}" rotation="${offset}">`,
+      "Unresolved intentions recalled across all sessions. Origin and disclosure labels govern disclosure, not recall.",
+      ...(pendingProjection.completed_pending_cleanup?.length
+        ? [
+            `<completed_pending_cleanup>${escapeXmlText(JSON.stringify(pendingProjection.completed_pending_cleanup))}</completed_pending_cleanup>`,
+          ]
+        : []),
+      ...(pendingProjection.degraded.length === 0
+        ? []
+        : [
+            `Unavailable working-memory files (retry next turn): ${escapeXmlText(JSON.stringify(pendingProjection.degraded))}`,
+          ]),
+      ...selected.map((action) => escapeXmlText(JSON.stringify(action))),
+      "</pending_actions>",
+    );
+  } else if (workingMemory.pending_actions.length > 0) {
     lines.push(
       "<pending_actions>",
       "These are unresolved operational follow-ups, not facts about the user.",

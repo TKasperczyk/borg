@@ -738,6 +738,15 @@ export class TurnPhaseCoordinator {
         }),
       completedSub: () => "pre_turn_catchup",
     });
+    if (this.options.sessionLock !== undefined) {
+      // The orchestrator holds this session's lease throughout the turn. Recover
+      // an earlier aborted turn before taking the rollback snapshot or writing.
+      await this.options.workingMemoryStore.migratePendingActionIds(
+        sessionId,
+        this.options.sessionLock,
+        { lockedSessionId: sessionId, turnId },
+      );
+    }
     let workingMemory = this.options.workingMemoryStore.load(sessionId);
     lifecycleTracker.captureInitialWorkingMemory(workingMemory);
     const turnPerception = this.options.perceptionGateway.beginTurn({

@@ -34,6 +34,7 @@ export type TurnTraceEventName =
   | "perception.completed"
   | "perception.classifier.degraded"
   | "working_memory.degraded"
+  | "working_memory.pending_action_resolved"
   | "recency.completed"
   | "participant_scan.skipped"
   | "retrieval.degraded"

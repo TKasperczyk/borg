@@ -17,6 +17,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { operatorAttentionPromptRow } from "../../memory/operator-attention/disclosure.js";
 import { unknownMemoryDisclosureLabel } from "../../memory/common/disclosure-label.js";
+import { memoryDisclosurePayloadFields } from "../../memory/common/disclosure-serializers.js";
+import { pendingActionResolutionId } from "../../memory/working/index.js";
 import type { LLMCompleteResult } from "../../llm/index.js";
 import { goalSchema } from "../../memory/self/types.js";
 import { FixedClock } from "../../util/clock.js";
@@ -322,6 +324,58 @@ describe("planner context capture", () => {
     expect(parsed.render_input.compactContext).not.toHaveProperty("reRetrieve");
     expect(repositoryGet).not.toHaveBeenCalled();
     expect(reRetrieve).not.toHaveBeenCalled();
+  });
+
+  it("replays global pending handles, labels, and rotation on both planner surfaces", () => {
+    const input = renderInput(
+      context({
+        turnOrigin: "autonomous",
+        pendingActionProjection: {
+          degraded: [DEFAULT_SESSION_ID],
+          completed_pending_cleanup: [
+            {
+              session_id: DEFAULT_SESSION_ID,
+              pending_action_id: "pact_9999999999999999",
+              action_id: pendingActionResolutionId({
+                session_id: DEFAULT_SESSION_ID,
+                pending_action_id: "pact_9999999999999999",
+              }),
+              audience_entity_id: null,
+              ...memoryDisclosurePayloadFields(unknownMemoryDisclosureLabel()),
+            },
+          ],
+          actions: Array.from({ length: 25 }, (_, i) => ({
+            session_id: DEFAULT_SESSION_ID,
+            pending_action_id: `pact_${String(i).padStart(16, "0")}`,
+            description: `Intent ${i}`,
+            next_action: null,
+            audience_entity_id: null,
+            ...memoryDisclosurePayloadFields(unknownMemoryDisclosureLabel()),
+          })),
+        },
+      }),
+    );
+    const live = renderCapturedPlannerSurfacePair(input);
+    const parsed = parsePlannerContextCaptureRecord(JSON.parse(JSON.stringify(record(input))));
+    const replay = renderCapturedPlannerSurfacePair(parsed.render_input);
+    expect(replay.compact.rendered.system).toEqual(live.compact.rendered.system);
+    expect(replay.legacy.rendered.system).toEqual(live.legacy.rendered.system);
+    expect(plannerSurfaceText(replay.compact.rendered.system)).toContain(
+      'working_intents_rotation="15"',
+    );
+    expect(replay.legacy.rendered.system).toContain('rotation="15"');
+    expect(plannerSurfaceText(replay.compact.rendered.system)).toContain(
+      'pending_action_id="pact_0000000000000015"',
+    );
+    expect(replay.legacy.rendered.system).toContain("disclosure_label");
+    expect(replay.legacy.rendered.system).toContain("Unavailable working-memory files");
+    expect(replay.legacy.rendered.system).toContain("completed_pending_cleanup");
+    expect(plannerSurfaceText(replay.compact.rendered.system)).toContain(
+      "completed_pending_cleanup",
+    );
+    expect(plannerSurfaceText(replay.compact.rendered.system)).toContain(
+      "working_intents_degraded",
+    );
   });
 
   it.each([0, 1])(
