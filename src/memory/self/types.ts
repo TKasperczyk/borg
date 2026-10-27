@@ -26,7 +26,14 @@ import { episodeIdSchema } from "../episodic/types.js";
 import { semanticNodeIdSchema } from "../semantic/types.js";
 import { goalBlockRecordSchema } from "./goal-blocks.js";
 
-export const goalStatusSchema = z.enum(["active", "done", "abandoned", "blocked"]);
+export const goalStatusSchema = z.enum(["active", "done", "superseded", "abandoned", "blocked"]);
+export const goalRetirementDispositionSchema = z.enum(["done", "superseded", "abandoned"]);
+
+export function isTerminalGoalStatus(
+  status: string,
+): status is z.infer<typeof goalRetirementDispositionSchema> {
+  return status === "done" || status === "superseded" || status === "abandoned";
+}
 export const identityStateSchema = z.enum(["candidate", "established"]);
 export const OPEN_QUESTION_STATUSES = ["open", "resolved", "abandoned"] as const;
 export const OPEN_QUESTION_SOURCES = [

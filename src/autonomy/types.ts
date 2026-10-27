@@ -200,6 +200,7 @@ export type AutonomySchedulerWakeDescription = {
 };
 
 export type AutonomySchedulerBudgetDescription = {
+  source_budgets?: Array<{ source: AutonomyWakeSourceName; usage: number; limit: number }>;
   max_wakes_per_window: number;
   window_ms: number;
   /**
@@ -431,6 +432,12 @@ export type AutonomySchedulerDescription = {
 };
 
 export type AutonomyTickEventResult = {
+  sourceBudget?: {
+    source: AutonomyWakeSourceName;
+    usage: number;
+    limit: number;
+    reason: "source_limit";
+  };
   id: string;
   sourceName: AutonomyWakeSourceName;
   sourceType: AutonomyWakeSourceType;

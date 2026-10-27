@@ -168,7 +168,7 @@ type FinalizerCallOptionsContext = {
   context: DeliberationContext;
   effectiveContext: DeliberationContext;
   baseSystemPrompt: string;
-  cacheableSystemPrompt: RunFinalizerOptions["cacheableSystemPrompt"];
+  cacheableSystemPrompt: ReturnType<typeof buildCacheableBaseSystemPromptParts>;
   baseSystemPromptOptions: BuildBaseSystemPromptOptions;
   initialMessages: RunFinalizerOptions["initialMessages"];
   maxTokens: number;
@@ -279,6 +279,14 @@ function buildFinalizerCallOptions(
     baseSystemPrompt: context.baseSystemPrompt,
     shownOpenQuestionIds:
       context.effectiveContext.autonomyTriggerPresentation?.shownOpenQuestionIds,
+    shownGoalIds: context.cacheableSystemPrompt.shownGoalIds,
+    onPromptPresented: (shownGoalIds) => {
+      const shown = new Set(shownGoalIds);
+      options.goalPresentation?.presented(
+        (context.effectiveContext.goalPresentations ?? []).filter((goal) => shown.has(goal.goalId)),
+        context.context.turnId ?? "autonomous",
+      );
+    },
     cacheableSystemPrompt: context.cacheableSystemPrompt,
     finalizerDynamicPromptCacheEnabled: options.finalizerDynamicPromptCacheEnabled ?? true,
     finalizerTransport: options.finalizerTransport ?? "unary",
@@ -924,6 +932,12 @@ export class Deliberator {
         effectiveContext.autonomyTrigger == null
           ? undefined
           : renderAutonomyTriggerPresentation(effectiveContext.autonomyTrigger),
+      // Capture every candidate generation. Each live renderer reports its
+      // actual membership; a digest can show a goal omitted from the trigger.
+      goalPresentations:
+        effectiveContext.turnOrigin === "autonomous"
+          ? (effectiveContext.selfSnapshot.goalPresentations ?? [])
+          : [],
       contradictionRoutingTier: decision.contradiction_tier,
       deliberationPath: decision.path,
     };
@@ -1204,6 +1218,17 @@ export class Deliberator {
         sessionId: context.sessionId,
         turnOrigin: effectiveContext.turnOrigin,
         plannerSurface,
+        onPromptPresented: () => {
+          const shown = new Set(
+            plannerSurface.variant === "compact"
+              ? (plannerSurface.shownGoalIds ?? [])
+              : cacheableBaseSystemPrompt.shownGoalIds,
+          );
+          this.options.goalPresentation?.presented(
+            (effectiveContext.goalPresentations ?? []).filter((goal) => shown.has(goal.goalId)),
+            context.turnId ?? "autonomous",
+          );
+        },
         ...(captureSelected
           ? {
               onRequestPrepared: (request: S2PlannerRequestSnapshot) => {

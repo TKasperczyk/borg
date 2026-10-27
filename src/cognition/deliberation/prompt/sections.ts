@@ -6,6 +6,8 @@ export { escapeReservedBorgTags } from "../../../util/prompt-tags.js";
 export type TaggedPromptSection = {
   tag: string;
   content: string | null | undefined;
+  /** Structural membership, recorded only when this section renders. */
+  shownGoalIds?: readonly string[];
 };
 
 export function renderTaggedPromptSection(

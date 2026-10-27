@@ -25,7 +25,12 @@ import {
   type TraitRecord,
 } from "../../memory/self/index.js";
 import { retrievalMigrations } from "../../retrieval/migrations.js";
-import { StreamReader, StreamWriter } from "../../stream/index.js";
+import {
+  StreamReader,
+  StreamWriter,
+  StreamWatermarkRepository,
+  streamWatermarkMigrations,
+} from "../../stream/index.js";
 import { FixedClock } from "../../util/clock.js";
 import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
 import {
@@ -121,7 +126,7 @@ function createReflectionResponse(
   }> = [],
   retiredGoals: Array<{
     goal_id: string;
-    disposition: "satisfied" | "no_longer_pursued";
+    disposition: "satisfied" | "superseded" | "no_longer_pursued";
     evidence: {
       note: string;
       evidence_episode_ids?: string[];
@@ -408,6 +413,7 @@ async function createExecutiveReflectionHarness(clock = new FixedClock(1_000)) {
       selfMigrations,
       executiveMigrations,
       retrievalMigrations,
+      streamWatermarkMigrations,
     ),
   });
   const table = await store.openTable({
@@ -422,6 +428,7 @@ async function createExecutiveReflectionHarness(clock = new FixedClock(1_000)) {
   const goalsRepository = new GoalsRepository({
     db,
     clock,
+    watermarkRepository: new StreamWatermarkRepository({ db, clock }),
   });
   const traitsRepository = new TraitsRepository({
     db,
@@ -548,6 +555,59 @@ describe("reflector", () => {
       await cleanup.pop()?.();
     }
   });
+
+  it.each(["associated", "unrelated", "wrong_entry", "autonomous"] as const)(
+    "reopens a presented goal only for a model-associated inbound handle: %s",
+    async (scenario) => {
+      const h = await createExecutiveReflectionHarness();
+      cleanup.push(h.cleanup);
+      const goal = h.goalsRepository.add({
+        description: "資料",
+        priority: 5,
+        provenance: { kind: "manual" },
+      });
+      const store = h.goalsRepository.presentation!;
+      store.presented([store.snapshot(goal)], "turn_before");
+      const inbound = createStreamEntryId();
+      const associations =
+        scenario === "unrelated"
+          ? []
+          : [
+              {
+                goal_id: goal.id,
+                stream_entry_id: scenario === "wrong_entry" ? createStreamEntryId() : inbound,
+              },
+            ];
+      const response = createRawReflectionResponse({
+        ...createReflectionResponse().tool_calls[0]!.input,
+        goal_input_associations: associations,
+      });
+      const llm = new FakeLLMClient({ responses: [response, response] });
+      const reflector = new Reflector({
+        clock: h.clock,
+        llmClient: llm,
+        model: "haiku",
+        episodicRepository: h.episodicRepository,
+        goalsRepository: h.goalsRepository,
+        traitsRepository: h.traitsRepository,
+        executiveStepsRepository: h.executiveStepsRepository,
+      });
+      const context = {
+        ...createExecutiveReflectionContext({
+          goal,
+          origin: scenario === "autonomous" ? "autonomous" : "user",
+        }),
+        turnId: "turn_association",
+        currentTurnInboundStreamEntryIds: [inbound],
+        currentTurnStreamEntryIds: [inbound],
+      };
+      await reflector.reflect(context, h.writer);
+      expect(store.wasPresented(h.goalsRepository.get(goal.id)!)).toBe(scenario !== "associated");
+      store.presented([store.snapshot(h.goalsRepository.get(goal.id)!)], "turn_after");
+      await reflector.reflect(context, h.writer);
+      expect(store.wasPresented(h.goalsRepository.get(goal.id)!)).toBe(true);
+    },
+  );
 
   it("applies valid executive step outcomes and drops invalid outcomes", async () => {
     const harness = await createExecutiveReflectionHarness();
@@ -2011,132 +2071,135 @@ describe("reflector", () => {
     );
   });
 
-  it("applies retired_goals through goal-followup forced focus", async () => {
-    const harness = await createExecutiveReflectionHarness(new FixedClock(4_850));
-    cleanup.push(harness.cleanup);
-    const evidenceStreamEntryId = createStreamEntryId();
-    const followupGoal = harness.goalsRepository.add({
-      description: "Low-priority settled followup",
-      terminalCondition: "The settled followup is complete",
-      priority: 1,
-      provenance: { kind: "manual" },
-    });
-    const competitor = harness.goalsRepository.add({
-      description: "Higher-priority competing work",
-      priority: 10,
-      provenance: { kind: "manual" },
-    });
-    const embeddingClient: EmbeddingClient = {
-      async embed() {
-        return Float32Array.from([0, 0, 0, 0]);
-      },
-      async embedBatch(texts) {
-        return texts.map(() => Float32Array.from([0, 0, 0, 0]));
-      },
-    };
-    const selfContext = await new TurnSelfContextBuilder({
-      embeddingClient,
-      valuesRepository: { list: () => [] },
-      goalsRepository: harness.goalsRepository,
-      traitsRepository: harness.traitsRepository,
-      executiveStepsRepository: harness.executiveStepsRepository,
-      clock: harness.clock,
-      tracer: NOOP_TRACER,
-      goalFocusThreshold: 0.45,
-      goalFollowupLookaheadMs: 20_000,
-      goalFollowupStaleMs: 100_000,
-    }).build({
-      turnId: "turn_followup_retirement_focus",
-      cognitionInput: "",
-      perception: {
-        entities: [],
-        mode: "reflective",
-        affectiveSignal: { valence: 0, arousal: 0, dominant_emotion: null },
-        temporalCue: null,
-      },
-      autonomyTrigger: {
-        source_name: "goal_followup_due",
-        source_type: "trigger",
-        event_id: "followup-retirement",
-        sort_ts: harness.clock.now(),
-        payload: {
-          selected_goal_id: followupGoal.id,
-          selected_goal: followupGoal,
+  it.each(["satisfied", "superseded"] as const)(
+    "applies %s retirement through goal-followup forced focus",
+    async (disposition) => {
+      const harness = await createExecutiveReflectionHarness(new FixedClock(4_850));
+      cleanup.push(harness.cleanup);
+      const evidenceStreamEntryId = createStreamEntryId();
+      const followupGoal = harness.goalsRepository.add({
+        description: "Low-priority settled followup",
+        terminalCondition: "The settled followup is complete",
+        priority: 1,
+        provenance: { kind: "manual" },
+      });
+      const competitor = harness.goalsRepository.add({
+        description: "Higher-priority competing work",
+        priority: 10,
+        provenance: { kind: "manual" },
+      });
+      const embeddingClient: EmbeddingClient = {
+        async embed() {
+          return Float32Array.from([0, 0, 0, 0]);
         },
-      },
-      audienceEntityId: null,
-    });
-    const selectedCandidate = selfContext.executiveFocus.candidates.find(
-      (candidate) => candidate.goal_id === followupGoal.id,
-    );
-    expect(selfContext.executiveFocus.candidates[0]?.goal_id).toBe(competitor.id);
-    expect(selectedCandidate?.score).toBeLessThan(selfContext.executiveFocus.threshold);
-    expect(selfContext.executiveFocus.selected_goal?.id).toBe(followupGoal.id);
+        async embedBatch(texts) {
+          return texts.map(() => Float32Array.from([0, 0, 0, 0]));
+        },
+      };
+      const selfContext = await new TurnSelfContextBuilder({
+        embeddingClient,
+        valuesRepository: { list: () => [] },
+        goalsRepository: harness.goalsRepository,
+        traitsRepository: harness.traitsRepository,
+        executiveStepsRepository: harness.executiveStepsRepository,
+        clock: harness.clock,
+        tracer: NOOP_TRACER,
+        goalFocusThreshold: 0.45,
+        goalFollowupLookaheadMs: 20_000,
+        goalFollowupStaleMs: 100_000,
+      }).build({
+        turnId: "turn_followup_retirement_focus",
+        cognitionInput: "",
+        perception: {
+          entities: [],
+          mode: "reflective",
+          affectiveSignal: { valence: 0, arousal: 0, dominant_emotion: null },
+          temporalCue: null,
+        },
+        autonomyTrigger: {
+          source_name: "goal_followup_due",
+          source_type: "trigger",
+          event_id: "followup-retirement",
+          sort_ts: harness.clock.now(),
+          payload: {
+            selected_goal_id: followupGoal.id,
+            selected_goal: followupGoal,
+          },
+        },
+        audienceEntityId: null,
+      });
+      const selectedCandidate = selfContext.executiveFocus.candidates.find(
+        (candidate) => candidate.goal_id === followupGoal.id,
+      );
+      expect(selfContext.executiveFocus.candidates[0]?.goal_id).toBe(competitor.id);
+      expect(selectedCandidate?.score).toBeLessThan(selfContext.executiveFocus.threshold);
+      expect(selfContext.executiveFocus.selected_goal?.id).toBe(followupGoal.id);
 
-    const llm = new FakeLLMClient({
-      responses: [
-        createReflectionResponse(
-          [],
-          [],
-          [],
-          [],
-          [],
-          [],
-          [],
-          [],
-          [
-            {
-              goal_id: followupGoal.id,
-              disposition: "satisfied",
-              evidence: {
-                note: "The settled followup is complete.",
-                evidence_stream_entry_ids: [evidenceStreamEntryId],
+      const llm = new FakeLLMClient({
+        responses: [
+          createReflectionResponse(
+            [],
+            [],
+            [],
+            [],
+            [],
+            [],
+            [],
+            [],
+            [
+              {
+                goal_id: followupGoal.id,
+                disposition,
+                evidence: {
+                  note: "The settled followup is complete.",
+                  evidence_stream_entry_ids: [evidenceStreamEntryId],
+                },
               },
-            },
-          ],
-        ),
-      ],
-    });
-    const cascadingGoalsRepository = new GoalsRepository({
-      db: harness.db,
-      clock: harness.clock,
-      executiveStepsRepository: harness.executiveStepsRepository,
-    });
-    const reflector = new Reflector({
-      clock: harness.clock,
-      llmClient: llm,
-      model: "haiku",
-      episodicRepository: harness.episodicRepository,
-      goalsRepository: cascadingGoalsRepository,
-      traitsRepository: harness.traitsRepository,
-      executiveStepsRepository: harness.executiveStepsRepository,
-    });
-    const baseContext = createExecutiveReflectionContext({
-      origin: "autonomous",
-      goal: followupGoal,
-    });
+            ],
+          ),
+        ],
+      });
+      const cascadingGoalsRepository = new GoalsRepository({
+        db: harness.db,
+        clock: harness.clock,
+        executiveStepsRepository: harness.executiveStepsRepository,
+      });
+      const reflector = new Reflector({
+        clock: harness.clock,
+        llmClient: llm,
+        model: "haiku",
+        episodicRepository: harness.episodicRepository,
+        goalsRepository: cascadingGoalsRepository,
+        traitsRepository: harness.traitsRepository,
+        executiveStepsRepository: harness.executiveStepsRepository,
+      });
+      const baseContext = createExecutiveReflectionContext({
+        origin: "autonomous",
+        goal: followupGoal,
+      });
 
-    await reflector.reflect(
-      {
-        ...baseContext,
-        turnId: "turn_followup_retired_goal_application",
-        selfSnapshot: selfContext.selfSnapshot,
-        executiveFocus: selfContext.executiveFocus,
-        currentTurnStreamEntryIds: [evidenceStreamEntryId],
-      },
-      harness.writer,
-    );
+      await reflector.reflect(
+        {
+          ...baseContext,
+          turnId: "turn_followup_retired_goal_application",
+          selfSnapshot: selfContext.selfSnapshot,
+          executiveFocus: selfContext.executiveFocus,
+          currentTurnStreamEntryIds: [evidenceStreamEntryId],
+        },
+        harness.writer,
+      );
 
-    expect(llm.requests).toHaveLength(1);
-    expect(cascadingGoalsRepository.get(followupGoal.id)).toMatchObject({
-      status: "done",
-      provenance: {
-        kind: "online_reflector",
-        evidence_stream_entry_ids: [evidenceStreamEntryId],
-      },
-    });
-    expect(cascadingGoalsRepository.get(competitor.id)?.status).toBe("active");
-  });
+      expect(llm.requests).toHaveLength(1);
+      expect(cascadingGoalsRepository.get(followupGoal.id)).toMatchObject({
+        status: disposition === "satisfied" ? "done" : "superseded",
+        provenance: {
+          kind: "online_reflector",
+          evidence_stream_entry_ids: [evidenceStreamEntryId],
+        },
+      });
+      expect(cascadingGoalsRepository.get(competitor.id)?.status).toBe("active");
+    },
+  );
 
   it("retires a user-turn goal when reflection also marks it advanced", async () => {
     const harness = await createExecutiveReflectionHarness(new FixedClock(4_900));

@@ -107,7 +107,8 @@ describe("buildToolDispatcher", () => {
 
     expect(goalsRetire).toMatchObject({
       name: "tool.goals.retire",
-      menuSummary: "Retire one of my own goals as done/superseded, with my reason.",
+      menuSummary:
+        "Retire one of my own goals as done, superseded, or abandoned, with my reason; close outstanding steps without claiming completion.",
       allowedOrigins: ["autonomous", "deliberator"],
       writeScope: "write",
     });

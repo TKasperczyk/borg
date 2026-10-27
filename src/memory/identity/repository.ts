@@ -208,7 +208,7 @@ export class IdentityEventRepository {
           WHERE record_type = 'goal' AND ts >= ? AND ts <= ?
             AND json_extract(old_value_json, '$.status') != json_extract(new_value_json, '$.status')
             AND (
-              json_extract(new_value_json, '$.status') IN ('abandoned', 'blocked')
+              json_extract(new_value_json, '$.status') IN ('done', 'superseded', 'abandoned', 'blocked')
               OR (json_extract(old_value_json, '$.status') = 'blocked'
                 AND json_extract(new_value_json, '$.status') = 'active')
             )

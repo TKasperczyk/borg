@@ -110,6 +110,7 @@ export type ExecuteToolLoopOptions = {
   traceLabel?: string;
   /** Exact transport request snapshot, synchronously exposed before each LLM attempt. */
   onRequestPrepared?: (request: LLMConverseOptions, attempt: number) => void;
+  onPromptPresented?: () => void;
   /** Best-effort capture hook. Observer failures never alter the live tool loop. */
   toolResultObserver?: ToolLoopResultObserver;
 };
@@ -459,6 +460,7 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
         usage,
       };
     }
+    options.onPromptPresented?.();
     usage = aggregateUsage(usage, response);
     lastResponseText = extractText(response.messageBlocks) || lastResponseText;
 

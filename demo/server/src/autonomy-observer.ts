@@ -46,6 +46,18 @@ export function wireAutonomySchedulerObserver(
           status === "bookkeeping_error" ||
           status === "busy_skipped",
       ).length;
+      const sourceBudgetSkips = result.events.flatMap(({ sourceBudget }) =>
+        sourceBudget === undefined
+          ? []
+          : [
+              {
+                source: sourceBudget.source,
+                usage: sourceBudget.usage,
+                limit: sourceBudget.limit,
+                reason: sourceBudget.reason,
+              },
+            ],
+      );
       const summary = {
         dueEvents: result.dueEvents,
         admittedEvents,
@@ -58,6 +70,7 @@ export function wireAutonomySchedulerObserver(
         errorCount: result.errorCount,
         sourceErrorCount: result.sourceErrorCount,
         bookkeepingErrorCount: result.bookkeepingErrorCount,
+        ...(sourceBudgetSkips.length === 0 ? {} : { sourceBudgetSkips }),
         ...(maintenanceHeld ? { maintenanceSkipped, maintenanceHeldSources } : {}),
       };
 

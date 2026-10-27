@@ -101,6 +101,7 @@ import { RetrievalPipeline } from "../retrieval/index.js";
 import { sessionMigrations } from "../sessions/index.js";
 import {
   StreamEntryIndexRepository,
+  StreamWatermarkRepository,
   StreamWriter,
   streamEntryIndexMigrations,
   streamWatermarkMigrations,
@@ -726,6 +727,7 @@ export async function createOfflineTestHarness(
     clock,
     identityEventRepository,
     executiveStepsRepository,
+    watermarkRepository: new StreamWatermarkRepository({ db, clock }),
   });
   const traitsRepository = new TraitsRepository({
     db,

@@ -340,7 +340,7 @@ export type TurnPostResponse = {
 };
 
 export type IdentityStateName = "candidate" | "established";
-export type GoalStatus = "active" | "done" | "abandoned" | "blocked";
+export type GoalStatus = "active" | "done" | "superseded" | "abandoned" | "blocked";
 export type OpenQuestionStatus = "open" | "resolved" | "abandoned";
 
 export type IdentityValue = {

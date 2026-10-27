@@ -10,7 +10,7 @@ import { ToolDispatcher } from "../../tools/index.js";
 import { OUTBOUND_POST_TOOL_NAME } from "../../tools/internal/outbound-post-name.js";
 import { ManualClock } from "../../util/clock.js";
 import { SessionBusyError } from "../../util/errors.js";
-import { DEFAULT_SESSION_ID } from "../../util/ids.js";
+import { DEFAULT_SESSION_ID, createStreamEntryId } from "../../util/ids.js";
 import type { AutonomyWakeSource } from "../types.js";
 import {
   executiveFocusGoalStaleBackoffCooldownMs,
@@ -96,6 +96,113 @@ describe("executive focus due trigger", () => {
       ...overrides,
     });
   }
+
+  it("does not re-present a goal on score drift, expired cooldown, new steps or action topology, but accepts new input", async () => {
+    const h = await createHarness();
+    const goal = h.goalsRepository.add({
+      description: "目的",
+      priority: 10,
+      provenance: { kind: "manual" },
+    });
+    h.clock.advance(86_400_001);
+    let actionKey = "before";
+    const trigger = createTrigger(h, {
+      threshold: 0,
+      goalStaleBackoffActionAvailabilityKey: () => actionKey,
+    });
+    expect(await trigger.scan()).toHaveLength(1);
+    expect(h.goalsRepository.presentation!.wasPresented(goal)).toBe(false);
+    h.goalsRepository.presentation!.presented(
+      [h.goalsRepository.presentation!.snapshot(goal)],
+      "turn_presented",
+    );
+    h.clock.advance(10 * 86_400_000);
+    actionKey = "after";
+    h.executiveStepsRepository.add({
+      goalId: goal.id,
+      description: "Now due",
+      kind: "think",
+      dueAt: h.clock.now() - 1,
+      provenance: { kind: "manual" },
+    });
+    expect(await trigger.scan()).toEqual([]);
+    h.goalsRepository.presentation!.associateInbound(goal.id, createStreamEntryId());
+    expect(await trigger.scan()).toHaveLength(1);
+    h.goalsRepository.presentation!.presented(
+      [h.goalsRepository.presentation!.snapshot(h.goalsRepository.get(goal.id)!)],
+      "turn_input",
+    );
+    expect(await trigger.scan()).toEqual([]);
+    h.goalsRepository.updateProgress(goal.id, "進捗", { kind: "manual" });
+    expect(await trigger.scan()).toHaveLength(1);
+  });
+
+  it.each([false, true])(
+    "shares re-presentation eligibility with followup, due step=%s",
+    async (dueStep) => {
+      const h = await createHarness();
+      const goal = h.goalsRepository.add({
+        description: "Shared generation",
+        priority: 9,
+        provenance: { kind: "manual" },
+        createdAt: h.clock.now() - 200_000,
+      });
+      if (dueStep)
+        h.executiveStepsRepository.add({
+          goalId: goal.id,
+          description: "Due step",
+          kind: "think",
+          dueAt: h.clock.now() - 1,
+          provenance: { kind: "manual" },
+        });
+      let actionKey = "before";
+      const executive = createTrigger(h, {
+        threshold: 0,
+        stalenessMs: 100_000,
+        goalFollowupDue: { enabled: true, lookaheadMs: 20_000, staleMs: 100_000 },
+        goalStaleBackoffActionAvailabilityKey: () => actionKey,
+      });
+      const followup = createGoalFollowupDueTrigger({
+        goalsRepository: h.goalsRepository,
+        watermarkRepository: h.watermarkRepository,
+        lookaheadMs: 20_000,
+        staleMs: 100_000,
+        respectStaleBackoff: true,
+        staleBackoff: {
+          baseCooldownMs: 1_000,
+          multiplier: 2,
+          maxCooldownMs: 60_000,
+          dormancyCount: 3,
+        },
+        goalStaleBackoffActionAvailabilityKey: () => actionKey,
+        clock: h.clock,
+      });
+      const first = (await followup.scan())[0]!;
+      h.watermarkRepository.set(first.watermarkProcessName, DEFAULT_SESSION_ID, {
+        lastTs: h.clock.now(),
+        lastEntryId: first.id,
+      });
+      const presentations = h.goalsRepository.presentation!;
+      presentations.presented([presentations.snapshot(goal)], "presented-by-either-lane");
+      actionKey = "changed-topology";
+      h.clock.advance(15 * 86_400_000);
+      expect(await executive.scan()).toEqual([]);
+      expect(await followup.scan()).toEqual([]);
+      for (const input of ["association", "progress"]) {
+        if (input === "association") presentations.associateInbound(goal.id, createStreamEntryId());
+        else {
+          h.goalsRepository.updateProgress(goal.id, "Structural progress", { kind: "manual" });
+          h.clock.advance(100_001);
+        }
+        // No gap: executive either admits its due step or delegates to an open followup lane.
+        expect(await executive.scan()).toHaveLength(dueStep ? 1 : 0);
+        expect(await followup.scan()).toHaveLength(1);
+        presentations.presented([presentations.snapshot(h.goalsRepository.get(goal.id)!)], input);
+        expect(await executive.scan()).toEqual([]);
+        expect(await followup.scan()).toEqual([]);
+      }
+    },
+  );
 
   function createScheduler(input: {
     harness: Awaited<ReturnType<typeof createHarness>>;

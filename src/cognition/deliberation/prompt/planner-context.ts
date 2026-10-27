@@ -33,7 +33,10 @@ import { formatRelativeAge, formatRelativeUntil } from "../../../util/relative-t
 import { estimatePromptTokens } from "../../../util/token-estimate.js";
 import { utf16SafePrefixEnd, utf16SafeSuffixStart } from "../../../util/utf16-boundary.js";
 import { renderAutonomousOutboundActionAvailabilitySection } from "../../../outbound/outbound-prompt.js";
-import { formatAutonomyTriggerContext } from "../../autonomy-trigger.js";
+import {
+  formatAutonomyTriggerContext,
+  renderAutonomyTriggerPresentation,
+} from "../../autonomy-trigger.js";
 import type {
   CompactPlannerLedgerPrompt,
   EvidenceLedgerEntry,
@@ -94,6 +97,7 @@ export type PlannerContextTraceSummary = {
 };
 
 export type CompactPlannerSystemPrompt = {
+  shownGoalIds?: readonly string[];
   system: readonly LLMSystemBlock[];
   traceSummary: PlannerContextTraceSummary;
 };
@@ -106,6 +110,7 @@ export type BuildCompactPlannerSystemPromptInput = {
 };
 
 export type RenderedPlannerSection = {
+  shownGoalIds?: readonly string[];
   label: string;
   text: string;
   rowCount: number;
@@ -314,6 +319,7 @@ function section(
     truncationCount?: number;
     omissionCount?: number;
     criticalOverflow?: boolean;
+    shownGoalIds?: readonly string[];
   } = {},
 ): RenderedPlannerSection {
   return {
@@ -322,6 +328,7 @@ function section(
     rowCount: options.rowCount ?? 0,
     truncationCount: options.truncationCount ?? 0,
     omissionCount: options.omissionCount ?? 0,
+    ...(options.shownGoalIds === undefined ? {} : { shownGoalIds: options.shownGoalIds }),
     ...(options.criticalOverflow === undefined
       ? {}
       : { criticalOverflow: options.criticalOverflow }),
@@ -641,6 +648,7 @@ export function renderGoalDigest(context: DeliberationContext): RenderedPlannerS
         "</borg_planner_goal_digest>",
       ].join("\n"),
       rowCount: goalIndex.rows.length + expandedGoals.rows.length + executiveNextSteps.rows.length,
+      shownGoalIds: includedGoals.map((goal) => goal.id),
       truncationCount:
         goalIndex.truncationCount +
         expandedGoals.truncationCount +
@@ -701,6 +709,7 @@ export function renderGoalDigest(context: DeliberationContext): RenderedPlannerS
   }
 
   return section("goal_index", rendered.text, {
+    shownGoalIds: rendered.shownGoalIds,
     rowCount: rendered.rowCount,
     truncationCount: rendered.truncationCount,
     omissionCount: rendered.omissionCount,
@@ -1994,6 +2003,7 @@ function renderAuthorityAndDirectiveContext(context: DeliberationContext): Rende
 }
 
 type RenderedTurnStateFragment = {
+  shownGoalIds?: readonly string[];
   lines: string[];
   rowCount: number;
   truncationCount: number;
@@ -2052,13 +2062,18 @@ function renderTurnStateAutonomyTrigger(
   // Bound the payload structurally at the planner's cap, so a presented question's id and text
   // outlast its evidence; a head+tail crop of the shared rendering cut whole questions out of the
   // middle. The crop remains for structure that stays whole and still exceeds the cap.
-  const formatted = formatAutonomyTriggerContext(trigger, PLANNER_AUTONOMY_TRIGGER_MAX_CHARS);
+  const presentation = renderAutonomyTriggerPresentation(
+    trigger,
+    PLANNER_AUTONOMY_TRIGGER_MAX_CHARS,
+  );
+  const formatted = presentation.text;
   const autonomyTrigger = headTailPlannerExcerpt(formatted, PLANNER_AUTONOMY_TRIGGER_MAX_CHARS);
   return {
     lines: [
       `  <autonomy_trigger disclosure="${disclosureAttribute}">${escapeXmlText(autonomyTrigger.text)}</autonomy_trigger>`,
     ],
     rowCount: 1,
+    shownGoalIds: autonomyTrigger.truncated ? [] : presentation.shownGoalIds,
     truncationCount:
       autonomyTrigger.truncated || formatted !== formatAutonomyTriggerContext(trigger) ? 1 : 0,
     omissionCount: 0,
@@ -2305,6 +2320,7 @@ function renderTurnState(context: DeliberationContext): RenderedPlannerSection {
       rowCount: fragments.reduce((sum, fragment) => sum + fragment.rowCount, 0),
       truncationCount: fragments.reduce((sum, fragment) => sum + fragment.truncationCount, 0),
       omissionCount: turnHistoryOmissionCount,
+      shownGoalIds: autonomyTrigger.shownGoalIds,
     },
   );
 }
@@ -2519,5 +2535,6 @@ export function buildCompactPlannerSystemPrompt(
       },
     ],
     traceSummary: buildTraceSummary(allSections),
+    shownGoalIds: [...new Set(allSections.flatMap((entry) => entry.shownGoalIds ?? []))],
   };
 }

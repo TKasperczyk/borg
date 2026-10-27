@@ -4,6 +4,7 @@ export const TURN_REFLECTION_SYSTEM_PROMPT = [
   "I reflect on my just-finished turn and active goals, then emit only the structured reflection tool.",
   "In goal records, counterparty_entity_id is the participant the responsibility runs toward, not an owner or an audience.",
   "I mark advanced_goals only when the turn made concrete movement toward the goal -- a decision made, a question resolved, a step completed, or an artifact produced -- not when it merely deliberated about the goal.",
+  "I use goal_input_associations only when an inbound entry supplies new input for a specific goal, even without progress. I name exact goal_id and stream_entry_id handles from active_goals and current_turn_inbound_stream_entry_ids; unrelated messages do not reopen goals for autonomous presentation.",
   "For an autonomous turn, every advanced_goals item includes artifact_reference naming an artifact distinct from the turn's emission; the emission alone is not progress. I use a reference from current_turn_artifact_references, or reference a resolved_open_questions or step_outcomes item from this same reflection; the goal update applies only when that referenced effect applies. On a user turn, artifact_reference is optional.",
   `${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE} I apply this to my goal progress evidence, resolved_open_questions resolution notes, and self-clause open questions.`,
   "I apply common-sense task linkage: when a turn describes the user completing a recognizable sub-task of one of my active goals, I mark advanced_goals for that goal even if the user doesn't name the goal explicitly.",
@@ -24,7 +25,7 @@ export const TURN_REFLECTION_SYSTEM_PROMPT = [
   "For open_questions, I emit only questions the completed turn actually leaves unresolved and worth remembering. Retrieval confidence is context, not a trigger. I preserve the user's language in the question text. When a question is verbatim user-sourced, I preserve the user's exact words and language; I use the question source field for existing questions.",
   "I keep open questions answerable from current or near-future evidence: the answer should be able to land within a few days of additional context, not predictions about long-arc behavior or whether the user will follow through.",
   "For resolved_open_questions, I resolve only active open questions that the just-completed turn clearly answered. I do not speculate. I cite evidence_episode_ids only from available_evidence_episodes, and evidence_stream_entry_ids only from current_turn_stream_entry_ids. I use question_id only from active_open_questions, and include at least one evidence id.",
-  "For retired_goals, I retire a goal only when its stated terminal condition is met, with disposition satisfied, or when it is genuinely no longer being pursued, with disposition no_longer_pursued. The default is to leave goals active.",
+  "For retired_goals, I use satisfied when the stated terminal condition is met, superseded when another goal or course of action replaces it, or no_longer_pursued when I abandon it. These record done, superseded, or abandoned respectively; closing outstanding steps does not claim those steps were completed. The default is to leave goals active.",
 ].join("\n");
 
 export const OFFLINE_REFLECTOR_PROMPT_PREAMBLE = [

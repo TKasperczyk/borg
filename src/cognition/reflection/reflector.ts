@@ -129,6 +129,7 @@ export type ReflectionContext = {
   // (user_msg + agent_msg). Used as evidence for trait demonstrations
   // since the episode hasn't been extracted yet at reflection time.
   currentTurnStreamEntryIds?: readonly StreamEntryId[];
+  currentTurnInboundStreamEntryIds?: readonly StreamEntryId[];
   // Records written by the turn's terminal emission. They remain available
   // as reflection evidence, but the emission itself is not a distinct act
   // that can substantiate autonomous goal progress.
@@ -243,7 +244,7 @@ const scheduledWakeArtifactOutputSchema = z.object({
 
 const retiredGoalSchema = z.object({
   goal_id: goalIdSchema,
-  disposition: z.enum(["satisfied", "no_longer_pursued"]),
+  disposition: z.enum(["satisfied", "superseded", "no_longer_pursued"]),
   evidence: z
     .object({
       note: z.string().min(1),
@@ -277,6 +278,12 @@ const strictReflectionOutputSchema = z.object({
     )
     .describe(
       `Goals advanced by this turn. Mark only when the turn made concrete movement toward the goal -- a decision made, a question resolved, a step completed, or an artifact produced -- not when it merely deliberated about the goal. The evidence is appended to goal progress_notes; for Borg-owned goals, apply this voice guidance: ${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE}`,
+    )
+    .default([]),
+  goal_input_associations: z
+    .array(z.object({ goal_id: goalIdSchema, stream_entry_id: streamEntryIdSchema }).strict())
+    .describe(
+      "Associate new inbound evidence with a goal only when this turn supplies input for that goal, even if no progress was made. Use exact goal ids from active_goals and entry ids from current_turn_inbound_stream_entry_ids. Unrelated inbound entries must not be associated.",
     )
     .default([]),
   procedural_outcomes: z
@@ -366,6 +373,7 @@ const REFLECTION_TOOL: LLMToolDefinition = {
 function emptyReflectionOutput(): ReflectionOutput {
   return {
     advanced_goals: [],
+    goal_input_associations: [],
     procedural_outcomes: [],
     trait_demonstrations: [],
     intent_updates: [],
@@ -809,6 +817,24 @@ export class Reflector {
     const activeGoalsById = new Map(context.selfSnapshot.goals.map((goal) => [goal.id, goal]));
     const reflectionOrigin = context.origin ?? "user";
     const isAutonomousTurn = isAutonomousLikeTurnOrigin(reflectionOrigin);
+
+    for (const association of reflectionOutput.goal_input_associations) {
+      const valid =
+        !isAutonomousTurn &&
+        activeGoalsById.has(association.goal_id) &&
+        (context.currentTurnInboundStreamEntryIds ?? []).includes(association.stream_entry_id);
+      if (valid)
+        this.options.goalsRepository.presentation?.associateInbound(
+          association.goal_id,
+          association.stream_entry_id,
+        );
+      await this.appendReflectorInternalEvent(streamWriter, {
+        hook: valid ? "reflector_goal_input_associated" : "reflector_goal_input_rejected",
+        goal_id: association.goal_id,
+        stream_entry_id: association.stream_entry_id,
+        ...(valid ? {} : { reason: "goal_or_inbound_handle_not_in_turn" }),
+      });
+    }
 
     const autonomouslyClosedStepGoalIds = await this.applyExecutiveStepOutcomes(
       context,
@@ -1913,7 +1939,12 @@ export class Reflector {
         continue;
       }
 
-      const nextStatus: GoalStatus = retirement.disposition === "satisfied" ? "done" : "abandoned";
+      const nextStatus: GoalStatus =
+        retirement.disposition === "satisfied"
+          ? "done"
+          : retirement.disposition === "superseded"
+            ? "superseded"
+            : "abandoned";
       const retirementProvenance = {
         kind: "online_reflector" as const,
         evidence_episode_ids: evidenceEpisodeIds,
@@ -2253,6 +2284,8 @@ export class Reflector {
                     ...memoryDisclosurePayloadFields(openQuestionMemoryDisclosureLabel(question)),
                   })),
                   current_turn_stream_entry_ids: context.currentTurnStreamEntryIds ?? [],
+                  current_turn_inbound_stream_entry_ids:
+                    context.currentTurnInboundStreamEntryIds ?? [],
                   current_turn_artifact_references: currentTurnArtifactReferences(context),
                   available_evidence_episodes: context.retrievedEpisodes.map((result) => ({
                     id: result.episode.id,

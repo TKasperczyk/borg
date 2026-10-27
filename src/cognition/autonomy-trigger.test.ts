@@ -17,6 +17,34 @@ const BASE = {
 } as const;
 
 describe("formatAutonomyTriggerContext epoch annotation", () => {
+  it("reports only goal handles retained by structural prompt bounding", () => {
+    const primary = "goal_aaaaaaaaaaaaaaaa";
+    const secondary = "goal_bbbbbbbbbbbbbbbb";
+    const context = {
+      ...BASE,
+      payload: {
+        selected_goal_id: primary,
+        selected_goal: {
+          id: primary,
+          description: "主題",
+          disclosure_label: { disclosure_class: "self_private" },
+        },
+        secondary_due_goals: [
+          {
+            goal_id: secondary,
+            description: "Secondary",
+            disclosure: "private ".repeat(1000),
+            disclosure_label: { disclosure_class: "relationship_private" },
+          },
+        ],
+      },
+    };
+    expect(renderAutonomyTriggerPresentation(context).shownGoalIds).toEqual([primary, secondary]);
+    const bounded = renderAutonomyTriggerPresentation(context, 1_000);
+    expect(bounded.shownGoalIds).toEqual([primary]);
+    expect(bounded.text).not.toContain(secondary);
+  });
+
   it("counts only whole question ids and texts in the retained payload", () => {
     const context = {
       ...BASE,
@@ -567,7 +595,9 @@ describe("formatAutonomyTriggerContext epoch annotation", () => {
           payload.related_episodes.slice(0, primary.length).map(handles),
         );
         expect(additional.map(handles)).toEqual(
-          payload.additional_questions[0]!.related_episodes.slice(0, additional.length).map(handles),
+          payload.additional_questions[0]!.related_episodes.slice(0, additional.length).map(
+            handles,
+          ),
         );
         if (omitted > 0 && omitted < 12) {
           partial += 1;

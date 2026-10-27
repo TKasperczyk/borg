@@ -50,6 +50,8 @@ describe("AutonomyWakesRepository", () => {
 
       expect(repository.countSince(1_000)).toBe(2);
       expect(repository.countSince(1_500)).toBe(1);
+      expect(repository.countSince(0, { triggerName: "scheduled_reflection" })).toBe(1);
+      expect(repository.countSince(1_500, { triggerName: "scheduled_reflection" })).toBe(0);
       expect(repository.countSince(0, { sourceCategory: "contemplative" })).toBe(1);
       expect(repository.countSince(0, { sourceCategory: "operational" })).toBe(1);
       expect(repository.listSince(0, 10)[1]?.source_category).toBe("contemplative");
@@ -90,6 +92,15 @@ describe("AutonomyWakesRepository", () => {
       expect(repository.countSince(0)).toBe(2);
       expect(repository.countSince(0, { outcome: "headway" })).toBe(1);
       expect(repository.countSince(0, { outcome: "silent" })).toBe(0);
+      expect(
+        repository.countSince(0, { triggerName: "goal_followup_due", outcome: "silent" }),
+      ).toBe(0);
+      expect(
+        repository.countSince(0, {
+          triggerName: "scheduled_reflection",
+          excludePreparationFailures: true,
+        }),
+      ).toBe(1);
       expect(
         repository.countSince(0, {
           sourceCategory: "operational",

@@ -1,6 +1,8 @@
 import { z } from "zod";
 
 import type { ExecutiveStepsRepository } from "../../executive/index.js";
+import { GoalPresentationStore } from "../../executive/goal-presentation.js";
+import type { StreamWatermarkRepository } from "../../stream/watermark.js";
 import { type SqliteDatabase } from "../../storage/sqlite/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { StorageError } from "../../util/errors.js";
@@ -49,12 +51,15 @@ import {
   goalPatchSchema,
   goalSchema,
   goalStatusSchema,
+  goalRetirementDispositionSchema,
+  isTerminalGoalStatus,
   type GoalRecord,
   type GoalStatus,
   type GoalTreeNode,
 } from "./types.js";
 
 export type GoalsRepositoryOptions = {
+  watermarkRepository?: StreamWatermarkRepository;
   db: SqliteDatabase;
   dataDir?: string;
   clock?: Clock;
@@ -120,11 +125,16 @@ export type GoalRetirementResult =
     };
 
 export class GoalsRepository {
+  readonly presentation: GoalPresentationStore | undefined;
   private readonly clock: Clock;
   private reconcilingBlocks = false;
 
   constructor(private readonly options: GoalsRepositoryOptions) {
     this.clock = options.clock ?? new SystemClock();
+    this.presentation =
+      options.watermarkRepository === undefined
+        ? undefined
+        : new GoalPresentationStore(options.watermarkRepository);
   }
 
   private get db(): SqliteDatabase {
@@ -160,7 +170,7 @@ export class GoalsRepository {
   private abandonOpenStepsWhenClosingGoal(current: GoalRecord, nextStatus: GoalStatus): void {
     if (
       (current.status !== "active" && current.status !== "blocked") ||
-      (nextStatus !== "done" && nextStatus !== "abandoned")
+      !isTerminalGoalStatus(nextStatus)
     ) {
       return;
     }
@@ -424,7 +434,13 @@ export class GoalsRepository {
     }));
   }
 
-  retire(goalId: GoalId, reason: string, provenance: Provenance): GoalRetirementResult {
+  retire(
+    goalId: GoalId,
+    reason: string,
+    provenance: Provenance,
+    disposition: z.infer<typeof goalRetirementDispositionSchema> = "abandoned",
+  ): GoalRetirementResult {
+    const status = goalRetirementDispositionSchema.parse(disposition);
     return this.runGoalWrite(() => {
       const current = this.get(goalId);
 
@@ -453,7 +469,7 @@ export class GoalsRepository {
         goal: this.update(
           goalId,
           {
-            status: "abandoned",
+            status,
             progress_notes: progressNotes,
             provenance,
           },
@@ -632,13 +648,13 @@ export class GoalsRepository {
             // Only a terminal status releases the dependency. Becoming blocked
             // leaves the blocker unfinished and does not resolve this wait.
             const dependency = this.get(blocker.goal_id);
-            if (dependency?.status === "done" || dependency?.status === "abandoned") {
+            if (dependency !== null && isTerminalGoalStatus(dependency.status)) {
               const event =
                 this.identityEventRepository === undefined
                   ? undefined
                   : (this.db
                       .prepare(
-                        "SELECT id, ts FROM identity_events WHERE record_type = 'goal' AND record_id = ? AND json_extract(new_value_json, '$.status') IN ('done', 'abandoned') AND COALESCE(json_extract(old_value_json, '$.status'), '') NOT IN ('done', 'abandoned') ORDER BY id DESC LIMIT 1",
+                        "SELECT id, ts FROM identity_events WHERE record_type = 'goal' AND record_id = ? AND json_extract(new_value_json, '$.status') IN ('done', 'superseded', 'abandoned') AND COALESCE(json_extract(old_value_json, '$.status'), '') NOT IN ('done', 'superseded', 'abandoned') ORDER BY id DESC LIMIT 1",
                       )
                       .get(dependency.id) as { id: number; ts: number } | undefined);
               this.unblock(
@@ -803,6 +819,7 @@ export class GoalsRepository {
         });
       }
 
+      this.presentation?.progressWritten(goalId, nextRecordVersion(expectedVersion));
       recordIdentityEvent(this.identityEventRepository, {
         record_type: "goal",
         record_id: goalId,
@@ -918,6 +935,10 @@ export class GoalsRepository {
       });
 
       this.abandonOpenStepsWhenClosingGoal(current, next.status);
+
+      if (parsedPatch.progress_notes !== undefined) {
+        this.presentation?.progressWritten(goalId, nextRecordVersion(expectedVersion));
+      }
 
       recordIdentityEvent(this.identityEventRepository, {
         record_type: "goal",

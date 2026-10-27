@@ -234,6 +234,11 @@ export class TurnReflectionCoordinator {
           input.persistedAgentEntry.id,
         ].filter((entryId): entryId is StreamEntryId => entryId !== undefined),
         currentTurnProducedStreamEntryIds: [input.persistedAgentEntry.id],
+        currentTurnInboundStreamEntryIds:
+          (input.origin ?? "user") === "user"
+            ? (input.sourceUserEntryIds ??
+              (input.persistedUserEntryId === undefined ? [] : [input.persistedUserEntryId]))
+            : [],
         currentTurnJournalEntryIds: input.currentTurnJournalEntryIds ?? [],
       },
       input.streamWriter,

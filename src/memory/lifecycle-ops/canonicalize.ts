@@ -3,6 +3,8 @@ import type { ActionRecord } from "../actions/types.js";
 import type { SharedStateEntry } from "../shared-state/types.js";
 import type { Provenance } from "../common/provenance.js";
 import type { GoalRecord } from "../self/types.js";
+import { isTerminalGoalStatus } from "../self/types.js";
+export { isTerminalGoalStatus } from "../self/types.js";
 import type { GoalsRepository } from "../self/goals-repository.js";
 import type { CommitmentRecord, CommitmentType } from "../commitments/types.js";
 import type { CommitmentRepository } from "../commitments/repository.js";
@@ -24,10 +26,6 @@ export const SHARED_STATE_RECONCILIATION_PROVENANCE = {
 const SHARED_STATE_COMMITMENT_CANONICALIZATION_TYPE_SET = new Set<CommitmentType>(
   SHARED_STATE_COMMITMENT_CANONICALIZATION_TYPES,
 );
-
-export function isTerminalGoalStatus(status: string): boolean {
-  return status === "done" || status === "abandoned";
-}
 
 export function isTerminalCommitment(commitment: CommitmentRecord, nowMs: number): boolean {
   return (

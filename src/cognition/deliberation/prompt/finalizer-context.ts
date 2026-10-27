@@ -93,6 +93,7 @@ export type FinalizerContextTraceSummary = {
 export type CompactFinalizerSystemPrompt = {
   system: readonly LLMSystemBlock[];
   traceSummary: FinalizerContextTraceSummary;
+  shownGoalIds: readonly string[];
 };
 
 export type BuildCompactFinalizerSystemPromptInput = {
@@ -121,6 +122,7 @@ type RenderedTerminalSection = {
   rowCount: number;
   truncationCount: number;
   omissionCount: number;
+  shownGoalIds?: readonly string[];
 };
 
 const TERMINAL_PASS_CONTRACT = [
@@ -190,7 +192,7 @@ function terminalSection(
   cacheTier: FinalizerCacheTier,
   text: string,
   counts: Partial<
-    Pick<RenderedTerminalSection, "rowCount" | "truncationCount" | "omissionCount">
+    Pick<RenderedTerminalSection, "rowCount" | "truncationCount" | "omissionCount" | "shownGoalIds">
   > = {},
 ): RenderedTerminalSection {
   return {
@@ -200,6 +202,7 @@ function terminalSection(
     rowCount: counts.rowCount ?? 0,
     truncationCount: counts.truncationCount ?? 0,
     omissionCount: counts.omissionCount ?? 0,
+    ...(counts.shownGoalIds === undefined ? {} : { shownGoalIds: counts.shownGoalIds }),
   };
 }
 
@@ -1399,6 +1402,7 @@ function plannerSectionToTerminal(
     rowCount: section.rowCount,
     truncationCount: section.truncationCount,
     omissionCount: section.omissionCount,
+    shownGoalIds: section.shownGoalIds,
   });
 }
 
@@ -1441,8 +1445,16 @@ function renderTurnContext(
   const currentTime = renderCurrentTimeSection(nowMs, input.context.currentTimeContext ?? null);
   const renderBaseSections = (ids: readonly string[]) =>
     ids.flatMap((id) => {
-      const rendered = renderPromptSection(baseSections.promptSectionsById.get(id));
-      return rendered === null ? [] : [terminalSection(id, "terminal_fast_turn", rendered)];
+      const section = baseSections.promptSectionsById.get(id);
+      const rendered = renderPromptSection(section);
+      return rendered === null
+        ? []
+        : [
+            terminalSection(id, "terminal_fast_turn", rendered, {
+              shownGoalIds:
+                section != null && typeof section === "object" ? section.shownGoalIds : undefined,
+            }),
+          ];
     });
   const trustedBaseSections = renderBaseSections(TRUSTED_TURN_BASE_SECTION_IDS);
   const untrustedBaseSections = renderBaseSections(UNTRUSTED_TURN_BASE_SECTION_IDS);
@@ -1604,5 +1616,6 @@ export function buildCompactFinalizerSystemPrompt(
       cache_control: { type: "ephemeral", ttl },
     })),
     traceSummary: traceSummary(input, allSections),
+    shownGoalIds: [...new Set(allSections.flatMap((section) => section.shownGoalIds ?? []))],
   };
 }

@@ -142,6 +142,7 @@ export type RunS2PlannerOptions = {
   turnOrigin?: TurnOrigin;
   plannerSurface?: { variant: "legacy" } | ({ variant: "compact" } & CompactPlannerSystemPrompt);
   onRequestPrepared?: (request: S2PlannerRequestSnapshot) => void;
+  onPromptPresented?: () => void;
   onOutcome?: (outcome: S2PlannerOutcome) => void;
 };
 
@@ -570,6 +571,7 @@ async function callPlannerAttempt(
   } satisfies LLMCompleteOptions;
   options.onRequestPrepared?.(request);
   const planner = await options.llmClient.complete(completeOptions);
+  options.onPromptPresented?.();
   const extraction = extractTurnPlan(planner.tool_calls, options.turnOrigin);
 
   if (options.tracer?.enabled === true && options.turnId !== undefined) {

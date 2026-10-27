@@ -13,9 +13,15 @@ import {
   commitmentMigrations,
 } from "../../memory/commitments/index.js";
 import type { SharedStateArtifact } from "../../memory/shared-state/index.js";
-import type { OpenQuestion } from "../../memory/self/index.js";
-import { openDatabase } from "../../storage/sqlite/index.js";
-import { StreamReader, StreamWriter } from "../../stream/index.js";
+import { GoalsRepository, selfMigrations, type OpenQuestion } from "../../memory/self/index.js";
+import { composeMigrations, openDatabase } from "../../storage/sqlite/index.js";
+import {
+  StreamReader,
+  StreamWriter,
+  StreamWatermarkRepository,
+  streamWatermarkMigrations,
+} from "../../stream/index.js";
+import type { GoalPresentationStore } from "../../executive/goal-presentation.js";
 import { ToolDispatcher } from "../../tools/index.js";
 import { FixedClock, ManualClock, type Clock } from "../../util/clock.js";
 import {
@@ -228,6 +234,7 @@ function createDeliberator(
     finalizerSurfaceVariant?: "compact" | "legacy";
     plannerContextCapture?: PlannerContextCapture;
     clock?: Clock;
+    goalPresentation?: GoalPresentationStore;
     planRequestedVerificationMembershipTokenBudget?: number;
   } = {},
 ): Deliberator {
@@ -243,6 +250,9 @@ function createDeliberator(
       ? {}
       : { plannerContextCapture: options.plannerContextCapture }),
     clock: options.clock,
+    ...(options.goalPresentation === undefined
+      ? {}
+      : { goalPresentation: options.goalPresentation }),
     ...(options.planRequestedVerificationMembershipTokenBudget === undefined
       ? {}
       : {
@@ -1262,6 +1272,181 @@ describe("deliberator", () => {
       persistence_class: "assistant_self_report",
     });
   });
+
+  it.each([false, true])(
+    "latches only rendered batch goals after a response, failure before presentation=%s",
+    async (fails) => {
+      const db = openDatabase(":memory:", {
+        migrations: composeMigrations(selfMigrations, streamWatermarkMigrations),
+      });
+      try {
+        const watermarks = new StreamWatermarkRepository({ db });
+        const goals = new GoalsRepository({ db, watermarkRepository: watermarks });
+        const rows = ["Primary", "Secondary", "Not part of wake"].map((description) =>
+          goals.add({ description, priority: 5, provenance: { kind: "manual" } }),
+        );
+        const store = goals.presentation!;
+        const llm = new FakeLLMClient({
+          responses: [
+            emitFinalizerToolResponse({
+              id: "toolu_silent",
+              name: "EmitNoOutput",
+              input: { reason: "natural_close", no_output_categories: ["closure"] },
+            }),
+          ],
+        });
+        if (fails) {
+          vi.spyOn(llm, "complete").mockRejectedValue(new Error("before response"));
+          vi.spyOn(llm, "converse").mockRejectedValue(new Error("before response"));
+        }
+        const context = simpleDeliberationContext({
+          turnOrigin: "autonomous",
+          turnId: "turn_batch_latch",
+          selfSnapshot: {
+            values: [],
+            traits: [],
+            goals: rows.slice(0, 2),
+            goalPresentations: rows.map((goal) => store.snapshot(goal)),
+          },
+          autonomyTrigger: {
+            source_name: "executive_focus_due",
+            source_type: "trigger",
+            event_id: "batch",
+            sort_ts: 1_000,
+            payload: {
+              selected_goal_id: rows[0]!.id,
+              selected_goal: { ...rows[0], disclosure_label: { disclosure_class: "self_private" } },
+              secondary_due_goals: [
+                {
+                  ...rows[1],
+                  goal_id: rows[1]!.id,
+                  disclosure_label: { disclosure_class: "self_private" },
+                },
+              ],
+            },
+          },
+        });
+        const result = createDeliberator(llm, tempDirs, { goalPresentation: store }).run(context);
+        if (fails) await expect(result).rejects.toThrow("before response");
+        else expect((await result).emitted).toBe(false);
+        expect(store.wasPresented(rows[0]!)).toBe(!fails);
+        expect(store.wasPresented(rows[1]!)).toBe(!fails);
+        expect(store.wasPresented(rows[2]!)).toBe(false);
+      } finally {
+        db.close();
+      }
+    },
+  );
+
+  it.each([
+    ["system_1", "compact"],
+    ["system_1", "legacy"],
+    ["system_2", "compact"],
+    ["system_2", "legacy"],
+  ] as const)(
+    "latches a goal shown only outside the trigger in a silent %s %s response",
+    async (path, variant) => {
+      const db = openDatabase(":memory:", {
+        migrations: composeMigrations(selfMigrations, streamWatermarkMigrations),
+      });
+      try {
+        const watermarks = new StreamWatermarkRepository({ db });
+        const goals = new GoalsRepository({ db, watermarkRepository: watermarks });
+        const rows = ["Primary", "Digest-only secondary", "Never rendered"].map((description) =>
+          goals.add({ description, priority: 5, provenance: { kind: "manual" } }),
+        );
+        const store = goals.presentation!;
+        const presented = vi.spyOn(store, "presented");
+        const response =
+          path === "system_1"
+            ? emitFinalizerToolResponse({
+                id: "toolu_silent",
+                name: "EmitNoOutput",
+                input: { reason: "natural_close", no_output_categories: ["closure"] },
+              })
+            : emitFinalizerToolResponse({
+                id: "toolu_plan",
+                name: "EmitTurnPlan",
+                input: {
+                  uncertainty: "",
+                  verification_steps: [],
+                  tensions: [],
+                  voice_note: "",
+                  intents: [],
+                  emission_recommendation: "no_output",
+                },
+              });
+        const llm = new FakeLLMClient({
+          responses: [
+            response,
+            emitFinalizerToolResponse({
+              id: "toolu_final_silent",
+              name: "EmitNoOutput",
+              input: { reason: "natural_close", no_output_categories: ["closure"] },
+            }),
+          ],
+        });
+        const result = await createDeliberator(llm, tempDirs, {
+          goalPresentation: store,
+          plannerSurfaceVariant: variant,
+          finalizerSurfaceVariant: variant,
+        }).run(
+          simpleDeliberationContext({
+            turnOrigin: "autonomous",
+            turnId: "digest-latch",
+            options: { stakes: path === "system_2" ? "high" : "low" },
+            selfSnapshot: {
+              values: [],
+              traits: [],
+              goals: rows.slice(0, 2),
+              goalPresentations: rows.map((goal) => store.snapshot(goal)),
+            },
+            autonomyTrigger: {
+              source_name: "executive_focus_due",
+              source_type: "trigger",
+              event_id: "batch",
+              sort_ts: 1_000,
+              payload: {
+                selected_goal_id: rows[0]!.id,
+                selected_goal: {
+                  ...rows[0],
+                  disclosure_label: { disclosure_class: "self_private" },
+                },
+                secondary_due_goals: [
+                  {
+                    goal_id: rows[1]!.id,
+                    description: rows[1]!.description,
+                    disclosure: "private ".repeat(10_000),
+                    disclosure_label: { disclosure_class: "self_private" },
+                  },
+                ],
+              },
+            },
+          }),
+        );
+        expect(result).toMatchObject({ path, emitted: false });
+        const prompt = requestSystemText(llm.requests[0]?.system);
+        const trigger =
+          path === "system_2" && variant === "compact"
+            ? /<autonomy_trigger [^>]*>([\s\S]*?)<\/autonomy_trigger>/.exec(prompt)?.[1]
+            : /<borg_autonomy_trigger>([\s\S]*?)<\/borg_autonomy_trigger>/.exec(prompt)?.[1];
+        expect(trigger).toBeDefined();
+        expect(trigger).not.toContain(rows[1]!.id);
+        expect(prompt).toContain(rows[1]!.description);
+        expect(store.wasPresented(rows[0]!)).toBe(true);
+        expect(store.wasPresented(rows[1]!)).toBe(true);
+        expect(store.wasPresented(rows[2]!)).toBe(false);
+        expect(presented.mock.calls).toHaveLength(path === "system_1" ? 1 : 2);
+        for (const [snapshots] of presented.mock.calls) {
+          expect(snapshots.map((goal) => goal.goalId)).toEqual(
+            rows.slice(0, 2).map((goal) => goal.id),
+          );
+        }
+      } finally {
+        db.close();
+      }
+    },
+  );
 
   it("maps EmitContinueThought to a non-message private thought emission", async () => {
     const llm = new FakeLLMClient({

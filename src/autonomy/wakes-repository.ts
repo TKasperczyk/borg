@@ -285,6 +285,7 @@ export class AutonomyWakesRepository {
     ts: number,
     options: {
       sourceCategory?: AutonomyWakeSourceCategory;
+      triggerName?: AutonomyWakeSourceName;
       outcome?: AutonomyWakeOutcome;
       excludePreparationFailures?: boolean;
       excludeTurnProviderFailures?: boolean;
@@ -294,6 +295,11 @@ export class AutonomyWakesRepository {
     const outcomeFilter = options.outcome;
     const conditions = ["ts >= ?"];
     const values: unknown[] = [ts];
+
+    if (options.triggerName !== undefined) {
+      conditions.push("trigger_name = ?");
+      values.push(autonomyWakeSourceNameSchema.parse(options.triggerName));
+    }
 
     if (options.excludePreparationFailures === true) {
       conditions.push("preparation_failed = 0");

@@ -202,6 +202,8 @@ function beginSql(mode: TransactionMode): string {
 export type Migration = {
   id: number;
   name: string;
+  /** Table rebuilds must disable FK actions outside the migration transaction. */
+  disableForeignKeys?: boolean;
   up: string | ((db: SqliteDatabase) => void);
 };
 
@@ -389,10 +391,27 @@ export function runMigrations(
         migration.up(db);
       }
 
+      if (migration.disableForeignKeys && db.prepare("PRAGMA foreign_key_check").all().length > 0) {
+        throw new StorageError(`Foreign key check failed after migration ${migration.name}`);
+      }
+
       insertMigration.run(migration.id, migration.name, appliedAt);
     });
 
-    applyMigration();
+    if (migration.disableForeignKeys) {
+      if (db.raw.inTransaction) {
+        throw new StorageError(`Migration ${migration.name} requires an outermost transaction`);
+      }
+      const foreignKeys = db.pragma("foreign_keys", { simple: true });
+      db.pragma("foreign_keys = OFF");
+      try {
+        applyMigration();
+      } finally {
+        db.pragma(`foreign_keys = ${foreignKeys === 1 ? "ON" : "OFF"}`);
+      }
+    } else {
+      applyMigration();
+    }
   }
 }
 

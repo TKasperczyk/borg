@@ -1207,6 +1207,7 @@ describe("executeToolLoop", () => {
       name: "tool.goals.retire",
       input: {
         goal_id: goal.id,
+        disposition: "abandoned",
         reason: "The batched wake verified that this goal is complete.",
       },
     });

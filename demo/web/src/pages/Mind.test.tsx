@@ -479,6 +479,24 @@ describe("Mind page", () => {
     expect(screen.queryByText("The operator is the creator.")).toBeNull();
   });
 
+  it("counts terminal goal dispositions separately and disables their progress controls", async () => {
+    const data = identity();
+    data.goals = (["done", "superseded", "abandoned"] as const).map((status, index) => ({
+      ...data.goals[0]!,
+      id: `goal_${index + 1}`,
+      status,
+      description: `Goal ${status}`,
+    }));
+    renderMind("/mind", { identityOverride: data });
+    expect(await screen.findByText("1 done · 1 superseded · 1 abandoned")).toBeTruthy();
+    expect(screen.getByText("SUPERSEDED")).toBeTruthy();
+    expect(
+      screen
+        .getAllByRole("button", { name: /BUMP/ })
+        .every((button) => (button as HTMLButtonElement).disabled),
+    ).toBe(true);
+  });
+
   it("adds a value with the exact server body and surfaces server errors", async () => {
     const emptyValues = { ...identity(), values: [] };
     const { requests } = renderMind("/mind", { identityOverride: emptyValues });

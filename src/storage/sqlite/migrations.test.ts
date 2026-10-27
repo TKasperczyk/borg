@@ -117,7 +117,7 @@ describe("migration name reconciliation", () => {
     expect(reopenedDb.prepare("SELECT total_changes() AS count").get()).toEqual({ count: 0 });
   });
 
-  it("opens the 73-row Sol demo ledger without moves and applies only five pending migrations", () => {
+  it("opens the 73-row Sol demo ledger without moves and applies only six pending migrations", () => {
     const [header, ...rows] = readFileSync(
       new URL("../fixtures/sol-demo-bank-migrations.txt", import.meta.url),
       "utf8",
@@ -153,16 +153,18 @@ describe("migration name reconciliation", () => {
     }));
     const appliedAt = 1_900_000_000_000;
     runMigrations(legacyDb, trackedMigrations, appliedAt);
-    expect(appliedIds).toEqual([1_000_012, 16_000_006, 16_000_007, 28_000_001, 28_000_002]);
+    expect(appliedIds).toEqual([
+      1_000_012, 1_000_013, 16_000_006, 16_000_007, 28_000_001, 28_000_002,
+    ]);
     const after = legacyDb.listAppliedMigrations();
-    expect(after).toHaveLength(78);
+    expect(after).toHaveLength(79);
     expect(after.filter((row) => !appliedIds.includes(row.id))).toEqual(liveLedger);
     expect(after.filter((row) => appliedIds.includes(row.id)).map((row) => row.applied_at)).toEqual(
-      [appliedAt, appliedAt, appliedAt, appliedAt, appliedAt],
+      [appliedAt, appliedAt, appliedAt, appliedAt, appliedAt, appliedAt],
     );
     const changes = legacyDb.prepare("SELECT total_changes() AS count").get();
     runMigrations(legacyDb, trackedMigrations, appliedAt + 1000);
-    expect(appliedIds).toHaveLength(5);
+    expect(appliedIds).toHaveLength(6);
     expect(legacyDb.listAppliedMigrations()).toEqual(after);
     expect(legacyDb.prepare("SELECT total_changes() AS count").get()).toEqual(changes);
   });

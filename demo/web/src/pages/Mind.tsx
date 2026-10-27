@@ -628,6 +628,7 @@ function IdentityGrid({
       </div>
       <div className="identity-cell">
         <Subhead>GOALS</Subhead>
+        <div>{goals.filter((goal) => goal.status === "done").length} done · {goals.filter((goal) => goal.status === "superseded").length} superseded · {goals.filter((goal) => goal.status === "abandoned").length} abandoned</div>
         {visibleGoals.map((goal) => (
           <GoalRow key={goal.id} goal={goal} showToast={showToast} refetchMind={refetchMind} />
         ))}
@@ -838,7 +839,7 @@ function GoalRow({
       </div>
       <div className="goal-actions">
         <span>prio {goal.priority.toFixed(2)}</span>
-        <button type="button" onClick={() => void bump()} disabled={pendingAction !== null}>
+        <button type="button" onClick={() => void bump()} disabled={pendingAction !== null || (goal.status !== "active" && goal.status !== "blocked")}>
           BUMP +
         </button>
         {goal.status === "active" ? (

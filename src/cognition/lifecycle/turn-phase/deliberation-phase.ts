@@ -98,6 +98,7 @@ export async function runDeliberationPhase(input: {
 }): Promise<TurnDeliberationPhaseResult> {
   const promptBlocks = resolvePromptBlockOverrides(input.options.promptOverrideRepository);
   const deliberator = new Deliberator({
+    goalPresentation: input.options.goalsRepository?.presentation,
     llmClient: input.llmClient,
     toolDispatcher: input.options.toolDispatcher,
     cognitionModel: input.options.config.anthropic.models.cognition,

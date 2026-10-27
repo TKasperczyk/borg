@@ -232,6 +232,7 @@ export function buildAutonomyScheduler(options: BuildAutonomySchedulerOptions): 
     intervalMs: options.config.autonomy.intervalMs,
     prepToolTimeoutMs: options.config.autonomy.prepToolTimeoutMs,
     maxWakesPerWindow: options.config.autonomy.maxWakesPerWindow,
+    maxWakesPerWindowBySource: options.config.autonomy.maxWakesPerWindowBySource,
     goalWakeBatchMax: options.config.autonomy.goalWakeBatchMax,
     budgetWindowMs: options.config.autonomy.budgetWindowMs,
     reservedContemplativeWakesPerWindow:

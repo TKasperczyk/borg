@@ -2,6 +2,23 @@ import type { ExecutiveGoalScoreBasis } from "../executive/index.js";
 import { IDENTITY_EVENT_COGNITION_CHANGE_EXCERPT_MAX_CHARS } from "../memory/identity/index.js";
 import { headTailTextExcerpt } from "../util/text-excerpt.js";
 import { epochMsToIso } from "../util/iso-instant.js";
+import { goalIdHelpers, type GoalId } from "../util/ids.js";
+
+/** Exact handles on the primary and retained secondary wake rows; no text matching. */
+export function autonomyTriggerGoalIds(payload: Record<string, unknown>): GoalId[] {
+  return [
+    ...new Set(
+      [
+        payload,
+        ...(Array.isArray(payload.secondary_due_goals) ? payload.secondary_due_goals : []),
+      ].flatMap((row) => {
+        if (row === null || typeof row !== "object") return [];
+        const id = row.selected_goal_id ?? row.goal_id;
+        return typeof id === "string" && goalIdHelpers.is(id) ? [id as GoalId] : [];
+      }),
+    ),
+  ];
+}
 
 export const AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS = 32_000;
 
@@ -299,6 +316,7 @@ function boundAutonomyTriggerContext(
     text: string,
   ): RenderedAutonomyTriggerContext => ({
     text,
+    shownGoalIds: autonomyTriggerGoalIds(payload),
     shownOpenQuestionIds: [
       payload,
       ...(Array.isArray(payload.additional_questions) ? payload.additional_questions : []),
@@ -505,6 +523,7 @@ export function formatAutonomyTriggerContext(
 export type RenderedAutonomyTriggerContext = {
   text: string;
   shownOpenQuestionIds: string[];
+  shownGoalIds?: GoalId[];
 };
 
 export function renderAutonomyTriggerPresentation(

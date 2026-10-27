@@ -1,5 +1,6 @@
 import type { Migration } from "../../storage/sqlite/index.js";
 import { tableHasColumn } from "../../storage/sqlite/migrations-utils.js";
+import { StorageError } from "../../util/errors.js";
 
 export const selfMigrations = [
   {
@@ -462,6 +463,41 @@ export const selfMigrations = [
           FOREIGN KEY (open_question_id) REFERENCES open_questions(id) ON DELETE CASCADE
         );
       `);
+    },
+  },
+  {
+    id: 13,
+    name: "goal_superseded_status",
+    disableForeignKeys: true,
+    up: (db) => {
+      // Transform only machine-authored DDL; retain every existing column,
+      // row, reference, index and trigger, including deployment-added indexes.
+      const row = db
+        .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'goals'")
+        .get() as { sql: string };
+      const sql = row.sql
+        .replace(/^CREATE TABLE\s+(?:"goals"|goals)\s*\(/i, "CREATE TABLE goals_next (")
+        .replace(
+          "'active', 'done', 'abandoned', 'blocked'",
+          "'active', 'done', 'abandoned', 'blocked', 'superseded'",
+        );
+      if (
+        sql === row.sql ||
+        !sql.includes("CREATE TABLE goals_next (") ||
+        !sql.includes("'superseded'")
+      ) {
+        throw new StorageError("Unexpected goals schema during superseded-status migration");
+      }
+      const objects = db
+        .prepare(
+          "SELECT sql FROM sqlite_master WHERE tbl_name = 'goals' AND type IN ('index', 'trigger') AND sql IS NOT NULL ORDER BY type, name",
+        )
+        .all() as Array<{ sql: string }>;
+      db.exec(sql);
+      db.exec(
+        "INSERT INTO goals_next SELECT * FROM goals; DROP TABLE goals; ALTER TABLE goals_next RENAME TO goals;",
+      );
+      for (const object of objects) db.exec(object.sql);
     },
   },
 ] as const satisfies readonly Migration[];

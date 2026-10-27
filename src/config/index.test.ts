@@ -47,6 +47,26 @@ describe("config", () => {
     expect(similarityThresholds(config)).toEqual(similarityThresholds(DEFAULT_CONFIG));
   });
 
+  it.each([
+    { open_question_dormant: 12 },
+    { invalid_source: 12 },
+    { open_question_dormant: 0 },
+    { open_question_dormant: 1.5 },
+  ])("loads and validates source wake caps: %j", (caps) => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-source-caps-"));
+    tempDirs.push(tempDir);
+    writeJsonFileAtomic(join(tempDir, "config.json"), {
+      autonomy: { maxWakesPerWindowBySource: caps },
+    });
+    if (caps.open_question_dormant === 12) {
+      expect(loadConfig({ dataDir: tempDir, env: {} }).autonomy.maxWakesPerWindowBySource).toEqual(
+        caps,
+      );
+    } else {
+      expect(() => loadConfig({ dataDir: tempDir, env: {} })).toThrow(ConfigError);
+    }
+  });
+
   it("loads defaults without requiring API keys", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
@@ -157,6 +177,7 @@ describe("config", () => {
     ).toBe(OFFLINE_PROCESS_NAMES.length);
     expect(config.executive.goalFocusThreshold).toBe(0.45);
     expect(config.autonomy.maxWakesPerWindow).toBe(6);
+    expect(config.autonomy.maxWakesPerWindowBySource).toEqual({});
     expect(config.autonomy.prepToolTimeoutMs).toBe(90_000);
     expect(config.autonomy.goalWakeBatchMax).toBe(5);
     expect(config.autonomy.budgetWindowMs).toBe(24 * 60 * 60 * 1_000);

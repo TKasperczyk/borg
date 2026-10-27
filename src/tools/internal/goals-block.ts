@@ -52,7 +52,7 @@ export function createGoalsBlockTool(
   return {
     name: "tool.goals.block",
     description:
-      "Only block goals I attempted and found unavailable; unattempted goals stay active. Declare attempted_unavailable with my reason and exactly one named blocker: another existing goal, an existing entity, or an until timestamp in Unix milliseconds. Optional attempt_evidence names an existing artifact from this or an earlier turn. Blocking pauses executive competition and scheduling pressure, preserves open steps and recall, and records its history and disclosure labels. A terminal status of the blocker goal (done or abandoned, including retirement), a later inbound entry from the entity, or the timestamp passing reactivates it with an audited basis. A blocker goal becoming blocked is not a terminal status.",
+      "Only block goals I attempted and found unavailable; unattempted goals stay active. Declare attempted_unavailable with my reason and exactly one named blocker: another existing goal, an existing entity, or an until timestamp in Unix milliseconds. Optional attempt_evidence names an existing artifact from this or an earlier turn. Blocking pauses executive competition and scheduling pressure, preserves open steps and recall, and records its history and disclosure labels. A terminal status of the blocker goal (done, superseded, or abandoned), a later inbound entry from the entity, or the timestamp passing reactivates it with an audited basis. A blocker goal becoming blocked is not a terminal status.",
     menuSummary: "Block an attempted but unavailable goal with a named blocker and reason.",
     allowedOrigins: ["autonomous", "deliberator"],
     writeScope: "write",

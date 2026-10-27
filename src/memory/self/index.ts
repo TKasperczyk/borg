@@ -94,6 +94,8 @@ export {
   goalSchema,
   goalSourceStreamEntryIdSchema,
   goalStatusSchema,
+  goalRetirementDispositionSchema,
+  isTerminalGoalStatus,
   OPEN_QUESTION_SOURCES,
   OPEN_QUESTION_STATUSES,
   openQuestionAudienceEntityIdSchema,

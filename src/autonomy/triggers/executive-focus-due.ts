@@ -28,6 +28,7 @@ import type { TurnTracer } from "../../tracing/tracer.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { DEFAULT_SESSION_ID, type EpisodeId, type SessionId } from "../../util/ids.js";
 import type { AutonomyTrigger, DueEvent } from "../types.js";
+import { GoalPresentationStore } from "../../executive/goal-presentation.js";
 import {
   getExecutiveFocusGoalStaleBackoffProcessName,
   goalStaleBackoffState,
@@ -307,6 +308,8 @@ export function createExecutiveFocusDueTrigger(
   const clock = options.clock ?? new SystemClock();
   const sessionId = options.sessionId ?? DEFAULT_SESSION_ID;
   const threshold = options.threshold ?? DEFAULT_EXECUTIVE_GOAL_FOCUS_THRESHOLD;
+  const presentations =
+    options.goalsRepository.presentation ?? new GoalPresentationStore(options.watermarkRepository);
 
   function getGoalCooldownProcessName(goalId: GoalRecord["id"]): string {
     return `${WATERMARK_PREFIX}:cooldown:${goalId}`;
@@ -316,6 +319,8 @@ export function createExecutiveFocusDueTrigger(
     goal_id: GoalRecord["id"];
     last_progress_ts: number | null;
   }): number | null {
+    const current = options.goalsRepository.get(input.goal_id);
+    if (current !== null && presentations.hasNewInput(current)) return null;
     const cooldown = options.watermarkRepository.get(
       getGoalCooldownProcessName(input.goal_id),
       sessionId,
@@ -367,6 +372,7 @@ export function createExecutiveFocusDueTrigger(
     nowMs: number,
     actionAvailabilityKey: string | null,
   ): boolean {
+    if (presentations.hasNewInput(goal)) return false;
     const { endMs: backoffEnd } = getGoalStaleBackoff(
       {
         goal_id: goal.id,
@@ -439,6 +445,7 @@ export function createExecutiveFocusDueTrigger(
       const actionKey = options.goalStaleBackoffActionAvailabilityKey?.() ?? null;
       return listActiveGoalsForCognition(options.goalsRepository)
         .filter((goal) => {
+          if (presentations.hasNewInput(goal)) return false;
           const state = getGoalStaleBackoff(
             { goal_id: goal.id, last_progress_ts: goal.last_progress_ts },
             actionKey,
@@ -469,6 +476,9 @@ export function createExecutiveFocusDueTrigger(
           ...(
             await buildSelfScoringFeatureSet({
               embeddingClient: options.embeddingClient,
+              maxInputBytes: options.embeddingClient.maxInputBytes,
+              tracer: options.tracer,
+              turnId: "autonomy:executive_focus_due",
               goals,
               activeValues: [],
             })
@@ -488,7 +498,7 @@ export function createExecutiveFocusDueTrigger(
       const eventGoalIds = new Set<GoalRecord["id"]>();
 
       for (const goal of goals) {
-        if (isGoalCoolingDown(goal, nowMs)) {
+        if (presentations.wasPresented(goal) || isGoalCoolingDown(goal, nowMs)) {
           continue;
         }
 
@@ -573,6 +583,7 @@ export function createExecutiveFocusDueTrigger(
 
         return (
           candidate.score >= threshold &&
+          !presentations.wasPresented(candidateGoal) &&
           !eventGoalIds.has(candidateGoal.id) &&
           !isGoalCoolingDown(candidateGoal, nowMs) &&
           !isGoalStaleBackedOff(candidateGoal, nowMs, actionAvailabilityKey) &&
@@ -642,6 +653,8 @@ export function createExecutiveFocusDueTrigger(
       }
 
       for (const candidate of candidates) {
+        const goal = options.goalsRepository.get(candidate.goal_id);
+        if (goal !== null && presentations.wasPresented(goal)) continue;
         const cooldownEnd = getGoalCooldownEnd({
           goal_id: candidate.goal_id,
           last_progress_ts: candidate.goal_last_progress_ts,

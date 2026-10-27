@@ -39,7 +39,7 @@ export type TurnSelfContextOptions = {
   embeddingClient: EmbeddingClient;
   valuesRepository: Pick<ValuesRepository, "list">;
   goalsRepository: Pick<GoalsRepository, "list"> &
-    Partial<Pick<GoalsRepository, "reconcileBlocks">>;
+    Partial<Pick<GoalsRepository, "reconcileBlocks" | "presentation">>;
   sourceStreamAudienceDisclosureResolver?: SourceStreamAudienceDisclosureResolver;
   traitsRepository: Pick<TraitsRepository, "list">;
   autobiographicalRepository?: Pick<AutobiographicalRepository, "currentPeriod">;
@@ -170,6 +170,11 @@ export class TurnSelfContextBuilder {
   async buildSelfSnapshot(_audienceEntityId: EntityId | null): Promise<SelfSnapshot> {
     this.options.goalsRepository.reconcileBlocks?.();
     const rawGoals = listActiveGoalRecordsForCognition(this.options.goalsRepository);
+    const goalPresentations = rawGoals.flatMap((goal) =>
+      this.options.goalsRepository.presentation === undefined
+        ? []
+        : [this.options.goalsRepository.presentation.snapshot(goal)],
+    );
     const goals =
       this.options.sourceStreamAudienceDisclosureResolver?.resolve({ goals: rawGoals }).goals ??
       rawGoals;
@@ -180,6 +185,7 @@ export class TurnSelfContextBuilder {
     const recentGrowthMarkers = this.options.growthMarkersRepository?.list({ limit: 3 }) ?? [];
 
     return {
+      goalPresentations,
       values,
       goals,
       traits,
@@ -222,6 +228,9 @@ export class TurnSelfContextBuilder {
     try {
       selfScoringFeatures = await buildSelfScoringFeatureSet({
         embeddingClient: this.options.embeddingClient,
+        maxInputBytes: this.options.embeddingClient.maxInputBytes,
+        tracer: this.options.tracer,
+        turnId: input.turnId,
         goals: selfSnapshot.goals,
         activeValues: activeScoringValues,
       });

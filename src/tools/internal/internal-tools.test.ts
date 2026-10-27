@@ -1119,7 +1119,7 @@ describe("internal tools", () => {
           },
         ],
         ["tool.goals.unblock", { goal_id: goal.id, reason: reasons[1] }],
-        ["tool.goals.retire", { goal_id: goal.id, reason: reasons[2] }],
+        ["tool.goals.retire", { goal_id: goal.id, disposition: "abandoned", reason: reasons[2] }],
       ] as const) {
         expect(await dispatcher.dispatch({ toolName, input, origin: "autonomous" })).toMatchObject({
           ok: true,
@@ -1128,7 +1128,7 @@ describe("internal tools", () => {
       // A no-op and unrelated same-status update must not masquerade as dispositions.
       await dispatcher.dispatch({
         toolName: "tool.goals.retire",
-        input: { goal_id: goal.id, reason: "No-op." },
+        input: { goal_id: goal.id, disposition: "abandoned", reason: "No-op." },
         origin: "autonomous",
       });
       harness.goalsRepository.update(
@@ -1175,7 +1175,7 @@ describe("internal tools", () => {
       ]);
       const dispositions = records.filter((record) => record.kind === "goal_disposition");
       expect(dispositions.map((record) => record.content)).toEqual([
-        `At ${range.since}, the goal “${goal.description}” was retired. Reason: Zakończone: [internal_id]`,
+        `At ${range.since}, the goal “${goal.description}” was abandoned. Reason: Zakończone: [internal_id]`,
         `At ${range.since}, the goal “${goal.description}” was unblocked. Reason: ${reasons[1]}`,
         `At ${range.since}, the goal “${goal.description}” was blocked. Reason: ${reasons[0]}`,
       ]);
@@ -1298,7 +1298,7 @@ describe("internal tools", () => {
       expect(
         await dispatcher.dispatch({
           toolName: "tool.goals.retire",
-          input: { goal_id: goal.id, reason: "Finished." },
+          input: { goal_id: goal.id, disposition: "done", reason: "Finished." },
           origin: "autonomous",
         }),
       ).toMatchObject({ ok: true });
@@ -1373,6 +1373,7 @@ describe("internal tools", () => {
           toolName: "tool.goals.retire",
           input: {
             goal_id: goal.id,
+            disposition: "superseded",
             reason: `已完成${goal.id}，无需继续；${wakeId}已处理。保留8和1000100。`,
           },
           origin: "autonomous",
@@ -1392,7 +1393,7 @@ describe("internal tools", () => {
         output: {
           records: [
             {
-              content: `At ${new Date(clock.now()).toISOString()}, the goal “检查[internal_id]文档” was retired. Reason: 已完成[internal_id]，无需继续；[internal_id]已处理。保留8和1000100。`,
+              content: `At ${new Date(clock.now()).toISOString()}, the goal “检查[internal_id]文档” was superseded. Reason: 已完成[internal_id]，无需继续；[internal_id]已处理。保留8和1000100。`,
             },
           ],
         },
@@ -1455,7 +1456,7 @@ describe("internal tools", () => {
               content: `At ${new Date(clock.now()).toISOString()}, the goal “${goal.description}” was unblocked. Reason: blocker goal [internal_id] is abandoned; identity event [internal_id] at 1000100; observed at 1000100`,
             },
             {
-              content: `At ${new Date(clock.now()).toISOString()}, the goal “${dependency.description}” was retired. Reason: After 8 checks at 1000100.`,
+              content: `At ${new Date(clock.now()).toISOString()}, the goal “${dependency.description}” was abandoned. Reason: After 8 checks at 1000100.`,
             },
           ],
         },

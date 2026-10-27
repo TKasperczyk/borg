@@ -1,4 +1,5 @@
 import { toWellFormedUtf16 } from "../util/utf16-boundary.js";
+import { utf8SafeSuffix } from "../util/utf8-boundary.js";
 
 // A 6 KiB raw-query vector leaves room below the embedding transport cap while
 // keeping the budget language-independent; expansion retains the full focus.
@@ -12,18 +13,6 @@ export type BoundedRawRecallQuery = {
   queryBytes: number;
   selectedMessageCount: number;
 };
-
-function utf8Tail(value: string, maxBytes: number): string {
-  const bytes = Buffer.from(toWellFormedUtf16(value), "utf8");
-  let start = Math.max(0, bytes.length - maxBytes);
-
-  // A UTF-8 continuation byte cannot begin the retained suffix.
-  while (start < bytes.length && (bytes[start]! & 0xc0) === 0x80) {
-    start += 1;
-  }
-
-  return bytes.subarray(start).toString("utf8");
-}
 
 /** Message boundaries and oldest-first order come from the caller, never from parsing text. */
 export function boundRawRecallQuery(
@@ -46,7 +35,7 @@ export function boundRawRecallQuery(
   const sourceMessages = messages ?? [];
   const newest = sourceMessages.at(-1);
   if (newest === undefined) {
-    const tail = utf8Tail(query, maxBytes);
+    const tail = utf8SafeSuffix(query, maxBytes);
     return {
       query: tail,
       bounded: true,
@@ -58,7 +47,7 @@ export function boundRawRecallQuery(
   }
 
   if (Buffer.byteLength(newest, "utf8") > maxBytes) {
-    const tail = utf8Tail(newest, maxBytes);
+    const tail = utf8SafeSuffix(newest, maxBytes);
     return {
       query: tail,
       bounded: true,

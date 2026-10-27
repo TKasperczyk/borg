@@ -2008,6 +2008,60 @@ describe("compact terminal finalizer context", () => {
     );
   });
 
+  it.each(["system_1", "system_2"] as const)(
+    "reports goal membership from the trigger and bounded digest in %s",
+    (path) => {
+      const primary = goal("Trigger-only goal", null);
+      const secondary = goal("Digest-only secondary", null);
+      const result = build(
+        context({
+          turnOrigin: "autonomous",
+          selfSnapshot: { values: [], traits: [], goals: [secondary] },
+          autonomyTrigger: {
+            source_name: "executive_focus_due",
+            source_type: "trigger",
+            event_id: "batch",
+            sort_ts: NOW_MS,
+            payload: {
+              selected_goal_id: primary.id,
+              selected_goal: { ...primary, disclosure_label: { disclosure_class: "self_private" } },
+              secondary_due_goals: [
+                {
+                  goal_id: secondary.id,
+                  description: secondary.description,
+                  disclosure: "private ".repeat(10_000),
+                  disclosure_label: { disclosure_class: "self_private" },
+                },
+              ],
+            },
+          },
+        }),
+        path,
+      );
+      expect(result.shownGoalIds).toEqual([primary.id, secondary.id]);
+      const trigger = /<borg_autonomy_trigger>([\s\S]*?)<\/borg_autonomy_trigger>/.exec(
+        text(result),
+      )![1];
+      expect(trigger).toContain(primary.id);
+      expect(trigger).not.toContain(secondary.id);
+      expect(text(result)).toContain(`<goal i="${secondary.id}"`);
+
+      const manyGoals = Array.from({ length: 250 }, (_, i) => ({
+        ...goal(`Goal ${i} ${"&".repeat(1000)}`, null),
+        priority: 250 - i,
+      }));
+      const bounded = build(
+        context({ selfSnapshot: { values: [], traits: [], goals: manyGoals } }),
+        path,
+      );
+      const renderedIds = [...text(bounded).matchAll(/<goal i="([^"]+)"/g)].map(
+        (match) => match[1],
+      );
+      expect(renderedIds.length).toBeLessThan(manyGoals.length);
+      expect(bounded.shownGoalIds).toEqual(renderedIds);
+    },
+  );
+
   it("renders production trusted framing and host capabilities exactly once", () => {
     const inputContext = context();
     const baseOptions = {

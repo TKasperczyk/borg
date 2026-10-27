@@ -11,13 +11,81 @@ import { describe, expect, it } from "vitest";
 
 import { openDatabase } from "../../storage/sqlite/index.js";
 import { selfMigrations } from "./migrations.js";
+import { executiveMigrations, ExecutiveStepsRepository } from "../../executive/index.js";
 
 describe("self migrations", () => {
+  it("rebuilds goals without losing rows, parent references, dependent steps, indexes or triggers", () => {
+    const dir = mkdtempSync(join(tmpdir(), "borg-goal-migration-"));
+    const path = join(dir, "legacy.db");
+    try {
+      const old = openDatabase(path, {
+        migrations: composeMigrations(
+          selfMigrations.filter((m) => m.id < 13),
+          executiveMigrations,
+        ),
+      });
+      const goals = new GoalsRepository({ db: old });
+      const parent = goals.add({
+        description: "Parent",
+        priority: 5,
+        provenance: { kind: "manual" },
+      });
+      const child = goals.add({
+        description: "子",
+        parentId: parent.id,
+        priority: 3,
+        provenance: { kind: "manual" },
+      });
+      const step = new ExecutiveStepsRepository({ db: old }).add({
+        goalId: parent.id,
+        description: "Step",
+        kind: "think",
+        provenance: { kind: "manual" },
+      });
+      old.exec(
+        "CREATE INDEX custom_goal_priority ON goals(priority); CREATE TRIGGER custom_goal_update AFTER UPDATE ON goals BEGIN SELECT 1; END;",
+      );
+      const rows = old.prepare("SELECT * FROM goals ORDER BY id").all();
+      const objects = old
+        .prepare(
+          "SELECT name, sql FROM sqlite_master WHERE tbl_name = 'goals' AND type IN ('index', 'trigger') ORDER BY name",
+        )
+        .all();
+      old.close();
+      const db = openDatabase(path, {
+        migrations: composeMigrations(selfMigrations, executiveMigrations),
+      });
+      try {
+        expect(db.prepare("SELECT * FROM goals ORDER BY id").all()).toEqual(rows);
+        expect(
+          db
+            .prepare(
+              "SELECT name, sql FROM sqlite_master WHERE tbl_name = 'goals' AND type IN ('index', 'trigger') ORDER BY name",
+            )
+            .all(),
+        ).toEqual(objects);
+        expect(new GoalsRepository({ db }).get(child.id)?.parent_goal_id).toBe(parent.id);
+        expect(new ExecutiveStepsRepository({ db }).get(step.id)?.goal_id).toBe(parent.id);
+        expect(db.pragma("foreign_key_check")).toEqual([]);
+        expect(db.pragma("foreign_keys", { simple: true })).toBe(1);
+        db.prepare("UPDATE goals SET status = 'superseded' WHERE id = ?").run(parent.id);
+        expect(() =>
+          db.prepare("UPDATE goals SET status = 'invalid' WHERE id = ?").run(parent.id),
+        ).toThrow();
+      } finally {
+        db.close();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
   it("adds refusal scheduling state without changing existing questions or rumination stamps", () => {
     const dir = mkdtempSync(join(tmpdir(), "borg-refusal-migration-"));
     const path = join(dir, "legacy.db");
     try {
-      const old = openDatabase(path, { migrations: selfMigrations.slice(0, -1) });
+      const old = openDatabase(path, {
+        migrations: selfMigrations.filter((migration) => migration.id < 12),
+      });
       old.exec(`INSERT INTO open_questions
         (id, question, urgency, status, related_episode_ids, related_semantic_node_ids, source, created_at, last_touched, unresolved_rumination_ticks, last_ruminated_at)
         VALUES ('oq_legacy', '問い', 0.5, 'open', '[]', '[]', 'ruminator', 1, 2, 4, 3);
@@ -52,11 +120,12 @@ describe("self migrations", () => {
     try {
       const migrationNames = selfMigrations.map((migration) => migration.name);
       expect(new Set(migrationNames).size).toBe(migrationNames.length);
-      expect(migrationNames.slice(-4)).toEqual([
+      expect(migrationNames.slice(-5)).toEqual([
         "goal_counterparty_entity_id",
         "goal_named_block_history",
         "goal_deadline_assignment_basis",
         "open_question_refusal_backoff",
+        "goal_superseded_status",
       ]);
       expect(db.listAppliedMigrations().map((migration) => migration.name)).toEqual(migrationNames);
       expect(

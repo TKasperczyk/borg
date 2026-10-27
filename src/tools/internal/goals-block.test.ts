@@ -155,7 +155,7 @@ describe("named goal blocks", () => {
       ).toThrow();
   });
 
-  it.each(["done", "abandoned", "retired"] as const)(
+  it.each(["done", "superseded", "abandoned", "retired"] as const)(
     "unblocks only when the blocker goal reaches terminal status %s, with the event basis",
     (status) => {
       const h = harness();

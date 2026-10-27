@@ -126,7 +126,7 @@ export function parseGoalStatus(value: unknown) {
   const parsed = goalStatusSchema.safeParse(value);
 
   if (!parsed.success) {
-    throw new CliError("--status must be one of: active, done, abandoned, blocked", {
+    throw new CliError("--status must be one of: active, done, superseded, abandoned, blocked", {
       cause: parsed.error,
     });
   }

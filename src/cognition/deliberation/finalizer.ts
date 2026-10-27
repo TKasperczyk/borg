@@ -408,6 +408,8 @@ export type RunFinalizerOptions = {
   model: string;
   baseSystemPrompt: string;
   shownOpenQuestionIds?: readonly string[];
+  shownGoalIds?: readonly string[];
+  onPromptPresented?: (shownGoalIds: readonly string[]) => void;
   initialMessages: readonly LLMContentBlockMessage[];
   userEntryId: string | undefined;
   maxTokens: number;
@@ -627,6 +629,7 @@ function legacyFinalizerTraceSummary(
 export function buildFinalizerSystemPrompt(options: RunFinalizerOptions): {
   system: readonly LLMSystemBlock[];
   traceSummary: FinalizerContextTraceSummary | null;
+  shownGoalIds: readonly string[];
 } {
   const resolvedVariant = resolveFinalizerSurfaceVariant(
     options.finalizerSurfaceVariant,
@@ -661,6 +664,7 @@ export function buildFinalizerSystemPrompt(options: RunFinalizerOptions): {
     const totalText = system.map((block) => block.text).join("\n\n");
     return {
       system,
+      shownGoalIds: compact.shownGoalIds,
       traceSummary: {
         ...compact.traceSummary,
         sections: {
@@ -707,6 +711,7 @@ export function buildFinalizerSystemPrompt(options: RunFinalizerOptions): {
     return {
       system,
       traceSummary: legacyFinalizerTraceSummary(options.path, system),
+      shownGoalIds: options.shownGoalIds ?? [],
     };
   }
 
@@ -736,6 +741,7 @@ export function buildFinalizerSystemPrompt(options: RunFinalizerOptions): {
   return {
     system,
     traceSummary: legacyFinalizerTraceSummary(options.path, system),
+    shownGoalIds: options.shownGoalIds ?? [],
   };
 }
 
@@ -1199,6 +1205,7 @@ export async function runFinalizer(options: RunFinalizerOptions): Promise<Finali
         }
       },
       toolResultObserver: captureState.toolTranscriptCollector ?? undefined,
+      onPromptPresented: () => options.onPromptPresented?.(renderedSystemPrompt.shownGoalIds),
     });
   } catch (error) {
     const code =

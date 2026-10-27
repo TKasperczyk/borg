@@ -93,14 +93,14 @@ export function registerSelfCommands(cli: CAC, deps: CliCommandDeps): void {
         return;
       }
 
-      if (action === "done") {
+      if (action === "done" || action === "superseded" || action === "abandoned") {
         const goalId = resolveGoalId(arg);
         await withBorg(options, async (borg) => {
-          borg.self.goals.updateStatus(goalId, "done", {
+          borg.self.goals.updateStatus(goalId, action, {
             kind: "manual",
           });
         });
-        writeLine(stdout, JSON.stringify({ id: goalId, status: "done" }));
+        writeLine(stdout, JSON.stringify({ id: goalId, status: action }));
         return;
       }
 

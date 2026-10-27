@@ -1399,6 +1399,7 @@ describe("compact planner context", () => {
       /<omitted_count>(\d+)<\/omitted_count>/.exec(expandedBlock)?.[1],
     );
 
+    expect(planner.shownGoalIds).toEqual(renderedIds);
     expect(renderedIds.length).toBeGreaterThanOrEqual(4);
     expect(renderedIds.length).toBeLessThan(goals.length);
     expect(renderedIds).toEqual(goals.slice(0, renderedIds.length).map((entry) => entry.id));

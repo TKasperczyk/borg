@@ -1,5 +1,6 @@
 import { similarityConfigSchema, similarityValuesSchema } from "./similarity.js";
 import { DEFAULT_RAW_QUERY_MAX_BYTES } from "../retrieval/raw-query.js";
+import { AUTONOMY_WAKE_SOURCE_NAMES } from "../autonomy/types.js";
 import { embeddingProviderSchema, readEmbeddingProviderEnv } from "./embedding-provider.js";
 import { embeddingMaxInputBytesSchema, readEmbeddingMaxInputBytesEnv } from "./embedding-input.js";
 export {
@@ -818,6 +819,12 @@ const configBaseSchema = z.object({
       intervalMs: z.number().int().positive().default(60_000),
       prepToolTimeoutMs: z.number().int().positive().default(90_000),
       maxWakesPerWindow: z.number().int().positive().default(6),
+      // No per-source cap by default. A deployment allowing 25 wakes can set
+      // maxWakesPerWindowBySource: { open_question_dormant: 12 } to retain room
+      // for other sources within the same rolling budget window.
+      maxWakesPerWindowBySource: z
+        .partialRecord(z.enum(AUTONOMY_WAKE_SOURCE_NAMES), z.number().int().positive())
+        .default({}),
       goalWakeBatchMax: z.number().int().positive().default(5),
       budgetWindowMs: z.number().int().positive().default(86_400_000),
       reservedContemplativeWakesPerWindow: z.number().int().nonnegative().default(1),

@@ -64,7 +64,10 @@ import {
   type AutonomyWakeOutcomeDetailTally,
 } from "../../../autonomy/index.js";
 import { AUTONOMY_SCHEDULER_DESCRIPTION_DROPPED_FIELDS } from "../../mechanism-evidence.js";
-import { formatAutonomyTriggerContext } from "../../autonomy-trigger.js";
+import {
+  formatAutonomyTriggerContext,
+  renderAutonomyTriggerPresentation,
+} from "../../autonomy-trigger.js";
 import type { ActiveParticipant, ParticipantProfileContext } from "../../participants.js";
 import { renderParticipantRoster } from "../../perception/index.js";
 import {
@@ -180,6 +183,7 @@ export type CacheableBaseSystemPromptParts = {
   staticPrefix: string;
   staticPrefixSections: readonly string[];
   dynamicContent: string;
+  shownGoalIds: readonly string[];
 };
 
 export type CacheableStaticPrefixSection = {
@@ -1172,10 +1176,15 @@ function buildUntrustedBasePromptSections(
     {
       tag: "borg_self_snapshot",
       content: summarizeIdentity(context.selfSnapshot, context.workingMemory.turn_counter),
+      shownGoalIds: context.selfSnapshot.goals.map((goal) => goal.id),
     },
     {
       tag: "borg_executive_focus",
       content: summarizeExecutiveFocus(context.executiveFocus ?? null),
+      shownGoalIds:
+        context.executiveFocus?.selected_goal == null
+          ? []
+          : [context.executiveFocus.selected_goal.id],
     },
     {
       tag: "borg_current_period",
@@ -1257,6 +1266,13 @@ function buildUntrustedBasePromptSections(
     },
     {
       tag: "borg_autonomy_trigger",
+      shownGoalIds:
+        context.autonomyTrigger == null
+          ? []
+          : (
+              context.autonomyTriggerPresentation ??
+              renderAutonomyTriggerPresentation(context.autonomyTrigger)
+            ).shownGoalIds,
       content:
         context.autonomyTrigger === null || context.autonomyTrigger === undefined
           ? null
@@ -1412,6 +1428,7 @@ function groupChatSenderScopingReminder(context: DeliberationContext): string | 
 export function createBasePromptSurfaceRenderContext(
   context: DeliberationContext,
   sections: BaseSystemPromptSections,
+  shownGoalIds?: Set<string>,
 ): PromptSurfaceRenderContext {
   const renderContext: PromptSurfaceRenderContext = {
     renderBlock: (id) => {
@@ -1453,8 +1470,14 @@ export function createBasePromptSurfaceRenderContext(
             PROMPT_SURFACES.cacheableTrustedDynamicSections,
             renderContext,
           );
-        default:
-          return renderPromptSection(sections.promptSectionsById.get(id));
+        default: {
+          const section = sections.promptSectionsById.get(id);
+          const rendered = renderPromptSection(section);
+          if (rendered !== null && section != null && typeof section === "object") {
+            for (const goalId of section.shownGoalIds ?? []) shownGoalIds?.add(goalId);
+          }
+          return rendered;
+        }
       }
     },
   };
@@ -1477,7 +1500,8 @@ export function buildCacheableBaseSystemPromptParts(
   options: BuildBaseSystemPromptOptions,
 ): CacheableBaseSystemPromptParts {
   const sections = buildBaseSystemPromptSections(context, options);
-  const renderContext = createBasePromptSurfaceRenderContext(context, sections);
+  const shownGoalIds = new Set<string>();
+  const renderContext = createBasePromptSurfaceRenderContext(context, sections, shownGoalIds);
   const staticPrefixSections: readonly CacheableStaticPrefixSection[] =
     promptSurfaceBlocksForSurface(PROMPT_SURFACES.cacheableStaticPrefix).map((section) => ({
       label: section.id,
@@ -1496,6 +1520,7 @@ export function buildCacheableBaseSystemPromptParts(
       )
       .map((section) => section.label),
     dynamicContent: renderPromptSurface(PROMPT_SURFACES.cacheableDynamic, renderContext) ?? "",
+    shownGoalIds: [...shownGoalIds],
   };
 }
 

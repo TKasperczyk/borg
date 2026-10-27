@@ -5,6 +5,7 @@ import OpenAI from "openai";
 import { sleep } from "../util/clock.js";
 import { ConfigError, EmbeddingError } from "../util/errors.js";
 import { toWellFormedUtf16 } from "../util/utf16-boundary.js";
+import { utf8SafePrefix } from "../util/utf8-boundary.js";
 
 type OpenAIEmbeddingsClient = {
   embeddings: {
@@ -28,6 +29,8 @@ export type EmbeddingClientStats = {
 };
 
 export type EmbeddingClient = {
+  /** Effective transport cap; wrappers must preserve it for bounded scoring text. */
+  readonly maxInputBytes?: number | undefined;
   /** Required when injecting into Borg.open; wrappers must preserve this identity. */
   readonly profile?: EmbeddingProfile;
   stats?(): EmbeddingClientStats;
@@ -170,7 +173,7 @@ export class OpenAICompatibleEmbeddingClient implements EmbeddingClient {
   private readonly dims: number;
   private readonly modelReloadRetryDelaysMs: readonly number[];
   private readonly maxBatchSize: number;
-  private readonly maxInputBytes: number | undefined;
+  readonly maxInputBytes: number | undefined;
   private inputTruncations = 0;
   private readonly provider: EmbeddingProvider | undefined;
 
@@ -240,12 +243,8 @@ export class OpenAICompatibleEmbeddingClient implements EmbeddingClient {
       return wellFormed;
     }
 
-    const bytes = Buffer.from(wellFormed, "utf8");
-    let end = this.maxInputBytes;
-    // The first excluded byte must start a code point, never continue one.
-    while ((bytes[end]! & 0xc0) === 0x80) end -= 1;
     this.inputTruncations += 1;
-    return bytes.subarray(0, end).toString("utf8");
+    return utf8SafePrefix(wellFormed, this.maxInputBytes);
   }
 
   async embed(text: string): Promise<Float32Array> {

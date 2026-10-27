@@ -124,6 +124,7 @@ describe("createCachingEmbeddingClient", () => {
       dims: 1,
     }) as StatsClient;
     const texts = ["prefix-one", "prefix-two", "prefix-one"];
+    expect(client.maxInputBytes).toBe(6);
 
     const first = await client.embedBatch(texts);
     first[0]![0] = 99;

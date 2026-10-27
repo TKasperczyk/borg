@@ -75,7 +75,12 @@ import { RecallStateRepository, RetrievalPipeline } from "../retrieval/index.js"
 import { SessionsRepository } from "../sessions/index.js";
 import type { LanceDbTable } from "../storage/lancedb/index.js";
 import type { SqliteDatabase } from "../storage/sqlite/index.js";
-import { StreamEntryIndexRepository, StreamWriter, type StreamEntry } from "../stream/index.js";
+import {
+  StreamEntryIndexRepository,
+  StreamWriter,
+  StreamWatermarkRepository,
+  type StreamEntry,
+} from "../stream/index.js";
 import type { Clock } from "../util/clock.js";
 import { DEFAULT_SESSION_ID } from "../util/ids.js";
 import { PromptOverrideRepository } from "../cognition/prompts/override-repository.js";
@@ -328,6 +333,7 @@ export async function buildBorgRepositories(
     identityEventRepository,
   });
   const goalsRepository = new GoalsRepository({
+    watermarkRepository: new StreamWatermarkRepository({ db: sqlite, clock }),
     db: sqlite,
     dataDir: config.dataDir,
     clock,

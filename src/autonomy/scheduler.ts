@@ -18,7 +18,12 @@ import { turnExecutionMetricsFromError } from "../cognition/turn-execution-metri
 import { memoryDisclosurePayloadFields } from "../memory/common/disclosure-serializers.js";
 import type { SelfDecisionRepository } from "../memory/self-decisions/index.js";
 import type { TrainOfThoughtRepository } from "../memory/train-of-thought/index.js";
-import { goalStatusSchema, type GoalsRepository, type GoalStatus } from "../memory/self/index.js";
+import {
+  goalStatusSchema,
+  isTerminalGoalStatus,
+  type GoalsRepository,
+  type GoalStatus,
+} from "../memory/self/index.js";
 import { selfPrivateMemoryDisclosureLabel } from "../memory/common/disclosure-label.js";
 import { OUTBOUND_POST_TOOL_NAME } from "../tools/internal/outbound-post-name.js";
 
@@ -31,6 +36,7 @@ import type {
   AutonomyTriggerName,
   AutonomyWakeSource,
   AutonomyWakeSourceCategory,
+  AutonomyWakeSourceName,
   TickResult,
   DueEvent,
 } from "./types.js";
@@ -155,6 +161,7 @@ export type AutonomySchedulerOptions = {
   intervalMs: number;
   prepToolTimeoutMs?: number;
   maxWakesPerWindow: number;
+  maxWakesPerWindowBySource?: Partial<Record<AutonomyWakeSourceName, number>>;
   goalWakeBatchMax?: number;
   budgetWindowMs: number;
   reservedContemplativeWakesPerWindow?: number;
@@ -541,7 +548,11 @@ function goalRetiredByTurnTool(turnResult: TurnResult, goalId: string): boolean 
       return false;
     }
 
-    return call.output.goal.id === goalId && call.output.goal.status === "abandoned";
+    return (
+      call.output.goal.id === goalId &&
+      typeof call.output.goal.status === "string" &&
+      isTerminalGoalStatus(call.output.goal.status)
+    );
   });
 }
 
@@ -816,7 +827,10 @@ export class AutonomyScheduler {
     batch: WakeBatch,
     input: Pick<AutonomyTickEventResult, "status"> &
       Partial<
-        Pick<AutonomyTickEventResult, "outcomeSummary" | "turnResultId" | "error" | "errorName">
+        Pick<
+          AutonomyTickEventResult,
+          "outcomeSummary" | "turnResultId" | "error" | "errorName" | "sourceBudget"
+        >
       >,
   ): AutonomyTickEventResult[] {
     return batch.events.map(({ source, event }) => ({
@@ -830,6 +844,7 @@ export class AutonomyScheduler {
       ...(input.turnResultId === undefined ? {} : { turnResultId: input.turnResultId }),
       ...(input.error === undefined ? {} : { error: input.error }),
       ...(input.errorName === undefined ? {} : { errorName: input.errorName }),
+      ...(input.sourceBudget === undefined ? {} : { sourceBudget: input.sourceBudget }),
     }));
   }
 
@@ -1057,6 +1072,22 @@ export class AutonomyScheduler {
         stall_retries: wake.stall_retries,
       })),
       budget: {
+        source_budgets: AUTONOMY_WAKE_SOURCE_NAMES.flatMap((source) => {
+          const limit = this.options.maxWakesPerWindowBySource?.[source];
+          return limit === undefined
+            ? []
+            : [
+                {
+                  source,
+                  limit,
+                  usage: this.options.wakeRepository.countSince(budgetCutoff, {
+                    triggerName: source,
+                    excludePreparationFailures: true,
+                    excludeTurnProviderFailures: true,
+                  }),
+                },
+              ];
+        }),
         max_wakes_per_window: this.options.maxWakesPerWindow,
         window_ms: this.options.budgetWindowMs,
         window_started_at: budgetCutoff,
@@ -1227,27 +1258,60 @@ export class AutonomyScheduler {
       const consumedEventKeys = new Set<string>();
 
       try {
-        for (const scannedEvent of dueEvents) {
-          if (this.stopping) break;
-          if (consumedEventKeys.has(backoffKey(scannedEvent.event))) {
-            continue;
-          }
-
-          if (
-            this.sourceRetryIsActive(scannedEvent.event.sourceName, this.clock.now()) ||
-            this.triggerErrorRetryIsActive(scannedEvent.event.sourceName, this.clock.now())
-          ) {
-            continue;
-          }
+        while (!this.stopping) {
+          const scannedEvent = dueEvents.find(
+            ({ event }) =>
+              !consumedEventKeys.has(backoffKey(event)) &&
+              !this.sourceRetryIsActive(event.sourceName, this.clock.now()) &&
+              !this.triggerErrorRetryIsActive(event.sourceName, this.clock.now()),
+          );
+          if (scannedEvent === undefined) break;
 
           const wakeBatch = this.buildWakeBatch(scannedEvent, dueEvents, consumedEventKeys);
+          const dueEvent = wakeBatch.primary.event;
+          const sourceCategory = wakeBatch.primary.source.sourceCategory;
+          const budgetCutoff = this.clock.now() - this.options.budgetWindowMs;
+          // Charge a mixed batch once to its stored primary. If that source is
+          // exhausted, skip only its events and select again; the other members
+          // have not been consumed and may supply an eligible primary.
+          const sourceLimit = this.options.maxWakesPerWindowBySource?.[dueEvent.sourceName];
+          if (sourceLimit !== undefined) {
+            const usage = this.options.wakeRepository.countSince(budgetCutoff, {
+              triggerName: dueEvent.sourceName,
+              excludePreparationFailures: true,
+              excludeTurnProviderFailures: true,
+            });
+            if (usage >= sourceLimit) {
+              const rejectedEvents = dueEvents.filter(
+                ({ event }) =>
+                  event.sourceName === dueEvent.sourceName &&
+                  !consumedEventKeys.has(backoffKey(event)),
+              );
+              for (const { event } of rejectedEvents) consumedEventKeys.add(backoffKey(event));
+              budgetSkipped += rejectedEvents.length;
+              eventResults.push(
+                ...this.eventResultsForBatch(
+                  { ...wakeBatch, events: rejectedEvents },
+                  {
+                    status: "budget_skipped",
+                    outcomeSummary:
+                      "Skipped because the source's autonomy wake budget was exhausted.",
+                    sourceBudget: {
+                      source: dueEvent.sourceName,
+                      usage,
+                      limit: sourceLimit,
+                      reason: "source_limit",
+                    },
+                  },
+                ),
+              );
+              continue;
+            }
+          }
 
           for (const member of wakeBatch.events) {
             consumedEventKeys.add(backoffKey(member.event));
           }
-
-          const dueEvent = wakeBatch.primary.event;
-          const sourceCategory = wakeBatch.primary.source.sourceCategory;
 
           if (sourceCategory === "operational" && this.maintenanceHoldActive()) {
             eventResults.push(
@@ -1284,7 +1348,6 @@ export class AutonomyScheduler {
             continue;
           }
 
-          const budgetCutoff = this.clock.now() - this.options.budgetWindowMs;
           const totalWakesInWindow = this.options.wakeRepository.countSince(budgetCutoff, {
             excludePreparationFailures: true,
             excludeTurnProviderFailures: true,

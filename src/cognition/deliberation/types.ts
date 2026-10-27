@@ -201,6 +201,8 @@ export type SelfSnapshotGoal = GoalRecord & {
 };
 
 export type SelfSnapshot = {
+  /** Scheduling handles captured alongside the rows, never recomputed after prompt preparation. */
+  goalPresentations?: readonly import("../../executive/goal-presentation.js").GoalPresentation[];
   values: ValueRecord[];
   goals: SelfSnapshotGoal[];
   traits: TraitRecord[];
@@ -233,6 +235,7 @@ export type DeliberationContext = {
   turnId?: string;
   turnOrigin?: TurnOrigin;
   autonomyTriggerPresentation?: import("../autonomy-trigger.js").RenderedAutonomyTriggerContext;
+  goalPresentations?: readonly import("../../executive/goal-presentation.js").GoalPresentation[];
   audience?: string;
   isSelfAudience?: boolean;
   audienceEntityId?: EntityId | null;
@@ -382,6 +385,7 @@ export type DeliberationResult = {
 };
 
 export type DeliberatorOptions = {
+  goalPresentation?: import("../../executive/goal-presentation.js").GoalPresentationStore;
   llmClient: LLMClient;
   toolDispatcher: ToolDispatcher;
   cognitionModel: string;

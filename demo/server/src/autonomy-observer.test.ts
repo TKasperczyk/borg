@@ -104,6 +104,37 @@ describe("demo autonomy observer", () => {
     );
   });
 
+  it("traces source cap usage and its structural skip reason without event payloads", async () => {
+    const { observer, tracer } = harness();
+    await observer.onTick?.(
+      tick({
+        dueEvents: 1,
+        budgetSkipped: 1,
+        events: [
+          event({
+            status: "budget_skipped",
+            sourceBudget: {
+              source: "open_question_dormant",
+              usage: 12,
+              limit: 12,
+              reason: "source_limit",
+            },
+            payload: { question: "private content" },
+          }),
+        ],
+      }),
+    );
+    expect(tracer.emit).toHaveBeenCalledWith(
+      "autonomy.tick",
+      expect.objectContaining({
+        sourceBudgetSkips: [
+          { source: "open_question_dormant", usage: 12, limit: 12, reason: "source_limit" },
+        ],
+      }),
+    );
+    expect(JSON.stringify(tracer.emit.mock.calls)).not.toContain("private content");
+  });
+
   it("traces repeated budget-refusal-only ticks without journaling", async () => {
     const { observer, tracer, logger } = harness();
     for (const ts of [1000, 61_000]) {

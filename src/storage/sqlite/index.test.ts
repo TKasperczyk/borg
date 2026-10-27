@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { StorageError } from "../../util/errors.js";
-import { composeMigrations, openDatabase } from "./index.js";
+import { composeMigrations, openDatabase, runMigrations } from "./index.js";
 
 describe("sqlite storage", () => {
   const tempDirs: string[] = [];
@@ -73,6 +73,33 @@ describe("sqlite storage", () => {
         },
       ).toEqual({ name: "alpha" });
       expect(db.listAppliedMigrations().map((migration) => migration.id)).toEqual([1, 2]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("rolls back a failed table rebuild and restores foreign-key enforcement", () => {
+    const db = openDatabase(":memory:");
+    try {
+      db.exec(
+        "CREATE TABLE parents (id INTEGER PRIMARY KEY); CREATE TABLE children (parent_id INTEGER REFERENCES parents(id) ON DELETE CASCADE); INSERT INTO parents VALUES (1); INSERT INTO children VALUES (1);",
+      );
+      expect(() =>
+        runMigrations(db, [
+          {
+            id: 1,
+            name: "failed-rebuild",
+            disableForeignKeys: true,
+            up(database) {
+              database.exec("DELETE FROM parents");
+            },
+          },
+        ]),
+      ).toThrow("Foreign key check failed");
+      expect(db.prepare("SELECT * FROM parents").all()).toEqual([{ id: 1 }]);
+      expect(db.prepare("SELECT * FROM children").all()).toEqual([{ parent_id: 1 }]);
+      expect(db.pragma("foreign_keys", { simple: true })).toBe(1);
+      expect(db.listAppliedMigrations()).toEqual([]);
     } finally {
       db.close();
     }

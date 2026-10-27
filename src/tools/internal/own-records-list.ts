@@ -307,7 +307,7 @@ function withoutOversizedAnchors(row: OwnRecordForCognition): OwnRecordForCognit
 // only for a system unblock with the matching structured goal dependency; a
 // bare number in an authored reason is not an audit handle.
 const SYSTEM_GOAL_DEPENDENCY_UNBLOCK_REASON_PATTERN = new RegExp(
-  `^blocker goal (${goalIdHelpers.pattern.source.slice(1, -1)}) is (done|abandoned); identity event (\\d+|unrecorded) at (-?\\d+(?:\\.\\d+)?); observed at (-?\\d+(?:\\.\\d+)?)$`,
+  `^blocker goal (${goalIdHelpers.pattern.source.slice(1, -1)}) is (done|superseded|abandoned); identity event (\\d+|unrecorded) at (-?\\d+(?:\\.\\d+)?); observed at (-?\\d+(?:\\.\\d+)?)$`,
   "u",
 );
 
@@ -316,7 +316,15 @@ function renderGoalDisposition(event: IdentityEvent): string {
     .pick({ description: true, status: true, block_history: true })
     .parse(event.new_value);
   const disposition =
-    goal.status === "abandoned" ? "retired" : goal.status === "blocked" ? "blocked" : "unblocked";
+    goal.status === "abandoned"
+      ? "abandoned"
+      : goal.status === "superseded"
+        ? "superseded"
+        : goal.status === "done"
+          ? "completed"
+          : goal.status === "blocked"
+            ? "blocked"
+            : "unblocked";
   const block = goal.block_history?.at(-1);
   const effectiveAt =
     goal.status === "blocked"
