@@ -651,7 +651,29 @@ describe("TurnTracer", () => {
       }),
     );
     expect(new Set(turnEvents.map((event) => event.turnId)).size).toBe(1);
-    expect(turnEvents.map((event) => event.event)).toEqual([
+    // Concurrent collectors may settle in any order, but all ten lane events
+    // must belong to this session's retrieval phase. Every other event keeps
+    // the strict ordering contract below.
+    const laneEvents = turnEvents.filter((event) => event.event === "retrieval.lane_settled");
+    const retrievalStartedIndex = turnEvents.findIndex(
+      (event) => event.event === "retrieval.started",
+    );
+    const retrievalCompletedIndex = turnEvents.findIndex(
+      (event) => event.event === "retrieval.completed",
+    );
+    expect(laneEvents).toHaveLength(10);
+    expect(retrievalStartedIndex).toBeGreaterThanOrEqual(0);
+    expect(retrievalCompletedIndex).toBeGreaterThan(retrievalStartedIndex);
+    for (const event of laneEvents) {
+      expect(event.session_id).toBe(sessionId);
+      expect(turnEvents.indexOf(event)).toBeGreaterThan(retrievalStartedIndex);
+      expect(turnEvents.indexOf(event)).toBeLessThan(retrievalCompletedIndex);
+    }
+    expect(
+      turnEvents
+        .filter((event) => event.event !== "retrieval.lane_settled")
+        .map((event) => event.event),
+    ).toEqual([
       "turn_phase.started",
       "turn_phase.completed",
       "turn_phase.started",

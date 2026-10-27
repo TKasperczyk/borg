@@ -28,7 +28,7 @@ export const TRACE_EVENT_TAXONOMY = {
     "closure_loop.degraded",
     "closure_loop.transitioned",
   ],
-  working_memory: ["working_memory.degraded"],
+  working_memory: ["working_memory.degraded", "working_memory.pending_action_resolved"],
   executive_focus: [],
   retrieval: [
     "retrieval.started",

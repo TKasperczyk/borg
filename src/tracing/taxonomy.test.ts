@@ -4,6 +4,7 @@ import { canonicalTraceEventName, phaseForTraceEventName } from "./taxonomy.js";
 
 describe("trace taxonomy", () => {
   it("routes normalized trace events to their shared reporting phase", () => {
+    expect(phaseForTraceEventName("working_memory.pending_action_resolved")).toBe("working_memory");
     expect(phaseForTraceEventName("extraction.actions.completed")).toBe("extraction");
     expect(phaseForTraceEventName("extraction.commitments.transitioned")).toBe("extraction");
     expect(phaseForTraceEventName("episodic_extractor.skipped")).toBe("ingestion");
