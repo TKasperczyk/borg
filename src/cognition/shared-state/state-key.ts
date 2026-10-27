@@ -1,8 +1,16 @@
 import type { SharedStateEntry } from "../../memory/shared-state/index.js";
+import { INTERNAL_IDENTIFIER_PATTERN_SOURCE } from "../../util/ids.js";
 
 export const LEGACY_SHARED_STATE_KEY = "legacy";
 // state_key values are machine-generated handles; this is structural parsing, not language interpretation.
 const STATE_KEY_TOKEN_SEPARATOR = /[^a-z0-9]+/;
+// Overlap counts a record id as one token. Split at its "_", the id's type prefix
+// ("oq" of an open-question id) is a token shared by every key naming any record
+// of that type, so a key holding little more than one id overlaps all of them.
+const STATE_KEY_OVERLAP_TOKEN = new RegExp(
+  `(?<![a-z0-9])${INTERNAL_IDENTIFIER_PATTERN_SOURCE}(?![a-z0-9])|[a-z0-9]+`,
+  "g",
+);
 
 export function sharedStateKeyBucket(stateKey: string | null | undefined): string {
   return stateKey ?? LEGACY_SHARED_STATE_KEY;
@@ -43,14 +51,20 @@ export function tokenizeStateKey(key: string): string[] {
     .filter((token) => token.length > 0);
 }
 
+function stateKeyOverlapTokens(key: string): string[] {
+  return key.toLowerCase().match(STATE_KEY_OVERLAP_TOKEN) ?? [];
+}
+
 function uniqueStateKeyTokens(tokens: readonly string[]): string[] {
   return [...new Set(tokens)];
 }
 
 export function sharedStateKeyTokens(leftKey: string, rightKey: string): string[] {
-  const rightTokens = new Set(uniqueStateKeyTokens(tokenizeStateKey(rightKey)));
+  const rightTokens = new Set(stateKeyOverlapTokens(rightKey));
 
-  return uniqueStateKeyTokens(tokenizeStateKey(leftKey)).filter((token) => rightTokens.has(token));
+  return uniqueStateKeyTokens(stateKeyOverlapTokens(leftKey)).filter((token) =>
+    rightTokens.has(token),
+  );
 }
 
 export function stateKeysAreNearDuplicate(leftKey: string, rightKey: string): boolean {
@@ -58,8 +72,8 @@ export function stateKeysAreNearDuplicate(leftKey: string, rightKey: string): bo
     return false;
   }
 
-  const leftTokens = tokenizeStateKey(leftKey);
-  const rightTokens = tokenizeStateKey(rightKey);
+  const leftTokens = stateKeyOverlapTokens(leftKey);
+  const rightTokens = stateKeyOverlapTokens(rightKey);
 
   if (leftTokens.length <= 2 || rightTokens.length <= 2) {
     return false;

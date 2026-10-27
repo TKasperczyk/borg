@@ -96,6 +96,32 @@ describe("shared-state state key utilities", () => {
     );
   });
 
+  it("counts a record id as one token, so keys naming different records do not overlap through its type prefix", () => {
+    const idOnlyKey = "audit.closure.oq_4ur04223scjsj313";
+
+    expect(
+      stateKeysAreNearDuplicate("audit.closure.oq_9e246qepslmsvsp9_answered_dated", idOnlyKey),
+    ).toBe(false);
+    expect(stateKeysAreNearDuplicate("audit.closure.oq_kwnh_answered_by_code", idOnlyKey)).toBe(
+      false,
+    );
+    expect(stateKeysAreNearDuplicate("audit.closure.oq_4ur04223scjsj313_reopened", idOnlyKey)).toBe(
+      true,
+    );
+    expect(sharedStateKeyTokens("audit.closure.oq_4ur04223scjsj313_reopened", idOnlyKey)).toEqual([
+      "audit",
+      "closure",
+      "oq_4ur04223scjsj313",
+    ]);
+    expect(
+      similarStateKeyClusterCount([
+        idOnlyKey,
+        "audit.closure.oq_iu06_three_stores_neither_page_drew_them",
+        "audit.closure.oq_6vy8_oq_t288_closed_via_resolve_tool",
+      ]),
+    ).toBe(0);
+  });
+
   it("returns shared unique tokens in left-key order", () => {
     expect(
       sharedStateKeyTokens(

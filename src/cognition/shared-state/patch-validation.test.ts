@@ -1539,6 +1539,50 @@ describe("normalizePatch state_key validation", () => {
     ]);
   });
 
+  it("accepts a new key naming a different record beside a locked key that names one id", () => {
+    const audienceEntityId = createEntityId();
+    const sourceStreamEntryId = createStreamEntryId();
+    const result = normalizeKeyedPatch({
+      audienceEntityId,
+      sourceStreamEntryId,
+      previousEntries: [
+        makeEntry({
+          audienceEntityId,
+          sourceStreamEntryId,
+          stateKey: "audit.closure.oq_4ur04223scjsj313",
+          kind: "locked",
+          rank: 0,
+        }),
+      ],
+      operations: [
+        addOperation({
+          stateKey: "audit.closure.oq_9e246qepslmsvsp9_answered_dated",
+          kind: "locked",
+          sourceStreamEntryId,
+        }),
+        addOperation({
+          stateKey: "audit.closure.oq_4ur04223scjsj313_reopened",
+          kind: "locked",
+          sourceStreamEntryId,
+        }),
+      ],
+    });
+
+    expect(result.operations).toEqual([
+      expect.objectContaining({
+        type: "add",
+        state_key: "audit.closure.oq_9e246qepslmsvsp9_answered_dated",
+      }),
+    ]);
+    expect(result.rejected).toEqual([
+      expect.objectContaining({
+        reason: "near_duplicate_state_key",
+        operationIndex: 1,
+        similarStateKeys: ["audit.closure.oq_4ur04223scjsj313"],
+      }),
+    ]);
+  });
+
   it("rejects a near-duplicate key accumulated within an empty-registry patch", () => {
     const audienceEntityId = createEntityId();
     const sourceStreamEntryId = createStreamEntryId();
