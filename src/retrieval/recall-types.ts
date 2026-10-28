@@ -105,7 +105,9 @@ export type EvidenceItem = {
   matchedTerms: string[];
   score: number;
   // Pre-clamp fusion value for episode evidence; used to break dedup ties
-  // between saturated variants of the same episode. Absent on other sources.
+  // between saturated variants of the same episode. On a raw-stream copy of an
+  // episode's source it is the best citing episode's value, which orders the
+  // copies. Absent on other sources.
   rawScore?: number;
   scoreBreakdown: EvidenceScoreBreakdown;
   source_episode_ids?: EpisodeId[];

@@ -1034,6 +1034,53 @@ describe("RetrievalPipeline Sprint 2 multi-candidate retrieval", () => {
     );
   });
 
+  it("orders raw-stream copies by the episode that cites them, not by stream id", async () => {
+    harness = await createHarness();
+    const first = await harness.streamWriter.append({
+      kind: "user_msg",
+      content: "Source of the architecture decision.",
+    });
+    const second = await harness.streamWriter.append({
+      kind: "user_msg",
+      content: "Source of a loosely related aside.",
+    });
+    // Every copy scores the same constant, so the id order is the order the pool
+    // fell back to. The relevant episode cites the id that order put last.
+    const [idOrderFirst, idOrderLast] = [first.id, second.id].sort((left, right) =>
+      right.localeCompare(left),
+    );
+    await harness.episodicRepository.createEpisode(
+      createEpisodeFixture(
+        {
+          title: "Architecture decision",
+          narrative: "The architecture decision and why it was made.",
+          source_stream_ids: [idOrderLast!],
+        },
+        [1, 0, 0, 0],
+      ),
+    );
+    await harness.episodicRepository.createEpisode(
+      createEpisodeFixture(
+        {
+          title: "Loosely related aside",
+          narrative: "An aside that touches the architecture only in passing.",
+          source_stream_ids: [idOrderFirst!],
+        },
+        [0.6, 0.8, 0, 0],
+      ),
+    );
+
+    const result = await harness.retrievalPipeline.recallEpisodesForCognition(QUERY, {
+      ...cognitionRecallOptions(),
+      limit: 3,
+    });
+    const rawStreamOrder = result.evidence
+      .filter((item) => item.source === "raw_stream")
+      .map((item) => item.provenance?.streamIds?.[0]);
+
+    expect(rawStreamOrder).toEqual([idOrderLast, idOrderFirst]);
+  });
+
   it("lets MMR select a zero-similarity rescued candidate with a valid embedding", async () => {
     harness = await createHarness();
     const primary = createEpisodeFixture(

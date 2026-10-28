@@ -3212,6 +3212,9 @@ function streamEntriesToEvidence(
   const intentByStreamId = new Map<string, RecallIntent>();
   const parentEpisodeIdByStreamId = new Map<string, EpisodeId>();
   const disclosureLabelByStreamId = new Map<string, MemoryDisclosureLabel>();
+  // Every copy scores the same constant, so without its parent's rank the pool
+  // orders copies by id and the raw-stream section keeps whichever ids sort last.
+  const bestParentRawScoreByStreamId = new Map<string, number>();
 
   for (const candidate of episodeCandidates) {
     const disclosureLabel = memoryDisclosureLabelFromEpisodeAccess(candidate.candidate.episode);
@@ -3220,6 +3223,13 @@ function streamEntriesToEvidence(
       intentByStreamId.set(streamId, candidate.intent);
       parentEpisodeIdByStreamId.set(streamId, candidate.candidate.episode.id);
       disclosureLabelByStreamId.set(streamId, disclosureLabel);
+      bestParentRawScoreByStreamId.set(
+        streamId,
+        Math.max(
+          bestParentRawScoreByStreamId.get(streamId) ?? Number.NEGATIVE_INFINITY,
+          candidate.score.rawScore,
+        ),
+      );
     }
   }
 
@@ -3229,6 +3239,7 @@ function streamEntriesToEvidence(
       streamEntryToEvidence(entry, intentByStreamId.get(entry.id)!, "raw_stream", {
         parentEpisodeId: parentEpisodeIdByStreamId.get(entry.id),
         disclosureLabel: disclosureLabelByStreamId.get(entry.id),
+        bestParentRawScore: bestParentRawScoreByStreamId.get(entry.id),
       }),
     );
 }
@@ -3240,6 +3251,7 @@ function streamEntryToEvidence(
   options: {
     parentEpisodeId?: EpisodeId;
     disclosureLabel?: MemoryDisclosureLabel;
+    bestParentRawScore?: number;
   } = {},
 ): EvidenceItem {
   return {
@@ -3253,6 +3265,7 @@ function streamEntryToEvidence(
         ? {}
         : { parentEpisodeId: options.parentEpisodeId }),
     },
+    ...(options.bestParentRawScore === undefined ? {} : { rawScore: options.bestParentRawScore }),
     recallIntentId: intent.id,
     matchedTerms: [],
     streamEntryKind: entry.kind,
