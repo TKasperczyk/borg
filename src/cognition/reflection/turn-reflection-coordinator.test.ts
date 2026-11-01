@@ -4,7 +4,12 @@ import type { OpenQuestion } from "../../memory/self/index.js";
 import { createWorkingMemory } from "../../memory/working/index.js";
 import type { StreamEntry } from "../../stream/index.js";
 import { FixedClock } from "../../util/clock.js";
-import { createEntityId, createSessionId, createStreamEntryId } from "../../util/ids.js";
+import {
+  createEntityId,
+  createOpenQuestionId,
+  createSessionId,
+  createStreamEntryId,
+} from "../../util/ids.js";
 import { renderInboundBatch } from "../turn-input.js";
 import type { PerceptionResult } from "../types.js";
 import type { Reflector } from "./index.js";
@@ -39,7 +44,7 @@ describe("TurnReflectionCoordinator", () => {
     const coordinator = new TurnReflectionCoordinator({
       moodRepository: { update: vi.fn() },
       socialRepository: { recordInteractionWithId: vi.fn() },
-      openQuestionsRepository: { list: vi.fn(() => []) },
+      openQuestionsRepository: { list: vi.fn(() => []), get: vi.fn(() => null) },
       workingMemoryStore: { save: vi.fn() },
       pendingProceduralAttemptTracker: { update: vi.fn(() => []) },
       createReflector: vi.fn(() => ({ reflect }) as unknown as Reflector),
@@ -127,7 +132,7 @@ describe("TurnReflectionCoordinator", () => {
     const coordinator = new TurnReflectionCoordinator({
       moodRepository: { update: vi.fn() },
       socialRepository: { recordInteractionWithId: vi.fn() },
-      openQuestionsRepository: { list: vi.fn(() => byUrgency) },
+      openQuestionsRepository: { list: vi.fn(() => byUrgency), get: vi.fn(() => null) },
       workingMemoryStore: { save: vi.fn() },
       pendingProceduralAttemptTracker: { update: vi.fn(() => []) },
       createReflector: vi.fn(() => ({ reflect }) as unknown as Reflector),
@@ -198,6 +203,152 @@ describe("TurnReflectionCoordinator", () => {
     );
   });
 
+  it("hands the reflector open questions the inbound message names by full id, ahead of recall", async () => {
+    const sessionId = createSessionId();
+    const workingMemory = createWorkingMemory(sessionId, 1_000);
+    const question = (id: string, status: OpenQuestion["status"] = "open") =>
+      ({ id, status }) as OpenQuestion;
+    const byUrgency = Array.from({ length: 20 }, (_, index) => question(`oq_urgent_${index}`));
+    const recalled = question("oq_recalled_below_cut");
+    const named = createOpenQuestionId();
+    const namedBesideKanji = createOpenQuestionId();
+    const namedResolved = createOpenQuestionId();
+    const namedUnknown = createOpenQuestionId();
+    const glued = createOpenQuestionId();
+    const stored = new Map<string, OpenQuestion>([
+      [named, question(named)],
+      [namedBesideKanji, question(namedBesideKanji)],
+      [namedResolved, question(namedResolved, "resolved")],
+      [glued, question(glued)],
+    ]);
+    const get = vi.fn((id: string) => stored.get(id) ?? null);
+    const reflect = vi.fn(async () => ({
+      workingMemory,
+      effects: {
+        createdActionIds: [],
+        createdExecutiveStepIds: [],
+        createdOpenQuestionIds: [],
+        updatedExecutiveSteps: [],
+        updatedGoals: [],
+        retiredGoalIds: [],
+        resolvedOpenQuestions: [],
+        updatedEpisodeStats: [],
+      },
+    }));
+    const coordinator = new TurnReflectionCoordinator({
+      moodRepository: { update: vi.fn() },
+      socialRepository: { recordInteractionWithId: vi.fn() },
+      openQuestionsRepository: { list: vi.fn(() => byUrgency), get },
+      workingMemoryStore: { save: vi.fn() },
+      pendingProceduralAttemptTracker: { update: vi.fn(() => []) },
+      createReflector: vi.fn(() => ({ reflect }) as unknown as Reflector),
+      clock: new FixedClock(1_000),
+      tracer: { enabled: false, includePayloads: false, emit: vi.fn() },
+    });
+    const body = [
+      `That answers ${named}, and ${named} again.`,
+      `質問${namedBesideKanji}について。`,
+      `${namedResolved} closed earlier; ${namedUnknown} was never stored.`,
+      `A shortened handle, ${named.slice(0, 7)}, names nothing; neither does x${glued}.`,
+    ].join("\n");
+    const inbound = {
+      id: createStreamEntryId(),
+      session_id: sessionId,
+      entry_index: 1,
+      timestamp: 1_000,
+      kind: "user_msg",
+      content: body,
+    } as unknown as StreamEntry;
+    const run = (input: { isUserTurn: boolean; userMessage: string; entries: StreamEntry[] }) =>
+      coordinator.run({
+        llmClient: {} as never,
+        sessionId,
+        turnId: "turn-named-question",
+        origin: input.isUserTurn ? "user" : "autonomous",
+        userMessage: input.userMessage,
+        perception: { affectiveSignalDegraded: true } as PerceptionResult,
+        workingMood: { valence: 0, arousal: 0, dominant_emotion: "neutral" },
+        postActionWorkingMemory: workingMemory,
+        selfSnapshot: {} as never,
+        deliberation: { retrievedEpisodes: [] } as never,
+        actionResult: { response: "", tool_calls: [], intents: [], workingMemory },
+        retrievedEpisodes: [],
+        recalledOpenQuestions: [recalled],
+        retrievalConfidence: { confidence: 1, degraded: false, reason: null } as never,
+        executiveFocus: null as never,
+        selectedSkill: null,
+        proceduralContext: null,
+        audienceEntityId: null,
+        socialInteractionEntityId: null,
+        pendingSocialAttribution: null,
+        suppressionSet: { snapshot: () => [] } as never,
+        sourceUserEntries: input.entries,
+        persistedAgentEntry: {
+          id: createStreamEntryId(),
+          timestamp: 1_000,
+          kind: "agent_msg",
+          content: "ok",
+          session_id: sessionId,
+        } as StreamEntry,
+        isUserTurn: input.isUserTurn,
+        streamWriter: {} as never,
+        onHookFailure: vi.fn(),
+        trackReflectionEffects: vi.fn(),
+      });
+
+    await run({
+      isUserTurn: true,
+      userMessage: renderInboundBatch({ entries: [inbound] as never }),
+      entries: [inbound],
+    });
+    // Before: the turn that answered these could hand the reflector only its recall and the
+    // urgency twenty, so a question it named and answered below that cut could not be resolved.
+    // After: named ids lead in first-mention order, one slot each; a resolved row and an id the
+    // store does not hold are skipped; a shortened handle and an id glued to id characters name
+    // nothing; recall follows, and the list stays at twenty.
+    expect(reflect).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        activeOpenQuestions: [
+          stored.get(named),
+          stored.get(namedBesideKanji),
+          recalled,
+          ...byUrgency.slice(0, 17),
+        ],
+      }),
+      expect.anything(),
+    );
+    expect(get.mock.calls.map(([id]) => id)).toEqual([
+      named,
+      namedBesideKanji,
+      namedResolved,
+      namedUnknown,
+    ]);
+
+    await run({ isUserTurn: true, userMessage: body, entries: [] });
+    expect(reflect).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        activeOpenQuestions: [
+          stored.get(named),
+          stored.get(namedBesideKanji),
+          recalled,
+          ...byUrgency.slice(0, 17),
+        ],
+      }),
+      expect.anything(),
+    );
+
+    get.mockClear();
+    await run({ isUserTurn: false, userMessage: body, entries: [] });
+    expect(get).not.toHaveBeenCalled();
+    expect(reflect).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({ activeOpenQuestions: [recalled, ...byUrgency.slice(0, 19)] }),
+      expect.anything(),
+    );
+  });
+
   it("skips target-memory reflection persistence for directed_outbound internal instructions", async () => {
     const addOpenQuestion = vi.fn();
     const resolveOpenQuestion = vi.fn();
@@ -230,6 +381,7 @@ describe("TurnReflectionCoordinator", () => {
       },
       openQuestionsRepository: {
         list: vi.fn(() => []),
+        get: vi.fn(() => null),
       },
       workingMemoryStore: {
         save: vi.fn(),
@@ -337,7 +489,7 @@ describe("TurnReflectionCoordinator", () => {
       const coordinator = new TurnReflectionCoordinator({
         moodRepository: { update },
         socialRepository: { recordInteractionWithId: vi.fn() },
-        openQuestionsRepository: { list: vi.fn(() => []) },
+        openQuestionsRepository: { list: vi.fn(() => []), get: vi.fn(() => null) },
         workingMemoryStore: { save: vi.fn() },
         pendingProceduralAttemptTracker: { update: vi.fn(() => []) },
         createReflector: vi.fn(

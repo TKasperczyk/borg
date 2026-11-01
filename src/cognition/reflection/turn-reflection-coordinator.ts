@@ -10,7 +10,14 @@ import type {
 } from "../../memory/working/index.js";
 import type { StreamEntry, StreamWriter } from "../../stream/index.js";
 import type { Clock } from "../../util/clock.js";
-import type { EntityId, SessionId, StreamEntryId } from "../../util/ids.js";
+import {
+  INTERNAL_IDENTIFIER_TOKEN_PATTERN_SOURCE,
+  openQuestionIdHelpers,
+  type EntityId,
+  type OpenQuestionId,
+  type SessionId,
+  type StreamEntryId,
+} from "../../util/ids.js";
 import type { ActionResult } from "../turn-action/index.js";
 import type { SuppressionSet } from "../attention/index.js";
 import type { DeliberationResult, SelfSnapshot } from "../deliberation/deliberator.js";
@@ -41,14 +48,16 @@ function emptyReflectionEffects(): ReflectionEffects {
 
 // The reflector can resolve only the questions it is handed, and the store's urgency top-N is not
 // chosen by the turn: a question this turn recalled and answered could rank below it and stay open.
-// Recalled open questions come first; the urgency draw fills the remaining slots, so the count holds.
+// Questions the turn itself points at come first -- named by full id in its inbound message, then
+// recalled -- and the urgency draw fills the remaining slots, so the count holds.
 function reflectionOpenQuestions(
+  named: readonly OpenQuestion[],
   recalled: readonly OpenQuestion[],
   byUrgency: readonly OpenQuestion[],
 ): OpenQuestion[] {
   const byId = new Map<string, OpenQuestion>();
 
-  for (const question of [...recalled, ...byUrgency]) {
+  for (const question of [...named, ...recalled, ...byUrgency]) {
     if (question.status === "open" && !byId.has(question.id)) {
       byId.set(question.id, question);
     }
@@ -57,10 +66,27 @@ function reflectionOpenQuestions(
   return [...byId.values()].slice(0, OPEN_QUESTIONS_REFLECTION_LIMIT);
 }
 
+const INTERNAL_IDENTIFIER_TOKEN = new RegExp(INTERNAL_IDENTIFIER_TOKEN_PATTERN_SOURCE, "gu");
+
+// A message that answers a question can name it by its stored id while the turn's recall draws no
+// open question at all. The match uses the host guard's identifier grammar, so it reads handles,
+// not wording; a shortened handle is not an id and names nothing here.
+function openQuestionIdsNamedIn(text: string): OpenQuestionId[] {
+  const ids = new Set<OpenQuestionId>();
+
+  for (const [token] of text.matchAll(INTERNAL_IDENTIFIER_TOKEN)) {
+    if (openQuestionIdHelpers.is(token)) {
+      ids.add(token);
+    }
+  }
+
+  return [...ids];
+}
+
 export type TurnReflectionCoordinatorOptions = {
   moodRepository: Pick<MoodRepository, "update">;
   socialRepository: Pick<SocialRepository, "recordInteractionWithId">;
-  openQuestionsRepository: Pick<OpenQuestionsRepository, "list">;
+  openQuestionsRepository: Pick<OpenQuestionsRepository, "list" | "get">;
   workingMemoryStore: Pick<WorkingMemoryStore, "save">;
   pendingProceduralAttemptTracker: Pick<PendingProceduralAttemptTracker, "update">;
   createReflector: (llmClient: LLMClient) => Reflector;
@@ -189,7 +215,17 @@ export class TurnReflectionCoordinator {
     }
 
     const reflector = this.options.createReflector(input.llmClient);
+    const inboundBodies = inboundMessageBodies(input.sourceUserEntries ?? []);
+    const inboundText = inboundBodies.length === 0 ? input.userMessage : inboundBodies;
+    const namedOpenQuestions = input.isUserTurn
+      ? openQuestionIdsNamedIn(inboundText).flatMap((id) => {
+          const question = this.options.openQuestionsRepository.get(id);
+
+          return question === null ? [] : [question];
+        })
+      : [];
     const activeOpenQuestions = reflectionOpenQuestions(
+      namedOpenQuestions,
       input.recalledOpenQuestions ?? [],
       this.options.openQuestionsRepository.list({
         status: "open",
