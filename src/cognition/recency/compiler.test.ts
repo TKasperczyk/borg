@@ -573,17 +573,71 @@ describe("TurnContextCompiler", () => {
       writer.close();
     }
 
-    // 120 chars only fits the newest message plus the one before it if small
-    // enough -- the compiler breaks after the first message that would put
-    // us over the cap, but always keeps at least the newest message.
     const window = new TurnContextCompiler({ maxChars: 150 }).compile(makeReader(dataDir));
 
-    // With 100-char messages, the compiler keeps the newest (agent "d")
-    // then hits the cap on the next; the dangling assistant is dropped to
-    // respect the "starts with user" invariant, leaving zero messages.
-    expect(window.total_chars).toBeLessThanOrEqual(
-      window.messages.reduce((s, m) => s + m.content.length, 0) + 1,
+    // The newest (agent "d") fits; user "c" would pass the cap, so it is cut
+    // at its head to the 50 chars left rather than losing "d" to the
+    // starts-with-user drop.
+    expect(window.messages.map((m) => m.role)).toEqual(["user", "assistant"]);
+    expect(window.messages[0]?.content).toBe(`${"c".repeat(20)}\n[message truncated 80 chars]`);
+    expect(window.messages[1]?.content).toBe("d".repeat(100));
+    expect(window.total_chars).toBe(149);
+  });
+
+  it("keeps the newest assistant turn when the user turn before it passes the char cap", async () => {
+    const dataDir = createTempDir();
+    const clock = new ManualClock(1_000);
+    const writer = makeWriter(dataDir, clock);
+    const priorUser = "u".repeat(18_145);
+    const priorAssistant = "a".repeat(7_733);
+    let pendingEntryId: StreamEntryId | null = null;
+
+    try {
+      await writer.append({ kind: "user_msg", content: "older user" });
+      clock.advance(10);
+      await writer.append({ kind: "agent_msg", content: "older assistant" });
+      clock.advance(10);
+      await writer.append({ kind: "user_msg", content: priorUser });
+      clock.advance(10);
+      await writer.append({ kind: "agent_msg", content: priorAssistant });
+      clock.advance(10);
+      const pending = await writer.append({ kind: "user_msg", content: "pending inbound" });
+      pendingEntryId = pending.id;
+    } finally {
+      writer.close();
+    }
+
+    const window = new TurnContextCompiler().compile(makeReader(dataDir), {
+      beforeEntryIdExclusive: pendingEntryId ?? undefined,
+    });
+
+    // 7,733 + 18,145 passes the default 24,000 cap. Without the cut the window
+    // would be empty: the walk stops after the assistant turn, which the
+    // starts-with-user drop then removes.
+    expect(window.messages.map((m) => m.role)).toEqual(["user", "assistant"]);
+    expect(window.messages[1]?.content).toBe(priorAssistant);
+    expect(window.messages[0]?.content).toBe(
+      `${"u".repeat(16_235)}\n[message truncated 1910 chars]`,
     );
-    expect(window.messages.length).toBeLessThanOrEqual(2);
+    expect(window.total_chars).toBe(23_999);
+  });
+
+  it("stays empty when the newest assistant turn leaves no room for a cut user turn", async () => {
+    const dataDir = createTempDir();
+    const clock = new ManualClock(1_000);
+    const writer = makeWriter(dataDir, clock);
+
+    try {
+      await writer.append({ kind: "user_msg", content: "q".repeat(100) });
+      clock.advance(1);
+      await writer.append({ kind: "agent_msg", content: "r".repeat(140) });
+    } finally {
+      writer.close();
+    }
+
+    const window = new TurnContextCompiler({ maxChars: 150 }).compile(makeReader(dataDir));
+
+    // 10 chars left cannot hold the marker plus one char of "q".
+    expect(window.messages).toEqual([]);
   });
 });

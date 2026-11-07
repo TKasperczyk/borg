@@ -139,6 +139,22 @@ function suppressionCategoryContext(reason: string): string {
   return "guard or finalizer suppression";
 }
 
+function cutMarker(cutChars: number): string {
+  return `\n[message truncated ${cutChars} chars]`;
+}
+
+// Head of `content` plus a marker naming the cut, at most `budget` chars long;
+// null when the budget cannot hold the marker and at least one char.
+function cutToBudget(content: string, budget: number): string | null {
+  const keep = budget - cutMarker(content.length).length;
+
+  if (keep <= 0) {
+    return null;
+  }
+
+  return `${content.slice(0, keep)}${cutMarker(content.length - keep)}`;
+}
+
 function renderEntryContent(entry: StreamEntry): string {
   if (entry.kind === "agent_suppressed") {
     const reason = markerReason(entry);
@@ -267,6 +283,26 @@ export class TurnContextCompiler {
       const contentLength = content.length;
 
       if (reversed.length > 0 && totalChars + contentLength > this.maxChars) {
+        // Everything kept so far is assistant turns, which the leading-assistant
+        // drop below would discard, newest message included. Keep them by
+        // admitting this user message cut at its head to the remaining budget.
+        const cut =
+          item.role === "user" && reversed.every((message) => message.role === "assistant")
+            ? cutToBudget(content, this.maxChars - totalChars)
+            : null;
+
+        if (cut !== null) {
+          reversed.push({
+            role: item.role,
+            content: cut,
+            stream_entry_id: item.entry.id,
+            sender_entity_id: item.entry.sender_entity_id,
+            ts: item.entry.timestamp,
+            kind: item.entry.kind,
+          });
+          totalChars += cut.length;
+        }
+
         break;
       }
 
