@@ -88,6 +88,7 @@ export function mapActionRow(row: Record<string, unknown>): ActionRecord {
       row.completed_at === null || row.completed_at === undefined ? null : Number(row.completed_at),
     not_done_at:
       row.not_done_at === null || row.not_done_at === undefined ? null : Number(row.not_done_at),
+    declined_at: row.declined_at == null ? null : Number(row.declined_at),
     expired_at:
       row.expired_at === null || row.expired_at === undefined ? null : Number(row.expired_at),
     archived_at:
@@ -386,11 +387,11 @@ export class ActionRepository {
           INSERT INTO action_records (
             id, description, actor, audience_entity_id, goal_id, open_question_id, state, confidence,
             provenance_episode_ids, provenance_stream_entry_ids, created_at, updated_at,
-            considering_at, committed_at, scheduled_at, completed_at, not_done_at, expired_at,
+            considering_at, committed_at, scheduled_at, completed_at, not_done_at, declined_at, expired_at,
             archived_at, unknown_at, canonicalized_by_artifact_entry_id, session_scope,
             session_anchor_id, last_referenced_at_ms, last_referenced_turn_counter,
             last_referenced_turn_global
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT (id) DO UPDATE SET
             description = excluded.description,
             actor = excluded.actor,
@@ -407,6 +408,7 @@ export class ActionRepository {
             scheduled_at = excluded.scheduled_at,
             completed_at = excluded.completed_at,
             not_done_at = excluded.not_done_at,
+            declined_at = excluded.declined_at,
             expired_at = excluded.expired_at,
             archived_at = excluded.archived_at,
             unknown_at = excluded.unknown_at,
@@ -436,6 +438,7 @@ export class ActionRepository {
         record.scheduled_at,
         record.completed_at,
         record.not_done_at,
+        record.declined_at,
         record.expired_at,
         record.archived_at,
         record.unknown_at,

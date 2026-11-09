@@ -8,6 +8,7 @@
     "src/**/*",
     "tests/**/*",
     "scripts/async-ingest-scenario.ts",
+    "scripts/*contradiction*.ts",
     "scripts/repair-entity-graph*.ts",
     "scripts/migrate-embeddings*.ts",
     "scripts/embedding-migration/**/*.ts",

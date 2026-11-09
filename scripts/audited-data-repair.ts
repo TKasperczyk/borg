@@ -21,10 +21,14 @@ import { syncDirectory, writeJsonFileAtomic } from "../src/util/atomic-write.js"
 import { digest, openRepairDatabase } from "./repair-entity-graph-storage.js";
 
 export type RepairKind =
+  | "backfill-judged-contradiction-edges"
+  | "backfill-superseded-contradiction-edges"
   | "backfill-commitment-committers"
   | "repair-action-actor"
   | "apply-period-rollover";
 const KINDS: RepairKind[] = [
+  "backfill-judged-contradiction-edges",
+  "backfill-superseded-contradiction-edges",
   "backfill-commitment-committers",
   "repair-action-actor",
   "apply-period-rollover",

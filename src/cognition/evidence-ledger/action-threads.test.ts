@@ -25,6 +25,25 @@ const DOMINANT_AUDIENCE = createEntityId();
 const QUIET_AUDIENCE_A = createEntityId();
 const QUIET_AUDIENCE_B = createEntityId();
 
+it("renders declined as a terminal choice with terminal salience", () => {
+  const record = makeActionRecord({
+    state: "declined",
+    declined_at: 2_000,
+    last_referenced_turn_global: 10,
+  });
+  const thread: ActionThread = {
+    id: record.id,
+    records: [record],
+    origin: record,
+    current: record,
+    scope: "current_session",
+  };
+  expect(renderActionThreadText(thread, undefined)).toContain("declined");
+  expect(renderActionThreadText(thread, undefined)).toContain("choice to decline");
+  expect(actionSalienceClass({ thread, currentTurnGlobal: 10 })).toBe("completed_recent");
+  expect(actionSalienceClass({ thread, currentTurnGlobal: 1_000 })).toBeNull();
+});
+
 function makeCompletedThread(input: {
   audienceEntityId: ReturnType<typeof createEntityId>;
   updatedAt: number;

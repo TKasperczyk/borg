@@ -1,6 +1,7 @@
 import { FailureReportTracker } from "../util/failure-reports.js";
 import { runWithDeadline } from "../util/deadline.js";
 import { TimeoutBudgetExceeded } from "../util/timeout-policy.js";
+import type { GoalPresentation } from "../executive/goal-presentation.js";
 import { StreamWatermarkRepository, StreamWriter } from "../stream/index.js";
 import { SystemClock, type Clock } from "../util/clock.js";
 import {
@@ -1619,22 +1620,11 @@ export class AutonomyScheduler {
           let wakeHeadwayBases: string[];
 
           try {
-            perGoalOutcomes =
+            perGoalOutcomes = (
               wakeBatch.goalGroups.length === 0
-                ? [
-                    {
-                      event: preparedEvent.event,
-                      outcome: this.evaluateGoalWakeOutcome(preparedEvent.event, turnResult),
-                    },
-                  ]
-                : wakeBatch.goalGroups.map((group) => {
-                    const event = this.goalOutcomeEvent(group);
-
-                    return {
-                      event,
-                      outcome: this.evaluateGoalWakeOutcome(event, turnResult),
-                    };
-                  });
+                ? [preparedEvent.event]
+                : wakeBatch.goalGroups.map((group) => this.goalOutcomeEvent(group))
+            ).map((event) => ({ event, outcome: this.evaluateGoalWakeOutcome(event, turnResult) }));
             wakeHeadwayBases = [
               ...turnEmissionHeadwayBases(turnResult),
               ...new Set(
@@ -1729,7 +1719,11 @@ export class AutonomyScheduler {
               // rolls the whole group back, so a retry can never be hidden by
               // a committed source latch with missing goal accounting.
               for (const { event, outcome } of perGoalOutcomes) {
-                this.applyPerGoalEmptyWakeBackoff(event, outcome);
+                this.applyPerGoalEmptyWakeBackoff(
+                  event,
+                  outcome,
+                  turnResult.shownGoalPresentations,
+                );
               }
 
               for (const { source, event } of wakeBatch.events) {
@@ -1742,6 +1736,17 @@ export class AutonomyScheduler {
                   shownOpenQuestionIds: turnResult.shownOpenQuestionIds ?? [],
                 });
                 if (completion?.watermark === "source_owned") continue;
+                // A coalesced source did not necessarily present this goal.
+                // Its executive cooldown must follow the row's presentation owner.
+                if (
+                  event.sourceName === "executive_focus_due" &&
+                  wakeBatch.goalGroups.some(
+                    (group) =>
+                      group.presentation.goal_id === selectedGoalIdForWake(event) &&
+                      group.presentationEvent.event.sourceName !== "executive_focus_due",
+                  )
+                )
+                  continue;
                 this.options.watermarkRepository.set(event.watermarkProcessName, this.sessionId, {
                   lastTs: event.sortTs,
                   lastEntryId: event.id,
@@ -1875,12 +1880,21 @@ export class AutonomyScheduler {
     };
   }
 
-  private applyPerGoalEmptyWakeBackoff(event: DueEvent, outcome: GoalWakeOutcome): void {
+  private applyPerGoalEmptyWakeBackoff(
+    event: DueEvent,
+    outcome: GoalWakeOutcome,
+    presentations: readonly GoalPresentation[] | undefined,
+  ): void {
     const concern = outcome.backoffConcern;
+    if (concern === null) return;
+    const presentation = presentations?.find((goal) => goal.goalId === concern.goalId);
+    // Actual turns report even an empty set. Legacy custom runners without
+    // presentation metadata retain timestamp-only bookkeeping, never a guessed generation.
+    if (presentations !== undefined && presentation === undefined) return;
+    const currentGoal = this.options.goalsRepository?.get(concern.goalId as GoalId) ?? null;
 
     if (
-      concern === null ||
-      this.options.goalsRepository?.get(concern.goalId as GoalId)?.status === "blocked" ||
+      currentGoal?.status === "blocked" ||
       (event.sourceName === "goal_followup_due" && !this.respectGoalFollowupStaleBackoff)
     ) {
       return;
@@ -1912,6 +1926,7 @@ export class AutonomyScheduler {
       lastEntryId: event.id,
       metadata: {
         empty_count: previousEmptyCount + 1,
+        ...(presentation === undefined ? {} : { input_generation: presentation.inputGeneration }),
         ...(actionAvailabilityKey === undefined
           ? {}
           : {

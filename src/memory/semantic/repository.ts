@@ -61,6 +61,7 @@ import {
 } from "./types.js";
 import { canonicalizeDomain } from "./domain.js";
 import type { SemanticMutationRecorder } from "./mutation-journal.js";
+import { retireContradictionEdges } from "./contradiction-retirement.js";
 
 export type SemanticMutationOptions = { mutationRecorder?: SemanticMutationRecorder };
 
@@ -729,6 +730,13 @@ export class SemanticNodeRepository {
         node.corrected_by,
         node.superseded_at,
       );
+    if (node.status === "superseded")
+      this.retireSupersededContradictions(
+        node.id,
+        node.corrected_by,
+        node.superseded_at ?? this.clock.now(),
+        "semantic_node_write",
+      );
   }
 
   async insert(
@@ -1110,9 +1118,10 @@ export class SemanticNodeRepository {
       superseded_at: current.superseded_at as number | null,
     });
     const updatedAt = supersededAt ?? this.clock.now();
-    const result = this.db
-      .prepare(
-        `
+    const apply = () => {
+      const result = this.db
+        .prepare(
+          `
           UPDATE semantic_nodes
           SET status = ?,
               corrected_by = ?,
@@ -1120,12 +1129,24 @@ export class SemanticNodeRepository {
               updated_at = ?
           WHERE id = ?
         `,
-      )
-      .run(status, correctedBy, supersededAt, updatedAt, id);
+        )
+        .run(status, correctedBy, supersededAt, updatedAt, id);
 
-    if (result.changes !== 1) {
+      if (result.changes !== 1) {
+        return false;
+      }
+
+      if (status === "superseded")
+        this.retireSupersededContradictions(
+          id,
+          correctedBy,
+          updatedAt,
+          "semantic_node_supersession",
+        );
+      return true;
+    };
+    if (!(this.db.raw.inTransaction ? apply() : this.db.transaction(apply).immediate()))
       return null;
-    }
 
     return {
       id,
@@ -1134,6 +1155,31 @@ export class SemanticNodeRepository {
       correctedBy,
       supersededAt,
     };
+  }
+
+  private retireSupersededContradictions(
+    id: SemanticNodeId,
+    correctedBy: SemanticNodeCorrectionRef | null,
+    at: number,
+    sourceProcess: string,
+  ): void {
+    const repository = new SemanticEdgeRepository({ db: this.db, clock: this.clock });
+    const edges = [
+      ...repository.listEdges({ fromId: id, relation: "contradicts", includeInvalid: true }),
+      ...repository.listEdges({ toId: id, relation: "contradicts", includeInvalid: true }),
+    ].filter((edge) => edge.valid_to === null);
+    retireContradictionEdges({
+      db: this.db,
+      clock: this.clock,
+      repository,
+      edges,
+      provenance: {
+        at,
+        by_process: "maintenance",
+        reason: `semantic node superseded: ${id}; correction: ${correctedBy ?? "unspecified"}`,
+      },
+      context: { node_id: id, corrected_by: correctedBy, source_process: sourceProcess },
+    });
   }
 
   markSuperseded(
@@ -1465,6 +1511,19 @@ export class SemanticEdgeRepository {
     });
   }
 
+  private assertContradictionEndpoints(
+    edge: Pick<SemanticEdge, "from_node_id" | "to_node_id" | "relation" | "valid_to">,
+  ): void {
+    if (edge.relation !== "contradicts" || edge.valid_to !== null) return;
+    const stale = this.db
+      .prepare("SELECT id FROM semantic_nodes WHERE id IN (?, ?) AND status = 'superseded' LIMIT 1")
+      .get(edge.from_node_id, edge.to_node_id);
+    if (stale !== undefined)
+      throw new SemanticError("Open contradiction cannot reference a superseded node", {
+        code: "SEMANTIC_EDGE_SUPERSEDED_ENDPOINT",
+      });
+  }
+
   private hasSupportPath(fromId: SemanticNodeId, toId: SemanticNodeId, maxDepth = 3): boolean {
     const queue: Array<{ id: SemanticNodeId; depth: number }> = [{ id: fromId, depth: 0 }];
     const visited = new Set<string>([fromId]);
@@ -1629,6 +1688,7 @@ export class SemanticEdgeRepository {
 
   private insertEdgeWithDependencies(edge: SemanticEdge): void {
     const write = () => {
+      this.assertContradictionEndpoints(edge);
       this.insertEdgeRow(edge);
       this.insertSupportDependency(edge);
     };
@@ -1730,6 +1790,7 @@ export class SemanticEdgeRepository {
 
     this.assertNodeExists(parsed.from_node_id, "from_node_id");
     this.assertNodeExists(parsed.to_node_id, "to_node_id");
+    this.assertContradictionEndpoints({ ...parsed, valid_to: parsed.valid_to ?? null });
 
     const row = this.db
       .prepare(
@@ -1787,16 +1848,38 @@ export class SemanticEdgeRepository {
     return merged;
   }
 
-  restoreEdge(input: SemanticEdge): SemanticEdge {
+  restoreEdge(
+    input: SemanticEdge,
+    options: {
+      auditedReversal?: boolean;
+      preserveDependencies?: boolean;
+      invalidationEventId?: number;
+    } = {},
+  ): SemanticEdge {
     const edge = semanticEdgeSchema.parse(input);
 
     this.assertNodeExists(edge.from_node_id, "from_node_id");
     this.assertNodeExists(edge.to_node_id, "to_node_id");
 
     const write = () => {
-      this.db
-        .prepare("DELETE FROM semantic_belief_dependencies WHERE source_edge_id = ?")
-        .run(edge.id);
+      // Only an explicit maintenance reversal may restore the pre-repair history,
+      // including stale edges. Normal restore/import paths enforce the invariant.
+      if (!options.auditedReversal) this.assertContradictionEndpoints(edge);
+      if (
+        options.auditedReversal &&
+        edge.valid_to === null &&
+        options.invalidationEventId !== undefined
+      )
+        this.db
+          .prepare(
+            `DELETE FROM semantic_edge_invalidation_events
+           WHERE id = ? AND edge_id = ? AND processed_at IS NULL`,
+          )
+          .run(options.invalidationEventId, edge.id);
+      if (!options.preserveDependencies)
+        this.db
+          .prepare("DELETE FROM semantic_belief_dependencies WHERE source_edge_id = ?")
+          .run(edge.id);
       this.upsertEdgeRow(edge);
       this.insertSupportDependency(edge);
     };

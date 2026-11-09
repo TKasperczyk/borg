@@ -6,8 +6,60 @@ import { createActionId, createOpenQuestionId, createStreamEntryId } from "../..
 import type { OpenQuestion } from "../self/index.js";
 import { resolveOpenQuestionsForCompletedAction } from "./open-question-resolution.js";
 import type { ActionRecord } from "./types.js";
+import { makeActionRecord } from "../../test-support/factories/memory.js";
+import { declineAction, completeAction } from "../lifecycle-ops/index.js";
 
 describe("completed action open-question resolution", () => {
+  it("declines without completing its linked question and guards against later completion", async () => {
+    const h = await createOfflineTestHarness();
+    try {
+      const goal = h.goalsRepository.add({
+        description: "Opaque",
+        priority: 1,
+        provenance: { kind: "manual" },
+      });
+      const question = h.openQuestionsRepository.add({
+        question: "Was it done?",
+        urgency: 0.5,
+        goal_id: goal.id,
+        source: "reflection",
+        provenance: { kind: "manual" },
+      });
+      const action = makeActionRecord({
+        actor: "borg",
+        state: "committed_to_do",
+        goal_id: goal.id,
+        open_question_id: question.id,
+      });
+      h.actionRepository.add(action);
+      const complete = vi.spyOn(h.identityService, "resolveOpenQuestion");
+      expect(declineAction({ actionId: action.id, repository: h.actionRepository }).status).toBe(
+        "success",
+      );
+      const declined = h.actionRepository.get(action.id)!;
+      expect(declined).toMatchObject({
+        state: "declined",
+        declined_at: h.clock.now(),
+        completed_at: null,
+        not_done_at: null,
+      });
+      expect(h.actionRepository.list({ state: "not_done" })).toEqual([]);
+      expect(h.openQuestionsRepository.get(question.id)?.status).toBe("open");
+      expect(completeAction({ actionId: action.id, repository: h.actionRepository })).toMatchObject(
+        { status: "no_op", reason: "terminal" },
+      );
+      expect(
+        resolveOpenQuestionsForCompletedAction({
+          action: declined,
+          openQuestionsRepository: h.openQuestionsRepository,
+          identityService: h.identityService,
+        }),
+      ).toEqual([]);
+      expect(complete).not.toHaveBeenCalled();
+    } finally {
+      await h.cleanup();
+    }
+  });
   it("resolves a directly linked open question when an action completes", async () => {
     const harness = await createOfflineTestHarness();
 
@@ -39,6 +91,7 @@ describe("completed action open-question resolution", () => {
         scheduled_at: null,
         completed_at: null,
         not_done_at: null,
+        declined_at: null,
         expired_at: null,
         archived_at: null,
         unknown_at: null,
@@ -105,6 +158,7 @@ describe("completed action open-question resolution", () => {
         scheduled_at: null,
         completed_at: harness.clock.now(),
         not_done_at: null,
+        declined_at: null,
         expired_at: null,
         archived_at: null,
         unknown_at: null,
@@ -148,6 +202,7 @@ describe("completed action open-question resolution", () => {
       scheduled_at: null,
       completed_at: 1_000,
       not_done_at: null,
+      declined_at: null,
       expired_at: null,
       archived_at: null,
       unknown_at: null,

@@ -46,6 +46,7 @@ export function resolveOpenQuestionsForCompletedAction(
   options: ResolveCompletedActionOpenQuestionsOptions,
 ): OpenQuestion[] {
   const { action } = options;
+  if (action.state !== "completed") return [];
   const questions: OpenQuestion[] = [];
   const seen = new Set<OpenQuestion["id"]>();
 

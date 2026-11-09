@@ -16,6 +16,7 @@ export {
   completeAction,
   isTerminalActionState,
   markActionNotDone,
+  declineAction,
   type CompleteActionRepository,
   type MarkActionNotDoneRepository,
 } from "./complete.js";

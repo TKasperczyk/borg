@@ -555,6 +555,7 @@ describe("self repositories", () => {
           counterpartyMigration!,
           selfMigrations.find((migration) => migration.name === "goal_named_block_history")!,
           selfMigrations.find((migration) => migration.name === "goal_deadline_assignment_basis")!,
+          selfMigrations.find((migration) => migration.name === "goal_last_interaction_at")!,
         ],
       });
       const goals = new GoalsRepository({

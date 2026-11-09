@@ -157,6 +157,7 @@ function completedAction(index: number, updatedAt: number, completedAt: number):
     scheduled_at: null,
     completed_at: completedAt,
     not_done_at: null,
+    declined_at: null,
     expired_at: null,
     archived_at: null,
     unknown_at: null,

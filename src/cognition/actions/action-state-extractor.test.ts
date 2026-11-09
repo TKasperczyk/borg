@@ -32,7 +32,7 @@ type ActionStateInput = {
   classification?: ActionCandidateClassification | string;
   description?: string;
   actor?: "user" | "borg" | string;
-  state?: "considering" | "committed_to_do" | "scheduled" | "completed" | "not_done";
+  state?: "considering" | "committed_to_do" | "scheduled" | "completed" | "not_done" | "declined";
   audience_entity_id?: string | null;
   session_scope?: "current_session" | "next_session" | null;
   matched_existing_action_id?: string | null;
@@ -128,6 +128,7 @@ function makeActionRecord(
     scheduled_at: overrides.scheduled_at ?? null,
     completed_at: overrides.completed_at ?? null,
     not_done_at: overrides.not_done_at ?? null,
+    declined_at: overrides.declined_at ?? null,
     expired_at: overrides.expired_at ?? null,
     archived_at: overrides.archived_at ?? null,
     unknown_at: overrides.unknown_at ?? null,
@@ -236,6 +237,8 @@ class ScriptedEmbeddingClient implements EmbeddingClient {
 const TERMINAL_RACE_CASES = [
   { terminalState: "completed", candidateState: "completed" },
   { terminalState: "not_done", candidateState: "not_done" },
+  { terminalState: "declined", candidateState: "completed" },
+  { terminalState: "declined", candidateState: "declined" },
   { terminalState: "archived", candidateState: "completed" },
   { terminalState: "expired", candidateState: "not_done" },
 ] as const;
@@ -586,6 +589,7 @@ describe("ActionStateExtractor", () => {
           scheduled: 0,
           completed: 1,
           not_done: 0,
+          declined: 0,
           unknown: 0,
         }),
         classification_counts: expect.objectContaining({
@@ -917,100 +921,107 @@ describe("ActionStateExtractor", () => {
     });
   });
 
-  it("closes an existing active action when a terminal emission embedding-matches it", async () => {
-    const currentUserStreamEntryId = createStreamEntryId();
-    const previousStreamEntryId = createStreamEntryId();
-    const audience = createEntityId();
-    const actor = createEntityId();
-    const existingDescription = "deploy the fix";
-    const terminalDescription = "deployed the fix";
-    const existingAction = makeActionRecord({
-      description: existingDescription,
-      actor,
-      audience_entity_id: audience,
-      provenance_stream_entry_ids: [previousStreamEntryId],
-      state: "committed_to_do",
-      committed_at: 1_000,
-    });
-    const repository = makeActionRepository([existingAction]);
-    const events: Array<{ event: string; data: Record<string, unknown> }> = [];
-    const embeddingClient = new ScriptedEmbeddingClient(
-      new Map([
-        [existingDescription, [1, 0]],
-        [terminalDescription, [1, 0]],
-      ]),
-    );
-    const llm = new FakeLLMClient({
-      responses: [
-        actionStateResponse([
-          {
-            description: terminalDescription,
-            actor,
-            state: "completed",
-            audience_entity_id: audience,
-            evidence_stream_entry_ids: [currentUserStreamEntryId],
-            confidence: 0.94,
-          },
+  it.each(["completed", "not_done", "declined"] as const)(
+    "closes an active action when a model-selected %s emission matches it",
+    async (terminalState) => {
+      const currentUserStreamEntryId = createStreamEntryId();
+      const previousStreamEntryId = createStreamEntryId();
+      const audience = createEntityId();
+      const actor = createEntityId();
+      const existingDescription = "deploy the fix";
+      const terminalDescription = "deployed the fix";
+      const existingAction = makeActionRecord({
+        description: existingDescription,
+        actor,
+        audience_entity_id: audience,
+        provenance_stream_entry_ids: [previousStreamEntryId],
+        state: "committed_to_do",
+        committed_at: 1_000,
+      });
+      const repository = makeActionRepository([existingAction]);
+      const events: Array<{ event: string; data: Record<string, unknown> }> = [];
+      const embeddingClient = new ScriptedEmbeddingClient(
+        new Map([
+          [existingDescription, [1, 0]],
+          [terminalDescription, [1, 0]],
         ]),
-      ],
-    });
-    const extractor = new ActionStateExtractor({
-      llmClient: llm,
-      model: "haiku",
-      actionRepository: repository,
-      embeddingClient,
-      clock: new FixedClock(2_000),
-      turnId: "turn_action_terminal_close",
-      tracer: {
-        enabled: true,
-        includePayloads: true,
-        emit: (event, data) => events.push({ event, data }),
-      },
-    });
-
-    const records = await extractor.extract({
-      ...makeExtractorInput(currentUserStreamEntryId),
-      userMessage: "X deployed the fix.",
-      audienceEntityId: audience,
-    });
-
-    expect(records).toEqual([]);
-    expect(repository.add).not.toHaveBeenCalled();
-    expect(repository.update).toHaveBeenCalledOnce();
-    expect(repository.records).toHaveLength(1);
-    expect(repository.records[0]).toMatchObject({
-      id: existingAction.id,
-      description: existingDescription,
-      actor,
-      audience_entity_id: audience,
-      state: "completed",
-      confidence: 0.94,
-      provenance_stream_entry_ids: [previousStreamEntryId, currentUserStreamEntryId],
-      updated_at: 2_000,
-      committed_at: 1_000,
-      completed_at: 2_000,
-    });
-    expect(events).toContainEqual({
-      event: "action_state.transitioned",
-      data: expect.objectContaining({
+      );
+      const llm = new FakeLLMClient({
+        responses: [
+          actionStateResponse([
+            {
+              description: terminalDescription,
+              actor,
+              state: terminalState,
+              audience_entity_id: audience,
+              evidence_stream_entry_ids: [currentUserStreamEntryId],
+              confidence: 0.94,
+            },
+          ]),
+        ],
+      });
+      const extractor = new ActionStateExtractor({
+        llmClient: llm,
+        model: "haiku",
+        actionRepository: repository,
+        embeddingClient,
+        clock: new FixedClock(2_000),
         turnId: "turn_action_terminal_close",
-        action_id: existingAction.id,
-        candidate_index: 0,
-        terminal_state: "completed",
-        description_excerpt: terminalDescription,
-        similarity: 1,
-      }),
-    });
-    expect(events).toContainEqual({
-      event: "extraction.actions.completed",
-      data: expect.objectContaining({
-        turnId: "turn_action_terminal_close",
-        persisted_count: 0,
-        skipped_count: 0,
-        actions_closed_by_terminal_emission: 1,
-      }),
-    });
-  });
+        tracer: {
+          enabled: true,
+          includePayloads: true,
+          emit: (event, data) => events.push({ event, data }),
+        },
+      });
+
+      const records = await extractor.extract({
+        ...makeExtractorInput(currentUserStreamEntryId),
+        userMessage: "X deployed the fix.",
+        audienceEntityId: audience,
+      });
+
+      expect(records).toEqual([]);
+      expect(repository.add).not.toHaveBeenCalled();
+      expect(repository.update).toHaveBeenCalledOnce();
+      expect(repository.records).toHaveLength(1);
+      expect(repository.records[0]).toMatchObject({
+        id: existingAction.id,
+        description: existingDescription,
+        actor,
+        audience_entity_id: audience,
+        state: terminalState,
+        confidence: 0.94,
+        provenance_stream_entry_ids: [previousStreamEntryId, currentUserStreamEntryId],
+        updated_at: 2_000,
+        committed_at: 1_000,
+        [terminalState === "completed"
+          ? "completed_at"
+          : terminalState === "declined"
+            ? "declined_at"
+            : "not_done_at"]: 2_000,
+      });
+      expect(events).toContainEqual({
+        event: "action_state.transitioned",
+        data: expect.objectContaining({
+          turnId: "turn_action_terminal_close",
+          action_id: existingAction.id,
+          candidate_index: 0,
+          terminal_state: terminalState,
+          description_excerpt: terminalDescription,
+          similarity: 1,
+        }),
+      });
+      expect(events).toContainEqual({
+        event: "extraction.actions.completed",
+        data: expect.objectContaining({
+          turnId: "turn_action_terminal_close",
+          persisted_count: 0,
+          skipped_count: 0,
+          actions_closed_by_terminal_emission: 1,
+        }),
+      });
+    },
+  );
 
   it.each(TERMINAL_RACE_CASES)(
     "skips embedding terminal closure when lifecycle sees concurrent $terminalState",

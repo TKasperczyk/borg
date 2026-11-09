@@ -25,6 +25,7 @@ export const ACTION_STATES = [
   "scheduled",
   "completed",
   "not_done",
+  "declined",
   "expired",
   "archived",
   "unknown",
@@ -38,6 +39,7 @@ export type ActionStateTimestampField =
   | "scheduled_at"
   | "completed_at"
   | "not_done_at"
+  | "declined_at"
   | "expired_at"
   | "archived_at"
   | "unknown_at";
@@ -76,6 +78,12 @@ export const ACTION_STATE_METADATA: Record<ActionState, ActionStateMetadata> = {
   },
   not_done: {
     timestamp_field: "not_done_at",
+    active: false,
+    terminal: true,
+    terminal_closure_guard: true,
+  },
+  declined: {
+    timestamp_field: "declined_at",
     active: false,
     terminal: true,
     terminal_closure_guard: true,
@@ -179,6 +187,7 @@ const actionRecordShape = z.object({
   scheduled_at: z.number().finite().nullable(),
   completed_at: z.number().finite().nullable(),
   not_done_at: z.number().finite().nullable(),
+  declined_at: z.number().finite().nullable().default(null),
   expired_at: z.number().finite().nullable().default(null),
   archived_at: z.number().finite().nullable().default(null),
   unknown_at: z.number().finite().nullable(),
@@ -212,6 +221,8 @@ export const actionRecordPatchSchema = actionRecordShape
     created_at: true,
   })
   .partial()
+  // A missing patch field must remain absent so lifecycle transitions stamp it.
+  .extend({ declined_at: actionRecordShape.shape.declined_at.removeDefault().optional() })
   .strict();
 
 export type ActionActor = z.infer<typeof actionActorSchema>;

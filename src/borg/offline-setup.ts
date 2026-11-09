@@ -1,3 +1,4 @@
+import { registerContradictionRetirementReverser } from "../memory/semantic/contradiction-retirement.js";
 import { refreshSerializedEmbeddings } from "../embeddings/serialized.js";
 import { parseSemanticNodeId } from "../util/ids.js";
 // Wires Borg's offline maintenance processes into the maintenance orchestrator.
@@ -118,6 +119,7 @@ export function buildOfflineSetup(options: BuildOfflineSetupOptions): BorgOfflin
       options.semanticNodeRepository.get(parseSemanticNodeId(id)),
     );
   const reverserRegistry = new ReverserRegistry();
+  registerContradictionRetirementReverser(reverserRegistry, options.semanticEdgeRepository);
   const auditLog = new AuditLog({
     prepareSerializedEmbeddings,
     db: options.sqlite,

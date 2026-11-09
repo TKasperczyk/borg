@@ -294,6 +294,7 @@ describe("proactive outbound", () => {
         state: "completed",
         completed_at: expect.any(Number),
         not_done_at: null,
+        declined_at: null,
         session_scope: "current_session",
         session_anchor_id: targetSessionId,
       });
@@ -445,6 +446,7 @@ describe("proactive outbound", () => {
         state: "not_done",
         completed_at: null,
         not_done_at: expect.any(Number),
+        declined_at: null,
         session_scope: "current_session",
         session_anchor_id: targetSessionId,
       });

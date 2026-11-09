@@ -509,4 +509,11 @@ export const selfMigrations = [
       }
     },
   },
+  {
+    id: 15,
+    name: "goal_last_interaction_at",
+    up: (db) => {
+      db.exec("ALTER TABLE goals ADD COLUMN last_interaction_at INTEGER NULL");
+    },
+  },
 ] as const satisfies readonly Migration[];

@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import type { GoalPresentation } from "../executive/goal-presentation.js";
 
 import type {
   LLMClient,
@@ -12,6 +13,8 @@ import type {
 export type TurnExecutionMetrics = {
   /** Whole questions on finalizer requests actually sent, unioned across regeneration. */
   shownOpenQuestionIds?: string[];
+  /** Frozen snapshots actually rendered, unioned across planner/finalizer requests. */
+  shownGoalPresentations?: GoalPresentation[];
   finalizer_rounds: number;
   stall_retries: number;
 };
@@ -27,13 +30,29 @@ export const turnExecutionMetricsStorage = new AsyncLocalStorage<TurnExecutionMe
 
 export function createTurnExecutionMetrics(): TurnExecutionMetrics {
   return {
+    shownGoalPresentations: [],
     finalizer_rounds: 0,
     stall_retries: 0,
   };
 }
 
 export function snapshotTurnExecutionMetrics(metrics: TurnExecutionMetrics): TurnExecutionMetrics {
-  return { ...metrics };
+  return {
+    ...metrics,
+    ...(metrics.shownGoalPresentations === undefined
+      ? {}
+      : {
+          shownGoalPresentations: metrics.shownGoalPresentations.map((goal) => ({ ...goal })),
+        }),
+  };
+}
+
+export function recordShownGoalPresentations(presentations: readonly GoalPresentation[]): void {
+  const metrics = turnExecutionMetricsStorage.getStore();
+  if (metrics === undefined) return;
+  const byGoal = new Map((metrics.shownGoalPresentations ?? []).map((goal) => [goal.goalId, goal]));
+  for (const goal of presentations) byGoal.set(goal.goalId, { ...goal });
+  metrics.shownGoalPresentations = [...byGoal.values()];
 }
 
 function isFinalizerBudget(budget: string): boolean {

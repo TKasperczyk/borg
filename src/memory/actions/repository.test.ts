@@ -68,6 +68,7 @@ function makeAction(overrides: Partial<ActionRecord> = {}): ActionRecord {
     scheduled_at: overrides.scheduled_at ?? null,
     completed_at: overrides.completed_at ?? null,
     not_done_at: overrides.not_done_at ?? null,
+    declined_at: null,
     expired_at: overrides.expired_at ?? null,
     archived_at: overrides.archived_at ?? null,
     unknown_at: overrides.unknown_at ?? null,

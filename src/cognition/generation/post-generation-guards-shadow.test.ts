@@ -1241,6 +1241,7 @@ describe("post-generation guard shadow chain", () => {
       scheduled_at: null,
       completed_at: 2_000,
       not_done_at: null,
+      declined_at: null,
       expired_at: null,
       archived_at: null,
       unknown_at: null,

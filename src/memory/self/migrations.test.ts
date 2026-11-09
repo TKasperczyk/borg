@@ -79,7 +79,9 @@ describe("self migrations", () => {
         migrations: composeMigrations(selfMigrations, executiveMigrations),
       });
       try {
-        expect(db.prepare("SELECT * FROM goals ORDER BY id").all()).toEqual(rows);
+        expect(db.prepare("SELECT * FROM goals ORDER BY id").all()).toEqual(
+          rows.map((row) => ({ ...row, last_interaction_at: null })),
+        );
         expect(
           db
             .prepare(
@@ -143,13 +145,14 @@ describe("self migrations", () => {
     try {
       const migrationNames = selfMigrations.map((migration) => migration.name);
       expect(new Set(migrationNames).size).toBe(migrationNames.length);
-      expect(migrationNames.slice(-6)).toEqual([
+      expect(migrationNames.slice(-7)).toEqual([
         "goal_counterparty_entity_id",
         "goal_named_block_history",
         "goal_deadline_assignment_basis",
         "open_question_refusal_backoff",
         "goal_superseded_status",
         "autobiographical_narrative_coverage",
+        "goal_last_interaction_at",
       ]);
       expect(db.listAppliedMigrations().map((migration) => migration.name)).toEqual(migrationNames);
       expect(

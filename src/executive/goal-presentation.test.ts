@@ -9,7 +9,7 @@ import { ManualClock } from "../util/clock.js";
 import { createStreamEntryId } from "../util/ids.js";
 import { GoalPresentationStore } from "./goal-presentation.js";
 
-it("persists only presented generations across restart, and reopens only on new progress or an explicit inbound association", () => {
+it("persists generations across restart and reopens on explicit goal mutations or associated input", () => {
   const dir = mkdtempSync(join(tmpdir(), "borg-goal-presentation-"));
   const path = join(dir, "test.db");
   const migrations = composeMigrations(selfMigrations, streamWatermarkMigrations);
@@ -51,7 +51,7 @@ it("persists only presented generations across restart, and reopens only on new 
     watermarks = new StreamWatermarkRepository({ db, clock });
     store = new GoalPresentationStore(watermarks);
     goals = new GoalsRepository({ db, clock, watermarkRepository: watermarks });
-    expect(store.wasPresented(goals.get(first.id)!)).toBe(true);
+    expect(store.wasPresented(goals.get(first.id)!)).toBe(false);
     expect(store.wasPresented(goals.get(second.id)!)).toBe(true);
     clock.advance(100_000);
     goals.reconcileBlocks();
@@ -60,7 +60,7 @@ it("persists only presented generations across restart, and reopens only on new 
       { priority: 10, description: "Changed topology/score" },
       { kind: "manual" },
     );
-    expect(store.wasPresented(goals.get(first.id)!)).toBe(true);
+    expect(store.wasPresented(goals.get(first.id)!)).toBe(false);
     goals.updateProgress(first.id, "新しい進捗", { kind: "manual" });
     const progressed = goals.get(first.id)!;
     expect(store.wasPresented(progressed)).toBe(false);
@@ -80,5 +80,67 @@ it("persists only presented generations across restart, and reopens only on new 
   } finally {
     db.close();
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+it("owns executive acknowledgements, deduplicates planner/finalizer and persists interaction without replay or rendering refresh", () => {
+  const db = openDatabase(":memory:", {
+    migrations: composeMigrations(selfMigrations, streamWatermarkMigrations),
+  });
+  const clock = new ManualClock(1_000);
+  try {
+    const watermarks = new StreamWatermarkRepository({ db, clock });
+    const goals = new GoalsRepository({ db, clock, watermarkRepository: watermarks });
+    const store = goals.presentation!;
+    const goal = goals.add({ description: "Opaque", priority: 1, provenance: { kind: "manual" } });
+    const shown = [store.snapshot(goal)];
+    store.presented(shown, "reflection");
+    expect(store.executivePresentedAt(goal)).toBeNull();
+    expect(goals.get(goal.id)?.last_interaction_at).toBeNull();
+    store.presented(shown, "executive-1", new Set([goal.id]));
+    expect(store.executivePresentedAt(goal)).toBe(1_000);
+    clock.advance(500);
+    store.presented(shown, "executive-1", new Set([goal.id]));
+    expect(store.executivePresentedAt(goal)).toBe(1_000);
+    store.presented(shown, "followup");
+    expect(store.executivePresentedAt(goal)).toBe(1_000);
+    store.presented(shown, "executive-2", new Set([goal.id]));
+    expect(store.executivePresentedAt(goal)).toBe(1_500);
+    const inbound = createStreamEntryId();
+    store.associateInbound(goal.id, inbound);
+    expect(goals.get(goal.id)?.last_interaction_at).toBe(1_500);
+    expect(store.executivePresentedAt(goal)).toBeNull();
+    clock.advance(500);
+    store.associateInbound(goal.id, inbound);
+    expect(goals.get(goal.id)?.last_interaction_at).toBe(1_500);
+    const current = goals.get(goal.id)!;
+    store.presented([store.snapshot(current)], "new-input");
+    expect(() =>
+      goals.update(goal.id, { priority: 4 }, { kind: "manual" }, { expectedVersion: 999 }),
+    ).toThrow();
+    expect(store.wasPresented(goals.get(goal.id)!)).toBe(true);
+    expect(goals.get(goal.id)?.last_interaction_at).toBe(1_500);
+    goals.update(goal.id, {}, { kind: "manual" });
+    expect(store.wasPresented(goals.get(goal.id)!)).toBe(true);
+    expect(goals.get(goal.id)?.last_interaction_at).toBe(1_500);
+    goals.updateStatus(goal.id, "done", { kind: "manual" });
+    expect(store.wasPresented(goals.get(goal.id)!)).toBe(false);
+    expect(goals.get(goal.id)?.last_interaction_at).toBe(2_000);
+    goals.restore(current);
+    expect(goals.get(goal.id)?.last_interaction_at).toBe(1_500);
+    goals.block(
+      goal.id,
+      {
+        blocker: { kind: "until", until: 3_000 },
+        attempt_status: "attempted_unavailable",
+        reason: "Waiting",
+      },
+      { kind: "manual" },
+    );
+    clock.advance(4_000_000_000);
+    goals.reconcileBlocks();
+    expect(goals.get(goal.id)?.last_interaction_at).toBe(3_000);
+  } finally {
+    db.close();
   }
 });

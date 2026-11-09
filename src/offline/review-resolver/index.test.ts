@@ -1267,56 +1267,73 @@ describe("review resolver process", () => {
     expect(prompt).not.toContain("Do not populate stream citations");
   });
 
-  it("dismisses semantic-pair false positives without mutating either node", async () => {
-    const llm = new FakeLLMClient();
-    const harness = await createOfflineTestHarness({
-      llmClient: llm,
-      reviewOpenQuestionExtractor: null,
-    });
-    cleanup.push(harness.cleanup);
-    const source = await insertSource(harness, "Atlas and rollback notes are compatible.");
-    const first = await harness.semanticNodeRepository.insert(
-      createSemanticNodeFixture({
-        label: "Atlas note",
-        description: "Atlas is a deployment service.",
-        source_episode_ids: [source.episode.id],
-      }),
-    );
-    const second = await harness.semanticNodeRepository.insert(
-      createSemanticNodeFixture({
-        label: "Rollback note",
-        description: "Rollback planning supports Atlas deployments.",
-        source_episode_ids: [source.episode.id],
-      }),
-    );
-    const item = harness.reviewQueueRepository.enqueue({
-      kind: "contradiction",
-      reason: "Direct contradiction edge recorded for review",
-      refs: {
-        node_ids: [first.id, second.id],
-      },
-    });
-    llm.pushResponse(
-      semanticPairResolverResponse({
-        verdict: "dismiss",
-        reason: "The review flag is spurious.",
-        confidence: "high",
-      }),
-    );
+  it.each(["keep_both", "dismiss"] as const)(
+    "retires a judged %s contradiction edge without mutating either node",
+    async (decision) => {
+      const llm = new FakeLLMClient();
+      const harness = await createOfflineTestHarness({
+        llmClient: llm,
+        reviewOpenQuestionExtractor: null,
+      });
+      cleanup.push(harness.cleanup);
+      const source = await insertSource(harness, "Atlas and rollback notes are compatible.");
+      const first = await harness.semanticNodeRepository.insert(
+        createSemanticNodeFixture({
+          label: "Atlas note",
+          description: "Atlas is a deployment service.",
+          source_episode_ids: [source.episode.id],
+        }),
+      );
+      const second = await harness.semanticNodeRepository.insert(
+        createSemanticNodeFixture({
+          label: "Rollback note",
+          description: "Rollback planning supports Atlas deployments.",
+          source_episode_ids: [source.episode.id],
+        }),
+      );
+      const edge = harness.semanticEdgeRepository.addEdge({
+        from_node_id: first.id,
+        to_node_id: second.id,
+        relation: "contradicts",
+        confidence: 0.8,
+        evidence_episode_ids: [source.episode.id],
+        created_at: harness.clock.now(),
+        last_verified_at: harness.clock.now(),
+      });
+      const item = harness.reviewQueueRepository.list({
+        kind: "contradiction",
+        openOnly: true,
+      })[0]!;
+      llm.pushResponse(
+        semanticPairResolverResponse({
+          verdict: decision,
+          reason: "The review flag is spurious.",
+          confidence: "high",
+        }),
+      );
 
-    const result = await runResolver(harness);
-    const resolved = harness.reviewQueueRepository.get(item.id);
-    const storedFirst = await harness.semanticNodeRepository.get(first.id);
-    const storedSecond = await harness.semanticNodeRepository.get(second.id);
+      const result = await runResolver(harness);
+      const resolved = harness.reviewQueueRepository.get(item.id);
+      const storedFirst = await harness.semanticNodeRepository.get(first.id);
+      const storedSecond = await harness.semanticNodeRepository.get(second.id);
 
-    expect(result.errors).toEqual([]);
-    expect(resolved).toMatchObject({
-      resolved_at: expect.any(Number),
-      resolution: "dismiss",
-    });
-    expect(storedFirst?.status).toBe("active");
-    expect(storedSecond?.status).toBe("active");
-  });
+      expect(result.errors).toEqual([]);
+      expect(resolved).toMatchObject({
+        resolved_at: expect.any(Number),
+        resolution: decision,
+      });
+      expect(storedFirst?.status).toBe("active");
+      expect(storedSecond?.status).toBe("active");
+      expect(harness.semanticEdgeRepository.getEdge(edge.id)).toMatchObject({
+        valid_to: harness.clock.now(),
+        invalidated_by_review_id: item.id,
+        invalidated_by_process: "review",
+      });
+      expect(
+        harness.auditLog.list({}).find((a) => a.action === "retire_contradiction_edges")?.targets,
+      ).toMatchObject({ review_item_id: item.id, resolution: decision });
+    },
+  );
 
   it("accepts grounded new insight proposals through the existing review handler", async () => {
     const llm = new FakeLLMClient();
@@ -2890,6 +2907,55 @@ describe("review resolver autonomous mode", () => {
       bypass_handler_reason: "autonomous_needs_manual_exhausted",
     });
     expect(llm.requests).toHaveLength(2);
+  });
+
+  it("leaves contradiction edges open for handler-bypass dismissals at exhausted retries", async () => {
+    const llm = new FakeLLMClient();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      reviewOpenQuestionExtractor: null,
+      configOverrides: AUTONOMOUS_OVERRIDES,
+    });
+    cleanup.push(harness.cleanup);
+    const source = await insertSource(harness, "Opaque source.");
+    const nodes = [
+      await harness.semanticNodeRepository.insert(
+        createSemanticNodeFixture({ source_episode_ids: [source.episode.id] }),
+      ),
+      await harness.semanticNodeRepository.insert(
+        createSemanticNodeFixture({ source_episode_ids: [source.episode.id] }),
+      ),
+    ];
+    const edge = harness.semanticEdgeRepository.addEdge({
+      from_node_id: nodes[0]!.id,
+      to_node_id: nodes[1]!.id,
+      relation: "contradicts",
+      confidence: 0.8,
+      evidence_episode_ids: [source.episode.id],
+      created_at: harness.clock.now(),
+      last_verified_at: harness.clock.now(),
+    });
+    const item = harness.reviewQueueRepository.list({ kind: "contradiction", openOnly: true })[0]!;
+    for (let i = 0; i < 2; i++) {
+      llm.pushResponse(
+        semanticPairResolverResponse({
+          verdict: "needs_manual",
+          reason: "Insufficient context",
+          confidence: "low",
+        }),
+      );
+      await runResolver(harness);
+    }
+    expect(harness.reviewQueueRepository.get(item.id)).toMatchObject({
+      resolution: "dismiss",
+      refs: {
+        __borg_review_resolver_repair: { mode: "resolver_finalized_without_handler" },
+      },
+    });
+    expect(harness.semanticEdgeRepository.getEdge(edge.id)).toEqual(edge);
+    expect(
+      harness.auditLog.list({}).filter((a) => a.action === "retire_contradiction_edges"),
+    ).toEqual([]);
   });
 
   it("keeps stamped items parked when autonomous is off", async () => {

@@ -54,6 +54,7 @@ export function mapGoalRow(row: Record<string, unknown>): GoalRecord {
       row.last_progress_ts === null || row.last_progress_ts === undefined
         ? null
         : Number(row.last_progress_ts),
+    last_interaction_at: row.last_interaction_at == null ? null : Number(row.last_interaction_at),
     created_at: Number(row.created_at),
     target_at: row.target_at === null || row.target_at === undefined ? null : Number(row.target_at),
     target_assigned_at: row.target_assigned_at == null ? null : Number(row.target_assigned_at),
