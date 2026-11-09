@@ -11,5 +11,7 @@ export const SHARED_STATE_ACCEPTED_TOOL_NAMES = [
 export const MAX_PATCH_OUTPUT_TOKENS = 8_000;
 export const SHARED_STATE_PROMPT_WARNING_TOKEN_THRESHOLD = 35_000;
 export const MAX_OPERATIONS_PER_COMPILE = 40;
+// Matches the default 1,000 estimated-token row view; measured in UTF-16 code units.
+export const DEFAULT_MAX_LOCKED_ENTRY_TEXT_CHARS = 4_000;
 
 export const SHARED_STATE_TOOL_ENTRY_KINDS = CANONICAL_SHARED_STATE_ENTRY_KINDS;

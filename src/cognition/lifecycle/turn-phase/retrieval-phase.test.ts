@@ -3200,6 +3200,7 @@ describe("compileSharedStateArtifactForEvidenceLedgerResult", () => {
             ...DEFAULT_CONFIG.generation.evidenceLedger,
             decisionArtifact: {
               ...DEFAULT_CONFIG.generation.evidenceLedger.decisionArtifact,
+              maxLockedEntryTextChars: 64,
               compilerPrefilter: {
                 enabled: false,
               },
@@ -3311,6 +3312,7 @@ describe("compileSharedStateArtifactForEvidenceLedgerResult", () => {
       promptVisibleLedger: "Action candidate: Follow up with the clinic.",
     });
     expect(llmClient.requests[0]?.model).toBe("test-shared-state-compiler-model");
+    expect(JSON.stringify(llmClient.requests[0]?.system)).toContain("64 UTF-16 code units per row");
     const requestPayload = JSON.parse(
       String(llmClient.requests[0]?.messages[0]?.content ?? "{}"),
     ) as {

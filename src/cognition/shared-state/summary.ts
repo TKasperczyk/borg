@@ -47,6 +47,8 @@ export type SharedStatePromptSummaryOptions = {
   maxEntries?: Partial<Record<SharedStateEntryKind, number>>;
   summaryTokenBudget?: number;
   maxEntryTextTokens?: number;
+  /** Compiler views expose active locked bodies in full and locked history as references. */
+  fullLockedEntries?: boolean;
 };
 
 type MemoryDisclosurePromptFields = ReturnType<typeof memoryDisclosurePayloadFields>;
@@ -66,6 +68,8 @@ export type SharedStatePromptSummaryEntry = {
 
 export type SharedStatePromptSummarySupersededEntry = {
   id: SharedStateEntry["id"];
+  state_key: SharedStateEntry["state_key"];
+  kind: SharedStateEntryKind;
   text: string;
   body_completeness: "full";
   disclosure: MemoryDisclosurePromptFields["disclosure"];
@@ -78,9 +82,15 @@ export type SharedStatePromptSummary = {
   record_version: SharedStateArtifact["record_version"];
   active_counts_by_kind: SharedStateKindCounts;
   active_entries: Record<SharedStateEntryKind, SharedStatePromptSummaryEntry[]>;
-  active_entries_by_state_key: Record<string, SharedStatePromptSummaryEntry[]>;
+  active_entries_by_state_key: Record<string, SharedStateEntry["id"][]>;
   omitted_counts_by_kind: SharedStateKindCounts;
   recent_superseded: SharedStatePromptSummarySupersededEntry[];
+  locked_history_refs: Array<
+    MemoryDisclosurePromptFields & {
+      body_completeness: "omitted";
+      entries: Array<{ id: SharedStateEntry["id"]; original_chars: number }>;
+    }
+  >;
 };
 
 /** Mechanical render facts for this artifact version, never inferred from model output. */
@@ -206,7 +216,7 @@ export function buildExistingStateKeyRegistry(
     summary === undefined || summary === null
       ? null
       : new Set(
-          Object.values(summary.active_entries_by_state_key ?? {}).flatMap((entries) =>
+          Object.values(summary.active_entries).flatMap((entries) =>
             (entries ?? []).map((entry) => entry.id),
           ),
         );
@@ -254,7 +264,7 @@ function toSharedStatePromptSummaryEntry(
   return {
     id: entry.id,
     state_key: entry.state_key,
-    // Carry the lock/salience state on the row itself, including in the by-key view.
+    // The by-key index references this row; it never carries another copy of the body.
     kind: entry.kind,
     text,
     body_completeness: full ? "full" : "truncated",
@@ -275,6 +285,8 @@ function toSharedStatePromptSummarySupersededEntry(
   return {
     id: entry.id,
     text: entry.text,
+    state_key: entry.state_key,
+    kind: entry.kind,
     body_completeness: "full",
     ...memoryDisclosurePayloadFields(sharedStateMemoryDisclosureLabel(entry)),
     superseded_by_id: entry.superseded_by_id,
@@ -321,17 +333,22 @@ function buildSharedStateArtifactPromptSummaryFromEntries(input: {
   activeEntries: readonly SharedStateEntry[];
   selectedEntries: readonly SharedStateEntry[];
   recentSuperseded: readonly SharedStatePromptSummarySupersededEntry[];
+  lockedHistoryRefs: SharedStatePromptSummary["locked_history_refs"];
   maxEntryTextTokens: number;
+  fullLockedEntries: boolean;
 }): SharedStatePromptSummary {
   const activeEntriesByKind = emptySharedStatePromptSummaryEntries();
-  const activeEntriesByStateKey: Record<string, SharedStatePromptSummaryEntry[]> = {};
+  const activeEntriesByStateKey: SharedStatePromptSummary["active_entries_by_state_key"] = {};
 
   for (const entry of input.selectedEntries) {
-    const summaryEntry = toSharedStatePromptSummaryEntry(entry, input.maxEntryTextTokens);
+    const summaryEntry = toSharedStatePromptSummaryEntry(
+      entry,
+      input.fullLockedEntries && entry.kind === "locked" ? Infinity : input.maxEntryTextTokens,
+    );
 
     activeEntriesByKind[entry.kind].push(summaryEntry);
     const key = sharedStateKeyBucket(entry.state_key);
-    activeEntriesByStateKey[key] = [...(activeEntriesByStateKey[key] ?? []), summaryEntry];
+    activeEntriesByStateKey[key] = [...(activeEntriesByStateKey[key] ?? []), summaryEntry.id];
   }
 
   return {
@@ -347,6 +364,7 @@ function buildSharedStateArtifactPromptSummaryFromEntries(input: {
       countSharedStateArtifactEntriesByKind(input.selectedEntries),
     ),
     recent_superseded: [...input.recentSuperseded],
+    locked_history_refs: input.lockedHistoryRefs,
   };
 }
 
@@ -357,6 +375,7 @@ function sharedStatePromptSummaryTokenEstimate(summary: SharedStatePromptSummary
 function sharedStatePromptSummaryDropIndex(input: {
   entries: readonly SharedStateEntry[];
   activeCounts: SharedStateKindCounts;
+  fullLockedEntries: boolean;
 }): number | null {
   const dropTentative = tokenDropIndexForKinds({
     entries: input.entries,
@@ -380,7 +399,7 @@ function sharedStatePromptSummaryDropIndex(input: {
 
   return tokenDropIndexForKinds({
     entries: input.entries,
-    kinds: ["live", "locked"],
+    kinds: input.fullLockedEntries ? ["live"] : ["live", "locked"],
     minimumForKind: (kind) => onePerKindTokenDropFloor(kind, input.activeCounts),
   });
 }
@@ -401,13 +420,41 @@ export function buildSharedStateArtifactPromptSummaryWithExposure(
   }
 
   const normalizedOptions = sharedStatePromptSummaryOptions(options);
+  const fullLockedEntries = options?.fullLockedEntries === true;
+  // History carries no body. Group identical structural disclosure labels so
+  // every reference retains its scope without repeating that label per id.
+  const lockedHistoryByDisclosure = new Map<
+    string,
+    SharedStatePromptSummary["locked_history_refs"][number]
+  >();
+  if (fullLockedEntries) {
+    for (const entry of artifact.entries) {
+      if (entry.kind !== "locked" || entry.superseded_by_id === null) continue;
+      const fields = memoryDisclosurePayloadFields(sharedStateMemoryDisclosureLabel(entry));
+      const key = JSON.stringify(fields.disclosure_label);
+      let group = lockedHistoryByDisclosure.get(key);
+      if (group === undefined) {
+        group = { ...fields, body_completeness: "omitted", entries: [] };
+        lockedHistoryByDisclosure.set(key, group);
+      }
+      group.entries.push({ id: entry.id, original_chars: entry.text.length });
+    }
+  }
+  const lockedHistoryRefs = [...lockedHistoryByDisclosure.values()];
   const activeEntries = activeSharedStateArtifactEntries(artifact);
   let selectedEntries = selectedSharedStatePromptSummaryEntries({
     activeEntries,
-    maxEntries: normalizedOptions.maxEntries,
+    maxEntries: {
+      ...normalizedOptions.maxEntries,
+      locked: fullLockedEntries
+        ? activeEntries.filter((entry) => entry.kind === "locked").length
+        : normalizedOptions.maxEntries.locked,
+    },
   });
   let recentSuperseded = artifact.entries
-    .filter((entry) => entry.superseded_by_id !== null)
+    .filter(
+      (entry) => entry.superseded_by_id !== null && (!fullLockedEntries || entry.kind !== "locked"),
+    )
     .sort(compareSharedStateArtifactEntriesByRecency)
     .slice(0, 5)
     .flatMap((entry) => {
@@ -420,7 +467,9 @@ export function buildSharedStateArtifactPromptSummaryWithExposure(
     activeEntries,
     selectedEntries,
     recentSuperseded,
+    lockedHistoryRefs,
     maxEntryTextTokens: normalizedOptions.maxEntryTextTokens,
+    fullLockedEntries,
   });
   const initialTokenEstimate = sharedStatePromptSummaryTokenEstimate(summary);
   const initialActiveCount = selectedEntries.length;
@@ -436,7 +485,9 @@ export function buildSharedStateArtifactPromptSummaryWithExposure(
       activeEntries,
       selectedEntries,
       recentSuperseded,
+      lockedHistoryRefs,
       maxEntryTextTokens: normalizedOptions.maxEntryTextTokens,
+      fullLockedEntries,
     });
   }
 
@@ -447,6 +498,7 @@ export function buildSharedStateArtifactPromptSummaryWithExposure(
     const dropIndex = sharedStatePromptSummaryDropIndex({
       entries: selectedEntries,
       activeCounts: countSharedStateArtifactEntriesByKind(activeEntries),
+      fullLockedEntries,
     });
 
     if (dropIndex === null) {
@@ -462,12 +514,14 @@ export function buildSharedStateArtifactPromptSummaryWithExposure(
       activeEntries,
       selectedEntries,
       recentSuperseded,
+      lockedHistoryRefs,
       maxEntryTextTokens: normalizedOptions.maxEntryTextTokens,
+      fullLockedEntries,
     });
   }
 
-  // Read the final render, after both count caps and token-budget drops. The two active
-  // summary views contain the same bodies; recent_superseded also carries full bodies.
+  // Derive exposure only from actual bodies, after count caps and budget drops.
+  // Neither the by-key id index nor locked-history references expose any text.
   const renderedById = new Map(
     [...Object.values(summary.active_entries).flat(), ...summary.recent_superseded].map(
       (entry) => [entry.id, entry] as const,

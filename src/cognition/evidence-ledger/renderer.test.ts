@@ -1,4 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { DEFAULT_CONFIG } from "../../config/index.js";
+import {
+  memoryDisclosurePayloadFields,
+  sharedStateMemoryDisclosureLabel,
+} from "../../memory/common/disclosure-serializers.js";
 
 import type {
   SharedStateArtifact,
@@ -8,7 +13,16 @@ import type {
 import { createSharedStateEntryId, createEntityId, createStreamEntryId } from "../../util/ids.js";
 import { estimatePromptTokens } from "../../util/token-estimate.js";
 import { OPEN_QUESTION_STATUSES } from "../../memory/self/index.js";
-import { buildSharedStateArtifactPromptSummaryWithExposure } from "../shared-state/summary.js";
+import {
+  buildExistingStateKeyRegistry,
+  buildSharedStateArtifactPromptSummaryWithExposure,
+} from "../shared-state/summary.js";
+import {
+  buildSharedStateArtifactMessages,
+  estimateSharedStateArtifactPromptBudget,
+} from "../shared-state/compiler-prompt.js";
+import { SHARED_STATE_TOOLS } from "../shared-state/schema.js";
+import { SHARED_STATE_PROMPT_WARNING_TOKEN_THRESHOLD } from "../shared-state/constants.js";
 import { LIFECYCLE_OPEN_QUESTION_STATUSES } from "./open-question-handles.js";
 import { EVIDENCE_LEDGER_SECTION_DEFINITIONS, type EvidenceLedger } from "./types.js";
 import {
@@ -428,7 +442,7 @@ describe("buildSharedStateArtifactPromptSummary", () => {
           invalidated: 0,
           tentative: 0,
         },
-        // Keep the count cap dominant with completeness metadata in both summary views.
+        // Keep the count cap dominant with completeness metadata on the primary rows.
         summaryTokenBudget: 7_000,
       },
     );
@@ -489,7 +503,7 @@ describe("buildSharedStateArtifactPromptSummary", () => {
           invalidated: 0,
           tentative: 0,
         },
-        // Leave room for each selected row's explicit kind in both summary views.
+        // Leave room for each selected row's explicit kind and its id-only secondary index.
         summaryTokenBudget: 2_200,
       },
     );
@@ -626,6 +640,170 @@ describe("buildSharedStateArtifactPromptSummary", () => {
       exposure: null,
     });
   });
+
+  it("exposes active locked bodies once and keeps labeled history references despite compile-view caps", () => {
+    const audience = createEntityId();
+    const source = createStreamEntryId();
+    const locked = Array.from({ length: 20 }, (_, index) =>
+      sharedStateEntry({
+        audience,
+        source,
+        kind: "locked",
+        index,
+        text: `${index}: 規則🧭`.repeat(1_000),
+      }),
+    );
+    const historyOwner = createEntityId();
+    const history = Array.from({ length: 8 }, (_, index) => ({
+      ...sharedStateEntry({
+        audience,
+        source,
+        kind: "locked",
+        owner: index % 2 === 0 ? historyOwner : audience,
+        index: -index - 1,
+        text: `歴史${index}🧭`.repeat(1_000),
+      }),
+      superseded_by_id: locked[0]!.id,
+    }));
+    const live = sharedStateEntry({ audience, source, kind: "live", index: 100 });
+    const oldLive = {
+      ...sharedStateEntry({ audience, source, kind: "live", index: 99 }),
+      superseded_by_id: live.id,
+    };
+    const artifact = sharedStateWithEntries([...locked, ...history, live, oldLive], source);
+    const { summary, exposure } = buildSharedStateArtifactPromptSummaryWithExposure(artifact, {
+      fullLockedEntries: true,
+      maxEntries: { locked: 0, live: 0 },
+      maxEntryTextTokens: 1,
+      summaryTokenBudget: 1,
+    });
+
+    expect(summary!.active_entries.locked).toHaveLength(20);
+    expect(summary!.omitted_counts_by_kind.locked).toBe(0);
+    expect(summary!.active_entries.live).toEqual([]);
+    expect(summary!.recent_superseded).toEqual([]);
+    const rendered = summary!.active_entries.locked;
+    for (const entry of locked) {
+      expect(rendered.find((row) => row.id === entry.id)).toMatchObject({
+        text: entry.text,
+        kind: "locked",
+        state_key: entry.state_key,
+        body_completeness: "full",
+        ...memoryDisclosurePayloadFields(sharedStateMemoryDisclosureLabel(entry)),
+      });
+      expect(exposure!.rows.find((row) => row.id === entry.id)).toMatchObject({
+        original_chars: entry.text.length,
+        rendered_chars: entry.text.length,
+        completeness: "full",
+      });
+      expect(summary!.active_entries_by_state_key[entry.state_key!]).toContain(entry.id);
+    }
+    const serialized = JSON.stringify(summary);
+    for (const entry of locked) {
+      expect(serialized.split(JSON.stringify(entry.text))).toHaveLength(2);
+    }
+    for (const entry of history) {
+      const group = summary!.locked_history_refs.find((candidate) =>
+        candidate.entries.some((row) => row.id === entry.id),
+      )!;
+      expect(group).toMatchObject({
+        ...memoryDisclosurePayloadFields(sharedStateMemoryDisclosureLabel(entry)),
+        body_completeness: "omitted",
+      });
+      expect(group.entries).toContainEqual({ id: entry.id, original_chars: entry.text.length });
+      expect(serialized).not.toContain(JSON.stringify(entry.text));
+      expect(exposure!.rows.find((row) => row.id === entry.id)).toMatchObject({
+        original_chars: entry.text.length,
+        rendered_chars: 0,
+        completeness: "omitted",
+      });
+    }
+    expect(summary!.locked_history_refs).toHaveLength(2);
+    expect(exposure!.artifact_version).toBe(artifact.record_version);
+    expect(exposure!.omitted_entry_ids).toEqual(expect.arrayContaining([live.id, oldLive.id]));
+    expect(exposure!.budget.decision).toBe("selection_floor_exceeded");
+    expect(exposure!.budget.summary_token_estimate).toBe(
+      estimatePromptTokens(JSON.stringify(summary)),
+    );
+  });
+
+  it.each([
+    { name: "configured active capacity with the locked soft cap", historyCount: 0 },
+    {
+      name: "live shape: 24 active locked at the write bound + 160 historical refs",
+      historyCount: 160,
+    },
+  ])(
+    "keeps the summary below the warning with margin and measures full input ($name)",
+    ({ historyCount }) => {
+      const config = DEFAULT_CONFIG.generation.evidenceLedger.decisionArtifact;
+      const lockedCount = Math.min(config.maxActiveEntries, config.kindSoftCaps.locked);
+      const activeCount = historyCount > 0 ? lockedCount : config.maxActiveEntries;
+      const audience = createEntityId();
+      const source = createStreamEntryId();
+      const active = Array.from({ length: activeCount }, (_, index) => ({
+        ...sharedStateEntry({
+          audience,
+          source,
+          owner: null,
+          kind: index < lockedCount ? "locked" : "live",
+          index,
+          text: "x".repeat(config.maxLockedEntryTextChars),
+        }),
+        state_key: `decision.rule_${index}`,
+      }));
+      const history = Array.from({ length: historyCount }, (_, index) => ({
+        ...sharedStateEntry({
+          audience,
+          source,
+          owner: null,
+          kind: "locked",
+          index: activeCount + index,
+          text: "x".repeat(config.maxLockedEntryTextChars + 1),
+        }),
+        state_key: `decision.rule_${index % activeCount}`,
+        superseded_by_id: active[0]!.id,
+      }));
+      const artifact = sharedStateWithEntries([...active, ...history], source);
+      const { summary, exposure } = buildSharedStateArtifactPromptSummaryWithExposure(artifact, {
+        ...config.previousArtifactSummary,
+        fullLockedEntries: true,
+      });
+      expect(summary!.active_entries.locked).toHaveLength(lockedCount);
+      expect(summary!.locked_history_refs.flatMap((group) => group.entries)).toHaveLength(
+        historyCount,
+      );
+      expect(exposure!.budget.summary_token_estimate).toBeLessThan(
+        SHARED_STATE_PROMPT_WARNING_TOKEN_THRESHOLD - 2_000,
+      );
+      const input = {
+        audienceEntityId: audience,
+        selfEntityId: audience,
+        speakerEntityId: audience,
+        participants: [],
+        currentUserMessage: "",
+        currentUserStreamEntryId: source,
+        promptVisibleLedger: "",
+        existingStateKeyRegistry: buildExistingStateKeyRegistry(artifact, summary),
+        previousArtifactSummary: summary,
+        canonicalizationCandidates: {},
+      };
+      const budget = estimateSharedStateArtifactPromptBudget({
+        ...input,
+        messages: buildSharedStateArtifactMessages(input),
+        tools: SHARED_STATE_TOOLS,
+      });
+      // The summary has margin; the complete call also pays the unchanged system,
+      // tool and key-registry overhead. Do not mistake one estimate for the other.
+      expect(budget.breakdown.previous_artifact_summary).toBe(
+        exposure!.budget.summary_token_estimate,
+      );
+      expect(budget.decision).toBe("warn_only_prompt_unchanged");
+      expect(budget.inputTokenEstimate).toBeGreaterThan(
+        SHARED_STATE_PROMPT_WARNING_TOKEN_THRESHOLD,
+      );
+    },
+  );
 });
 
 describe("compactEvidenceLedger", () => {

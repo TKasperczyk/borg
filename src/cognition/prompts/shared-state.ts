@@ -4,6 +4,7 @@ import {
   RELATIONSHIP_LABEL_WRITE_GROUNDING_PROMPT,
   RELATIONSHIP_LABELS_PROMPT,
 } from "./relationship-labels.js";
+import { DEFAULT_MAX_LOCKED_ENTRY_TEXT_CHARS } from "../shared-state/constants.js";
 
 export type SharedStateCompilePass = "pre_answer" | "post_response";
 
@@ -25,6 +26,7 @@ function compilePassGuidance(compilePass: SharedStateCompilePass): string[] {
 
 export function buildSharedStateSystemPrompt(
   compilePass: SharedStateCompilePass = "pre_answer",
+  maxLockedEntryTextChars = DEFAULT_MAX_LOCKED_ENTRY_TEXT_CHARS,
 ): string {
   return [
     "Compile canonical shared audience state from the previous shared-state artifact, the current user turn, and the prompt-visible ledger.",
@@ -79,8 +81,9 @@ export function buildSharedStateSystemPrompt(
     "- Good state_key examples: decision.architecture, plan.attendees, observation.recurring, boundary.private_topic, agenda.tonight.",
     "- Legacy entries may appear without state_key under a legacy bucket; do not copy legacy as a new key. Choose a real dotted key for new operations.",
     "- The input includes existing_state_key_registry with every active state_key for this audience. Treat each listed key as a reusable handle.",
-    "- previous_artifact_summary.active_entries and active_entries_by_state_key carry the selected entries' id, state_key, kind, text, and body_completeness. kind=locked marks a durable decision or constraint; correction by update or supersede requires the text exposure described below.",
-    "- You may replace a locked row's text with supersede or an update containing text only when that target id has body_completeness=full in this prompt's previous_artifact_summary (including recent_superseded). A truncated body or an id shown only in existing_state_key_registry is not eligible. text_visible_entry_ids means a body is present, not that it is complete. If no full body is shown, do not replace it. Any combination of operations in one patch that replaces a locked row's text, or removes it and writes another row under its exact state_key, needs full exposure of that row; otherwise the participating operations are refused.",
+    "- previous_artifact_summary.active_entries carries each selected entry's id, state_key, kind, text, body_completeness, and disclosure labels once. active_entries_by_state_key is an id-only index into those rows. kind=locked marks a durable decision or constraint; correction by update or supersede requires full text exposure.",
+    "- locked_history_refs contains historical locked ids and their original UTF-16 lengths, grouped under the disclosure labels that apply to every reference in that group. Their body_completeness is omitted: no historical locked text is shown. recent_superseded carries only selected non-locked historical bodies.",
+    "- You may replace a locked row's text with supersede or an update containing text only when that target id has body_completeness=full in this prompt's previous_artifact_summary. A truncated body or an id shown only in a registry or history reference is not eligible. text_visible_entry_ids means a body is present, not that it is complete. If no full body is shown, do not replace it. Any combination of operations in one patch that replaces a locked row's text, or removes it and writes another row under its exact state_key, needs full exposure of that row; otherwise the participating operations are refused.",
     "- For locked rows with truncated or omitted bodies, you may still update kind, owner_entity_id, or canonicalizes when appropriate, omitting text and satisfying the existing citation and operation rules. There is no append-text operation; an update containing text replaces the body. Changing a row's kind earlier in the same patch does not make its unseen text eligible for replacement.",
     "- When replacing a rule, carry forward its substantive constraints, examples, and qualifiers except where the supplied evidence explicitly changes them. If the full text is not shown, do not replace it. This applies regardless of the language or script of the rule.",
     "- When the new state continues the same object, thread, or topic, reuse the existing state_key with update or supersede.",
@@ -102,6 +105,7 @@ export function buildSharedStateSystemPrompt(
     "- The input may include participant_roster; treat it as structured set context for participants, non-chat subjects, and grounded relationship-slot sources.",
     "",
     "Operation guidance:",
+    `- Locked text writes are limited to ${maxLockedEntryTextChars} UTF-16 code units per row. This includes adds, updates, supersede replacements, and promotions to locked across a multi-operation patch. Oversized writes are refused, never truncated. Rewrite the complete row shorter within this limit; a kind change cannot bypass the limit on rewriting an existing locked row. Active legacy oversized bodies are shown in full so you can shorten them; metadata-only changes need not rewrite them.`,
     "- A correction or contradiction of an existing entry must supersede that entry, or update it when retaining the earlier wording is unnecessary. Never add a sibling entry to describe the correction while leaving the contradicted claim active, even under a different state_key. Correct the original claim itself rather than appending commentary that leaves its false assertion in place.",
     "- add creates a new entry when no existing entry already represents it.",
     "- update modifies an existing entry in place while preserving its id. The previous text is overwritten and is not retained anywhere.",

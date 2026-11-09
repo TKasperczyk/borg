@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { refreshSerializedEmbeddings } from "../../embeddings/serialized.js";
+import { IdentityCasMismatchError } from "../../util/errors.js";
 
 import { LanceDbStore } from "../../storage/lancedb/index.js";
 import { composeMigrations, openDatabase } from "../../storage/sqlite/index.js";
@@ -266,6 +267,38 @@ describe("review queue", () => {
       refs: { superseded_by_review_id: winner.id },
     });
     expect(queue.get(stale.id)?.resolved_at).toBeNull();
+
+    // A proposal filed after sibling cleanup can still carry an old fence. The
+    // storage CAS remains authoritative; the resolver, not the queue, retires it.
+    const lateStale = queue.enqueue({
+      kind: "identity_inconsistency",
+      refs,
+      reason: "late stale proposal",
+    });
+    const freshSibling = queue.enqueue({
+      kind: "identity_inconsistency",
+      refs: { ...refs, expected_record_version: period.record_version! + 1 },
+      reason: "fresh proposal",
+    });
+    const eventsBefore = harness.identityEventRepository.list({
+      recordType: "autobiographical_period",
+      recordId: period.id,
+    });
+    await expect(queue.resolve(lateStale.id, "accept")).rejects.toBeInstanceOf(
+      IdentityCasMismatchError,
+    );
+    expect(queue.get(lateStale.id)?.resolved_at).toBeNull();
+    expect(queue.get(freshSibling.id)?.resolved_at).toBeNull();
+    expect(harness.autobiographicalRepository.getPeriod(period.id)).toMatchObject({
+      narrative: "Updated narrative",
+      record_version: period.record_version! + 1,
+    });
+    expect(
+      harness.identityEventRepository.list({
+        recordType: "autobiographical_period",
+        recordId: period.id,
+      }),
+    ).toEqual(eventsBefore);
   });
 
   it("opens review_queue schema on empty databases and databases with existing review rows", () => {

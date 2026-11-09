@@ -2367,6 +2367,7 @@ async function compileSharedStateArtifactForEvidenceLedgerResultInternal(input: 
       summaryTokenBudget: sharedStateConfig.previousArtifactSummary.summaryTokenBudget,
       maxEntryTextTokens: sharedStateConfig.previousArtifactSummary.maxEntryTextTokens,
     },
+    maxLockedEntryTextChars: sharedStateConfig.maxLockedEntryTextChars,
     ledgerMode: ledgerPromptContext.ledgerMode,
   });
 

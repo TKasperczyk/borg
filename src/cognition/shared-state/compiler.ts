@@ -11,6 +11,7 @@ import type {
   SharedStateOperation,
 } from "../../memory/shared-state/index.js";
 import { dedupePreservingOrder } from "../../util/collections.js";
+import { coercePositiveIntegerOrFallback } from "../../util/math.js";
 import { utf16SafePrefix } from "../../util/utf16-boundary.js";
 import { toTraceJsonValue } from "../../tracing/tracer.js";
 import { SystemClock } from "../../util/clock.js";
@@ -39,6 +40,7 @@ import {
   SHARED_STATE_ACCEPTED_TOOL_NAMES,
   SHARED_STATE_TOOL_NAME,
   SHARED_STATE_PROMPT_WARNING_TOKEN_THRESHOLD,
+  DEFAULT_MAX_LOCKED_ENTRY_TEXT_CHARS,
 } from "./constants.js";
 import {
   type EmptyUpdateDrop,
@@ -481,6 +483,7 @@ function repairablePatchRejections(rejections: readonly PatchRejection[]): Patch
     (rejection) =>
       rejection.reason === "live_entry_cap_exceeded_for_key" ||
       rejection.reason === "locked_state_key_collision" ||
+      rejection.reason === "locked_text_too_long" ||
       rejection.reason === "near_duplicate_state_key" ||
       rejection.reason === "missing_new_key_reason" ||
       rejection.reason === "relationship_claim_ungrounded",
@@ -490,6 +493,13 @@ function repairablePatchRejections(rejections: readonly PatchRejection[]): Patch
 function patchRejectionRepairMessage(rejections: readonly PatchRejection[]): string {
   const details = rejections
     .map((rejection) => {
+      if (rejection.reason === "locked_text_too_long") {
+        return [
+          `operation ${rejection.operationIndex} ${rejection.operationType} state_key=${rejection.stateKey ?? "unknown"}`,
+          `locked_text_too_long: ${rejection.actualTextChars} UTF-16 code units; maximum ${rejection.maxTextChars}`,
+          "rewrite the complete row shorter within the maximum; no text was truncated or stored",
+        ].join("; ");
+      }
       if (rejection.reason === "live_entry_cap_exceeded_for_key") {
         return [
           `operation ${rejection.operationIndex} add state_key=${rejection.stateKey ?? "unknown"}`,
@@ -544,7 +554,7 @@ function patchRejectionRepairMessage(rejections: readonly PatchRejection[]): str
     })
     .join(" | ");
 
-  return `Your previous patch violated structural shared-state key compaction: ${details}. Emit a corrected patch.`;
+  return `Your previous patch violated structural shared-state constraints: ${details}. Emit a corrected patch.`;
 }
 
 function allOperationsRejectedMessage(rejections: readonly PatchRejection[]): string {
@@ -559,6 +569,16 @@ function traceRepairablePatchRejection(
   input: CompileSharedStateArtifactInput,
   rejection: PatchRejection,
 ): void {
+  if (rejection.reason === "locked_text_too_long") {
+    traceCompileDegraded({
+      tracer: input.tracer,
+      turnId: input.turnId,
+      audienceEntityId: input.audienceEntityId,
+      reason: rejection.reason,
+      rejections: [rejection],
+    });
+    return;
+  }
   if (rejection.reason === "live_entry_cap_exceeded_for_key") {
     traceAddRejectedCapExceeded({
       tracer: input.tracer,
@@ -689,7 +709,11 @@ export async function compileSharedStateArtifact(
   const previousEntryCount = previousArtifact?.entries.length ?? 0;
   const speakerEntityId = input.speakerEntityId ?? null;
   const compilePass = input.compilePass ?? "pre_answer";
-  const systemPrompt = buildSharedStateSystemPrompt(compilePass);
+  const maxLockedEntryTextChars = coercePositiveIntegerOrFallback(
+    input.maxLockedEntryTextChars,
+    DEFAULT_MAX_LOCKED_ENTRY_TEXT_CHARS,
+  );
+  const systemPrompt = buildSharedStateSystemPrompt(compilePass, maxLockedEntryTextChars);
   const systemBlocks = [
     {
       type: "text" as const,
@@ -705,10 +729,10 @@ export async function compileSharedStateArtifact(
     input.currentUserStreamEntryId,
   ];
   const { summary: previousArtifactSummary, exposure: promptExposure } =
-    buildSharedStateArtifactPromptSummaryWithExposure(
-      previousArtifact,
-      input.previousArtifactSummaryOptions,
-    );
+    buildSharedStateArtifactPromptSummaryWithExposure(previousArtifact, {
+      ...input.previousArtifactSummaryOptions,
+      fullLockedEntries: true,
+    });
   const existingStateKeyRegistry = buildExistingStateKeyRegistry(
     previousArtifact,
     previousArtifactSummary,
@@ -1016,6 +1040,7 @@ export async function compileSharedStateArtifact(
     relationshipEvidenceStreamEntryTrust: input.relationshipEvidenceStreamEntryTrust,
     allowedCanonicalizationIds: allowedCanonicalizationIds(input.canonicalizationCandidates),
     maxLiveEntriesPerKey: input.lifecycle?.maxLiveEntriesPerKey,
+    maxLockedEntryTextChars,
     nowMs,
     materializePlan: (
       operations: readonly SharedStateOperation[],

@@ -85,6 +85,7 @@ export type CompileSharedStateArtifactInput = {
   lifecycle?: SharedStateLifecycleOptions;
   renderOptions?: SharedStateRenderOptions;
   previousArtifactSummaryOptions?: SharedStatePromptSummaryOptions;
+  maxLockedEntryTextChars?: number;
   ledgerMode?: SharedStateLedgerMode;
   onDegraded?: (reason: SharedStateCompileDegradedReason, error?: unknown) => Promise<void> | void;
 };
