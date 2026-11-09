@@ -12,6 +12,7 @@ import { estimatePromptTokens } from "../../util/token-estimate.js";
 
 import { episodeEvidencePromptRow } from "../evidence-labels.js";
 import { createEpisodeFixture, createOfflineTestHarness } from "../test-support.js";
+import { ReviewResolverProcess } from "../review-resolver/index.js";
 import { SelfNarratorProcess } from "./index.js";
 
 const SELF_NARRATOR_TOOL_NAME = "EmitSelfNarratorObservations";
@@ -1398,6 +1399,85 @@ describe("SelfNarratorProcess", () => {
           ...priorKeyEpisodeIds.slice(0, 6),
         ],
       });
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("retires an enqueued narrative proposal after an independent version advance", async () => {
+    const episodes = Array.from({ length: 2 }, (_, index) =>
+      createEpisodeFixture({
+        created_at: 1_000 + index,
+        updated_at: 1_000 + index,
+        start_time: 1_000 + index,
+        end_time: 1_000 + index,
+      }),
+    );
+    const llm = new FakeLLMClient({
+      responses: [
+        createSelfNarratorResponse({
+          observation: {
+            category: "understanding",
+            what_changed: "A new understanding.",
+            before_description: null,
+            after_description: null,
+            confidence: 0.8,
+            evidence_episode_ids: episodes.map((episode) => episode.id),
+          },
+          period_decision: "continue_current",
+          period_narrative: "A proposed complete narrative.",
+        }),
+      ],
+    });
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      reviewOpenQuestionExtractor: null,
+      configOverrides: { offline: { reviewResolver: { autonomous: true } } },
+    });
+    try {
+      const period = harness.autobiographicalRepository.upsertPeriod({
+        label: "Current",
+        start_ts: 1,
+        narrative: "Original narrative.",
+        provenance: { kind: "offline", process: "self-narrator" },
+      });
+      for (const episode of episodes) {
+        await harness.episodicRepository.createEpisode(episode);
+      }
+      const narrator = new SelfNarratorProcess({
+        autobiographicalRepository: harness.autobiographicalRepository,
+        growthMarkersRepository: harness.growthMarkersRepository,
+        registry: harness.registry,
+      });
+      const plan = await narrator.plan(harness.createContext(), {});
+      await narrator.apply(harness.createContext(), plan);
+      const proposal = harness.reviewQueueRepository
+        .getOpen()
+        .find((row) => row.refs.target_id === period.id)!;
+      expect(proposal.refs).toMatchObject({
+        expected_record_version: period.record_version,
+        patch: { narrative: "A proposed complete narrative." },
+      });
+      const current = harness.autobiographicalRepository.upsertPeriod(
+        { ...period, narrative: "Independently revised narrative." },
+        { expectedVersion: period.record_version },
+      );
+      const resolver = new ReviewResolverProcess({ db: harness.db });
+      const result = await resolver.run(harness.createContext(), {});
+      expect(result.errors).toEqual([]);
+      expect(harness.reviewQueueRepository.get(proposal.id)).toMatchObject({
+        resolution: "dismiss",
+        refs: {
+          __borg_review_resolver_repair: {
+            verdict: "stale_record_version",
+            expected_record_version: period.record_version,
+            current_record_version: current.record_version,
+          },
+        },
+      });
+      expect(harness.autobiographicalRepository.getPeriod(period.id)).toEqual(current);
+      expect((await resolver.run(harness.createContext(), {})).changes).toEqual([]);
+      expect(llm.requests).toHaveLength(1); // Only the narrator ran, never a resolver judgment.
     } finally {
       await harness.cleanup();
     }

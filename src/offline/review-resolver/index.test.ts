@@ -10,7 +10,9 @@ import {
 } from "../../memory/common/disclosure-label.js";
 import type { ReviewQueueItem } from "../../memory/review-queue/index.js";
 import type { Episode } from "../../memory/episodic/index.js";
+import type { AutobiographicalPeriod } from "../../memory/self/index.js";
 import {
+  createAutobiographicalPeriodId,
   createEntityId,
   createEpisodeId,
   createSemanticNodeId,
@@ -2486,6 +2488,192 @@ describe("review resolver autonomous mode", () => {
     };
   }
 
+  function enqueueRevision(
+    harness: OfflineHarness,
+    period: AutobiographicalPeriod,
+    narrative: string,
+  ) {
+    return harness.reviewQueueRepository.enqueue({
+      kind: "identity_inconsistency",
+      reason: `self-narrator proposed revising autobiographical period ${period.id}`,
+      refs: {
+        target_type: "autobiographical_period",
+        target_id: period.id,
+        repair_op: "patch",
+        patch: { narrative },
+        proposed_provenance: { kind: "offline", process: "self-narrator" },
+        evidence_episode_ids: [createEpisodeFixture().id],
+        ...(period.record_version === undefined
+          ? {}
+          : { expected_record_version: period.record_version }),
+      },
+    });
+  }
+
+  it.each(["stale", "equal", "absent", "future", "missing", "unversioned_target"] as const)(
+    "classifies a %s record version before evidence and model work",
+    async (version) => {
+      const llm = new FakeLLMClient();
+      const tracer = new ArrayTracer();
+      const harness = await createOfflineTestHarness({
+        llmClient: llm,
+        tracer,
+        reviewOpenQuestionExtractor: null,
+        configOverrides: AUTONOMOUS_OVERRIDES,
+      });
+      cleanup.push(harness.cleanup);
+      const period = harness.autobiographicalRepository.upsertPeriod({
+        label: "Current",
+        start_ts: 1,
+        narrative: "Original",
+        provenance: { kind: "offline", process: "self-narrator" },
+      });
+      const item = enqueueRevision(
+        harness,
+        {
+          ...period,
+          id: version === "missing" ? createAutobiographicalPeriodId() : period.id,
+          record_version:
+            version === "absent"
+              ? undefined
+              : version === "future"
+                ? period.record_version! + 1
+                : period.record_version,
+        },
+        "Proposed revision",
+      );
+      if (version === "stale") {
+        harness.autobiographicalRepository.upsertPeriod(
+          { ...period, narrative: "External revision" },
+          { expectedVersion: period.record_version },
+        );
+      } else if (version === "unversioned_target") {
+        vi.spyOn(harness.autobiographicalRepository, "getPeriod").mockReturnValueOnce({
+          ...period,
+          record_version: undefined,
+        });
+      }
+      const getEvidence = vi.spyOn(harness.episodicRepository, "getMany");
+      const applyPeriod = vi.spyOn(harness.identityService, "updatePeriod");
+      llm.pushResponse(identityResolverResponse({ verdict: "accept_repair" }));
+      const result = await runResolver(harness);
+      const stored = harness.reviewQueueRepository.get(item.id)!;
+      if (version === "stale") {
+        expect(result.errors).toEqual([]);
+        expect(llm.requests).toHaveLength(0);
+        expect(getEvidence).not.toHaveBeenCalled();
+        expect(applyPeriod).not.toHaveBeenCalled();
+        expect(stored.resolution).toBe("dismiss");
+        expect(stored.resolved_at).not.toBeNull();
+        const audit = {
+          expected_record_version: period.record_version,
+          current_record_version: period.record_version! + 1,
+          target_type: "autobiographical_period",
+          target_id: period.id,
+        };
+        expect(stored.refs.__borg_review_resolver_repair).toMatchObject({
+          verdict: "stale_record_version",
+          mode: "resolver_finalized_without_handler",
+          bypass_handler_reason: "stale_record_version",
+          ...audit,
+        });
+        expect(stored.refs).not.toHaveProperty("__borg_review_resolver_diagnostic");
+        expect(stored.refs.patch).toEqual(item.refs.patch);
+        expect(tracer.events).toContainEqual(
+          expect.objectContaining({
+            event: "review_resolver.decision.completed",
+            verdict: "stale_record_version",
+            ...audit,
+          }),
+        );
+        expect(tracer.events).toContainEqual(
+          expect.objectContaining({
+            event: "review_queue.completed",
+            resolution: "dismiss",
+            ...audit,
+          }),
+        );
+        await runResolver(harness);
+        expect(llm.requests).toHaveLength(0);
+        expect(harness.autobiographicalRepository.getPeriod(period.id)?.narrative).toBe(
+          "External revision",
+        );
+      } else {
+        expect(getEvidence).toHaveBeenCalledTimes(1);
+        expect(llm.requests).toHaveLength(1);
+        expect(stored.refs).not.toHaveProperty("__borg_review_resolver_repair");
+        if (version === "future" || version === "missing") {
+          expect(result.errors).toHaveLength(1);
+          expect(stored.resolved_at).toBeNull();
+          expect(stored.refs.__borg_review_resolver_diagnostic).toMatchObject({ attempts: 1 });
+        } else {
+          expect(result.errors).toEqual([]);
+          expect(stored.resolution).toBe("accept");
+          expect(harness.autobiographicalRepository.getPeriod(period.id)?.narrative).toBe(
+            "Proposed revision",
+          );
+        }
+      }
+    },
+  );
+
+  it("retires a proposal after a typed CAS race without applying it or dismissing siblings", async () => {
+    const llm = new FakeLLMClient();
+    const tracer = new ArrayTracer();
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      tracer,
+      reviewOpenQuestionExtractor: null,
+      configOverrides: AUTONOMOUS_OVERRIDES,
+    });
+    cleanup.push(harness.cleanup);
+    const period = harness.autobiographicalRepository.upsertPeriod({
+      label: "Current",
+      start_ts: 1,
+      narrative: "Original",
+      provenance: { kind: "offline", process: "self-narrator" },
+    });
+    const item = enqueueRevision(harness, period, "Obsolete proposal");
+    let sibling: ReviewQueueItem;
+    llm.pushResponse(() => {
+      const advanced = harness.autobiographicalRepository.upsertPeriod(
+        { ...period, narrative: "Concurrent revision" },
+        { expectedVersion: period.record_version },
+      );
+      sibling = enqueueRevision(harness, advanced, "Still current");
+      return identityResolverResponse({ verdict: "accept_repair" });
+    });
+    const applyPeriod = vi.spyOn(harness.identityService, "updatePeriod");
+    const result = await runResolver(harness);
+    expect(result.errors).toEqual([]);
+    expect(applyPeriod).toHaveBeenCalledTimes(1);
+    expect(harness.reviewQueueRepository.get(item.id)).toMatchObject({
+      resolution: "dismiss",
+      refs: {
+        __borg_review_resolver_repair: {
+          verdict: "stale_record_version",
+          expected_record_version: period.record_version,
+          current_record_version: period.record_version! + 1,
+        },
+      },
+    });
+    expect(harness.reviewQueueRepository.get(sibling!.id)?.resolved_at).toBeNull();
+    expect(harness.autobiographicalRepository.getPeriod(period.id)).toMatchObject({
+      narrative: "Concurrent revision",
+      record_version: period.record_version! + 1,
+    });
+    expect(tracer.events).toContainEqual(
+      expect.objectContaining({
+        event: "review_resolver.completed",
+        accepted: 0,
+        dismissed: 1,
+        processed: 1,
+      }),
+    );
+    expect(harness.reviewQueueRepository.getOpen().map((row) => row.id)).not.toContain(item.id);
+    expect(llm.requests).toHaveLength(1);
+  });
+
   it("resolves identity_inconsistency items when autonomous", async () => {
     const llm = new FakeLLMClient();
     const tracer = new ArrayTracer();
@@ -2556,21 +2744,10 @@ describe("review resolver autonomous mode", () => {
       narrative: "Base text.",
       provenance: { kind: "offline", process: "self-narrator" },
     });
-    const enqueueRevision = (narrative: string) =>
-      harness.reviewQueueRepository.enqueue({
-        kind: "identity_inconsistency",
-        reason: `self-narrator proposed revising autobiographical period ${period.id}`,
-        refs: {
-          target_type: "autobiographical_period",
-          target_id: period.id,
-          repair_op: "patch",
-          patch: { narrative },
-          proposed_provenance: { kind: "offline", process: "self-narrator" },
-          evidence_episode_ids: [createEpisodeFixture().id],
-          expected_record_version: period.record_version,
-        },
-      });
-    const revisions = [enqueueRevision("First revision."), enqueueRevision("Second revision.")];
+    const revisions = [
+      enqueueRevision(harness, period, "First revision."),
+      enqueueRevision(harness, period, "Second revision."),
+    ];
     llm.pushResponse(identityResolverResponse({ verdict: "accept_repair" }));
     llm.pushResponse(identityResolverResponse({ verdict: "accept_repair" }));
 

@@ -19,6 +19,21 @@ import {
 } from "./index.js";
 
 describe("config", () => {
+  it("validates the structural locked text write limit", () => {
+    for (const maxLockedEntryTextChars of [0, -1, 1.5]) {
+      expect(
+        configSchema.safeParse({
+          generation: { evidenceLedger: { decisionArtifact: { maxLockedEntryTextChars } } },
+        }).success,
+      ).toBe(false);
+    }
+    expect(
+      configSchema.parse({
+        generation: { evidenceLedger: { decisionArtifact: { maxLockedEntryTextChars: 120 } } },
+      }).generation.evidenceLedger.decisionArtifact.maxLockedEntryTextChars,
+    ).toBe(120);
+  });
+
   const tempDirs: string[] = [];
 
   afterEach(() => {
@@ -258,6 +273,7 @@ describe("config", () => {
       sectionOptions: {},
       decisionArtifact: {
         maxActiveEntries: 40,
+        maxLockedEntryTextChars: 4_000,
         maxLiveEntriesPerKey: 2,
         kindSoftCaps: {
           locked: 24,

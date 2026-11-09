@@ -109,6 +109,7 @@ function normalizeKeyedPatch(input: {
   canonicalizationCandidates?: SharedStateCanonicalizationCandidates;
   summaryOptions?: SharedStatePromptSummaryOptions;
   promptExposure?: SharedStatePromptExposure | null;
+  maxLockedEntryTextChars?: number;
 }) {
   const selfEntityId = createEntityId();
   const speakerEntityId = createEntityId();
@@ -124,8 +125,12 @@ function normalizeKeyedPatch(input: {
     previousArtifact,
     promptExposure:
       input.promptExposure === undefined
-        ? buildSharedStateArtifactPromptSummaryWithExposure(previousArtifact, input.summaryOptions)
-            .exposure
+        ? // Explicit bounded fixtures keep incomplete-exposure guard tests meaningful
+          // even though production compiler views always request full locked bodies.
+          buildSharedStateArtifactPromptSummaryWithExposure(previousArtifact, {
+            fullLockedEntries: false,
+            ...input.summaryOptions,
+          }).exposure
         : input.promptExposure,
     audienceEntityId: input.audienceEntityId,
     selfEntityId,
@@ -138,6 +143,7 @@ function normalizeKeyedPatch(input: {
     ),
     allowedCanonicalizationIds: allowedCanonicalizationIds(input.canonicalizationCandidates),
     maxLiveEntriesPerKey: 2,
+    maxLockedEntryTextChars: input.maxLockedEntryTextChars,
     nowMs: 2_000,
     materializePlan: (operations, retainedEntryIds) => {
       const compilerOperations = materializeSharedStateOperationIds(operations);
@@ -187,6 +193,201 @@ function addOperation(input: {
     source_stream_entry_ids: [input.sourceStreamEntryId],
   };
 }
+
+describe("normalizePatch locked text write limit", () => {
+  it.each(
+    (["add", "update", "supersede", "promotion"] as const).flatMap((type) =>
+      [false, true].map((oversized) => ({ type, oversized })),
+    ),
+  )("checks UTF-16 length for $type (oversized=$oversized)", ({ type, oversized }) => {
+    const audienceEntityId = createEntityId();
+    const sourceStreamEntryId = createStreamEntryId();
+    const text = "規則🧭".repeat(6) + (oversized ? "!" : "");
+    const entry = makeEntry({
+      audienceEntityId,
+      sourceStreamEntryId,
+      stateKey: "decision.rule",
+      kind: type === "promotion" ? "live" : "locked",
+      text: type === "promotion" ? text : "Old rule",
+    });
+    const body = {
+      state_key: "decision.rule",
+      kind: "locked" as const,
+      text,
+      source_stream_entry_ids: [sourceStreamEntryId],
+    };
+    const operation: EmitSharedStatePatch["operations"][number] =
+      type === "add"
+        ? { type, ...body, new_key_reason: "New decision" }
+        : type === "supersede"
+          ? { type, id: entry.id, replacement: body }
+          : {
+              type: "update",
+              id: entry.id,
+              state_key: entry.state_key!,
+              ...(type === "promotion" ? { kind: "locked" } : { text }),
+              source_stream_entry_ids: [sourceStreamEntryId],
+            };
+    const normalized = normalizeKeyedPatch({
+      previousEntries: type === "add" ? [] : [entry],
+      operations: [operation],
+      audienceEntityId,
+      sourceStreamEntryId,
+      maxLockedEntryTextChars: 24,
+    });
+    if (oversized) {
+      expect(normalized.operations).toEqual([]);
+      expect(normalized.plan.operations).toEqual([]);
+      expect(normalized.rejected).toEqual([
+        expect.objectContaining({
+          operationIndex: 0,
+          reason: "locked_text_too_long",
+          actualTextChars: 25,
+          maxTextChars: 24,
+        }),
+      ]);
+    } else {
+      expect(normalized.rejected).toEqual([]);
+      expect(normalized.plan.compilerOperations).toHaveLength(1);
+    }
+  });
+
+  it.each(["metadata", "shrink", "unrelated"] as const)(
+    "allows %s with a legacy oversized locked body",
+    (change) => {
+      const audienceEntityId = createEntityId();
+      const sourceStreamEntryId = createStreamEntryId();
+      const entry = makeEntry({
+        audienceEntityId,
+        sourceStreamEntryId,
+        stateKey: "decision.rule",
+        kind: "locked",
+        text: "古い規則🧭".repeat(1_000),
+      });
+      const operation: EmitSharedStatePatch["operations"][number] =
+        change === "unrelated"
+          ? addOperation({ stateKey: "plan.next", sourceStreamEntryId })
+          : {
+              type: "update",
+              id: entry.id,
+              state_key: entry.state_key!,
+              ...(change === "shrink"
+                ? { text: "短い規則🧭" }
+                : { owner_entity_id: audienceEntityId }),
+              source_stream_entry_ids: [sourceStreamEntryId],
+            };
+      const result = normalizeKeyedPatch({
+        previousEntries: [entry],
+        operations: [operation],
+        audienceEntityId,
+        sourceStreamEntryId,
+        summaryOptions: { fullLockedEntries: true },
+      });
+      expect(result.rejected).toEqual([]);
+      expect(result.plan.compilerOperations).toHaveLength(1);
+      expect(entry.text.length).toBeGreaterThan(4_000);
+    },
+  );
+
+  it.each([
+    "grow_then_promote",
+    "promote_then_grow",
+    "demote_then_grow",
+    "shrink_then_promote",
+  ] as const)("checks effective multi-operation writes: %s", (sequence) => {
+    const audienceEntityId = createEntityId();
+    const sourceStreamEntryId = createStreamEntryId();
+    const longText = "規則🧭".repeat(10);
+    const entry = makeEntry({
+      audienceEntityId,
+      sourceStreamEntryId,
+      stateKey: "decision.rule",
+      kind: sequence === "demote_then_grow" ? "locked" : "live",
+      text: sequence === "shrink_then_promote" ? longText : "Initial",
+    });
+    const update = {
+      type: "update" as const,
+      id: entry.id,
+      state_key: entry.state_key!,
+      source_stream_entry_ids: [sourceStreamEntryId],
+    };
+    const operations: EmitSharedStatePatch["operations"] =
+      sequence === "grow_then_promote"
+        ? [
+            { ...update, text: longText },
+            { ...update, kind: "locked" },
+          ]
+        : sequence === "shrink_then_promote"
+          ? [
+              { ...update, text: "Short" },
+              { ...update, kind: "locked" },
+            ]
+          : sequence === "demote_then_grow"
+            ? [
+                { ...update, kind: "live" },
+                { ...update, kind: "live", text: longText },
+              ]
+            : [
+                { ...update, kind: "locked" },
+                { ...update, text: longText },
+              ];
+    const result = normalizeKeyedPatch({
+      previousEntries: [entry],
+      operations,
+      audienceEntityId,
+      sourceStreamEntryId,
+      maxLockedEntryTextChars: 24,
+    });
+    if (sequence === "shrink_then_promote") {
+      expect(result.rejected).toEqual([]);
+      expect(result.plan.compilerOperations).toHaveLength(2);
+    } else {
+      expect(result.rejected).toEqual([
+        expect.objectContaining({
+          reason: "locked_text_too_long",
+          operationIndex: 1,
+          actualTextChars: 40,
+          maxTextChars: 24,
+        }),
+      ]);
+      expect(result.plan.operations).toEqual([]);
+    }
+  });
+
+  it("refuses oversized writes even when a following prune would remove them", () => {
+    const audienceEntityId = createEntityId();
+    const sourceStreamEntryId = createStreamEntryId();
+    const entry = makeEntry({
+      audienceEntityId,
+      sourceStreamEntryId,
+      stateKey: "decision.rule",
+      kind: "locked",
+    });
+    const result = normalizeKeyedPatch({
+      previousEntries: [entry],
+      audienceEntityId,
+      sourceStreamEntryId,
+      operations: [
+        {
+          type: "update",
+          id: entry.id,
+          state_key: entry.state_key!,
+          text: "x".repeat(4_001),
+          source_stream_entry_ids: [sourceStreamEntryId],
+        },
+        { type: "prune", id: entry.id, reason: "Remove after write" },
+      ],
+    });
+    expect(result.plan.operations).toEqual([]);
+    expect(result.rejected).toEqual([
+      expect.objectContaining({
+        reason: "locked_text_too_long",
+        actualTextChars: 4_001,
+        maxTextChars: 4_000,
+      }),
+    ]);
+  });
+});
 
 describe("normalizePatch locked text exposure", () => {
   it.each(

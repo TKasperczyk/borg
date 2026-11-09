@@ -82,6 +82,44 @@ function lifecycleCapFixture(
 }
 
 describe("applySharedStateArtifactLifecycleCap", () => {
+  it("keeps a legacy oversized locked row when the compiler rewrites it shorter at the cap", () => {
+    const audience = createEntityId();
+    const entries = lifecycleCapFixture(audience, { locked: 40 });
+    const oldest = entries[0]!;
+    oldest.text = "規則🧭".repeat(1_001);
+    const result = applySharedStateArtifactLifecycleCap({
+      previousArtifact: sharedStateArtifact(entries),
+      operations: [
+        {
+          type: "update",
+          id: oldest.id,
+          state_key: oldest.state_key!,
+          text: "短い規則🧭",
+          last_updated_stream_entry_ids: oldest.last_updated_stream_entry_ids,
+        },
+        {
+          type: "add",
+          id: createSharedStateEntryId(),
+          state_key: "boundary.access",
+          kind: "locked",
+          text: "New boundary",
+          provenance_stream_entry_ids: oldest.provenance_stream_entry_ids,
+        },
+      ],
+      nowMs: 20_000,
+    });
+    expect(result.postPlanActiveEntryCount).toBe(40);
+    expect(result.operations.filter((operation) => operation.type === "prune")).toEqual([
+      { type: "prune", id: entries[1]!.id },
+    ]);
+    expect(result.operations[0]).toMatchObject({
+      type: "update",
+      id: oldest.id,
+      text: "短い規則🧭",
+    });
+    expect(oldest.text.length).toBe(4_004);
+  });
+
   it("reserves newest state changes while applying kind soft caps", () => {
     const audience = createEntityId();
     const locked = Array.from({ length: 14 }, (_, index) =>

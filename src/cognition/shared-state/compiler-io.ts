@@ -160,6 +160,12 @@ export function traceCompileCompleted(options: {
           state_key: rejection.stateKey ?? null,
           target_entry_id: rejection.targetEntryId ?? null,
           target_exposure: rejection.targetExposure ?? null,
+          ...(rejection.actualTextChars === undefined
+            ? {}
+            : {
+                actual_text_chars: rejection.actualTextChars,
+                max_text_chars: rejection.maxTextChars,
+              }),
           source_stream_entry_id: rejection.sourceStreamEntryId ?? null,
           disallowed_citation_barrier: disallowedCitationBarrier(rejection),
         })),

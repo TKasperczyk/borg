@@ -45,7 +45,7 @@ import { episodeIdSchema, type Episode } from "../../memory/episodic/index.js";
 import { streamEntryIdSchema, type StreamEntry } from "../../stream/index.js";
 import type { SqliteDatabase } from "../../storage/sqlite/index.js";
 import { dedupePreservingOrder } from "../../util/collections.js";
-import { BudgetExceededError, SemanticError } from "../../util/errors.js";
+import { BudgetExceededError, IdentityCasMismatchError, SemanticError } from "../../util/errors.js";
 import { positiveIntegerValue } from "../../util/parse.js";
 import { serializeJsonValue } from "../../util/json-value.js";
 import type { StreamEntryId } from "../../util/ids.js";
@@ -303,7 +303,14 @@ type LoadedNewInsightContext = {
 type PreparedDecisionVerdict =
   | ReviewResolverVerdict["verdict"]
   | NewInsightReviewResolverVerdict["verdict"]
-  | SemanticPairReviewResolverVerdict["verdict"];
+  | SemanticPairReviewResolverVerdict["verdict"]
+  | "stale_record_version";
+type StaleReviewVersion = {
+  target_type: "autobiographical_period";
+  target_id: string;
+  expected_record_version: number;
+  current_record_version: number;
+};
 type PreparedDecision =
   | {
       action: "resolve";
@@ -324,6 +331,7 @@ type PreparedDecision =
       correctedBy?: SemanticNodeCorrectionRef;
       winnerNodeId?: SemanticNode["id"];
       bypassHandlerReason?: string;
+      staleVersion?: StaleReviewVersion;
     }
   | {
       action: "needs_manual";
@@ -1993,6 +2001,41 @@ async function evaluateIdentityInconsistencyDecision(input: {
   }
 }
 
+// Version fences are structural apply constraints, not a judgment of the proposal.
+// Reused before evidence/model work and after a typed CAS failure during apply.
+function staleIdentityReviewDecision(
+  ctx: OfflineContext,
+  refs: IdentityInconsistencyReviewRefs,
+): PreparedDecision | null {
+  if (
+    refs.target_type !== "autobiographical_period" ||
+    refs.expected_record_version === undefined
+  ) {
+    return null;
+  }
+  const current = ctx.autobiographicalRepository.getPeriod(refs.target_id);
+  if (
+    current?.record_version === undefined ||
+    refs.expected_record_version >= current.record_version
+  ) {
+    return null;
+  }
+  return {
+    action: "resolve",
+    verdict: "stale_record_version",
+    resolution: "dismiss",
+    appliedResolution: "dismiss",
+    reason: `stale_record_version: proposal expected ${refs.expected_record_version}, target is at ${current.record_version}`,
+    bypassHandlerReason: "stale_record_version",
+    staleVersion: {
+      target_type: refs.target_type,
+      target_id: refs.target_id,
+      expected_record_version: refs.expected_record_version,
+      current_record_version: current.record_version,
+    },
+  };
+}
+
 // Autonomous-only path (identity_inconsistency is never selected otherwise).
 // The kind's apply handler executes the stored repair on accept; reject and
 // dismiss discard the proposal without touching identity state.
@@ -2013,6 +2056,9 @@ async function prepareIdentityInconsistencyDecision(input: {
       bypassHandlerReason: "malformed_identity_refs",
     };
   }
+
+  const staleDecision = staleIdentityReviewDecision(input.ctx, parsed.data);
+  if (staleDecision !== null) return staleDecision;
 
   const evidenceEpisodeIds = (
     "evidence_episode_ids" in parsed.data ? (parsed.data.evidence_episode_ids ?? []) : []
@@ -2381,16 +2427,23 @@ function markResolvedWithoutHandler(input: {
   resolution: Extract<ReviewResolution, "dismiss" | "reject">;
   reason: string;
   bypassHandlerReason: string;
+  staleVersion?: StaleReviewVersion;
 }): ReviewQueueItem {
   const resolvedAt = input.ctx.clock.now();
   const nextRefs = {
     ...input.item.refs,
     [REVIEW_RESOLVER_REPAIR_REF_KEY]: {
-      verdict: input.resolution === "reject" ? "reject_malformed" : "dismiss_false_positive",
+      verdict:
+        input.staleVersion !== undefined
+          ? "stale_record_version"
+          : input.resolution === "reject"
+            ? "reject_malformed"
+            : "dismiss_false_positive",
       mode: "resolver_finalized_without_handler",
       bypass_handler_reason: input.bypassHandlerReason,
       reason: input.reason,
       at: resolvedAt,
+      ...input.staleVersion,
     },
   };
   const result = input.db
@@ -2424,6 +2477,7 @@ function markResolvedWithoutHandler(input: {
       decision_reason: input.reason,
       source_process: "review-resolver",
       resolution: input.resolution,
+      ...input.staleVersion,
     });
   }
 
@@ -2452,6 +2506,7 @@ function emitDecision(input: {
     applied_resolution:
       input.decision.action === "needs_manual" ? "needs_manual" : input.decision.appliedResolution,
     reason: input.decision.reason,
+    ...(input.decision.action === "resolve" ? input.decision.staleVersion : {}),
   });
 }
 
@@ -2590,6 +2645,7 @@ async function applyPreparedDecision(input: {
       resolution: input.decision.resolution,
       reason: input.decision.reason,
       bypassHandlerReason: input.decision.bypassHandlerReason,
+      staleVersion: input.decision.staleVersion,
     });
     emitDecision(input);
     return resolvedChange({
@@ -2708,17 +2764,53 @@ export class ReviewResolverProcess implements OfflineProcess<ReviewResolverPlan>
             // stripped (the per-kind refs schemas are strict, and autonomous
             // mode re-selects previously stamped items). Apply keeps the
             // original item: its refs are the CAS comparand for updates.
-            const decision = await prepareDecision({
+            let decision = await prepareDecision({
               ctx,
               llmClient,
               item: { ...current, refs: stripReviewResolverRefs(current.refs) },
             });
-            const change = await applyPreparedDecision({
-              db: this.options.db,
-              ctx,
-              item: current,
-              decision,
-            });
+            let change: OfflineChange;
+            try {
+              change = await applyPreparedDecision({
+                db: this.options.db,
+                ctx,
+                item: current,
+                decision,
+              });
+            } catch (error) {
+              if (
+                !(error instanceof IdentityCasMismatchError) ||
+                current.kind !== "identity_inconsistency"
+              ) {
+                throw error;
+              }
+              // The failed transaction has rolled back. Re-read both records; embedding
+              // preparation may have changed refs, and dismissal must CAS the fresh row.
+              const latest = ctx.reviewQueueRepository.get(current.id);
+              const parsed = identityInconsistencyReviewRefsSchema.safeParse(
+                stripReviewResolverRefs(latest?.refs ?? {}),
+              );
+              if (
+                latest === null ||
+                latest.resolved_at !== null ||
+                !parsed.success ||
+                parsed.data.target_type !== "autobiographical_period" ||
+                error.recordType !== parsed.data.target_type ||
+                error.recordId !== parsed.data.target_id ||
+                error.expectedVersion !== parsed.data.expected_record_version
+              ) {
+                throw error;
+              }
+              const staleDecision = staleIdentityReviewDecision(ctx, parsed.data);
+              if (staleDecision === null) throw error;
+              decision = staleDecision;
+              change = await applyPreparedDecision({
+                db: this.options.db,
+                ctx,
+                item: latest,
+                decision,
+              });
+            }
 
             countDecision(counters, decision);
             changes.push(change);

@@ -19,6 +19,7 @@ import { join } from "node:path";
 import { z } from "zod";
 
 import { DEFAULT_HOST_CAPABILITIES_SECTION } from "../cognition/prompts/host-capability-contracts.js";
+import { DEFAULT_MAX_LOCKED_ENTRY_TEXT_CHARS } from "../cognition/shared-state/constants.js";
 import {
   DEFAULT_CONTEXT_CAPTURE_ROTATION_KEEP,
   DEFAULT_FINALIZER_CONTEXT_CAPTURE_MAX_FILE_BYTES,
@@ -185,6 +186,11 @@ const sharedStateLedgerDeltaConfigSchema = z
 const sharedStateConfigSchema = z
   .object({
     maxActiveEntries: z.number().int().positive().default(40),
+    maxLockedEntryTextChars: z
+      .number()
+      .int()
+      .positive()
+      .default(DEFAULT_MAX_LOCKED_ENTRY_TEXT_CHARS),
     maxLiveEntriesPerKey: z.number().int().positive().default(2),
     recentTurnThreshold: z.number().int().positive().default(5),
     dormantTurnThreshold: z.number().int().positive().default(15),

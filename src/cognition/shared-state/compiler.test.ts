@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { DEFAULT_CONFIG } from "../../config/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import type { ActionRecord } from "../../memory/actions/index.js";
 import { sharedStateMigrations } from "../../memory/shared-state/migrations.js";
@@ -24,6 +25,7 @@ import {
 } from "../../storage/sqlite/index.js";
 import { FixedClock } from "../../util/clock.js";
 import type { JsonValue } from "../../util/json-value.js";
+import { estimatePromptTokens } from "../../util/token-estimate.js";
 import { unknownMemoryDisclosureLabel } from "../../memory/common/disclosure-label.js";
 import {
   createActionId,
@@ -60,10 +62,26 @@ import {
   SHARED_STATE_TOOL_NAME,
 } from "./compiler.js";
 import { buildSharedStateArtifactMessages } from "./compiler-prompt.js";
-import { SHARED_STATE_TOOL_ENTRY_KINDS } from "./constants.js";
+import {
+  SHARED_STATE_PROMPT_WARNING_TOKEN_THRESHOLD,
+  SHARED_STATE_TOOL_ENTRY_KINDS,
+} from "./constants.js";
 import type { SemanticRevisionVerdictCache } from "./reconciliation.js";
 import { sharedStatePatchSchema } from "./types.js";
 import type { SharedStatePromptSummary } from "./summary.js";
+import * as sharedStateSummary from "./summary.js";
+
+// Production always requests full active locked exposure. Supply deliberately incomplete
+// payloads here to keep exercising the independent ba3ccfa3 refusal guard.
+function mockIncompleteCompileView(): void {
+  const build = sharedStateSummary.buildSharedStateArtifactPromptSummaryWithExposure;
+  vi.spyOn(
+    sharedStateSummary,
+    "buildSharedStateArtifactPromptSummaryWithExposure",
+  ).mockImplementation((artifact, options) =>
+    build(artifact, { ...options, fullLockedEntries: false }),
+  );
+}
 
 let defaultStateKeyCounter = 0;
 
@@ -303,6 +321,7 @@ describe("compileSharedStateArtifact", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     db.close();
   });
 
@@ -379,6 +398,312 @@ describe("compileSharedStateArtifact", () => {
       (entry) => entry.superseded_by_id === null,
     );
   }
+
+  it.each(
+    (["pre_answer", "post_response"] as const).flatMap((compilePass) =>
+      (["direct", "schema_repair", "patch_repair"] as const).flatMap((path) =>
+        (["update", "supersede"] as const).map((type) => ({ compilePass, path, type })),
+      ),
+    ),
+  )(
+    "rewrites fully exposed active legacy locked text ($compilePass, $path, $type)",
+    async ({ compilePass, path, type }) => {
+      const seeded = repository.upsert(
+        audience,
+        Array.from({ length: 17 }, (_, index) => ({
+          type: "add" as const,
+          state_key: `decision.legacy_${index}`,
+          kind: "locked" as const,
+          text: `${index}:規則🧭`.repeat(800),
+          provenance_stream_entry_ids: [priorAllowedStreamEntryId],
+        })),
+      )!;
+      const previous = repository.upsert(
+        audience,
+        seeded.entries.slice(0, 7).map((entry) => ({
+          type: "supersede" as const,
+          id: entry.id,
+          last_updated_stream_entry_ids: [priorAllowedStreamEntryId],
+          replacement: {
+            state_key: entry.state_key!,
+            kind: "locked" as const,
+            text: `${entry.text}追加`,
+            provenance_stream_entry_ids: [priorAllowedStreamEntryId],
+          },
+        })),
+      )!;
+      const target = previous.entries.find((entry) => entry.superseded_by_id === null)!;
+      const shortBody = {
+        state_key: target.state_key,
+        kind: "locked",
+        text: "短い完全な規則🧭",
+        source_stream_entry_ids: [priorAllowedStreamEntryId],
+      };
+      const operation =
+        type === "update"
+          ? { type: "update", id: target.id, ...shortBody }
+          : { type: "supersede", id: target.id, replacement: shortBody };
+      const oversizedOperation =
+        type === "update"
+          ? { ...operation, text: "x".repeat(4_001) }
+          : { ...operation, replacement: { ...shortBody, text: "x".repeat(4_001) } };
+      const llmClient = new FakeLLMClient({
+        responses: [
+          ...(path === "direct"
+            ? []
+            : [
+                emitRawSharedStateArtifactPatchResponse({
+                  operations:
+                    path === "schema_repair" ? [{ type: "replace" }] : [oversizedOperation],
+                }),
+              ]),
+          emitRawSharedStateArtifactPatchResponse({ operations: [operation] }),
+        ],
+      });
+      const trace = createTraceRecorder();
+      const result = await compileSharedStateArtifact({
+        ...baseInput(llmClient),
+        compilePass,
+        tracer: trace,
+        previousArtifactSummaryOptions: {
+          fullLockedEntries: false,
+          maxEntries: { locked: 0 },
+          maxEntryTextTokens: 1,
+          summaryTokenBudget: 1,
+        },
+      });
+
+      expect(result.operations).toHaveLength(1);
+      expect(repository.get(audience)!.entries).toContainEqual(
+        expect.objectContaining({
+          state_key: target.state_key,
+          text: shortBody.text,
+        }),
+      );
+      expect(llmClient.requests).toHaveLength(path === "direct" ? 1 : 2);
+      for (const request of llmClient.requests) {
+        expect(JSON.stringify(request.system)).toContain("4000 UTF-16 code units per row");
+        const prompt = JSON.parse(request.messages[0]!.content) as {
+          previous_artifact_summary: SharedStatePromptSummary;
+        };
+        const summary = prompt.previous_artifact_summary;
+        expect(summary.active_entries.locked).toHaveLength(17);
+        expect(summary.recent_superseded).toEqual([]);
+        const history = summary.locked_history_refs.flatMap((group) => group.entries);
+        expect(history).toHaveLength(7);
+        for (const entry of previous.entries.filter((row) => row.superseded_by_id === null)) {
+          const rows = summary.active_entries.locked;
+          expect(rows.find((row) => row.id === entry.id)).toMatchObject({
+            text: entry.text,
+            body_completeness: "full",
+            disclosure: expect.any(String),
+            disclosure_label: expect.any(Object),
+          });
+        }
+        for (const entry of previous.entries.filter((row) => row.superseded_by_id !== null)) {
+          expect(history).toContainEqual({ id: entry.id, original_chars: entry.text.length });
+          expect(request.messages[0]!.content).not.toContain(JSON.stringify(entry.text));
+        }
+      }
+      for (const call of trace.events.filter(({ event }) => event === "llm_call.started")) {
+        expect(call.data.prompt_exposure).toMatchObject({
+          artifact_version: previous.record_version,
+          omitted_entry_ids: previous.entries
+            .filter((entry) => entry.superseded_by_id !== null)
+            .map((entry) => entry.id),
+          rows: previous.entries.map((entry) =>
+            expect.objectContaining({
+              id: entry.id,
+              original_chars: entry.text.length,
+              rendered_chars: entry.superseded_by_id === null ? entry.text.length : 0,
+              completeness: entry.superseded_by_id === null ? "full" : "omitted",
+            }),
+          ),
+          budget: expect.objectContaining({ decision: "selection_floor_exceeded" }),
+        });
+      }
+      if (path === "patch_repair") {
+        expect(llmClient.requests[1]!.messages.at(-1)!.content).toContain(
+          "4001 UTF-16 code units; maximum 4000",
+        );
+      }
+      expect(
+        trace.events.some(({ data }) => data.reason === "locked_target_not_fully_rendered"),
+      ).toBe(false);
+    },
+  );
+
+  it.each(["update_text", "supersede", "metadata", "prune", "prune_and_replace"] as const)(
+    "keeps historical locked rows reference-only for %s",
+    async (action) => {
+      const original = repository.upsert(audience, [
+        {
+          type: "add",
+          state_key: "decision.history",
+          kind: "locked",
+          text: "Historical rule",
+          provenance_stream_entry_ids: [priorAllowedStreamEntryId],
+        },
+      ])!.entries[0]!;
+      const previous = repository.upsert(audience, [
+        {
+          type: "supersede",
+          id: original.id,
+          last_updated_stream_entry_ids: [priorAllowedStreamEntryId],
+          replacement: {
+            state_key: "decision.current",
+            kind: "locked",
+            text: "Current rule",
+            provenance_stream_entry_ids: [priorAllowedStreamEntryId],
+          },
+        },
+      ])!;
+      const body = {
+        state_key: original.state_key,
+        kind: "locked",
+        text: "Rewritten history",
+        source_stream_entry_ids: [priorAllowedStreamEntryId],
+      };
+      const operations =
+        action === "update_text"
+          ? [{ type: "update", id: original.id, ...body }]
+          : action === "supersede"
+            ? [{ type: "supersede", id: original.id, replacement: body }]
+            : action === "metadata"
+              ? [
+                  {
+                    type: "update",
+                    id: original.id,
+                    state_key: original.state_key,
+                    owner_entity_id: audience,
+                    source_stream_entry_ids: [priorAllowedStreamEntryId],
+                  },
+                ]
+              : [
+                  { type: "prune", id: original.id },
+                  ...(action === "prune_and_replace"
+                    ? [
+                        {
+                          type: "add",
+                          ...body,
+                          new_key_reason: "Replacement under the original key",
+                        },
+                      ]
+                    : []),
+                ];
+      const llmClient = new FakeLLMClient({
+        responses: [emitRawSharedStateArtifactPatchResponse({ operations })],
+      });
+      const trace = createTraceRecorder();
+      const result = await compileSharedStateArtifact({ ...baseInput(llmClient), tracer: trace });
+      const refused =
+        action === "update_text" || action === "supersede" || action === "prune_and_replace";
+      expect(result.operations).toHaveLength(refused ? 0 : 1);
+      const stored = repository.get(audience)!;
+      if (refused) expect(stored).toEqual(previous);
+      else if (action === "prune")
+        expect(stored.entries.some((entry) => entry.id === original.id)).toBe(false);
+      else
+        expect(stored.entries.find((entry) => entry.id === original.id)).toMatchObject({
+          text: original.text,
+          owner_entity_id: audience,
+        });
+      const exposure = trace.events.find(({ event }) => event === "llm_call.started")!.data
+        .prompt_exposure;
+      expect(exposure).toMatchObject({
+        artifact_version: previous.record_version,
+        rows: expect.arrayContaining([
+          expect.objectContaining({ id: original.id, completeness: "omitted", rendered_chars: 0 }),
+        ]),
+      });
+      expect(
+        trace.events.some(({ data }) => data.reason === "locked_target_not_fully_rendered"),
+      ).toBe(refused);
+      const prompt = JSON.parse(llmClient.requests[0]!.messages[0]!.content) as {
+        previous_artifact_summary: SharedStatePromptSummary;
+      };
+      expect(prompt.previous_artifact_summary.locked_history_refs[0]).toMatchObject({
+        body_completeness: "omitted",
+        entries: [{ id: original.id, original_chars: original.text.length }],
+      });
+    },
+  );
+
+  it("degrades after a failed length repair without applying paired prunes or other writes", async () => {
+    const previous = repository.upsert(audience, [
+      {
+        type: "add",
+        state_key: "decision.rule",
+        kind: "locked",
+        text: "Original",
+        provenance_stream_entry_ids: [priorAllowedStreamEntryId],
+      },
+    ])!;
+    const response = emitRawSharedStateArtifactPatchResponse({
+      operations: [
+        { type: "prune", id: previous.entries[0]!.id, reason: "Replace this row" },
+        {
+          type: "add",
+          state_key: "decision.rule",
+          kind: "locked",
+          text: "🧭".repeat(13),
+          new_key_reason: "Replacement",
+          source_stream_entry_ids: [priorAllowedStreamEntryId],
+        },
+        {
+          type: "add",
+          state_key: "plan.next",
+          kind: "live",
+          text: "A step",
+          new_key_reason: "Separate plan",
+          source_stream_entry_ids: [priorAllowedStreamEntryId],
+        },
+      ],
+    });
+    const llmClient = new FakeLLMClient({ responses: [response, response] });
+    const onDegraded = vi.fn();
+    const trace = createTraceRecorder();
+    const result = await compileSharedStateArtifact({
+      ...baseInput(llmClient),
+      maxLockedEntryTextChars: 24,
+      onDegraded,
+      tracer: trace,
+    });
+    expect(result.operations).toEqual([]);
+    expect(repository.get(audience)).toEqual(previous);
+    expect(llmClient.requests).toHaveLength(2);
+    expect(JSON.stringify(llmClient.requests[0]!.system)).toContain("24 UTF-16 code units per row");
+    expect(llmClient.requests[1]!.messages.at(-1)!.content).toContain(
+      "26 UTF-16 code units; maximum 24",
+    );
+    expect(onDegraded).toHaveBeenCalledWith(
+      "invalid_patch",
+      expect.objectContaining({
+        message: expect.stringContaining("locked_text_too_long"),
+      }),
+    );
+    expect(trace.events).toContainEqual(
+      expect.objectContaining({
+        event: "shared_state.compile.completed",
+        data: expect.objectContaining({
+          applied: false,
+          rejections: [
+            expect.objectContaining({
+              reason: "locked_text_too_long",
+              actual_text_chars: 26,
+              max_text_chars: 24,
+            }),
+          ],
+        }),
+      }),
+    );
+    expect(trace.events).toContainEqual(
+      expect.objectContaining({
+        event: "shared_state.compile.degraded",
+        data: expect.objectContaining({ reason: "locked_text_too_long" }),
+      }),
+    );
+  });
 
   it("frames the compiler prompt as shared audience state instead of planning state", () => {
     expect(SHARED_STATE_SYSTEM_PROMPT).toContain("canonical shared audience state");
@@ -460,14 +785,14 @@ describe("compileSharedStateArtifact", () => {
         "rather than appending commentary that leaves its false assertion in place",
       );
       expect(prompt).toContain(
-        "kind=locked marks a durable decision or constraint; correction by update or supersede requires the text exposure described below",
+        "kind=locked marks a durable decision or constraint; correction by update or supersede requires full text exposure",
       );
       expect(prompt).toContain("only when that target id has body_completeness=full");
       expect(prompt).toContain(
         "Any combination of operations in one patch that replaces a locked row's text, or removes it and writes another row under its exact state_key, needs full exposure of that row; otherwise the participating operations are refused.",
       );
       expect(prompt).toContain(
-        "A truncated body or an id shown only in existing_state_key_registry is not eligible",
+        "A truncated body or an id shown only in a registry or history reference is not eligible",
       );
       expect(prompt).toContain(
         "carry forward its substantive constraints, examples, and qualifiers",
@@ -1834,6 +2159,9 @@ describe("compileSharedStateArtifact", () => {
         existing_state_key_registry: Array<{ active_entry_ids: string[]; kinds: string[] }>;
       };
       expect(payload.previous_artifact_summary.active_entries_by_state_key[stateKey]).toEqual([
+        original.id,
+      ]);
+      expect(payload.previous_artifact_summary.active_entries.locked).toEqual([
         expect.objectContaining({
           id: original.id,
           state_key: stateKey,
@@ -1843,9 +2171,6 @@ describe("compileSharedStateArtifact", () => {
           disclosure_label: expect.objectContaining({ disclosure_class: "relationship_private" }),
         }),
       ]);
-      expect(payload.previous_artifact_summary.active_entries.locked).toEqual(
-        payload.previous_artifact_summary.active_entries_by_state_key[stateKey],
-      );
       expect(payload.existing_state_key_registry).toEqual([
         expect.objectContaining({ active_entry_ids: [original.id], kinds: ["locked"] }),
       ]);
@@ -1896,6 +2221,7 @@ describe("compileSharedStateArtifact", () => {
   )(
     "checks cap evictions against exposure ($exposure, same-key write=$sameKeyWrite)",
     async ({ exposure, sameKeyWrite }) => {
+      mockIncompleteCompileView();
       const previous = repository.upsert(
         audience,
         Array.from({ length: 40 }, (_, index) => ({
@@ -1995,6 +2321,7 @@ describe("compileSharedStateArtifact", () => {
   )(
     "checks surviving same-key sibling writes (removal=$removal, write=$write)",
     async ({ removal, write }) => {
+      mockIncompleteCompileView();
       const goalId = createGoalId();
       const previous = repository.upsert(audience, [
         ...Array.from({ length: removal === "cap" ? 39 : 1 }, (_, index) => ({
@@ -2110,6 +2437,7 @@ describe("compileSharedStateArtifact", () => {
   )(
     "checks supersede + prune together ($exposure, replacement key=$replacementKey)",
     async ({ exposure, replacementKey }) => {
+      mockIncompleteCompileView();
       const original = repository.upsert(audience, [
         {
           type: "add",
@@ -2185,6 +2513,7 @@ describe("compileSharedStateArtifact", () => {
   it.each(["omitted", "full"] as const)(
     "uses the changed H → M → S graph with %s history",
     async (exposure) => {
+      mockIncompleteCompileView();
       const historicalId = repository.upsert(audience, [
         {
           type: "add",
@@ -2292,6 +2621,7 @@ describe("compileSharedStateArtifact", () => {
   ] as const)(
     "checks prune + add exposure ($exposure, key=$addKey)",
     async ({ exposure, addKey, refused }) => {
+      mockIncompleteCompileView();
       const original = repository.upsert(audience, [
         {
           type: "add",
@@ -2382,6 +2712,7 @@ describe("compileSharedStateArtifact", () => {
   )(
     "enforces and traces $completeness locked exposure for $type through $path",
     async ({ path, completeness, type }) => {
+      mockIncompleteCompileView();
       const originalText = "規則：条件と例を引き継いでください。".repeat(70);
       const previous = repository.upsert(audience, [
         {
@@ -2567,6 +2898,7 @@ describe("compileSharedStateArtifact", () => {
   );
 
   it("returns a traced validation outcome when every operation targets an omitted locked body", async () => {
+    mockIncompleteCompileView();
     const previous = repository.upsert(audience, [
       {
         type: "add",
@@ -3420,19 +3752,13 @@ describe("compileSharedStateArtifact", () => {
       previous_artifact_summary?: {
         active_entries?: {
           live?: Array<{
+            id: string;
             text: string;
             disclosure?: string;
             disclosure_label?: { disclosure_class?: string; private_to_entity_ids?: string[] };
           }>;
         };
-        active_entries_by_state_key?: Record<
-          string,
-          Array<{
-            text: string;
-            disclosure?: string;
-            disclosure_label?: { disclosure_class?: string; private_to_entity_ids?: string[] };
-          }>
-        >;
+        active_entries_by_state_key?: Record<string, string[]>;
         recent_superseded?: Array<{
           text: string;
           disclosure?: string;
@@ -3466,14 +3792,7 @@ describe("compileSharedStateArtifact", () => {
     expect(supersededSummary?.disclosure).toContain("disclosure_class=relationship_private");
     expect(supersededSummary?.disclosure_label?.disclosure_class).not.toBe("public");
     expect(prompt.previous_artifact_summary?.active_entries_by_state_key).toMatchObject({
-      "decision.live": [
-        expect.objectContaining({
-          text: "Live shared-state decision",
-          disclosure_label: expect.objectContaining({
-            disclosure_class: "relationship_private",
-          }),
-        }),
-      ],
+      "decision.live": [activeSummary!.id],
     });
   });
 
@@ -3595,6 +3914,88 @@ describe("compileSharedStateArtifact", () => {
     const withoutBody = await registryFor({ maxEntries: { live: 0 } });
     expect(withoutBody.active_entry_ids).toEqual(withBody.active_entry_ids);
     expect(withoutBody.text_visible_entry_ids).toEqual([]);
+  });
+
+  it("exposes and rewrites the theoretical hard-cap maximum of 40 locked rows while warning once", async () => {
+    const config = DEFAULT_CONFIG.generation.evidenceLedger.decisionArtifact;
+    const previous = repository.upsert(
+      audience,
+      Array.from({ length: config.maxActiveEntries }, (_, index) => ({
+        type: "add" as const,
+        state_key: `decision.rule_${index}`,
+        kind: "locked" as const,
+        text: "x".repeat(config.maxLockedEntryTextChars),
+        provenance_stream_entry_ids: [priorAllowedStreamEntryId],
+      })),
+    )!;
+    const target = previous.entries[0]!;
+    const shortenedText = "Shortened locked decision.";
+    const llmClient = new FakeLLMClient({
+      responses: [
+        emitSharedStateArtifactPatchResponse({
+          operations: [
+            {
+              type: "update",
+              id: target.id,
+              state_key: target.state_key,
+              text: shortenedText,
+              source_stream_entry_ids: [priorAllowedStreamEntryId],
+            },
+          ],
+        }),
+      ],
+    });
+    const trace = createTraceRecorder();
+    const result = await compileSharedStateArtifact({
+      ...baseInput(llmClient),
+      tracer: trace,
+      lifecycle: config,
+      maxLockedEntryTextChars: config.maxLockedEntryTextChars,
+      previousArtifactSummaryOptions: config.previousArtifactSummary,
+    });
+
+    expect(llmClient.requests).toHaveLength(1);
+    const prompt = JSON.parse(llmClient.requests[0]!.messages[0]!.content) as {
+      previous_artifact_summary: SharedStatePromptSummary;
+    };
+    const summary = prompt.previous_artifact_summary;
+    expect(summary.active_entries.locked).toHaveLength(config.maxActiveEntries);
+    for (const entry of previous.entries) {
+      expect(summary.active_entries.locked).toContainEqual(
+        expect.objectContaining({ id: entry.id, text: entry.text, body_completeness: "full" }),
+      );
+    }
+    const summaryTokens = estimatePromptTokens(JSON.stringify(summary));
+    expect(summaryTokens).toBeGreaterThan(SHARED_STATE_PROMPT_WARNING_TOKEN_THRESHOLD);
+    const warnings = trace.events.filter(
+      (event) =>
+        event.event === "shared_state.compile.degraded" &&
+        event.data.reason === "prompt_over_budget",
+    );
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]!.data).toMatchObject({
+      budget_decision: "warn_only_prompt_unchanged",
+      input_token_budget: SHARED_STATE_PROMPT_WARNING_TOKEN_THRESHOLD,
+      breakdown: { previous_artifact_summary: summaryTokens },
+    });
+    expect(warnings[0]!.data.input_token_estimate).toBeGreaterThan(summaryTokens);
+    expect(result.operations).toHaveLength(1);
+    expect(activeEntries()).toHaveLength(config.maxActiveEntries);
+    expect(activeEntries()).toContainEqual(
+      expect.objectContaining({ id: target.id, text: shortenedText }),
+    );
+    expect(trace.events).toContainEqual(
+      expect.objectContaining({
+        event: "shared_state.compile.completed",
+        data: expect.objectContaining({
+          applied: true,
+          rejectedCount: 0,
+          rejectionReasons: [],
+          input_token_estimate: warnings[0]!.data.input_token_estimate,
+          artifact_pruned_entry_count_this_turn: 0,
+        }),
+      }),
+    );
   });
 
   it("warns when the compiler input estimate exceeds the prompt budget", async () => {
@@ -3759,7 +4160,7 @@ describe("compileSharedStateArtifact", () => {
     expect(targetEntryId).toBeDefined();
     expect(llmClient.requests).toHaveLength(2);
     expect(repairPayload.additional_prompt_sections?.[0]).toContain(
-      "structural shared-state key compaction",
+      "structural shared-state constraints",
     );
     expect(repairPayload.additional_prompt_sections?.[0]).toContain("observation.recurring");
     expect(patch.operations).toEqual([

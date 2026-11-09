@@ -44,6 +44,7 @@ import { sharedStateKeyTokens, stateKeysAreNearDuplicate } from "./state-key.js"
 import type { SyncRelationshipEvidenceStreamEntryTrustValidator } from "../../memory/source-trust.js";
 import { buildExistingStateKeyRegistry, type SharedStatePromptExposure } from "./summary.js";
 import { materializeSharedStateEntriesAfterOperations } from "./lifecycle-aging.js";
+import { DEFAULT_MAX_LOCKED_ENTRY_TEXT_CHARS } from "./constants.js";
 
 const DEFAULT_MAX_LIVE_ENTRIES_PER_KEY = 2;
 const relationshipClaimsInputSchema = relationshipClaimSchema.array().default([]);
@@ -453,6 +454,8 @@ function rejection(
     | "maxLiveEntriesPerKey"
     | "targetEntryId"
     | "targetExposure"
+    | "actualTextChars"
+    | "maxTextChars"
     | "lockedEntryIds"
     | "similarStateKeys"
     | "sharedStateKeyTokens"
@@ -492,6 +495,7 @@ export function normalizePatch<
   relationshipEvidenceStreamEntryTrust?: SyncRelationshipEvidenceStreamEntryTrustValidator;
   allowedCanonicalizationIds: AllowedCanonicalizationIds;
   maxLiveEntriesPerKey?: number;
+  maxLockedEntryTextChars?: number;
   nowMs: number;
   materializePlan: (
     operations: readonly SharedStateOperation[],
@@ -1108,6 +1112,53 @@ export function normalizePatch<
     );
     remainingIndices = remainingIndices.filter((index) => !rejectedIndices.has(index));
     plan = input.materializePlan(remainingOperations, retainedEntryIds);
+  }
+
+  // Check each effective write before lifecycle pruning can hide it. Reuse the
+  // operation materializer so promotions and multiple writes to one id see the
+  // same text/kind as storage. Existing oversized bodies may pass through metadata
+  // updates, but new text and newly locked bodies must fit. Never truncate text.
+  const maxTextChars = input.maxLockedEntryTextChars ?? DEFAULT_MAX_LOCKED_ENTRY_TEXT_CHARS;
+  let priorWriteEntries = input.previousArtifact?.entries ?? [];
+  const oversizedWrites: PatchRejection[] = [];
+  plan.compilerOperations.forEach((operation, index) => {
+    const before =
+      operation.type === "add"
+        ? undefined
+        : priorWriteEntries.find((entry) => entry.id === operation.id);
+    priorWriteEntries = materializeSharedStateEntriesAfterOperations({
+      previousArtifact: input.previousArtifact,
+      operations: plan.compilerOperations.slice(0, index + 1),
+      audienceEntityId: input.audienceEntityId,
+      nowMs: input.nowMs,
+    });
+    if (operation.type === "prune" || operation.type === "transition_kind") return;
+    const writtenId = operation.type === "supersede" ? operation.replacement.id : operation.id;
+    const written = priorWriteEntries.find((entry) => entry.id === writtenId);
+    if (written === undefined || written.text.length <= maxTextChars) return;
+    const lockedTarget =
+      operation.type !== "add" &&
+      (before?.kind === "locked" || previousEntries.get(operation.id)?.kind === "locked");
+    const writesText = operation.type !== "update" || operation.text !== undefined;
+    const promotesToLocked = written.kind === "locked" && before?.kind !== "locked";
+    if (!(writesText && (lockedTarget || written.kind === "locked")) && !promotesToLocked) return;
+    const operationIndex = remainingIndices[index]!;
+    oversizedWrites.push(
+      rejection(input.patch.operations[operationIndex]!, operationIndex, "locked_text_too_long", {
+        stateKey: written.state_key ?? undefined,
+        targetEntryId: operation.type === "add" ? undefined : operation.id,
+        actualTextChars: written.text.length,
+        maxTextChars,
+      }),
+    );
+  });
+  if (oversizedWrites.length > 0) {
+    // Repair the whole patch before applying any paired demotions/prunes. A
+    // refused replacement must not leave a deletion or a partial rewrite behind.
+    rejected.push(...oversizedWrites);
+    remainingOperations = [];
+    remainingIndices = [];
+    plan = { ...plan, operations: [], compilerOperations: [] };
   }
 
   return {
