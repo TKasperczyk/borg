@@ -675,7 +675,7 @@ describe("RuminatorProcess", () => {
     }
   });
 
-  it("backs off exhausted refusals per question/run without ticks or recall loss, then resets on completion", async () => {
+  it.each([false, true])("backs off refusals (repair=%s)", async (repair) => {
     const questionText = "この問いをどう理解するか";
     const clock = new ManualClock(3_000_000);
     const tracer = new CaptureTracer();
@@ -705,13 +705,41 @@ describe("RuminatorProcess", () => {
         growthMarkersRepository: harness.growthMarkersRepository,
         registry: harness.registry,
       });
-      call.mockRejectedValue(new LLMRefusalError());
+      const invalidResponse = {
+        ...createStillOpenRuminatorResponse({ reasoning: "Unused", tensions: [] }),
+        tool_calls: [{ id: "toolu_invalid", name: RUMINATOR_TOOL_NAME, input: {} }],
+      };
+      let emitInvalidPayload = repair;
+      call.mockImplementation(async (options) => {
+        if (options.budget === "offline-ruminator" && emitInvalidPayload) {
+          emitInvalidPayload = false;
+          return invalidResponse;
+        }
+        throw new LLMRefusalError();
+      });
+      const refusalCall = call.getMockImplementation()!;
       await process.run(harness.createContext(), { dryRun: true });
       expect(harness.openQuestionsRepository.get(question.id)?.consecutive_refusals).toBe(0);
       for (let streak = 1; streak <= 3; streak += 1) {
-        call.mockRejectedValue(new LLMRefusalError());
+        emitInvalidPayload = repair;
+        call.mockImplementation(refusalCall);
+        const callsBefore = call.mock.calls.length;
         const ctx = harness.createContext();
         const plan = await process.plan(ctx);
+        const resolutionCalls = call.mock.calls
+          .slice(callsBefore)
+          .filter(([options]) => options.budget === "offline-ruminator");
+        expect(resolutionCalls).toHaveLength(repair ? 2 : 1);
+        expect(tracer.events).toContainEqual({
+          event: "llm_call.completed",
+          data: expect.objectContaining({
+            correlation_id: `${ctx.runId}:ruminator:resolution:${question.id}`,
+            attempt: repair ? 2 : 1,
+            schema_repair: repair,
+            stopReason: "refusal",
+            stopReasonClassification: { kind: "refusal", raw: "refusal" },
+          }),
+        });
         expect(plan.attempts).toEqual([
           { question_id: question.id, outcome: "refused", attempted_at: clock.now() },
         ]);
@@ -732,6 +760,13 @@ describe("RuminatorProcess", () => {
       }
       const until = clock.now() + 7 * DAY_MS;
       expect(harness.openQuestionsRepository.get(question.id)?.refusal_backoff_until).toBe(until);
+      expect(tracer.events).toContainEqual({
+        event: "llm_call.completed",
+        data: expect.objectContaining({
+          stopReason: "refusal",
+          stopReasonClassification: { kind: "refusal", raw: "refusal" },
+        }),
+      });
       expect(tracer.events).toContainEqual({
         event: "open_question_resolution.transitioned",
         data: expect.objectContaining({
@@ -3568,6 +3603,7 @@ describe("RuminatorProcess", () => {
     async (outcome) => {
       const refusal = new LLMRefusalError();
       attachLlmErrorUsage(refusal, { input_tokens: 20, output_tokens: 20 });
+      expect(refusal.stopReasonClassification).toEqual({ kind: "refusal", raw: "refusal" });
       const llm = new FakeLLMClient({
         responses: [
           {

@@ -373,6 +373,7 @@ export type BorgAutobiographicalPeriodInput = {
   start_ts: number;
   end_ts?: number | null;
   narrative: string;
+  narrative_coverage?: AutobiographicalPeriod["narrative_coverage"];
   key_episode_ids?: readonly EpisodeId[];
   themes?: readonly string[];
   provenance: Provenance;

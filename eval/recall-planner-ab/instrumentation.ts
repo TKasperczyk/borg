@@ -11,6 +11,7 @@ import type {
   LLMConverseOptions,
   LLMConverseResult,
 } from "../../src/llm/index.js";
+import { llmStopReasonClassificationSchema } from "../../src/llm/stop-reason.js";
 
 import { JsonlValueCache, VectorCache } from "../embedding-ab/cache.js";
 import { summarizeError, type ModelEmbeddingRuntime } from "../embedding-ab/gateway.js";
@@ -33,6 +34,7 @@ const plannerResponseSchema = z
     cache_creation_input_tokens: z.number().nonnegative().optional(),
     cache_read_input_tokens: z.number().nonnegative().optional(),
     stop_reason: z.string().nullable(),
+    stop_reason_classification: llmStopReasonClassificationSchema.optional(),
     tool_calls: z.array(llmToolCallSchema),
     structured_output: z.unknown().optional(),
   })

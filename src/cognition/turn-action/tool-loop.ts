@@ -1,3 +1,4 @@
+import { classifyLlmStopReason } from "../../llm/stop-reason.js";
 import type {
   LLMClient,
   LLMContentBlock,
@@ -24,6 +25,7 @@ import { buildUsageTraceBlock, toTraceJsonValue } from "../../tracing/tracer.js"
 import {
   summarizeToolSchemas,
   traceLlmCallRetryHook,
+  traceLlmCallError,
   traceLlmToolChoiceTranslationHook,
 } from "../../tracing/llm-call-trace.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
@@ -435,6 +437,14 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
             })
           : await options.llmClient.converse(converseOptions);
     } catch (error) {
+      traceLlmCallError({
+        tracer: options.tracer,
+        turnId: options.turnId,
+        sessionId: options.sessionId,
+        label: traceLabel,
+        error,
+        extra: { iteration: iterations + 1 },
+      });
       const autonomousBudgetExpired =
         autonomousRequestDeadline !== null &&
         wallClock.now() >= autonomousRequestDeadline &&
@@ -485,6 +495,8 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
         iteration: iterations + 1,
         responseShape: summarizeResponseShape(response.messageBlocks),
         stopReason: response.stop_reason,
+        stopReasonClassification:
+          response.stop_reason_classification ?? classifyLlmStopReason(response.stop_reason),
         usage: buildUsageTraceBlock(response),
         ...(options.tracer.includePayloads
           ? {

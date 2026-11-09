@@ -31,6 +31,7 @@ import type {
   AutonomyConditionName,
   AutonomySchedulerDescription,
   AutonomySchedulerSourceDescription,
+  AutonomySchedulerRuntimeHold,
   AutonomySchedulerWakeGroupDescription,
   AutonomyTickEventResult,
   AutonomyTriggerName,
@@ -636,7 +637,13 @@ export class AutonomyScheduler {
   private readonly prepToolTimeoutMs: number;
   private readonly fleetBrakeOptions: FleetBrakeOptions;
   private readonly respectGoalFollowupStaleBackoff: boolean;
-  private readonly retryBackoff = new Map<string, RetryBackoffState>();
+  private readonly retryBackoff = new Map<
+    string,
+    RetryBackoffState & {
+      sourceName: AutonomyWakeSource["name"];
+      eventId: string;
+    }
+  >();
   // Preparation history recovers on an empty scan or successful preparation.
   // Failed-turn history is independent and survives those recovery signals.
   private readonly sourceRetryBackoff = new Map<
@@ -955,7 +962,58 @@ export class AutonomyScheduler {
       return evidence;
     };
     const budgetCutoff = nowMs - this.options.budgetWindowMs;
+    // Capture runtime holds and source charges before awaiting any nextDueAt read.
+    const maintenanceStartedAt = this.options.maintenancePassStartedAt?.();
     const registeredSources = new Map(this.options.sources.map((source) => [source.name, source]));
+    const holdsBySource = new Map(
+      AUTONOMY_WAKE_SOURCE_NAMES.map((name) => {
+        const holds: AutonomySchedulerRuntimeHold[] = [];
+        for (const retry of this.retryBackoff.values()) {
+          if (retry.sourceName === name && retry.nextEligibleTs > nowMs) {
+            holds.push({
+              kind: "event_retry",
+              until: retry.nextEligibleTs,
+              event_id: retry.eventId,
+            });
+          }
+        }
+        for (const [kind, retry] of [
+          ["source_retry", this.sourceRetryBackoff.get(name)],
+          ["trigger_error", this.triggerErrorBackoff.get(name)],
+        ] as const) {
+          if (retry !== undefined && retry.nextEligibleTs > nowMs) {
+            holds.push({ kind, until: retry.nextEligibleTs });
+          }
+        }
+        if (
+          registeredSources.get(name)?.sourceCategory === "operational" &&
+          maintenanceStartedAt != null &&
+          nowMs < maintenanceStartedAt + MAX_MAINTENANCE_HOLD_MS
+        ) {
+          holds.push({
+            kind: "maintenance",
+            until: maintenanceStartedAt + MAX_MAINTENANCE_HOLD_MS,
+          });
+        }
+        return [name, holds] as const;
+      }),
+    );
+    const sourceBudgets = AUTONOMY_WAKE_SOURCE_NAMES.flatMap((source) => {
+      const limit = this.options.maxWakesPerWindowBySource?.[source];
+      return limit === undefined
+        ? []
+        : [
+            {
+              source,
+              limit,
+              usage: this.options.wakeRepository.countSince(budgetCutoff, {
+                triggerName: source,
+                excludePreparationFailures: true,
+                excludeTurnProviderFailures: true,
+              }),
+            },
+          ];
+    });
     const sources: AutonomySchedulerSourceDescription[] = [];
 
     for (const name of AUTONOMY_WAKE_SOURCE_NAMES) {
@@ -968,6 +1026,7 @@ export class AutonomyScheduler {
           type: "condition",
           category: metadata.category,
           enabled: source !== undefined,
+          runtime_holds: source === undefined ? [] : holdsBySource.get(name)!,
         });
         continue;
       }
@@ -977,6 +1036,7 @@ export class AutonomyScheduler {
         type: "trigger",
         category: metadata.category,
         enabled: source !== undefined,
+        runtime_holds: source === undefined ? [] : holdsBySource.get(name)!,
         next_due_at: source?.nextDueAt === undefined ? null : await source.nextDueAt(),
       });
     }
@@ -1072,22 +1132,7 @@ export class AutonomyScheduler {
         stall_retries: wake.stall_retries,
       })),
       budget: {
-        source_budgets: AUTONOMY_WAKE_SOURCE_NAMES.flatMap((source) => {
-          const limit = this.options.maxWakesPerWindowBySource?.[source];
-          return limit === undefined
-            ? []
-            : [
-                {
-                  source,
-                  limit,
-                  usage: this.options.wakeRepository.countSince(budgetCutoff, {
-                    triggerName: source,
-                    excludePreparationFailures: true,
-                    excludeTurnProviderFailures: true,
-                  }),
-                },
-              ];
-        }),
+        source_budgets: sourceBudgets,
         max_wakes_per_window: this.options.maxWakesPerWindow,
         window_ms: this.options.budgetWindowMs,
         window_started_at: budgetCutoff,
@@ -2460,6 +2505,8 @@ export class AutonomyScheduler {
         : Math.min(previousBackoff.delayMs * 2, MAX_RETRY_BACKOFF_MS);
 
     this.retryBackoff.set(key, {
+      sourceName: dueEvent.sourceName,
+      eventId: dueEvent.id,
       delayMs,
       nextEligibleTs: this.clock.now() + delayMs,
     });

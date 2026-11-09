@@ -960,6 +960,7 @@ describe("Recall Core", () => {
         ],
       },
       stopReason: "tool_use",
+      stopReasonClassification: { kind: "tool_use", raw: "tool_use" },
       usage: {
         inputTokens: 0,
         outputTokens: 0,
@@ -1280,6 +1281,7 @@ describe("Recall Core", () => {
         error: "recall expansion unavailable",
       },
       stopReason: null,
+      stopReasonClassification: { kind: "unknown", raw: null },
       usage: null,
     });
   });

@@ -1329,6 +1329,7 @@ export class AutobiographicalRecallService {
 function periodMetadata(period: AutobiographicalPeriod): Record<string, unknown> {
   return {
     autobiographical_period_id: period.id,
+    narrative_coverage: period.narrative_coverage ?? null,
     label: period.label,
     start_ts: period.start_ts,
     end_ts: period.end_ts,

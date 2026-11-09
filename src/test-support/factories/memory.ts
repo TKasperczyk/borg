@@ -1,4 +1,5 @@
 import type { ActionRecord, ActionState } from "../../memory/actions/index.js";
+import type { AutobiographicalPeriod } from "../../memory/self/types.js";
 import type {
   CommitmentKind,
   CommitmentRecord,
@@ -9,9 +10,33 @@ import {
   defaultCommitmentCriticalDomain,
   defaultCommitmentEnforcementClass,
 } from "../../memory/commitments/index.js";
-import { createActionId, createCommitmentId, createStreamEntryId } from "../../util/ids.js";
+import {
+  createActionId,
+  createAutobiographicalPeriodId,
+  createCommitmentId,
+  createStreamEntryId,
+} from "../../util/ids.js";
 
 const DEFAULT_TEST_TIMESTAMP_MS = 1_000;
+
+export function makeAutobiographicalPeriod(
+  overrides: Partial<AutobiographicalPeriod> = {},
+): AutobiographicalPeriod {
+  return {
+    id: createAutobiographicalPeriodId(),
+    label: "Continuity",
+    start_ts: DEFAULT_TEST_TIMESTAMP_MS,
+    end_ts: null,
+    narrative: "I carry my earlier experience forward.",
+    narrative_coverage: null,
+    key_episode_ids: [],
+    themes: [],
+    provenance: { kind: "manual" },
+    created_at: DEFAULT_TEST_TIMESTAMP_MS,
+    last_updated: DEFAULT_TEST_TIMESTAMP_MS,
+    ...definedOverrides(overrides),
+  };
+}
 
 function definedOverrides<T extends object>(overrides: Partial<T>): Partial<T> {
   return Object.fromEntries(

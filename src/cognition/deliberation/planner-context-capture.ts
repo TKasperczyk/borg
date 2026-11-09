@@ -163,12 +163,17 @@ function projectEvidenceMetadata(metadata: Record<string, unknown> | undefined) 
     "recurrence_count",
     "relative_age",
     "disclosure_label",
+    "narrative_coverage",
   ] as const) {
     if (Object.hasOwn(metadata, key)) {
-      projected[key] =
-        key === "disclosure_label" && isJsonObject(metadata[key])
-          ? projectDisclosureLabel(metadata[key] as unknown as MemoryDisclosureLabel)
-          : metadata[key];
+      if (key === "narrative_coverage" && isJsonObject(metadata[key])) {
+        projected[key] = { ...metadata[key] };
+      } else {
+        projected[key] =
+          key === "disclosure_label" && isJsonObject(metadata[key])
+            ? projectDisclosureLabel(metadata[key] as unknown as MemoryDisclosureLabel)
+            : metadata[key];
+      }
     }
   }
 
@@ -288,6 +293,10 @@ function projectSelfSnapshot(snapshot: SelfSnapshot) {
             id: snapshot.currentPeriod.id,
             label: snapshot.currentPeriod.label,
             narrative: snapshot.currentPeriod.narrative,
+            narrative_coverage:
+              snapshot.currentPeriod.narrative_coverage == null
+                ? null
+                : { ...snapshot.currentPeriod.narrative_coverage },
             last_updated: snapshot.currentPeriod.last_updated,
             ...(projectDisclosureLabel(snapshot.currentPeriod.disclosure_label) === undefined
               ? {}
@@ -529,6 +538,13 @@ function projectTurnMechanismEvidence(value: DeliberationContext["turnMechanismE
             },
             budget: {
               ...value.autonomySchedulerState.budget,
+              ...(value.autonomySchedulerState.budget.source_budgets === undefined
+                ? {}
+                : {
+                    source_budgets: value.autonomySchedulerState.budget.source_budgets.map(
+                      (budget) => ({ ...budget }),
+                    ),
+                  }),
               wakes_in_current_window_by_trigger:
                 value.autonomySchedulerState.budget.wakes_in_current_window_by_trigger.map(
                   (group) => ({
@@ -538,7 +554,12 @@ function projectTurnMechanismEvidence(value: DeliberationContext["turnMechanismE
                   }),
                 ),
             },
-            sources: value.autonomySchedulerState.sources.map((source) => ({ ...source })),
+            sources: value.autonomySchedulerState.sources.map((source) => ({
+              ...source,
+              ...(source.runtime_holds === undefined
+                ? {}
+                : { runtime_holds: source.runtime_holds.map((hold) => ({ ...hold })) }),
+            })),
           },
         }),
   };

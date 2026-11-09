@@ -65,6 +65,84 @@ function createSelfNarratorResponse(input: {
 }
 
 describe("SelfNarratorProcess", () => {
+  it("reviews coverage-only revisions, preserves empty-pass coverage, and reverses the stored pair", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        createSelfNarratorResponse({
+          observation: null,
+          period_narrative: "Stable story.",
+          period_decision: "continue_current",
+        }),
+        createSelfNarratorResponse({ observation: null, period_decision: "continue_current" }),
+      ],
+    });
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      configOverrides: { offline: { selfNarrator: { maxEpisodesPerRun: 2 } } },
+    });
+    const process = new SelfNarratorProcess({
+      autobiographicalRepository: harness.autobiographicalRepository,
+      growthMarkersRepository: harness.growthMarkersRepository,
+      registry: harness.registry,
+    });
+    try {
+      const previous = harness.autobiographicalRepository.upsertPeriod({
+        label: "Period",
+        start_ts: 1,
+        narrative: "Stable story.",
+        provenance: { kind: "manual" },
+      });
+      vi.spyOn(harness.episodicRepository, "listEffectivelyVisible").mockResolvedValue(
+        Array.from({ length: 4 }, (_, i) =>
+          createEpisodeFixture({ start_time: 10 + i, end_time: 10 + i }),
+        ),
+      );
+      const ctx = harness.createContext();
+      const plan = await process.plan(ctx);
+      const coverage = {
+        shown_episodes: 2,
+        omitted_episodes: 2,
+        window_rule: "newest_contiguous_suffix",
+        limiting_bound: "maxEpisodesPerRun",
+      };
+      expect(plan.items).toContainEqual(
+        expect.objectContaining({
+          action: "update_period_narrative",
+          narrative: previous.narrative,
+          narrative_coverage: coverage,
+        }),
+      );
+      expect(String(llm.requests[0]?.messages[0]?.content)).toContain(
+        "Latest narration pass input: coverage unknown.",
+      );
+      await process.apply(ctx, plan);
+      const review = harness.reviewQueueRepository
+        .getOpen()
+        .find((row) => row.refs.target_id === previous.id)!;
+      expect(review.refs.patch).toMatchObject({ narrative_coverage: coverage });
+      await harness.reviewQueueRepository.resolve(review.id, "accept");
+      expect(harness.autobiographicalRepository.getPeriod(previous.id)?.narrative_coverage).toEqual(
+        coverage,
+      );
+      const emptyPlan = await process.plan(harness.createContext());
+      expect(emptyPlan.items).toEqual([]);
+      expect(String(llm.requests[1]?.messages[0]?.content)).toContain("newest 2 episodes shown");
+      const audit = harness.auditLog.record({
+        run_id: ctx.runId,
+        process: "self-narrator",
+        action: "update_period_narrative",
+        targets: { period_id: previous.id },
+        reversal: { previous },
+      });
+      await harness.auditLog.revert(audit.id, "test coverage reversal");
+      expect(harness.autobiographicalRepository.getPeriod(previous.id)).toMatchObject({
+        narrative: previous.narrative,
+        narrative_coverage: null,
+      });
+    } finally {
+      await harness.cleanup();
+    }
+  });
   it("bounds the prompt by newest episodes while retaining all prior context and scoped citations", async () => {
     const episodes = Array.from({ length: 6 }, (_, index) =>
       createEpisodeFixture({
@@ -75,8 +153,16 @@ describe("SelfNarratorProcess", () => {
     );
     const llm = new FakeLLMClient({
       responses: [
-        createSelfNarratorResponse({ observation: null, period_decision: "continue_current" }),
-        createSelfNarratorResponse({ observation: null, period_decision: "continue_current" }),
+        createSelfNarratorResponse({
+          observation: null,
+          period_decision: "continue_current",
+          period_narrative: "My latest narrative.",
+        }),
+        createSelfNarratorResponse({
+          observation: null,
+          period_decision: "continue_current",
+          period_narrative: "My latest narrative.",
+        }),
         createSelfNarratorResponse({
           observation: {
             category: "understanding",
@@ -137,7 +223,18 @@ describe("SelfNarratorProcess", () => {
         estimatePromptTokens(omittedRows.join("\n")) +
         100;
       harness.config.offline.selfNarrator.maxPromptTokens = cap;
-      await process.plan(harness.createContext());
+      const boundedPlan = await process.plan(harness.createContext());
+      expect(boundedPlan.items).toContainEqual(
+        expect.objectContaining({
+          action: "update_period_narrative",
+          narrative_coverage: {
+            shown_episodes: 2,
+            omitted_episodes: 4,
+            window_rule: "newest_contiguous_suffix",
+            limiting_bound: "maxPromptTokens",
+          },
+        }),
+      );
       const prompt = String(llm.requests[1]!.messages[0]!.content);
       const request = llm.requests[1]!;
       expect(
@@ -269,7 +366,12 @@ describe("SelfNarratorProcess", () => {
         }),
       );
       const llm = new FakeLLMClient({
-        responses: [createSelfNarratorResponse({ observation: null })],
+        responses: [
+          createSelfNarratorResponse({
+            observation: null,
+            period_narrative: "My latest narrative.",
+          }),
+        ],
       });
       const harness = await createOfflineTestHarness({ llmClient: llm });
       const process = new SelfNarratorProcess({
@@ -296,6 +398,19 @@ describe("SelfNarratorProcess", () => {
         config.maxInputTokensPerRun = bound === "oversized_newest" ? 1000 : newestTwoTokens;
         const plan = await process.plan(harness.createContext());
         if (bound === "row") {
+          expect(plan.items).toContainEqual(
+            expect.objectContaining({
+              action: "open_period",
+              period: expect.objectContaining({
+                narrative_coverage: {
+                  shown_episodes: 2,
+                  omitted_episodes: 3,
+                  window_rule: "newest_contiguous_suffix",
+                  limiting_bound: "maxInputTokensPerRun",
+                },
+              }),
+            }),
+          );
           expect(llm.requests).toHaveLength(1);
           const request = llm.requests[0]!;
           const prompt = String(request.messages[0]!.content);
@@ -669,6 +784,12 @@ describe("SelfNarratorProcess", () => {
       expect(harness.autobiographicalRepository.currentPeriod()).toEqual(
         expect.objectContaining({
           label: "2026-Q2",
+          narrative_coverage: {
+            shown_episodes: 2,
+            omitted_episodes: 0,
+            window_rule: "newest_contiguous_suffix",
+            limiting_bound: null,
+          },
         }),
       );
       expect(harness.growthMarkersRepository.list()).toEqual([

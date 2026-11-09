@@ -5,6 +5,7 @@
 // which composes these repositories with memory/commitments and routes
 // writes through IdentityService + IdentityGuard.
 export * from "./goal-blocks.js";
+export * from "./narrative-coverage.js";
 
 export {
   AutobiographicalRepository,

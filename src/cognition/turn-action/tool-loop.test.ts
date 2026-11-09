@@ -20,7 +20,12 @@ import {
 import { ManualClock } from "../../util/clock.js";
 import { LLMError } from "../../util/errors.js";
 import { DEFAULT_SESSION_ID } from "../../util/ids.js";
-import { type LLMContentBlockMessage, type LLMConverseOptions } from "../../llm/index.js";
+import {
+  LLMRefusalError,
+  type LLMContentBlockMessage,
+  type LLMConverseOptions,
+} from "../../llm/index.js";
+import { attachLlmErrorUsage } from "../../llm/usage.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { FinalizerToolTranscriptCollector } from "../deliberation/finalizer-tool-transcript.js";
 import {
@@ -122,6 +127,40 @@ describe("executeToolLoop", () => {
       stopReason: "text",
     });
     expect(llm.converseRequests[0]?.tools).toBeUndefined();
+  });
+
+  it("traces and propagates exhausted refusals without another loop retry", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-tool-loop-refusal-"));
+    tempDirs.push(tempDir);
+    const refusal = new LLMRefusalError();
+    attachLlmErrorUsage(refusal, { input_tokens: 12, output_tokens: 6 });
+    const llm = new FakeLLMClient();
+    const converse = vi.spyOn(llm, "converse").mockRejectedValue(refusal);
+    const emit = vi.fn();
+    await expect(
+      executeToolLoop({
+        llmClient: llm,
+        dispatcher: createDispatcher(tempDir),
+        sessionId: DEFAULT_SESSION_ID,
+        model: "fake",
+        systemPrompt: "system",
+        initialMessages: baseMessages(),
+        tools: [],
+        origin: "deliberator",
+        budget: "test",
+        turnId: "turn_refusal",
+        tracer: { enabled: true, includePayloads: false, emit },
+      }),
+    ).rejects.toBe(refusal);
+    expect(converse).toHaveBeenCalledOnce();
+    expect(emit).toHaveBeenCalledWith(
+      "llm_call.completed",
+      expect.objectContaining({
+        stopReason: "refusal",
+        stopReasonClassification: { kind: "refusal", raw: "refusal" },
+        usage: { inputTokens: 12, outputTokens: 6 },
+      }),
+    );
   });
 
   it("returns immediately when a terminal tool is called", async () => {

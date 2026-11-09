@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { makeAutobiographicalPeriod } from "../../test-support/factories/memory.js";
 
 import { operatorAttentionPromptRow } from "../../memory/operator-attention/disclosure.js";
 import { unknownMemoryDisclosureLabel } from "../../memory/common/disclosure-label.js";
@@ -31,6 +32,7 @@ import {
 } from "../../util/ids.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import type { DeliberationContext } from "./types.js";
+import { renderEntry } from "../evidence-ledger/section-rendering.js";
 import {
   buildBaseSystemPrompt,
   buildCacheableBaseSystemPromptParts,
@@ -160,6 +162,90 @@ function record(input = renderInput()): PlannerContextCaptureRecord {
 }
 
 describe("planner context capture", () => {
+  it.each([
+    null,
+    {
+      shown_episodes: 3,
+      omitted_episodes: 5,
+      window_rule: "newest_contiguous_suffix" as const,
+      limiting_bound: "maxEpisodesPerRun" as const,
+    },
+  ])("preserves and clones recalled-period coverage through capture and replay: %j", (coverage) => {
+    const source = context({
+      evidenceLedger: {
+        sections: [
+          {
+            id: "autobiographical_recall",
+            label: "Recalled periods",
+            entries: [
+              {
+                id: "recalled_period",
+                source_type: "system_metadata",
+                session_scope: "global",
+                actor: "memory",
+                trust_rank: 1,
+                text: "My recalled period narrative.",
+                state_metadata: {
+                  source_kind: "autobiographical_period",
+                  narrative_coverage: coverage,
+                },
+              },
+            ],
+          },
+        ],
+        transcriptIncluded: false,
+        transcriptCompacted: false,
+        originalTranscriptTokenEstimate: 0,
+        compactedTranscriptEntryCount: 0,
+        rawPreservedUserTranscriptEntryCount: 0,
+        estimatedTokens: 0,
+      },
+    });
+    const input = renderInput(source);
+    const captured = input.compactContext.evidenceLedger!.sections[0]!.entries[0]!;
+    expect(captured.state_metadata?.narrative_coverage).toEqual(coverage);
+    if (coverage !== null) {
+      expect(captured.state_metadata?.narrative_coverage).not.toBe(coverage);
+      coverage.shown_episodes = 99;
+    }
+    const parsed = parsePlannerContextCaptureRecord(JSON.parse(JSON.stringify(record(input))));
+    const replayed = parsed.render_input.compactContext.evidenceLedger!.sections[0]!.entries[0]!;
+    expect(replayed.text).toBe("My recalled period narrative.");
+    expect(renderEntry(replayed)).toContain(
+      coverage === null
+        ? "Latest narration pass input: coverage unknown."
+        : "Latest narration pass input: newest 3 episodes shown (contiguous suffix, chronological order); 5 earlier episodes omitted; limiting bound: maxEpisodesPerRun.",
+    );
+  });
+  it.each([
+    null,
+    {
+      shown_episodes: 3,
+      omitted_episodes: 5,
+      window_rule: "newest_contiguous_suffix" as const,
+      limiting_bound: "maxInputTokensPerRun" as const,
+    },
+  ])("round-trips narrative coverage into both replay surfaces: %j", (coverage) => {
+    const input = renderInput(
+      context({
+        selfSnapshot: {
+          values: [],
+          goals: [],
+          traits: [],
+          currentPeriod: makeAutobiographicalPeriod({ narrative_coverage: coverage }),
+        },
+      }),
+    );
+    const parsed = parsePlannerContextCaptureRecord(JSON.parse(JSON.stringify(record(input))));
+    const pair = renderCapturedPlannerSurfacePair(parsed.render_input);
+    const expected =
+      coverage === null
+        ? "Latest narration pass input: coverage unknown."
+        : "Latest narration pass input: newest 3 episodes shown (contiguous suffix, chronological order); 5 earlier episodes omitted; limiting bound: maxInputTokensPerRun.";
+    expect(JSON.stringify(parsed)).toContain('"narrative_coverage":' + JSON.stringify(coverage));
+    expect(JSON.stringify(pair.legacy.rendered.system)).toContain(expected);
+    expect(JSON.stringify(pair.compact.rendered.system)).toContain(expected);
+  });
   it("keeps capture disabled at sample rate zero without touching the data dir", () => {
     const dataDir = mkdtempSync(join(tmpdir(), "borg-planner-capture-off-"));
     tempDirs.push(dataDir);
@@ -223,6 +309,9 @@ describe("planner context capture", () => {
                 category: "operational",
                 enabled: true,
                 next_due_at: NOW_MS + 120_000,
+                runtime_holds: [
+                  { kind: "event_retry", until: NOW_MS + 180_000, event_id: "goal-retry:1" },
+                ],
               },
               {
                 name: "mood_valence_drop",
@@ -260,6 +349,7 @@ describe("planner context capture", () => {
               max_wakes_per_window: 6,
               window_ms: 60 * 60_000,
               window_started_at: NOW_MS - 60 * 60_000,
+              source_budgets: [{ source: "executive_focus_due", usage: 2, limit: 2 }],
               used_in_current_window: 1,
               reserved_contemplative_wakes_per_window: 2,
               contemplative_used_in_current_window: 1,
@@ -295,6 +385,9 @@ describe("planner context capture", () => {
       "Harness scheduler state",
     );
     expect(plannerSurfaceText(replayPair.compact.rendered.system)).toContain("in_flight=1");
+    expect(plannerSurfaceText(replayPair.compact.rendered.system)).toContain(
+      'source_cap=2/2 window=1h rolling hold=source_cap hold=event_retry event_id="goal-retry:1"',
+    );
     expect(replayPair.legacy.rendered.system).toContain("Harness scheduler state");
     expect(replayPair.legacy.rendered.system).toContain(
       "Operator attention records: total=125, 4 without a subject",

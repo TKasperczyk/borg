@@ -655,6 +655,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
         start_ts: input.start_ts,
         end_ts: input.end_ts ?? null,
         narrative: input.narrative,
+        narrative_coverage: input.narrative_coverage,
         key_episode_ids: [...(input.key_episode_ids ?? [])],
         themes: [...(input.themes ?? [])],
         provenance: input.provenance,

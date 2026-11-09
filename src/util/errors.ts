@@ -1,3 +1,5 @@
+import type { LLMStopReasonClassification } from "../llm/stop-reason.js";
+
 export type BorgDefaultErrorCode =
   | "BORG_AUTH_ERROR"
   | "BORG_ATTACHMENT_ERROR"
@@ -91,6 +93,8 @@ export type KnownBorgErrorCode =
   | "LANCEDB_SCHEMA_INVALID"
   | "LANCEDB_SCHEMA_MISMATCH"
   | "LLM_ATTACHMENT_RESOLVER_MISSING"
+  | "LLM_REFUSAL"
+  | "LLM_REFUSAL_EXHAUSTED"
   | "LLM_STRUCTURED_OUTPUT_PARSE_FAILED"
   | "LLM_TOOL_ARGUMENTS_UNPARSEABLE"
   | "MAINTENANCE_AUDIT_INSERT_FAILED"
@@ -384,6 +388,7 @@ export type LLMToolArgumentsErrorUsage = {
 export class LLMToolArgumentsError extends LLMError {
   readonly toolName: string;
   readonly stopReason: string | null;
+  readonly stopReasonClassification: LLMStopReasonClassification | undefined;
   // Length of the raw argument text the provider returned; with stopReason it
   // tells a cut-off (max_tokens, thousands of chars) from a malformed emission.
   readonly argumentsLength: number | undefined;
@@ -397,6 +402,7 @@ export class LLMToolArgumentsError extends LLMError {
     options: BorgErrorOptions & {
       toolName: string;
       stopReason: string | null;
+      stopReasonClassification?: LLMStopReasonClassification;
       argumentsLength?: number;
       usage?: LLMToolArgumentsErrorUsage;
     },
@@ -404,6 +410,7 @@ export class LLMToolArgumentsError extends LLMError {
     super(message, { cause: options.cause, code: "LLM_TOOL_ARGUMENTS_UNPARSEABLE" });
     this.toolName = options.toolName;
     this.stopReason = options.stopReason;
+    this.stopReasonClassification = options.stopReasonClassification;
     this.argumentsLength = options.argumentsLength;
     this.usage = options.usage;
   }

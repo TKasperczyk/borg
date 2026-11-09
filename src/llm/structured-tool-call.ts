@@ -1,3 +1,8 @@
+import {
+  classifyLlmStopReason,
+  getLlmErrorStopReason,
+  type LLMStopReasonClassification,
+} from "./stop-reason.js";
 import type {
   LLMClient,
   LLMCompleteOptions,
@@ -33,6 +38,7 @@ const MAX_REPAIR_ISSUES = 5;
 export type StructuredToolCallErrorKind = "llm_failed" | "missing_tool_call" | "invalid_payload";
 
 export type StructuredToolCallErrorOptions = {
+  stopReasonClassification?: LLMStopReasonClassification;
   kind: StructuredToolCallErrorKind;
   toolName: string;
   acceptedToolNames: readonly string[];
@@ -49,6 +55,7 @@ export type StructuredToolCallUsage = Pick<
 >;
 
 export class StructuredToolCallError extends LLMError {
+  readonly stopReasonClassification: LLMStopReasonClassification;
   readonly kind: StructuredToolCallErrorKind;
   readonly toolName: string;
   readonly acceptedToolNames: readonly string[];
@@ -66,6 +73,8 @@ export class StructuredToolCallError extends LLMError {
     this.toolName = options.toolName;
     this.acceptedToolNames = options.acceptedToolNames;
     this.stopReason = options.stopReason;
+    this.stopReasonClassification =
+      options.stopReasonClassification ?? classifyLlmStopReason(options.stopReason);
     this.repairFailure = options.repairFailure;
     this.attemptCount = options.attemptCount ?? 0;
     this.usage = options.usage ?? { input_tokens: 0, output_tokens: 0 };
@@ -369,6 +378,7 @@ export async function callStructuredTool<T>(
       );
       if (budgetError !== undefined) throw budgetError;
 
+      const stopReasonClassification = getLlmErrorStopReason(error);
       const unparseable = findInErrorCauseChain(
         error,
         (candidate): candidate is LLMToolArgumentsError =>
@@ -381,7 +391,8 @@ export async function callStructuredTool<T>(
           kind: "llm_failed",
           toolName: options.toolName,
           acceptedToolNames: names,
-          stopReason: unparseable?.stopReason ?? null,
+          stopReason: unparseable?.stopReason ?? stopReasonClassification.raw,
+          stopReasonClassification,
           cause: error,
           ...errorAccounting(),
         },
@@ -404,6 +415,7 @@ export async function callStructuredTool<T>(
           toolName: options.toolName,
           acceptedToolNames: names,
           stopReason: response.stop_reason,
+          stopReasonClassification: response.stop_reason_classification,
           ...errorAccounting(),
         },
       );
@@ -473,19 +485,23 @@ export async function callStructuredTool<T>(
   } catch (error) {
     const initialResponse = response;
     const initialToolCall = toolCall;
-    const originalInvalidPayload = (repairFailure?: unknown) =>
-      new StructuredToolCallError(
+    const originalInvalidPayload = (repairFailure?: unknown) => {
+      const repairStopReason = getLlmErrorStopReason(repairFailure);
+      const terminalRefusal = repairStopReason.kind === "refusal" ? repairStopReason : undefined;
+      return new StructuredToolCallError(
         `Structured tool call ${initialToolCall.name} returned an invalid payload`,
         {
           kind: "invalid_payload",
           toolName: initialToolCall.name,
           acceptedToolNames: names,
-          stopReason: initialResponse.stop_reason,
+          stopReason: terminalRefusal?.raw ?? initialResponse.stop_reason,
+          stopReasonClassification: terminalRefusal ?? initialResponse.stop_reason_classification,
           cause: error,
           repairFailure,
           ...errorAccounting(),
         },
       );
+    };
 
     if (attemptCount >= maxAttempts) {
       const failure = originalInvalidPayload();

@@ -1,3 +1,4 @@
+import type { NarrativeCoverage } from "../../memory/self/narrative-coverage.js";
 import type { FrameAnomalyAnnotation } from "../../stream/frame-anomaly.js";
 import { z } from "zod";
 
@@ -44,7 +45,7 @@ export type EvidenceLedgerEntry = {
   value?: string;
   state?: string;
   salience_class?: EvidenceLedgerActionSalienceClass;
-  state_metadata?: Record<string, unknown>;
+  state_metadata?: Record<string, unknown> & { narrative_coverage?: NarrativeCoverage | null };
   /** Planner-only presentation metadata for the compact planner digest and its captures. */
   planner_metadata?: {
     decision_outcome_ref?: string;

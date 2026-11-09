@@ -19,6 +19,9 @@ import {
   GROWTH_MARKER_CATEGORIES,
   autobiographicalPeriodIdSchema,
   autobiographicalPeriodSchema,
+  narrativeCoverageSchema,
+  renderNarrativeCoverage,
+  type NarrativeCoverage,
   growthMarkerIdSchema,
   growthMarkerSchema,
   type AutobiographicalPeriod,
@@ -91,8 +94,10 @@ const selfNarratorPlanItemSchema = z.discriminatedUnion("action", [
     period_id: autobiographicalPeriodIdSchema,
     previous: autobiographicalPeriodSchema,
     narrative: z.string(),
+    narrative_coverage: narrativeCoverageSchema.nullable().optional(),
     key_episode_ids: z.array(episodeIdSchema),
-    // This pass's own citations; key_episode_ids stops admitting them once it holds eight.
+    // This pass's citations, or direct inputs when it only revises the narrative.
+    // key_episode_ids stops admitting citations once it holds eight.
     evidence_episode_ids: z.array(episodeIdSchema).default([]),
     disclosure_label: memoryDisclosureLabelSchema,
     themes: z.array(z.string().min(1)),
@@ -205,7 +210,12 @@ function buildObservationPrompt(
   availableMessageTokens: number,
   maxEpisodes: number,
   maxInputTokens: number,
-): { sourceEpisodes: Episode[]; prompt: string; coverage: string } {
+): {
+  sourceEpisodes: Episode[];
+  prompt: string;
+  coverage: string;
+  narrativeCoverage: NarrativeCoverage;
+} {
   const priorContext = [
     "I narrate my own recent experience by identifying thematic clusters and grounded autobiographical growth observations from these candidate episodes.",
     `I emit my result by calling the ${SELF_NARRATOR_TOOL_NAME} tool exactly once.`,
@@ -232,6 +242,7 @@ function buildObservationPrompt(
             ),
           },
     ),
+    ...(currentPeriod === null ? [] : [renderNarrativeCoverage(currentPeriod.narrative_coverage)]),
     "Existing growth markers for the current period (prior context, not additional citable episodes):",
     ...priorGrowthMarkers.map((marker) =>
       JSON.stringify({
@@ -300,6 +311,12 @@ function buildObservationPrompt(
     sourceEpisodes: episodes.slice(omittedCount),
     prompt: [header(omittedCount, limitingBound), ...rows.reverse()].join("\n"),
     coverage: coverage(omittedCount, limitingBound),
+    narrativeCoverage: {
+      shown_episodes: episodes.length - omittedCount,
+      omitted_episodes: omittedCount,
+      window_rule: "newest_contiguous_suffix",
+      limiting_bound: omittedCount === 0 ? null : limitingBound,
+    },
   };
 }
 
@@ -389,6 +406,7 @@ function buildChange(item: SelfNarratorPlan["items"][number]): OfflineChange {
       },
       preview: {
         narrative: item.narrative,
+        narrative_coverage: item.narrative_coverage ?? null,
         themes: item.themes,
       },
     };
@@ -498,7 +516,7 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
     const promptOverheadTokens =
       estimatePromptTokens(SELF_NARRATOR_SYSTEM_PROMPT) +
       estimatePromptTokens(JSON.stringify(tools));
-    const { sourceEpisodes, prompt, coverage } = buildObservationPrompt(
+    const { sourceEpisodes, prompt, coverage, narrativeCoverage } = buildObservationPrompt(
       candidateEpisodes,
       minSupportEpisodes,
       maxObservationsPerRun,
@@ -690,6 +708,7 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
           start_ts: nextPeriodStartTs,
           end_ts: null,
           narrative,
+          narrative_coverage: narrativeCoverage,
           key_episode_ids: keyEpisodeIds,
           disclosure_label: periodDisclosureLabel,
           themes,
@@ -709,6 +728,11 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
     } else if (currentPeriod !== null) {
       const nextNarrative =
         composedPeriodNarrative ?? buildNarrative(currentPeriod.narrative, observations);
+      // No new narrative input on a skipped/failed/empty pass: retain its prior coverage.
+      const nextCoverage =
+        composedPeriodNarrative !== null || observations.length > 0
+          ? narrativeCoverage
+          : (currentPeriod.narrative_coverage ?? null);
       const nextThemes = uniqueStrings([...currentPeriod.themes, ...themes]).slice(0, 6);
       const nextKeyEpisodes = uniqueValues([
         ...currentPeriod.key_episode_ids,
@@ -722,6 +746,7 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
 
       if (
         (nextNarrative !== null && nextNarrative !== currentPeriod.narrative) ||
+        JSON.stringify(nextCoverage) !== JSON.stringify(currentPeriod.narrative_coverage ?? null) ||
         JSON.stringify(nextThemes) !== JSON.stringify(currentPeriod.themes) ||
         JSON.stringify(nextKeyEpisodes) !== JSON.stringify(currentPeriod.key_episode_ids) ||
         !memoryDisclosureLabelsEqual(nextDisclosureLabel, currentPeriod.disclosure_label)
@@ -731,8 +756,14 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
           period_id: currentPeriod.id,
           previous: currentPeriod,
           narrative: nextNarrative ?? currentPeriod.narrative,
+          narrative_coverage: nextCoverage,
           key_episode_ids: nextKeyEpisodes,
-          evidence_episode_ids: keyEpisodeIds,
+          evidence_episode_ids:
+            keyEpisodeIds.length > 0
+              ? keyEpisodeIds
+              : composedPeriodNarrative !== null
+                ? sourceEpisodes.map((episode) => episode.id).slice(0, 8)
+                : [],
           disclosure_label: nextDisclosureLabel,
           themes: nextThemes,
         });
@@ -920,6 +951,7 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
           item.period_id,
           {
             narrative: item.narrative,
+            narrative_coverage: item.narrative_coverage ?? null,
             key_episode_ids: item.key_episode_ids,
             disclosure_label: item.disclosure_label,
             themes: item.themes,
@@ -936,6 +968,7 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
               repair_op: "patch",
               patch: {
                 narrative: item.narrative,
+                narrative_coverage: item.narrative_coverage ?? null,
                 key_episode_ids: item.key_episode_ids,
                 disclosure_label: item.disclosure_label,
                 themes: item.themes,

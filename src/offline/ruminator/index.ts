@@ -4,6 +4,7 @@ import { z } from "zod";
 import { computeWeights } from "../../cognition/attention/index.js";
 import {
   callStructuredTool,
+  getLlmErrorStopReason,
   isStructuredToolCallError,
   type LLMClient,
   type LLMToolDefinition,
@@ -47,13 +48,7 @@ import {
   parseMaintenanceRunId,
   type MaintenanceRunId,
 } from "../../util/ids.js";
-import {
-  BudgetExceededError,
-  findInErrorCauseChain,
-  IdentityCasMismatchError,
-  LLMError,
-  StorageError,
-} from "../../util/errors.js";
+import { BudgetExceededError, IdentityCasMismatchError, StorageError } from "../../util/errors.js";
 import { clamp } from "../../util/math.js";
 import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
 
@@ -631,6 +626,13 @@ function buildResolutionPrompt(
 }
 
 function invalidResolutionResponse(error: unknown): unknown {
+  if (
+    isStructuredToolCallError(error, "invalid_payload") &&
+    getLlmErrorStopReason(error).kind === "refusal"
+  ) {
+    // Its cause is the initial schema failure; the wrapper carries the repair's refusal.
+    return error;
+  }
   if (isStructuredToolCallError(error, "missing_tool_call")) {
     return new StorageError(`Ruminator did not emit tool ${RUMINATOR_TOOL_NAME}`, {
       code: "RUMINATOR_INVALID",
@@ -1716,11 +1718,7 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
             failedQuestionIds.add(question.id);
             if (
               modelCalledQuestionIds.has(question.id) &&
-              findInErrorCauseChain(
-                error,
-                (cause): cause is LLMError =>
-                  cause instanceof LLMError && cause.code === "LLM_REFUSAL_EXHAUSTED",
-              ) !== undefined
+              getLlmErrorStopReason(error).kind === "refusal"
             ) {
               attempts.push({
                 question_id: question.id,

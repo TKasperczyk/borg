@@ -1121,6 +1121,7 @@ describe("llm", () => {
       input_tokens: 12,
       output_tokens: 7,
       stop_reason: "tool_use",
+      stop_reason_classification: { kind: "tool_use", raw: "tool_use" },
       tool_calls: [
         {
           id: "toolu_1",
@@ -2293,6 +2294,7 @@ describe("llm", () => {
             });
       expect(response).toMatchObject({
         stop_reason: "end_turn",
+        stop_reason_classification: { kind: "completed", raw: "end_turn" },
         input_tokens: 24,
         output_tokens: 14,
       });
@@ -2302,7 +2304,13 @@ describe("llm", () => {
       );
       expect(emit).toHaveBeenCalledExactlyOnceWith(
         "llm_call.retried",
-        expect.objectContaining({ kind: "refusal", code: "LLM_REFUSAL", retry_transport: "unary" }),
+        expect.objectContaining({
+          kind: "refusal",
+          code: "LLM_REFUSAL",
+          retry_transport: "unary",
+          stopReason: "refusal",
+          stopReasonClassification: { kind: "refusal", raw: "refusal" },
+        }),
       );
       expect(usageSink).toHaveBeenCalledExactlyOnceWith(
         expect.objectContaining({ input_tokens: 24, output_tokens: 14 }),
@@ -2341,7 +2349,11 @@ describe("llm", () => {
     } catch (caught) {
       error = caught;
     }
-    expect(error).toMatchObject({ code: "LLM_REFUSAL_EXHAUSTED" });
+    expect(error).toMatchObject({
+      code: "LLM_REFUSAL_EXHAUSTED",
+      stopReason: "refusal",
+      stopReasonClassification: { kind: "refusal", raw: "refusal" },
+    });
     expect(getLlmErrorUsage(error)).toMatchObject({ input_tokens: 36, output_tokens: 21 });
     expect(create).toHaveBeenCalledTimes(3);
     expect(create.mock.calls[0]?.[0]).toEqual(create.mock.calls[1]?.[0]);
@@ -3770,6 +3782,7 @@ describe("llm", () => {
       input_tokens: 12,
       output_tokens: 7,
       stop_reason: "tool_use",
+      stop_reason_classification: { kind: "tool_use", raw: "tool_use" },
     });
   });
 

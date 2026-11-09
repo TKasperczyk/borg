@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
+import { LLMRefusalError } from "./index.js";
+import { getLlmErrorStopReason } from "./stop-reason.js";
+import { attachLlmErrorUsage, getLlmErrorUsage } from "./usage.js";
 
 import { BudgetExceededError, LLMToolArgumentsError } from "../util/errors.js";
 import type {
@@ -82,6 +85,22 @@ function queuedClient(responses: Array<LLMCompleteResult | Error>) {
 }
 
 describe("callStructuredTool", () => {
+  it("preserves exhausted refusal classification and usage without schema repair", async () => {
+    const refusal = new LLMRefusalError();
+    attachLlmErrorUsage(refusal, { input_tokens: 12, output_tokens: 6 });
+    const llmClient = client(refusal);
+    const error = await callStructuredTool({
+      llmClient,
+      request: { model: "model", messages: [], tools: [TOOL], budget: "test" },
+      toolName: TOOL_NAME,
+      parse: (input) => schema.parse(input),
+    }).catch((error: unknown) => error);
+    expect(error).toBeInstanceOf(StructuredToolCallError);
+    expect(error).toMatchObject({ kind: "llm_failed", stopReason: "refusal", cause: refusal });
+    expect(getLlmErrorStopReason(error)).toEqual({ kind: "refusal", raw: "refusal" });
+    expect(getLlmErrorUsage(error)).toEqual({ input_tokens: 12, output_tokens: 6 });
+    expect(llmClient.complete).toHaveBeenCalledOnce();
+  });
   it("selects the accepted tool call and parses its input", async () => {
     const result = await callStructuredTool({
       llmClient: client(
@@ -356,6 +375,38 @@ describe("callStructuredTool", () => {
       input_tokens: 3,
       output_tokens: 4,
     });
+    expect(llmClient.complete).toHaveBeenCalledTimes(2);
+  });
+
+  it("preserves a repair-time refusal alongside the original validation failure", async () => {
+    const refusal = new LLMRefusalError();
+    attachLlmErrorUsage(refusal, { input_tokens: 12, output_tokens: 6 });
+    const llmClient = queuedClient([
+      completeResult([{ id: "toolu_invalid", name: TOOL_NAME, input: { value: 42 } }]),
+      refusal,
+    ]);
+    let thrown: unknown;
+    try {
+      await callStructuredTool({
+        llmClient,
+        request: { model: "model", messages: [], tools: [TOOL], budget: "test" },
+        toolName: TOOL_NAME,
+        parse: (input) => schema.parse(input),
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toMatchObject({
+      kind: "invalid_payload",
+      stopReason: "refusal",
+      stopReasonClassification: { kind: "refusal", raw: "refusal" },
+      cause: expect.any(z.ZodError),
+      repairFailure: { kind: "llm_failed", cause: refusal },
+      attemptCount: 2,
+      usage: { input_tokens: 15, output_tokens: 10 },
+    });
+    expect(getLlmErrorStopReason(thrown)).toEqual({ kind: "refusal", raw: "refusal" });
     expect(llmClient.complete).toHaveBeenCalledTimes(2);
   });
 

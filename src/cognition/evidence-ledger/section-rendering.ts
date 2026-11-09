@@ -1,4 +1,5 @@
 import { renderFrameAnomalyAnnotations } from "../../stream/frame-anomaly.js";
+import { renderNarrativeCoverage } from "../../memory/self/narrative-coverage.js";
 import type {
   EvidenceLedgerEntry,
   EvidenceLedgerSection,
@@ -28,6 +29,10 @@ export function renderEntry(entry: EvidenceLedgerEntry): string {
   ].filter((part): part is string => part !== null);
   const body = [
     renderFrameAnomalyAnnotations(entry.frame_anomalies) || null,
+    // Render after compaction from structural metadata, outside every prose cap.
+    entry.state_metadata?.source_kind === "autobiographical_period"
+      ? `  ${renderNarrativeCoverage(entry.state_metadata.narrative_coverage)}`
+      : null,
     entry.value === undefined ? null : `  value: ${entry.value}`,
     entry.text === undefined ? null : `  text:\n${entry.text}`,
   ].filter((part): part is string => part !== null);

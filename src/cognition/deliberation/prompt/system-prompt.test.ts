@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { makeAutobiographicalPeriod } from "../../../test-support/factories/memory.js";
 
 import { operatorAttentionPromptRow } from "../../../memory/operator-attention/disclosure.js";
 import { unknownMemoryDisclosureLabel } from "../../../memory/common/disclosure-label.js";
@@ -2520,25 +2521,62 @@ describe("buildBaseSystemPrompt", () => {
     expect(block).toContain("</pending_actions>");
   });
 
-  it("renders the newest eight pending actions when more are held", () => {
-    const actions = Array.from({ length: 9 }, (_, index) => ({
-      description: `Follow-up item ${String(index).padStart(2, "0")}`,
-      next_action: null,
-    }));
+  it.each([0, 1, 8, 9, 16])(
+    "renders the newest eight of %i held pending actions with omission counts only when needed",
+    (total) => {
+      const actions = Array.from({ length: total }, (_, index) => ({
+        description: `Follow-up item ${String(index).padStart(2, "0")}`,
+        next_action: null,
+      }));
+      const prompt = buildBaseSystemPrompt(
+        makeContext({
+          workingMemory: {
+            ...makeContext().workingMemory,
+            pending_actions: actions,
+          },
+        }),
+        PROMPT_OPTIONS,
+      );
+      const block = extractBlock(prompt, "borg_working_state");
+      const rendered = block.split("\n").filter((line) => line.startsWith("- Follow-up item "));
+
+      expect(rendered).toEqual(actions.slice(-8).map((action) => `- ${action.description}`));
+      if (total === 0) expect(block).not.toContain("<pending_actions");
+      else if (total <= 8) expect(block).toContain("<pending_actions>");
+      else expect(block).toContain(`<pending_actions total="${total}" omitted="${total - 8}">`);
+    },
+  );
+
+  it.each([
+    null,
+    {
+      shown_episodes: 8,
+      omitted_episodes: 12,
+      window_rule: "newest_contiguous_suffix" as const,
+      limiting_bound: "maxEpisodesPerRun" as const,
+    },
+  ])("keeps latest-pass coverage outside the current period prose excerpt: %j", (coverage) => {
     const prompt = buildBaseSystemPrompt(
       makeContext({
-        workingMemory: {
-          ...makeContext().workingMemory,
-          pending_actions: actions,
+        selfSnapshot: {
+          values: [],
+          goals: [],
+          traits: [],
+          currentPeriod: makeAutobiographicalPeriod({
+            narrative: "Long narrative. ".repeat(200),
+            narrative_coverage: coverage,
+          }),
         },
       }),
       PROMPT_OPTIONS,
     );
-    const block = extractBlock(prompt, "borg_working_state");
-    const rendered = block.split("\n").filter((line) => line.startsWith("- Follow-up item "));
-
-    expect(rendered).toEqual(actions.slice(1).map((action) => `- ${action.description}`));
-    expect(block).not.toContain("Follow-up item 00");
+    const block = extractBlock(prompt, "borg_current_period");
+    expect(block).toContain(
+      coverage === null
+        ? "Latest narration pass input: coverage unknown."
+        : "Latest narration pass input: newest 8 episodes shown (contiguous suffix, chronological order); 12 earlier episodes omitted; limiting bound: maxEpisodesPerRun.",
+    );
+    expect(block).not.toContain("Long narrative. ".repeat(100));
   });
 
   it("renders pending and completed actions as distinct prompt sections", () => {
@@ -3442,7 +3480,7 @@ describe("buildBaseSystemPrompt", () => {
     // rather than printing a null, so the absence reads as the field not
     // existing rather than as nothing being due.
     expect(block).toContain(
-      "- name=mood_valence_drop type=condition category=operational registered=true\n",
+      "- name=mood_valence_drop type=condition category=operational registered=true source_cap=unknown runtime_holds=unknown\n",
     );
     expect(block).not.toContain(
       "name=mood_valence_drop type=condition category=operational registered=true next_due_at",
@@ -3509,6 +3547,58 @@ describe("buildBaseSystemPrompt", () => {
     );
   });
 
+  it("renders source caps and scoped runtime holds beside due eligibility", () => {
+    const state = makeSchedulerStateWithSources();
+    state.budget.source_budgets = [{ source: "open_question_dormant", usage: 12, limit: 12 }];
+    state.budget.window_ms = 86_400_000;
+    state.sources = [
+      {
+        name: "open_question_dormant",
+        type: "trigger",
+        category: "operational",
+        enabled: true,
+        next_due_at: NOW_MS,
+        runtime_holds: [
+          { kind: "event_retry", event_id: "question:1", until: NOW_MS + 30_000 },
+          { kind: "source_retry", until: NOW_MS + 60_000 },
+          { kind: "trigger_error", until: NOW_MS + 90_000 },
+          { kind: "maintenance", until: NOW_MS + 120_000 },
+        ],
+      },
+      {
+        name: "scheduled_wake",
+        type: "trigger",
+        category: "contemplative",
+        enabled: true,
+        next_due_at: null,
+        runtime_holds: [],
+      },
+    ];
+    const block = extractBlock(
+      buildBaseSystemPrompt(
+        makeContext({
+          turnMechanismEvidence: {
+            recentSuppressions: [],
+            recentRegenerations: [],
+            autonomySchedulerState: state,
+          },
+        }),
+        { ...PROMPT_OPTIONS, nowMs: NOW_MS },
+      ),
+      "borg_mechanism_evidence",
+    );
+    const row = block.split("\n").find((line) => line.startsWith("- name=open_question_dormant"))!;
+    expect(row).toContain("source_cap=12/12 window=1d rolling hold=source_cap");
+    for (const hold of state.sources[0]!.runtime_holds!)
+      expect(row).toContain(`until=${new Date(hold.until).toISOString()}`);
+    expect(row).toContain('hold=event_retry event_id="question:1"');
+    expect(row).toContain("hold=source_retry");
+    expect(row).toContain("hold=trigger_error");
+    expect(row).toContain("hold=maintenance");
+    expect(block).toContain("source_cap=none runtime_holds=none");
+    expect(block).toContain("Due time is the source's eligibility");
+  });
+
   // A ceiling on the wake-source section, because it did not have one. Every
   // clarification here has been paid for out of a block with no size pin, so
   // growth is only ever noticed by the reader whose page it lands on, after it
@@ -3524,7 +3614,8 @@ describe("buildBaseSystemPrompt", () => {
   // scheduler reads in the 2026-08-31 -> 2026-09-02 traces print exactly equal.
   // The width bought a clause that is false on the majority of live pages being
   // deleted, which is the case the "argue for it against a number" rule was for.
-  const WAKE_SOURCE_SECTION_CHAR_CEILING = 2_360;
+  // Includes the cap/hold fields on all four fixture sources and their one-sentence framing.
+  const WAKE_SOURCE_SECTION_CHAR_CEILING = 2_700;
 
   it("keeps the wake-source section under a stated width", () => {
     const block = extractBlock(

@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import type { LLMCompleteOptions, LLMCompleteResult } from "../../src/llm/index.js";
 import { FakeLLMClient } from "../../src/llm/test-support/fake-client.js";
+import { classifyLlmStopReason } from "../../src/llm/stop-reason.js";
 
 import { JsonlValueCache } from "../embedding-ab/cache.js";
 import {
@@ -59,7 +60,11 @@ describe("planner response instrumentation", () => {
     }
   });
 
-  it("persists only responses accepted by the production planner parser", async () => {
+  it.each([
+    undefined,
+    classifyLlmStopReason("tool_calls", "openai"),
+    classifyLlmStopReason("refusal", "openai"),
+  ])("persists only accepted planner responses with classification %j", async (classification) => {
     const outDir = mkdtempSync(join(tmpdir(), "borg-recall-planner-cache-"));
     directories.push(outDir);
     const cachePath = join(outDir, "cache", "planner.jsonl");
@@ -68,8 +73,12 @@ describe("planner response instrumentation", () => {
       parseCachedPlannerResponse,
       join(outDir, "cache"),
     );
+    const acceptedResponse = {
+      ...response("zaakceptowana odpowiedź"),
+      ...(classification === undefined ? {} : { stop_reason_classification: classification }),
+    };
     const inner = new FakeLLMClient({
-      responses: [response("odrzucona odpowiedź"), response("zaakceptowana odpowiedź")],
+      responses: [response("odrzucona odpowiedź"), acceptedResponse],
     });
     const client = new ScratchPlannerLlmClient(inner, cache);
     const key = plannerRequestCacheKey(REQUEST);
@@ -80,9 +89,7 @@ describe("planner response instrumentation", () => {
 
     await client.complete(REQUEST);
     await client.settleCallsSince(1, true);
-    expect(cache.get(key)?.tool_calls[0]?.input).toMatchObject({
-      resolved_query: "zaakceptowana odpowiedź",
-    });
+    expect(cache.get(key)).toEqual(acceptedResponse);
 
     const reloadedCache = new JsonlValueCache<LLMCompleteResult>(
       cachePath,
@@ -91,13 +98,20 @@ describe("planner response instrumentation", () => {
     );
     const unusedInner = new FakeLLMClient();
     const cachedClient = new ScratchPlannerLlmClient(unusedInner, reloadedCache);
-    await expect(cachedClient.complete(REQUEST)).resolves.toMatchObject({
-      tool_calls: [
-        expect.objectContaining({
-          input: expect.objectContaining({ resolved_query: "zaakceptowana odpowiedź" }),
-        }),
-      ],
-    });
+    await expect(cachedClient.complete(REQUEST)).resolves.toEqual(acceptedResponse);
     expect(unusedInner.requests).toHaveLength(0);
+  });
+
+  it.each([
+    { kind: "unsupported", raw: "tool_calls" },
+    { kind: "unknown", raw: 42 },
+    { kind: "tool_use", raw: "tool_calls", extra: true },
+  ])("rejects malformed cached classification metadata: %j", (classification) => {
+    expect(() =>
+      parseCachedPlannerResponse({
+        ...response("plan"),
+        stop_reason_classification: classification,
+      }),
+    ).toThrow();
   });
 });

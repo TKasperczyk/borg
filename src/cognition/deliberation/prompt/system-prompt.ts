@@ -1,3 +1,4 @@
+import { renderNarrativeCoverage } from "../../../memory/self/narrative-coverage.js";
 import { goalBlockStateAttribute } from "../../../memory/self/goal-blocks.js";
 import { renderAnsweredWindowEvidence } from "../../../stream/answered-window.js";
 // Assembles the base deliberation system prompt from memory, state, and guidance sections.
@@ -2308,29 +2309,48 @@ export function summarizeAutonomySchedulerState(
   // behind the tick is. None of it supports a statement about the next wake that
   // could turn out wrong, and the wakes-by-trigger groups are these same source
   // names counted backwards -- which is why this is not a duplicate of them.
-  lines.push(...renderWakeSourceLines(schedulerState.sources, renderNowMs, observationLagMs));
+  lines.push(...renderWakeSourceLines(schedulerState, renderNowMs, observationLagMs));
 
   return lines.join("\n");
 }
 
 function renderWakeSourceLines(
-  sources: NonNullable<
+  schedulerState: NonNullable<
     NonNullable<DeliberationContext["turnMechanismEvidence"]>["autonomySchedulerState"]
-  >["sources"],
+  >,
   renderNowMs: number,
   observationLagMs: number,
 ): string[] {
+  const { sources, budget } = schedulerState;
   if (sources.length === 0) {
     return ["Wake sources held by that scheduler: none, so nothing can fire from any of them."];
   }
 
   return [
     "Wake sources held by that scheduler, with each trigger's own next-due stamp as of that read. This is the forward view; the wakes-by-trigger counts above are the same names counted backwards.",
+    "Due time is the source's eligibility; each line shows its rolling cap and runtime holds at the read, with event retries holding only the named event.",
     ...sources.map((source) => {
       const head = `- name=${source.name} type=${source.type} category=${source.category} registered=${source.enabled}`;
+      const sourceBudget = budget.source_budgets?.find((entry) => entry.source === source.name);
+      const cap =
+        sourceBudget === undefined
+          ? `source_cap=${budget.source_budgets === undefined ? "unknown" : "none"}`
+          : `source_cap=${sourceBudget.usage}/${sourceBudget.limit} window=${formatRelativeDuration(budget.window_ms)} rolling${sourceBudget.usage >= sourceBudget.limit ? " hold=source_cap" : ""}`;
+      const holds =
+        source.runtime_holds === undefined
+          ? "runtime_holds=unknown"
+          : source.runtime_holds.length === 0
+            ? "runtime_holds=none"
+            : source.runtime_holds
+                .map(
+                  (hold) =>
+                    `hold=${hold.kind}${hold.kind === "event_retry" ? ` event_id=${JSON.stringify(hold.event_id)}` : ""} until=${new Date(hold.until).toISOString()}`,
+                )
+                .join(" ");
+      const state = `${cap} ${holds}`;
 
       if (source.type === "condition") {
-        return head;
+        return `${head} ${state}`;
       }
 
       return `${head} next_due_at=${
@@ -2340,7 +2360,7 @@ function renderWakeSourceLines(
               source.next_due_at,
               renderNowMs,
             )})`
-      }`;
+      } ${state}`;
     }),
     // Three separate ways this list misleads a reader who takes it at face
     // value, each of which makes a prediction off it wrong in a different
@@ -3031,14 +3051,18 @@ function summarizeWorkingMemory(
       "</pending_actions>",
     );
   } else if (workingMemory.pending_actions.length > 0) {
+    const selected = workingMemory.pending_actions.slice(-8);
+    const total = workingMemory.pending_actions.length;
     lines.push(
-      "<pending_actions>",
+      total > selected.length
+        ? `<pending_actions total="${total}" omitted="${total - selected.length}">`
+        : "<pending_actions>",
       "These are unresolved operational follow-ups, not facts about the user.",
       "I do not treat them as authoritative claims about identity, relationships, or biography.",
     );
     // The list is oldest-first and the store keeps its newest entries at the
     // cap, so the render cap keeps the newest too.
-    for (const action of workingMemory.pending_actions.slice(-8)) {
+    for (const action of selected) {
       lines.push(
         `- ${action.description.trim()}${
           action.next_action === null ? "" : ` -> ${action.next_action.trim()}`
@@ -3171,6 +3195,7 @@ function summarizeCurrentPeriod(period: AutobiographicalPeriod | null | undefine
   if (narrative.length > 0) {
     const snippet = narrative.length > 240 ? `${narrative.slice(0, 237).trimEnd()}...` : narrative;
     parts.push(`- narrative: ${snippet}`);
+    parts.push(renderNarrativeCoverage(period.narrative_coverage));
   }
 
   if (themes.length > 0) {
