@@ -1207,6 +1207,12 @@ describe("review queue", () => {
         repair_op: "patch",
         patch: {
           narrative: "Reconciled narrative.",
+          narrative_coverage: {
+            shown_episodes: 2,
+            omitted_episodes: 4,
+            window_rule: "newest_contiguous_suffix",
+            limiting_bound: "maxPromptTokens",
+          },
         },
         proposed_provenance: {
           kind: "offline",
@@ -1252,6 +1258,12 @@ describe("review queue", () => {
     expect(harness.autobiographicalRepository.getPeriod(period.id)).toEqual(
       expect.objectContaining({
         narrative: "Reconciled narrative.",
+        narrative_coverage: {
+          shown_episodes: 2,
+          omitted_episodes: 4,
+          window_rule: "newest_contiguous_suffix",
+          limiting_bound: "maxPromptTokens",
+        },
         provenance: {
           kind: "offline",
           process: "self-narrator",

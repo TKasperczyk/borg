@@ -218,12 +218,18 @@ export type AutonomySchedulerBudgetDescription = {
   next_budget_slot_frees_at: number | null;
 };
 
+export type AutonomySchedulerRuntimeHold =
+  | { kind: "event_retry"; until: number; event_id: string }
+  | { kind: "source_retry" | "trigger_error" | "maintenance"; until: number };
+
 export type AutonomySchedulerTriggerSourceDescription = {
   name: AutonomyTriggerName;
   type: "trigger";
   category: AutonomyWakeSourceCategory;
   enabled: boolean;
   next_due_at: number | null;
+  /** Active at observed_at; absent only in historical captures. */
+  runtime_holds?: AutonomySchedulerRuntimeHold[];
 };
 
 export type AutonomySchedulerConditionSourceDescription = {
@@ -231,6 +237,7 @@ export type AutonomySchedulerConditionSourceDescription = {
   type: "condition";
   category: AutonomyWakeSourceCategory;
   enabled: boolean;
+  runtime_holds?: AutonomySchedulerRuntimeHold[];
 };
 
 export type AutonomySchedulerSourceDescription =

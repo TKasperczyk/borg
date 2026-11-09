@@ -18,6 +18,7 @@
 // pre-configured OpenAI instance when finer control is needed.
 
 import OpenAI from "openai";
+import { classifyLlmStopReason } from "./stop-reason.js";
 import { reportLlmErrorUsage } from "./usage.js";
 
 import { ConfigError, LLMError, LLMToolArgumentsError } from "../util/errors.js";
@@ -135,13 +136,12 @@ function toOpenAIToolChoice(
 }
 
 function mapFinishReason(finishReason: string | null): string | null {
-  switch (finishReason) {
-    case "tool_calls":
-    case "function_call":
+  switch (classifyLlmStopReason(finishReason, "openai").kind) {
+    case "tool_use":
       return "tool_use";
-    case "stop":
+    case "completed":
       return "end_turn";
-    case "length":
+    case "max_tokens":
       return "max_tokens";
     default:
       // Pass through anything else (e.g. "content_filter") unchanged.
@@ -154,7 +154,7 @@ type ResponseUsage = { prompt_tokens?: number; completion_tokens?: number } | nu
 function parseToolArguments(
   name: string,
   rawArguments: string | undefined,
-  stopReason: string | null,
+  finishReason: string | null,
   usage: ResponseUsage,
 ): unknown {
   if (rawArguments === undefined || rawArguments.trim() === "") {
@@ -163,6 +163,7 @@ function parseToolArguments(
   try {
     return JSON.parse(rawArguments);
   } catch (error) {
+    const stopReason = mapFinishReason(finishReason);
     // Raised inside complete()/converse(), so callStructuredTool classifies it
     // as "llm_failed": the model produced syntactically broken tool arguments,
     // which is a failed call rather than a schema mismatch. The mapped stop
@@ -175,6 +176,7 @@ function parseToolArguments(
         cause: error,
         toolName: name,
         stopReason,
+        stopReasonClassification: classifyLlmStopReason(finishReason, "openai"),
         argumentsLength: rawArguments.length,
         usage: {
           input_tokens: usage?.prompt_tokens ?? 0,
@@ -315,11 +317,7 @@ export class OpenAICompatibleLLMClient implements LLMClient {
 
     let toolCalls: LLMToolCall[];
     try {
-      toolCalls = decodeToolCalls(
-        choice.message.tool_calls,
-        mapFinishReason(choice.finish_reason),
-        response.usage,
-      );
+      toolCalls = decodeToolCalls(choice.message.tool_calls, choice.finish_reason, response.usage);
     } catch (error) {
       await reportLlmErrorUsage(error, this.usageSink, options);
       throw error;
@@ -331,6 +329,7 @@ export class OpenAICompatibleLLMClient implements LLMClient {
       input_tokens: response.usage?.prompt_tokens ?? 0,
       output_tokens: response.usage?.completion_tokens ?? 0,
       stop_reason: mapFinishReason(choice.finish_reason),
+      stop_reason_classification: classifyLlmStopReason(choice.finish_reason, "openai"),
       tool_calls: toolCalls,
     };
   }
@@ -350,11 +349,7 @@ export class OpenAICompatibleLLMClient implements LLMClient {
 
     let toolCalls: LLMToolCall[];
     try {
-      toolCalls = decodeToolCalls(
-        choice.message.tool_calls,
-        mapFinishReason(choice.finish_reason),
-        response.usage,
-      );
+      toolCalls = decodeToolCalls(choice.message.tool_calls, choice.finish_reason, response.usage);
     } catch (error) {
       await reportLlmErrorUsage(error, this.usageSink, options);
       throw error;
@@ -380,6 +375,7 @@ export class OpenAICompatibleLLMClient implements LLMClient {
       input_tokens: response.usage?.prompt_tokens ?? 0,
       output_tokens: response.usage?.completion_tokens ?? 0,
       stop_reason: mapFinishReason(choice.finish_reason),
+      stop_reason_classification: classifyLlmStopReason(choice.finish_reason, "openai"),
     };
   }
 

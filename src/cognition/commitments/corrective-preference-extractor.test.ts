@@ -624,6 +624,7 @@ describe("CorrectivePreferenceExtractor", () => {
         ],
       },
       stopReason: "tool_use",
+      stopReasonClassification: { kind: "tool_use", raw: "tool_use" },
       usage: {
         inputTokens: 4,
         outputTokens: 2,

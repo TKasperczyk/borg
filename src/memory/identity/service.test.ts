@@ -1102,6 +1102,12 @@ describe("identity service", () => {
         label: "2027-Q3",
         start_ts: 5_000,
         narrative: "The period as first written.",
+        narrative_coverage: {
+          shown_episodes: 2,
+          omitted_episodes: 4,
+          window_rule: "newest_contiguous_suffix",
+          limiting_bound: "maxEpisodesPerRun",
+        },
         key_episode_ids: [periodEpisodeId],
         themes: ["identity"],
         provenance: {
@@ -1131,6 +1137,7 @@ describe("identity service", () => {
       expect(harness.autobiographicalRepository.getPeriod(period.id)).toMatchObject({
         narrative: "The period as rewritten a day later.",
         created_at: 5_000,
+        narrative_coverage: null,
         last_updated: 95_000,
         record_version: 2,
       });

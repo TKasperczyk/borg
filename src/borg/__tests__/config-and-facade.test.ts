@@ -34,6 +34,7 @@ import { createEpisodeFixture, createSemanticNodeFixture } from "../../offline/t
 import { resolveMemoryDisclosureLabelForEpisodeIds } from "../../retrieval/index.js";
 import { createBorgFacades } from "../facade.js";
 import type { BorgDependencies } from "../types.js";
+import type { BorgAutobiographicalPeriodInput } from "../public-facade.js";
 import { createEntityId, createSemanticNodeId, DEFAULT_SESSION_ID } from "../../util/ids.js";
 import { StreamReader, StreamWriter, type StreamEntryIndexRepository } from "../../stream/index.js";
 import * as reviewOpenQuestionHook from "../../memory/self/review-open-question-hook.js";
@@ -1340,6 +1341,66 @@ describe("Borg", () => {
       expect(borg.self.autobiographical.getPeriod(period.id)).toMatchObject({
         label: "2026-Q2 revised",
         end_ts: 1_900,
+      });
+    } finally {
+      await borg.close();
+    }
+  });
+
+  it("round-trips narrative coverage through public period creates and updates", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-period-coverage-"));
+    tempDirs.push(tempDir);
+    const borg = await Borg.open({
+      dataDir: tempDir,
+      clock: new ManualClock(1_000),
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: new FakeLLMClient(),
+    });
+
+    try {
+      const input = {
+        label: "Period",
+        start_ts: 1_000,
+        narrative: "The same narrative across passes.",
+        provenance: { kind: "episodes", episode_ids: [createEpisodeId()] },
+      } satisfies BorgAutobiographicalPeriodInput;
+      const coverage = {
+        shown_episodes: 2,
+        omitted_episodes: 4,
+        window_rule: "newest_contiguous_suffix",
+        limiting_bound: "maxEpisodesPerRun",
+      } as const;
+      const period = borg.self.autobiographical.upsertPeriod({
+        ...input,
+        narrative_coverage: coverage,
+      });
+      expect(period.narrative_coverage).toEqual(coverage);
+      expect(borg.self.autobiographical.getPeriod(period.id)?.narrative_coverage).toEqual(coverage);
+
+      const revisedCoverage = { ...coverage, shown_episodes: 3, omitted_episodes: 3 };
+      const updated = borg.self.autobiographical.upsertPeriod({
+        ...input,
+        id: period.id,
+        narrative_coverage: revisedCoverage,
+      });
+      expect(updated).toMatchObject({
+        status: "applied",
+        record: { narrative_coverage: revisedCoverage },
+      });
+      expect(borg.self.autobiographical.getPeriod(period.id)).toMatchObject({
+        narrative: input.narrative,
+        narrative_coverage: revisedCoverage,
+      });
+
+      const withoutCoverage = borg.self.autobiographical.upsertPeriod({ ...input, id: period.id });
+      expect(withoutCoverage).toMatchObject({
+        status: "applied",
+        record: { narrative_coverage: null },
+      });
+      expect(borg.self.autobiographical.getPeriod(period.id)).toMatchObject({
+        narrative: input.narrative,
+        narrative_coverage: null,
       });
     } finally {
       await borg.close();

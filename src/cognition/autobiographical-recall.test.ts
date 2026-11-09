@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import { makeAutobiographicalPeriod } from "../test-support/factories/memory.js";
 
 import type { ActionRecord } from "../memory/actions/index.js";
 import type { EpisodeStats } from "../memory/episodic/types.js";
@@ -253,6 +254,46 @@ function episodeStatsFixture(episodeId: EpisodeId): EpisodeStats {
 }
 
 describe("AutobiographicalRecallService", () => {
+  it.each([
+    null,
+    {
+      shown_episodes: 3,
+      omitted_episodes: 5,
+      window_rule: "newest_contiguous_suffix" as const,
+      limiting_bound: "maxEpisodesPerRun" as const,
+    },
+  ])(
+    "retains latest-pass coverage after narrative truncation and in the ledger: %j",
+    async (coverage) => {
+      const service = new AutobiographicalRecallService({
+        clock: new FixedClock(NOW_MS),
+        autobiographicalRepository: {
+          listPeriods: () => [
+            makeAutobiographicalPeriod({
+              last_updated: NOW_MS - 1,
+              narrative: "Story. ".repeat(200),
+              narrative_coverage: coverage,
+            }),
+          ],
+        },
+      });
+      const result = await service.recall({
+        sessionId: createSessionId(),
+        temporalCue: null,
+        isSelfAudience: true,
+        sessionAudienceRole: "operator",
+        perceptionMode: "reflective",
+      });
+      const evidence = result!.evidence.find((item) => item.kind === "autobiographical_period")!;
+      const expected =
+        coverage === null
+          ? "Latest narration pass input: coverage unknown."
+          : "Latest narration pass input: newest 3 episodes shown (contiguous suffix, chronological order); 5 earlier episodes omitted; limiting bound: maxEpisodesPerRun.";
+      expect(evidence.text).not.toContain("Story. ".repeat(100));
+      expect(evidence.metadata).toMatchObject({ narrative_coverage: coverage });
+      expect(renderSection(autobiographicalSection(result!))).toContain(expected);
+    },
+  );
   // DELIBERATE: autobiographical recall is a second, independent path that puts an episode into the
   // turn prompt. It reads through listRecentForCognition and records nothing, while the retrieval
   // pipeline's projection loop is the only caller of recordRetrieval. So retrieval_count/last_retrieved

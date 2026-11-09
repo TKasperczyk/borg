@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { narrativeCoverageSchema, type NarrativeCoverage } from "./narrative-coverage.js";
 
 import { SqliteDatabase } from "../../storage/sqlite/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
@@ -46,7 +47,7 @@ export type AutobiographicalRepositoryOptions = {
   clock?: Clock;
 };
 
-function parseStringArray<T>(value: string, schema: z.ZodType<T>, label: string): T[] {
+function parseStoredJson<T>(value: string, schema: z.ZodType<T>, label: string): T {
   let parsed: unknown;
 
   try {
@@ -58,7 +59,7 @@ function parseStringArray<T>(value: string, schema: z.ZodType<T>, label: string)
     });
   }
 
-  const result = z.array(schema).safeParse(parsed);
+  const result = schema.safeParse(parsed);
 
   if (!result.success) {
     throw new StorageError(`Invalid ${label}`, {
@@ -78,15 +79,20 @@ export function mapPeriodRow(row: Record<string, unknown>): AutobiographicalPeri
     start_ts: Number(row.start_ts),
     end_ts: row.end_ts === null || row.end_ts === undefined ? null : Number(row.end_ts),
     narrative: String(row.narrative ?? ""),
-    key_episode_ids: parseStringArray(
+    narrative_coverage: parseStoredJson(
+      String(row.narrative_coverage ?? "null"),
+      narrativeCoverageSchema.nullable(),
+      "autobiographical narrative_coverage",
+    ),
+    key_episode_ids: parseStoredJson(
       String(row.key_episode_ids ?? "[]"),
-      valueSourceEpisodeIdSchema,
+      z.array(valueSourceEpisodeIdSchema),
       "autobiographical key_episode_ids",
     ),
     disclosure_label: parseMemoryDisclosureLabel(row.disclosure_label),
-    themes: parseStringArray(
+    themes: parseStoredJson(
       String(row.themes ?? "[]"),
-      z.string().min(1),
+      z.array(z.string().min(1)),
       "autobiographical themes",
     ),
     provenance: parseStoredProvenance({
@@ -130,6 +136,7 @@ export class AutobiographicalRepository {
       start_ts: number;
       end_ts?: number | null;
       narrative: string;
+      narrative_coverage?: NarrativeCoverage | null;
       key_episode_ids?: readonly EpisodeId[];
       disclosure_label?: MemoryDisclosureLabel;
       themes?: readonly string[];
@@ -168,6 +175,7 @@ export class AutobiographicalRepository {
       start_ts: input.start_ts,
       end_ts: input.end_ts ?? null,
       narrative: input.narrative,
+      narrative_coverage: input.narrative_coverage ?? null,
       key_episode_ids: input.key_episode_ids ?? [],
       disclosure_label:
         input.disclosure_label ?? existing?.disclosure_label ?? unknownMemoryDisclosureLabel(),
@@ -207,9 +215,9 @@ export class AutobiographicalRepository {
           .prepare(
             `
               INSERT INTO autobiographical_periods (
-                id, label, start_ts, end_ts, narrative, key_episode_ids, disclosure_label, themes, provenance_kind,
+                id, label, start_ts, end_ts, narrative, narrative_coverage, key_episode_ids, disclosure_label, themes, provenance_kind,
                 provenance_episode_ids, provenance_process, created_at, last_updated
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             `,
           )
           .run(
@@ -218,6 +226,9 @@ export class AutobiographicalRepository {
             period.start_ts,
             period.end_ts,
             period.narrative,
+            period.narrative_coverage == null
+              ? null
+              : serializeJsonValue(period.narrative_coverage),
             serializeJsonValue(period.key_episode_ids),
             serializeJsonValue(period.disclosure_label),
             serializeJsonValue(period.themes),
@@ -234,7 +245,7 @@ export class AutobiographicalRepository {
         .prepare(
           `
             UPDATE autobiographical_periods
-            SET label = ?, start_ts = ?, end_ts = ?, narrative = ?, key_episode_ids = ?, disclosure_label = ?, themes = ?,
+            SET label = ?, start_ts = ?, end_ts = ?, narrative = ?, narrative_coverage = ?, key_episode_ids = ?, disclosure_label = ?, themes = ?,
                 provenance_kind = ?, provenance_episode_ids = ?, provenance_process = ?, last_updated = ?,
                 record_version = record_version + 1
             WHERE id = ? AND record_version = ?
@@ -245,6 +256,7 @@ export class AutobiographicalRepository {
           period.start_ts,
           period.end_ts,
           period.narrative,
+          period.narrative_coverage == null ? null : serializeJsonValue(period.narrative_coverage),
           serializeJsonValue(period.key_episode_ids),
           serializeJsonValue(period.disclosure_label),
           serializeJsonValue(period.themes),
@@ -379,6 +391,7 @@ export class AutobiographicalRepository {
     keyEpisodeIds?: readonly EpisodeId[],
     themes?: readonly string[],
     provenance?: Provenance,
+    coverage: NarrativeCoverage | null = null,
   ): AutobiographicalPeriod {
     const existing = this.getPeriod(id);
 
@@ -392,6 +405,7 @@ export class AutobiographicalRepository {
       {
         ...existing,
         narrative,
+        narrative_coverage: coverage,
         key_episode_ids: keyEpisodeIds ?? existing.key_episode_ids,
         themes: themes ?? existing.themes,
         provenance: provenance ?? existing.provenance,

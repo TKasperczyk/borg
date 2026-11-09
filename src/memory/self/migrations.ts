@@ -500,4 +500,13 @@ export const selfMigrations = [
       for (const object of objects) db.exec(object.sql);
     },
   },
+  {
+    id: 14,
+    name: "autobiographical_narrative_coverage",
+    up: (db) => {
+      if (!tableHasColumn(db, "autobiographical_periods", "narrative_coverage")) {
+        db.exec("ALTER TABLE autobiographical_periods ADD COLUMN narrative_coverage TEXT");
+      }
+    },
+  },
 ] as const satisfies readonly Migration[];

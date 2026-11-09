@@ -9,6 +9,9 @@ import { TEMPORAL_CUE_JUDGE_SYSTEM_PROMPT } from "../../perception/temporal-cue.
 import { DEFAULT_SESSION_ID, createEntityId } from "../../../util/ids.js";
 import type { BuilderSectionContext } from "../builder-context.js";
 import { createSectionBuckets } from "../section-buckets.js";
+import { compactEvidenceLedger } from "../compaction.js";
+import { renderSection } from "../section-rendering.js";
+import type { EvidenceLedger } from "../types.js";
 import { addAutobiographicalRecallSection } from "./autobiographical-recall.js";
 
 const NOW_MS = 1_788_302_709_101;
@@ -66,6 +69,47 @@ function buildSection(recall: AutobiographicalRecallResult) {
 }
 
 describe("evidence-ledger autobiographical recall section", () => {
+  it.each([
+    null,
+    {
+      shown_episodes: 3,
+      omitted_episodes: 5,
+      window_rule: "newest_contiguous_suffix",
+      limiting_bound: "maxEpisodesPerRun",
+    },
+  ])("renders period coverage outside ledger prose compaction: %j", (coverage) => {
+    const recall = recallFixture();
+    recall.evidence = [
+      {
+        ...recall.evidence[0]!,
+        kind: "autobiographical_period",
+        text: "narrative=" + "Story. ".repeat(300),
+        metadata: { narrative_coverage: coverage },
+      },
+    ];
+    const entry = buildSection(recall).get("autobiographical_recall")?.entries[0];
+    expect(entry?.text).toBe(recall.evidence[0]!.text);
+    expect(entry?.state_metadata).toMatchObject({ narrative_coverage: coverage });
+    const ledger: EvidenceLedger = {
+      sections: [{ id: "autobiographical_recall", label: "Periods", entries: [entry!] }],
+      transcriptIncluded: false,
+      transcriptCompacted: false,
+      originalTranscriptTokenEstimate: 0,
+      compactedTranscriptEntryCount: 0,
+      rawPreservedUserTranscriptEntryCount: 0,
+      estimatedTokens: 0,
+    };
+    const compacted = compactEvidenceLedger(ledger, { maxEntryTextTokens: 20 });
+    const rendered = renderSection(
+      compacted.ledger.sections.find((section) => section.id === "autobiographical_recall")!,
+    );
+    expect(rendered).toContain("evidence ledger entry truncated");
+    expect(rendered).toContain(
+      coverage === null
+        ? "Latest narration pass input: coverage unknown."
+        : "Latest narration pass input: newest 3 episodes shown (contiguous suffix, chronological order); 5 earlier episodes omitted; limiting bound: maxEpisodesPerRun.",
+    );
+  });
   it("describes additive time bands and the unchanged recent default", () => {
     const framing = buildSection(recallFixture()).get("autobiographical_recall")?.framing;
     expect(framing?.text).toContain("My recent seven-day default is always recalled");

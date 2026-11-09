@@ -1,3 +1,4 @@
+import { renderNarrativeCoverage } from "../../../memory/self/narrative-coverage.js";
 import { goalBlockStateText } from "../../../memory/self/goal-blocks.js";
 import {
   COMMITMENT_KINDS,
@@ -390,7 +391,7 @@ function renderSelfPatternDigest(context: DeliberationContext): RenderedPlannerS
       currentPeriod.disclosure_label ?? selfPrivateMemoryDisclosureLabel(),
     );
     rows.push(
-      `<current_period id="${escapeXmlAttribute(currentPeriod.id)}" age="${escapeXmlAttribute(relativeAge(currentPeriod.last_updated, nowMs))}" disclosure="${escapeXmlAttribute(periodDisclosure)}"><label>${escapeXmlText(label.text)}</label><narrative>${escapeXmlText(narrative.text)}</narrative></current_period>`,
+      `<current_period id="${escapeXmlAttribute(currentPeriod.id)}" age="${escapeXmlAttribute(relativeAge(currentPeriod.last_updated, nowMs))}" disclosure="${escapeXmlAttribute(periodDisclosure)}"><label>${escapeXmlText(label.text)}</label><narrative>${escapeXmlText(narrative.text)}</narrative><coverage>${escapeXmlText(renderNarrativeCoverage(currentPeriod.narrative_coverage))}</coverage></current_period>`,
     );
   }
 

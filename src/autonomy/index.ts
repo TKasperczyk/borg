@@ -18,6 +18,7 @@ export {
   type AutonomySchedulerDescription,
   type AutonomySchedulerFleetBrakeDescription,
   type AutonomySchedulerSourceDescription,
+  type AutonomySchedulerRuntimeHold,
   type AutonomySchedulerTriggerSourceDescription,
   type AutonomySchedulerWakeGroupDescription,
   type AutonomySchedulerWakeDescription,

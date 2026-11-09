@@ -1,3 +1,5 @@
+import { classifyLlmStopReason, getLlmErrorStopReason } from "../llm/stop-reason.js";
+import { getLlmErrorUsage } from "../llm/usage.js";
 import type {
   LLMCompleteResult,
   LLMMessage,
@@ -93,6 +95,12 @@ export function traceLlmCallRetryHook(options: {
       kind: event.kind,
       ...(event.code === undefined ? {} : { code: event.code }),
       retry_transport: event.retry_transport,
+      ...(event.stop_reason_classification === undefined
+        ? {}
+        : {
+            stopReason: event.stop_reason_classification.raw,
+            stopReasonClassification: event.stop_reason_classification,
+          }),
     });
   };
 }
@@ -170,6 +178,9 @@ export function traceLlmCallResponse(options: {
       label: options.label,
       responseShape: options.responseShape,
       stopReason: options.response.stop_reason,
+      stopReasonClassification:
+        options.response.stop_reason_classification ??
+        classifyLlmStopReason(options.response.stop_reason),
       usage: buildUsageTraceBlock(options.response),
     });
   }
@@ -184,6 +195,8 @@ export function traceLlmCallError(options: {
   extra?: TracePayloadExtension;
 }): void {
   if (options.tracer?.enabled === true && options.turnId !== undefined) {
+    const stopReason = getLlmErrorStopReason(options.error);
+    const usage = getLlmErrorUsage(options.error);
     options.tracer.emit("llm_call.completed", {
       ...options.extra,
       turnId: options.turnId,
@@ -192,8 +205,9 @@ export function traceLlmCallError(options: {
       responseShape: {
         error: options.error instanceof Error ? options.error.message : String(options.error),
       },
-      stopReason: null,
-      usage: null,
+      stopReason: stopReason.raw,
+      stopReasonClassification: stopReason,
+      usage: usage === undefined ? null : buildUsageTraceBlock(usage),
     });
   }
 }

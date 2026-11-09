@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { narrativeCoverageSchema } from "./narrative-coverage.js";
 
 import { memoryDisclosureLabelSchema } from "../common/disclosure-label.js";
 import {
@@ -156,6 +157,8 @@ export const autobiographicalPeriodSchema = z
     start_ts: z.number().finite(),
     end_ts: z.number().finite().nullable(),
     narrative: z.string(),
+    // Older captures may omit it; stored legacy/manual periods normalize to null.
+    narrative_coverage: narrativeCoverageSchema.nullable().optional(),
     key_episode_ids: z.array(valueSourceEpisodeIdSchema),
     disclosure_label: memoryDisclosureLabelSchema.optional(),
     themes: z.array(z.string().min(1)),
@@ -174,6 +177,7 @@ export const autobiographicalPeriodPatchSchema = z
     start_ts: z.number().finite().optional(),
     end_ts: z.number().finite().nullable().optional(),
     narrative: z.string().optional(),
+    narrative_coverage: narrativeCoverageSchema.nullable().optional(),
     key_episode_ids: z.array(valueSourceEpisodeIdSchema).optional(),
     disclosure_label: memoryDisclosureLabelSchema.optional(),
     themes: z.array(z.string().min(1)).optional(),

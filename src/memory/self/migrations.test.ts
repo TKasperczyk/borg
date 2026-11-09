@@ -14,6 +14,29 @@ import { selfMigrations } from "./migrations.js";
 import { executiveMigrations, ExecutiveStepsRepository } from "../../executive/index.js";
 
 describe("self migrations", () => {
+  it("adds nullable narrative coverage without rewriting historical narratives", () => {
+    const dir = mkdtempSync(join(tmpdir(), "borg-period-coverage-"));
+    const path = join(dir, "legacy.db");
+    try {
+      const old = openDatabase(path, { migrations: selfMigrations.filter((m) => m.id < 14) });
+      old.exec(`INSERT INTO autobiographical_periods
+        (id, label, start_ts, narrative, key_episode_ids, themes, created_at, last_updated)
+        VALUES ('abp_aaaaaaaaaaaaaaaa', 'Earlier period', 1, 'Existing story', '[]', '[]', 1, 2)`);
+      const previous = old.prepare("SELECT * FROM autobiographical_periods").get();
+      old.close();
+      const db = openDatabase(path, { migrations: selfMigrations });
+      try {
+        expect(db.prepare("SELECT * FROM autobiographical_periods").get()).toEqual({
+          ...previous,
+          narrative_coverage: null,
+        });
+      } finally {
+        db.close();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
   it("rebuilds goals without losing rows, parent references, dependent steps, indexes or triggers", () => {
     const dir = mkdtempSync(join(tmpdir(), "borg-goal-migration-"));
     const path = join(dir, "legacy.db");
@@ -120,12 +143,13 @@ describe("self migrations", () => {
     try {
       const migrationNames = selfMigrations.map((migration) => migration.name);
       expect(new Set(migrationNames).size).toBe(migrationNames.length);
-      expect(migrationNames.slice(-5)).toEqual([
+      expect(migrationNames.slice(-6)).toEqual([
         "goal_counterparty_entity_id",
         "goal_named_block_history",
         "goal_deadline_assignment_basis",
         "open_question_refusal_backoff",
         "goal_superseded_status",
+        "autobiographical_narrative_coverage",
       ]);
       expect(db.listAppliedMigrations().map((migration) => migration.name)).toEqual(migrationNames);
       expect(

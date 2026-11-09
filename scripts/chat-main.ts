@@ -1,3 +1,4 @@
+import { renderNarrativeCoverage } from "../src/memory/self/narrative-coverage.js";
 import { createHash } from "node:crypto";
 import { createInterface } from "node:readline";
 
@@ -885,6 +886,7 @@ async function main(): Promise<void> {
       }
 
       writeLine(`${period.label} ${truncate(period.narrative, 120)}`);
+      writeLine(renderNarrativeCoverage(period.narrative_coverage));
       return;
     }
 

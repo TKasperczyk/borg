@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+import { LLMRefusalError } from "../llm/index.js";
+import { attachLlmErrorUsage } from "../llm/usage.js";
+import { StructuredToolCallError } from "../llm/structured-tool-call.js";
 
 import type { LLMCompleteResult, LLMMessage, LLMToolDefinition } from "../llm/index.js";
 import type { TurnTracer } from "./tracer.js";
@@ -137,6 +140,7 @@ describe("llm call trace helpers", () => {
       label: "test_label",
       responseShape: { textLength: 2 },
       stopReason: "tool_use",
+      stopReasonClassification: { kind: "tool_use", raw: "tool_use" },
       usage: {
         inputTokens: 7,
         outputTokens: 3,
@@ -176,6 +180,7 @@ describe("llm call trace helpers", () => {
       label: "actual_label",
       responseShape: { textLength: 2 },
       stopReason: "end_turn",
+      stopReasonClassification: { kind: "completed", raw: "end_turn" },
       usage: {
         inputTokens: 7,
         outputTokens: 3,
@@ -198,7 +203,32 @@ describe("llm call trace helpers", () => {
       label: "test_label",
       responseShape: { error: "failed" },
       stopReason: null,
+      stopReasonClassification: { kind: "unknown", raw: null },
       usage: null,
     });
+  });
+
+  it("traces a wrapped exhausted refusal with provider reason and accounted usage", () => {
+    const tracer = createTracer();
+    const refusal = new LLMRefusalError();
+    attachLlmErrorUsage(refusal, { input_tokens: 12, output_tokens: 6 });
+    const error = new StructuredToolCallError("wrapped", {
+      kind: "llm_failed",
+      toolName: "Emit",
+      acceptedToolNames: ["Emit"],
+      stopReason: refusal.stopReason,
+      stopReasonClassification: refusal.stopReasonClassification,
+      cause: refusal,
+      usage: { input_tokens: 12, output_tokens: 6 },
+    });
+    traceLlmCallError({ tracer, turnId: "turn_1", label: "refusal", error });
+    expect(tracer.emit).toHaveBeenCalledWith(
+      "llm_call.completed",
+      expect.objectContaining({
+        stopReason: "refusal",
+        stopReasonClassification: { kind: "refusal", raw: "refusal" },
+        usage: { inputTokens: 12, outputTokens: 6 },
+      }),
+    );
   });
 });

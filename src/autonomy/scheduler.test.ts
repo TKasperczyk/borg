@@ -479,6 +479,15 @@ describe("AutonomyScheduler", () => {
       expect(operationalScan).not.toHaveBeenCalled();
       expect(watermarkRepository.get("autonomy:test:operational", DEFAULT_SESSION_ID)).toBeNull();
       expect((await scheduler.describe()).budget.used_in_current_window).toBe(1);
+      expect((await scheduler.describe()).sources).toContainEqual(
+        expect.objectContaining({
+          name: operational.name,
+          runtime_holds: [{ kind: "maintenance", until: clock.now() + 90 * 60_000 }],
+        }),
+      );
+      expect((await scheduler.describe()).sources).toContainEqual(
+        expect.objectContaining({ name: contemplative.name, runtime_holds: [] }),
+      );
       // Repeated polls do not reset the fixed pass start, charge an operational wake, or mutate its brake.
       const brakeBefore = watermarkRepository.get(FLEET_BRAKE_PROCESS_NAME, DEFAULT_SESSION_ID);
       await scheduler.tick();
@@ -488,6 +497,9 @@ describe("AutonomyScheduler", () => {
       );
       if (release === "ended") passStartedAt = null;
       else clock.advance(90 * 60_000);
+      expect((await scheduler.describe()).sources).toContainEqual(
+        expect.objectContaining({ name: operational.name, runtime_holds: [] }),
+      );
       await scheduler.tick();
       expect(operationalScan).toHaveBeenCalledOnce();
       expect(
@@ -548,6 +560,45 @@ describe("AutonomyScheduler", () => {
     expect(watermarkRepository.get("autonomy:test:first", DEFAULT_SESSION_ID)).not.toBeNull();
     expect(watermarkRepository.get("autonomy:test:second", DEFAULT_SESSION_ID)).toBeNull();
     expect((await scheduler.tick()).status).toBe("disabled");
+  });
+
+  it("snapshots runtime holds at observed_at before asynchronous source reads", async () => {
+    const clock = new ManualClock(1_000_000);
+    const harness = await createOfflineTestHarness({ clock });
+    cleanup = harness.cleanup;
+    let maintenance: number | null = clock.now();
+    const source = createTestDueSource();
+    source.nextDueAt = async () => {
+      clock.advance(90 * 60_000);
+      maintenance = null;
+      return clock.now();
+    };
+    const createStreamWriter = (sessionId: typeof DEFAULT_SESSION_ID) =>
+      new StreamWriter({ dataDir: harness.tempDir, sessionId, clock });
+    const scheduler = createScheduler({
+      db: harness.db,
+      enabled: true,
+      intervalMs: 1000,
+      maxWakesPerWindow: 6,
+      clock,
+      createStreamWriter,
+      watermarkRepository: new StreamWatermarkRepository({ db: harness.db, clock }),
+      toolDispatcher: new ToolDispatcher({ createStreamWriter, clock }),
+      turnOrchestrator: { run: vi.fn() },
+      sources: [source],
+      maintenancePassStartedAt: () => maintenance,
+    });
+    const observed = await scheduler.describe();
+    expect(observed.observed_at).toBe(1_000_000);
+    expect(observed.sources).toContainEqual(
+      expect.objectContaining({
+        name: source.name,
+        runtime_holds: [{ kind: "maintenance", until: 6_400_000 }],
+      }),
+    );
+    expect((await scheduler.describe()).sources).toContainEqual(
+      expect.objectContaining({ name: source.name, runtime_holds: [] }),
+    );
   });
 
   it.each([
@@ -4427,6 +4478,10 @@ describe("AutonomyScheduler", () => {
     expect((await scheduler.describe()).budget.source_budgets).toEqual([
       { source: "open_question_dormant", usage: 1, limit: 1 },
     ]);
+    expect((await scheduler.describe()).budget).toMatchObject({
+      window_ms: 1_000,
+      window_started_at: clock.now() - 1_000,
+    });
     expect(first.events).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -4443,6 +4498,9 @@ describe("AutonomyScheduler", () => {
       ]),
     );
     clock.advance(1_001);
+    expect((await scheduler.describe()).budget.source_budgets).toEqual([
+      { source: "open_question_dormant", usage: 0, limit: 1 },
+    ]);
     expect((await scheduler.tick()).events).toContainEqual(
       expect.objectContaining({ id: "a-capped", status: "fired" }),
     );
@@ -5422,6 +5480,14 @@ describe("AutonomyScheduler", () => {
     const firstTick = await scheduler.tick();
     expect(firstTick.events[0]?.id).toBe("scheduled-reflection:1000000");
     expect(firstTick.busySkipped).toBe(1);
+    expect((await scheduler.describe()).sources).toContainEqual(
+      expect.objectContaining({
+        name: trigger.name,
+        runtime_holds: [
+          { kind: "event_retry", event_id: "scheduled-reflection:1000000", until: 1_030_000 },
+        ],
+      }),
+    );
     expect(turnRunner.run).toHaveBeenCalledTimes(1);
 
     clock.advance(10_000);
@@ -5435,6 +5501,9 @@ describe("AutonomyScheduler", () => {
     expect(turnRunner.run).toHaveBeenCalledTimes(1);
 
     clock.advance(30_001);
+    expect((await scheduler.describe()).sources).toContainEqual(
+      expect.objectContaining({ name: trigger.name, runtime_holds: [] }),
+    );
     const fourthTick = await scheduler.tick();
     expect(fourthTick.events[0]?.id).toBe("scheduled-reflection:1060000");
     expect(fourthTick.busySkipped).toBe(1);
@@ -5495,6 +5564,12 @@ describe("AutonomyScheduler", () => {
     expect(result.errorCount).toBe(1);
     expect(result.events[0]?.status).toBe("error");
     expect(watermarkRepository.get("autonomy:scheduled-reflection", DEFAULT_SESSION_ID)).toBeNull();
+    expect((await scheduler.describe()).sources).toContainEqual(
+      expect.objectContaining({
+        name: trigger.name,
+        runtime_holds: expect.arrayContaining([{ kind: "trigger_error", until: 1_030_000 }]),
+      }),
+    );
 
     clock.advance(10_000);
     const secondResult = await scheduler.tick();
@@ -6999,6 +7074,7 @@ describe("AutonomyScheduler", () => {
           category: "contemplative",
           enabled: true,
           next_due_at: 1_030_000,
+          runtime_holds: [],
         },
         {
           name: "scheduled_reflection",
@@ -7006,12 +7082,14 @@ describe("AutonomyScheduler", () => {
           category: "contemplative",
           enabled: false,
           next_due_at: null,
+          runtime_holds: [],
         },
         {
           name: "commitment_revoked",
           type: "condition",
           category: "operational",
           enabled: true,
+          runtime_holds: [],
         },
       ]),
       fleet_brake: {
@@ -8338,8 +8416,17 @@ describe("AutonomyScheduler", () => {
       expect(onTick).toHaveBeenCalledTimes(2);
     });
     expect(scanCount).toBe(1);
+    expect((await scheduler.describe()).sources).toContainEqual(
+      expect.objectContaining({
+        name: "scheduled_reflection",
+        runtime_holds: [{ kind: "source_retry", until: clock.now() + 30_000 }],
+      }),
+    );
 
     clock.advance(30_000);
+    expect((await scheduler.describe()).sources).toContainEqual(
+      expect.objectContaining({ name: "scheduled_reflection", runtime_holds: [] }),
+    );
     intervalCallback?.();
     await vi.waitFor(() => {
       expect(onTick).toHaveBeenCalledTimes(3);

@@ -1,3 +1,9 @@
+import { classifyLlmStopReason, type LLMStopReasonClassification } from "./stop-reason.js";
+export {
+  classifyLlmStopReason,
+  getLlmErrorStopReason,
+  type LLMStopReasonClassification,
+} from "./stop-reason.js";
 import { addLlmUsage, attachLlmErrorUsage, reportLlmErrorUsage, type LLMUsage } from "./usage.js";
 import Anthropic from "@anthropic-ai/sdk";
 import { APIConnectionError as OpenAIConnectionError, APIError as OpenAIAPIError } from "openai";
@@ -318,6 +324,7 @@ type LLMCallOptions = {
 };
 
 export type LLMTransportRetryEvent = {
+  stop_reason_classification?: LLMStopReasonClassification;
   // The attempt number about to run (2 = first retry).
   attempt: number;
   kind: "stall" | "connection" | "refusal";
@@ -407,6 +414,8 @@ export type LLMCompleteStreamOptions = LLMCompleteRequestOptions & {
 };
 
 export type LLMCompleteResult = {
+  /** Optional for custom clients; built-in providers always classify their raw reason. */
+  stop_reason_classification?: LLMStopReasonClassification;
   text: string;
   input_tokens: number;
   output_tokens: number;
@@ -430,6 +439,7 @@ export type LLMConverseStreamOptions = LLMConverseOptions & {
 };
 
 export type LLMConverseResult = {
+  stop_reason_classification?: LLMStopReasonClassification;
   messageBlocks: LLMContentBlock[];
   input_tokens: number;
   output_tokens: number;
@@ -1026,6 +1036,8 @@ function rethrowRetryableLlmTransportErrorAtTopLevel(error: unknown): void {
 }
 
 export class LLMRefusalError extends LLMError {
+  readonly stopReason = "refusal";
+  readonly stopReasonClassification = classifyLlmStopReason(this.stopReason);
   constructor() {
     super("Anthropic refused the request after the logical call's refusal retry was exhausted", {
       code: "LLM_REFUSAL_EXHAUSTED",
@@ -1066,11 +1078,17 @@ async function runWithAnthropicTransportRetries(
         output_tokens: response.usage.output_tokens,
         ...extractCacheUsage(response),
       });
-      if (response.stop_reason !== "refusal") return response;
+      const stopReasonClassification = classifyLlmStopReason(response.stop_reason);
+      if (stopReasonClassification.kind !== "refusal") return response;
       if (options.callState.refusalRetries >= 1) throw new LLMRefusalError();
       options.signal?.throwIfAborted();
       options.callState.refusalRetries += 1;
-      options.onRetry?.({ attempt: attempt + 1, kind: "refusal", code: "LLM_REFUSAL" });
+      options.onRetry?.({
+        attempt: attempt + 1,
+        kind: "refusal",
+        code: "LLM_REFUSAL",
+        stop_reason_classification: stopReasonClassification,
+      });
       continue;
     } catch (error) {
       // The SHALLOWEST typed transport verdict in the cause chain decides.
@@ -1810,8 +1828,7 @@ function buildOutputConfig(
   // Caller values win. The shared default rides only on the tier whose omitted
   // effort changed (see needsExplicitEffortDefault); other models keep the
   // request free of the field, which some of them reject.
-  const resolved =
-    effort ?? (needsExplicitEffortDefault(model) ? DEFAULT_LLM_EFFORT : undefined);
+  const resolved = effort ?? (needsExplicitEffortDefault(model) ? DEFAULT_LLM_EFFORT : undefined);
   if (base === undefined && resolved === undefined) {
     return undefined;
   }
@@ -2684,7 +2701,7 @@ export class AnthropicLLMClient implements LLMClient {
 
   // One state and deadline enclose auth recovery, forced-tool translation and transport
   // retries. Raw responses are counted once here, including discarded refusals.
-  private async runLogicalCall<T extends LLMUsage>(
+  private async runLogicalCall<T extends LLMUsage & { stop_reason: string | null }>(
     options: LLMCallOptions & { timeoutMs?: number },
     kind: "unary" | "streaming",
     run: (state: AnthropicCallState, signal: AbortSignal) => Promise<T>,
@@ -2711,7 +2728,11 @@ export class AnthropicLLMClient implements LLMClient {
       });
       throw error;
     }
-    const accounted = { ...result, ...state.usage };
+    const accounted = {
+      ...result,
+      ...state.usage,
+      stop_reason_classification: classifyLlmStopReason(result.stop_reason),
+    };
     await this.emitUsage(options, accounted);
     return accounted;
   }

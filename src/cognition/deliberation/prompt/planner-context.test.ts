@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { makeAutobiographicalPeriod } from "../../../test-support/factories/memory.js";
 
 import type { CommitmentRecord } from "../../../memory/commitments/index.js";
 import { memoryDisclosurePayloadFields } from "../../../memory/common/disclosure-serializers.js";
@@ -295,6 +296,39 @@ function livedEntry(input: {
 }
 
 describe("compact planner context", () => {
+  it.each([
+    null,
+    {
+      shown_episodes: 3,
+      omitted_episodes: 5,
+      window_rule: "newest_contiguous_suffix" as const,
+      limiting_bound: "maxPromptTokens" as const,
+    },
+  ])("preserves latest-pass coverage outside the planner narrative excerpt: %j", (coverage) => {
+    const text = allSystemText(
+      build(
+        context({
+          selfSnapshot: {
+            values: [],
+            goals: [],
+            traits: [],
+            currentPeriod: makeAutobiographicalPeriod({
+              narrative: "Narrative. ".repeat(400),
+              narrative_coverage: coverage,
+            }),
+          },
+        }),
+      ),
+    );
+    const period = taggedBlock(text, "current_period");
+    expect(period).toContain(
+      coverage === null
+        ? "<coverage>Latest narration pass input: coverage unknown.</coverage>"
+        : "<coverage>Latest narration pass input: newest 3 episodes shown (contiguous suffix, chronological order); 5 earlier episodes omitted; limiting bound: maxPromptTokens.</coverage>",
+    );
+    expect(period).not.toContain("Narrative. ".repeat(200));
+    expect(period.indexOf("</narrative>")).toBeLessThan(period.indexOf("<coverage>"));
+  });
   it("renders the structurally available outbound action in the turn-local autonomous surface", () => {
     const outboundContext = {
       maxPostsPerWindow: 3,

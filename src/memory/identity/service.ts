@@ -1057,6 +1057,9 @@ export class IdentityService {
         {
           ...carried,
           ...parsedPatch,
+          ...(parsedPatch.narrative !== undefined && parsedPatch.narrative_coverage === undefined
+            ? { narrative_coverage: null }
+            : {}),
           provenance,
         },
         {

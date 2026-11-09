@@ -65,6 +65,44 @@ function toolCallResponse(args: string, finishReason = "tool_calls") {
 }
 
 describe("OpenAICompatibleLLMClient", () => {
+  it.each(["refusal", "content_filter", "future_reason"])(
+    "preserves an unknown gateway finish reason %s without calling it refusal",
+    async (reason) => {
+      const client = new OpenAICompatibleLLMClient({
+        client: fakeClient(toolCallResponse("{}", reason)),
+      });
+      const result = await client.complete(completeOptions());
+      expect(result.stop_reason_classification).toEqual({ kind: "unknown", raw: reason });
+    },
+  );
+
+  it.each(["refusal", "content_filter", "length"])(
+    "carries raw gateway %s through malformed-tool error wrappers",
+    async (reason) => {
+      const client = new OpenAICompatibleLLMClient({
+        client: fakeClient(toolCallResponse("{", reason)),
+      });
+      await expect(
+        callStructuredTool({
+          llmClient: client,
+          request: completeOptions(),
+          toolName: TOOL.name,
+          parse: (input) => input,
+        }),
+      ).rejects.toMatchObject({
+        stopReasonClassification: {
+          kind: reason === "length" ? "max_tokens" : "unknown",
+          raw: reason,
+        },
+        cause: expect.objectContaining({
+          stopReasonClassification: {
+            kind: reason === "length" ? "max_tokens" : "unknown",
+            raw: reason,
+          },
+        }),
+      });
+    },
+  );
   afterEach(() => vi.restoreAllMocks());
 
   it.each(["complete", "converse"] as const)(

@@ -9,6 +9,34 @@ import { AutobiographicalRepository } from "./autobiographical.js";
 import { selfMigrations } from "./migrations.js";
 
 describe("AutobiographicalRepository", () => {
+  it("round-trips coverage, restores it, and leaves manual replacements unknown", () => {
+    const db = openDatabase(":memory:", { migrations: selfMigrations });
+    try {
+      const repository = new AutobiographicalRepository({ db });
+      const coverage = {
+        shown_episodes: 8,
+        omitted_episodes: 12,
+        window_rule: "newest_contiguous_suffix",
+        limiting_bound: "maxEpisodesPerRun",
+      } as const;
+      const period = repository.upsertPeriod({
+        label: "Period",
+        start_ts: 1,
+        narrative: "Story",
+        provenance: { kind: "manual" },
+        narrative_coverage: coverage,
+      });
+      expect(repository.getPeriod(period.id)?.narrative_coverage).toEqual(coverage);
+      expect(repository.listPeriods()[0]?.narrative_coverage).toEqual(coverage);
+      repository.updateNarrative(period.id, "Manual replacement");
+      expect(repository.currentPeriod()?.narrative_coverage).toBeNull();
+      repository.upsertPeriod(period);
+      repository.closePeriod(period.id, 2);
+      expect(repository.getPeriod(period.id)?.narrative_coverage).toEqual(coverage);
+    } finally {
+      db.close();
+    }
+  });
   const offlineNarratorProvenance = { kind: "offline", process: "self-narrator" } as const;
 
   it("upserts, lists, closes, and updates periods", () => {
