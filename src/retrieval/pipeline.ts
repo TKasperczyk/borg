@@ -1,4 +1,6 @@
 import { frameAnomalyAnnotationFields } from "../stream/frame-anomaly.js";
+import type { RetrievalDegradation } from "./degradation.js";
+export type { RetrievalDegradation } from "./degradation.js";
 import { similarityThresholds, type SimilarityConfigSource } from "../config/similarity.js";
 import type { AttentionWeights, TemporalCue } from "../contracts/cognitive-contracts.js";
 import {
@@ -93,7 +95,6 @@ import {
   DEFAULT_RECALL_EXPANSION_MODEL,
   MAX_RECALL_QUERY_FOCUS_CHARS,
   expandRecall,
-  type RecallQueryPlan,
   type RecallQueryPlannerContext,
 } from "./recall-expansion.js";
 import type {
@@ -163,8 +164,11 @@ export type RetrievalPipelineOptions = {
   recallExpansionSemanticVariantCount?: number;
   rawQueryMaxBytes?: number;
   // Hard cap for the recall-expansion LLM call; on timeout recall proceeds
-  // without expansion via the existing degraded path. Unset or 0 disables it.
+  // without expansion via the existing degraded path. Defaults to 90s; 0 disables it.
   recallExpansionTimeoutMs?: number;
+  recallExpansionAttemptTimeoutMs?: number;
+  recallExpansionMaxTokens?: number;
+  recallExpansionRepairMaxTokens?: number;
   // IANA zone the recall planner resolves relative time references in (default UTC).
   recallPlannerTimeZone?: string;
   // Time attention weight applied when the planner's cue is the only time signal. Callers fix
@@ -204,16 +208,6 @@ export type RetrievalPipelineOptions = {
   recallStateMaxWarmEvidenceRendered?: number;
   maxRetrievedImageRefs?: number;
   lexicalFusionEnabled?: boolean;
-};
-
-// A retrieval subsystem that failed without failing the whole recall. The
-// tracer already records these, but an interactive caller (the memory
-// sidecar's /memory/recall) needs them inline so it can label a partial answer
-// rather than presenting it as a complete one — "no memories found" and "the
-// search itself broke" must not look identical to the consumer.
-export type RetrievalDegradation = {
-  subsystem: string;
-  reason: string;
 };
 
 // The time reference a retrieval pass acted on, reported once the plan is decided: the caller's
@@ -261,6 +255,7 @@ export type RetrievalSharedOptions = EpisodeCognitionRecallOptions & {
   turnCounter?: number;
   traceTurnId?: string;
   recordRetrieval?: boolean;
+  signal?: AbortSignal;
 };
 
 export type CognitionRetrievalOptions = RetrievalSharedOptions & {
@@ -489,7 +484,8 @@ export class RetrievalPipeline {
           const reportObserverError = (observerError: unknown): void => {
             try {
               console.error("Retrieval open-question observer failed", {
-                error_name: observerError instanceof Error ? observerError.name : typeof observerError,
+                error_name:
+                  observerError instanceof Error ? observerError.name : typeof observerError,
               });
             } catch {
               // Degradation observers must not prevent fallback retrieval.
@@ -629,6 +625,7 @@ export class RetrievalPipeline {
     intentQueryVectorsOverride?: IntentQueryVectorMemo,
     rawQueryOverride?: string,
   ): Promise<RetrievedContext> {
+    options.signal?.throwIfAborted();
     options = this.options.entityRepository?.resolveReferences?.(options) ?? options;
     if (this.tracer.enabled && options.traceTurnId !== undefined) {
       this.tracer.emit("retrieval.started", {
@@ -660,14 +657,7 @@ export class RetrievalPipeline {
           activeValues: options.activeValues ?? [],
         });
       } catch (error) {
-        if (this.tracer.enabled && options.traceTurnId !== undefined) {
-          this.tracer.emit("retrieval.degraded", {
-            turnId: options.traceTurnId,
-            session_id: options.sessionId,
-            subsystem: "scoring_features",
-            reason: error instanceof Error ? error.message : String(error),
-          });
-        }
+        this.emitRetrievalDegraded(options, "scoring_features", error);
 
         scoringFeatures = {
           goalVectors: [],
@@ -678,6 +668,7 @@ export class RetrievalPipeline {
 
     const rawQuery = rawQueryOverride ?? this.prepareRawRecallQuery(query, options);
     const intents = await this.buildRecallIntents(query, rawQuery, options, expansionOverride);
+    options.signal?.throwIfAborted();
     const timeSignalPresent =
       options.timeRange !== undefined || intents.some((intent) => intent.kind === "time");
     const plannerTimeWeightApplied =
@@ -860,7 +851,9 @@ export class RetrievalPipeline {
   private async resolveIntentQueryVector(
     query: string,
     memo: IntentQueryVectorMemo,
+    signal?: AbortSignal,
   ): Promise<Float32Array> {
+    signal?.throwIfAborted();
     const existing = memo.get(query);
 
     if (existing !== undefined) {
@@ -868,7 +861,9 @@ export class RetrievalPipeline {
     }
 
     const pending = (async (): Promise<Float32Array> => {
-      return await this.options.embeddingClient.embed(query);
+      return signal === undefined
+        ? await this.options.embeddingClient.embed(query)
+        : await this.options.embeddingClient.embed(query, { signal });
     })();
     // Keep rejected promises in the per-search memo as well. The collectors'
     // existing per-intent settling still isolates the failure, while later
@@ -1595,34 +1590,36 @@ export class RetrievalPipeline {
     }
 
     try {
-      const expansion = await this.raceExpansionDeadline(
-        expandRecall({
-          llmClient: this.options.llmClient,
-          model: this.options.recallExpansionModel ?? DEFAULT_RECALL_EXPANSION_MODEL,
-          focus: query,
-          semanticVariantCount:
-            options.semanticVariantCount ??
-            this.options.recallExpansionSemanticVariantCount ??
-            DEFAULT_RECALL_EXPANSION_SEMANTIC_VARIANT_COUNT,
-          ...(options.recallQueryPlannerContext ?? {}),
-          identity: {
-            ...options.recallQueryPlannerContext?.identity,
-            entityTerms: dedupeStrings([
-              ...(options.recallQueryPlannerContext?.identity?.entityTerms ?? []),
-              ...(options.entityTerms ?? []),
-              ...(options.audienceTerms ?? []),
-            ]),
-          },
-          nowMs: this.clock.now(),
-          ...(this.options.recallPlannerTimeZone === undefined
-            ? {}
-            : { timeZone: this.options.recallPlannerTimeZone }),
-          timeoutMs: this.options.recallExpansionTimeoutMs,
-          tracer: this.tracer,
-          turnId: options.traceTurnId,
-          sessionId: options.sessionId,
-        }),
-      );
+      const expansion = await expandRecall({
+        llmClient: this.options.llmClient,
+        model: this.options.recallExpansionModel ?? DEFAULT_RECALL_EXPANSION_MODEL,
+        focus: query,
+        semanticVariantCount:
+          options.semanticVariantCount ??
+          this.options.recallExpansionSemanticVariantCount ??
+          DEFAULT_RECALL_EXPANSION_SEMANTIC_VARIANT_COUNT,
+        ...(options.recallQueryPlannerContext ?? {}),
+        identity: {
+          ...options.recallQueryPlannerContext?.identity,
+          entityTerms: dedupeStrings([
+            ...(options.recallQueryPlannerContext?.identity?.entityTerms ?? []),
+            ...(options.entityTerms ?? []),
+            ...(options.audienceTerms ?? []),
+          ]),
+        },
+        nowMs: this.clock.now(),
+        ...(this.options.recallPlannerTimeZone === undefined
+          ? {}
+          : { timeZone: this.options.recallPlannerTimeZone }),
+        timeoutMs: this.options.recallExpansionTimeoutMs,
+        attemptTimeoutMs: this.options.recallExpansionAttemptTimeoutMs,
+        maxTokens: this.options.recallExpansionMaxTokens,
+        repairMaxTokens: this.options.recallExpansionRepairMaxTokens,
+        signal: options.signal,
+        tracer: this.tracer,
+        turnId: options.traceTurnId,
+        sessionId: options.sessionId,
+      });
       const namedTerms = dedupeStrings(expansion.named_terms);
       const semanticIntents = expansion.semantic_variants.map(
         (variant, index): RecallIntent => ({
@@ -1651,6 +1648,7 @@ export class RetrievalPipeline {
         namedTerms,
       };
     } catch (error) {
+      options.signal?.throwIfAborted();
       this.reportDegraded(options, {
         subsystem: "recall_expansion",
         reason: error instanceof Error ? error.message : String(error),
@@ -1688,40 +1686,6 @@ export class RetrievalPipeline {
     }
   }
 
-  // The abort signal inside expandRecall is advisory: the SDK's retry backoff
-  // does not observe it, so a 429/5xx retry can keep the call pending past the
-  // deadline. This race is the hard cap; the losing call is left to settle on
-  // its own (its rejection is swallowed) and the caller's degraded path runs.
-  private async raceExpansionDeadline(
-    expansion: Promise<RecallQueryPlan>,
-  ): Promise<RecallQueryPlan> {
-    const timeoutMs = this.options.recallExpansionTimeoutMs;
-
-    if (timeoutMs === undefined || timeoutMs <= 0) {
-      return expansion;
-    }
-
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    expansion.catch(() => undefined);
-
-    try {
-      return await Promise.race([
-        expansion,
-        new Promise<never>((_, reject) => {
-          timer = setTimeout(
-            () => reject(new Error(`recall expansion exceeded ${timeoutMs}ms deadline`)),
-            timeoutMs,
-          );
-          timer.unref?.();
-        }),
-      ]);
-    } finally {
-      if (timer !== undefined) {
-        clearTimeout(timer);
-      }
-    }
-  }
-
   private async collectEpisodicEvidenceCandidates(
     intents: readonly RecallIntent[],
     options: RetrievalExecutionOptions,
@@ -1742,7 +1706,11 @@ export class RetrievalPipeline {
         const settle = this.startLaneTrace(options, intent, "episodic");
         try {
           const candidates = await this.collectEpisodicCandidatesForDisclosureModeIntent(
-            intent, options, limit, mode, intentQueryVectors,
+            intent,
+            options,
+            limit,
+            mode,
+            intentQueryVectors,
           );
           settle(candidates.length);
           return candidates;
@@ -1893,7 +1861,11 @@ export class RetrievalPipeline {
     const recentBudget = Math.max(limit, 4);
 
     if (intent.kind === "raw_text" || intent.kind === "semantic_query") {
-      const intentVector = await this.resolveIntentQueryVector(intent.query, intentQueryVectors);
+      const intentVector = await this.resolveIntentQueryVector(
+        intent.query,
+        intentQueryVectors,
+        options.signal,
+      );
       const candidates =
         mode === "cognition"
           ? await this.options.episodicRepository.recallByVectorForCognition(intentVector, {
@@ -2058,6 +2030,7 @@ export class RetrievalPipeline {
           const intentVector = await this.resolveIntentQueryVector(
             intent.query,
             intentQueryVectors,
+            options.signal,
           );
           const resolveSemanticContextForMode =
             mode === "disclosure"
@@ -2086,8 +2059,13 @@ export class RetrievalPipeline {
             },
           );
 
-          settle(semantic.matchedNodes.length + semantic.supportHits.length + semantic.causalHits.length +
-            semantic.contradictionHits.length + semantic.categoryHits.length);
+          settle(
+            semantic.matchedNodes.length +
+              semantic.supportHits.length +
+              semantic.causalHits.length +
+              semantic.contradictionHits.length +
+              semantic.categoryHits.length,
+          );
           return {
             intent,
             semantic,
@@ -2128,9 +2106,11 @@ export class RetrievalPipeline {
             limit: options.openQuestionsLimit,
             traceTurnId: options.traceTurnId,
             sessionId: options.sessionId,
-            onDegraded: (_reason, error) => {
+            onDegraded: (reason, error) => {
               laneRejected = true;
               laneError = error;
+              // The public helper owns tracing and observer error handling.
+              return options.onDegraded?.({ subsystem: "open_questions", reason });
             },
           });
 
@@ -2183,7 +2163,11 @@ export class RetrievalPipeline {
       async (intent): Promise<ImagePerceptionEvidenceCandidate[]> => {
         const settle = this.startLaneTrace(options, intent, "image_perception");
         try {
-          const vector = await this.resolveIntentQueryVector(intent.query, intentQueryVectors);
+          const vector = await this.resolveIntentQueryVector(
+            intent.query,
+            intentQueryVectors,
+            options.signal,
+          );
           const imageRecallLimit = Math.max(1, options.limit ?? 5);
           const imageRecallInput = {
             vector,
@@ -2233,23 +2217,25 @@ export class RetrievalPipeline {
     subsystem: string,
     error: unknown,
   ): void {
-    if (this.tracer.enabled && options.traceTurnId !== undefined) {
-      this.tracer.emit("retrieval.degraded", {
-        turnId: options.traceTurnId,
-        session_id: options.sessionId,
-        subsystem,
-        reason: error instanceof Error ? error.message : String(error),
-      });
-    }
+    this.reportDegraded(options, {
+      subsystem,
+      reason: error instanceof Error ? error.message : String(error),
+    });
   }
 
   private async collectCommitmentEvidence(
     intents: readonly RecallIntent[],
     options: RetrievalExecutionOptions,
   ): Promise<EvidenceItem[]> {
-    const settle = this.startLaneTrace(options, {
-      id: "context:commitments", kind: "commitment", source: "context",
-    }, "commitments");
+    const settle = this.startLaneTrace(
+      options,
+      {
+        id: "context:commitments",
+        kind: "commitment",
+        source: "context",
+      },
+      "commitments",
+    );
     let candidateCount = 0;
     let laneError: unknown;
     let laneRejected = false;
@@ -2284,9 +2270,11 @@ export class RetrievalPipeline {
       try {
         intentVectors = await this.options.embeddingClient.embedBatch(
           relevantIntents.map((intent) => intent.query),
+          { signal: options.signal },
         );
         commitmentVectors = await this.options.embeddingClient.embedBatch(
           activeCommitments.map((commitment) => commitment.directive),
+          { signal: options.signal },
         );
       } catch (error) {
         laneError = error;

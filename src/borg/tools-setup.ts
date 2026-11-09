@@ -1,6 +1,9 @@
 // Registers Borg's built-in read and memory tools with a dispatcher.
 
 import type { Clock } from "../util/clock.js";
+import type { Config } from "../config/index.js";
+import type { ToolDispatchCall } from "../tools/dispatcher.js";
+import type { TimeoutLoadSignals } from "../util/timeout-policy.js";
 import type { ScheduledWakesRepository } from "../autonomy/index.js";
 import type { PromptSurfaceHistoryRepository } from "../cognition/prompts/prompt-surface-history.js";
 import {
@@ -16,6 +19,7 @@ import type { CommitmentRepository } from "../memory/commitments/index.js";
 import type { EntityRepository } from "../memory/commitments/index.js";
 import type { EpisodicRepository } from "../memory/episodic/index.js";
 import type { LifecycleTracer } from "../memory/lifecycle-ops/index.js";
+import type { TurnTracer } from "../tracing/tracer.js";
 import {
   parseIdentityEventDisclosureSources,
   type IdentityEvent,
@@ -90,6 +94,9 @@ export type BuildToolDispatcherOptions = {
   createStreamWriter: BorgStreamWriterFactory;
   clock: Clock;
   tracer?: LifecycleTracer;
+  budgetTracer?: Pick<TurnTracer, "emit">;
+  toolTimeouts?: Config["tools"];
+  loadSignals?: (call: ToolDispatchCall) => TimeoutLoadSignals;
 };
 
 async function identityEventDisclosureLabelsForCollection(
@@ -175,6 +182,9 @@ export function buildToolDispatcher(options: BuildToolDispatcherOptions): ToolDi
   const toolDispatcher = new ToolDispatcher({
     createStreamWriter: options.createStreamWriter,
     clock: options.clock,
+    ...options.toolTimeouts,
+    loadSignals: options.loadSignals,
+    tracer: options.budgetTracer,
   });
 
   toolDispatcher
@@ -204,6 +214,7 @@ export function buildToolDispatcher(options: BuildToolDispatcherOptions): ToolDi
     .register(
       createEpisodicSearchTool({
         searchEpisodes: async (query, limit, context) => {
+          const degradations: import("../retrieval/degradation.js").RetrievalDegradation[] = [];
           const currentAudienceEntityId = context.audienceEntityId ?? null;
           const retrieved = await options.retrievalPipeline.recallEpisodesForCognition(query, {
             limit,
@@ -217,9 +228,14 @@ export function buildToolDispatcher(options: BuildToolDispatcherOptions): ToolDi
             rankingAudienceEntityId: currentAudienceEntityId,
             sessionId: context.sessionId,
             traceTurnId: context.turnId,
+            signal: context.signal,
+            onDegraded: (degradation) => {
+              degradations.push(degradation);
+              context.onRetrievalDegraded?.(degradation);
+            },
           });
 
-          return retrieved.episodes;
+          return { episodes: retrieved.episodes, degradations };
         },
       }),
     )

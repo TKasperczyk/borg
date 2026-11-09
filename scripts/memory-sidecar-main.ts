@@ -88,6 +88,8 @@ const maxOpen = Number(process.env.BORG_MEMORY_MAX_OPEN ?? 32);
 // caller's recall timeout (team-agent: memory.recall_timeout, 6s on prod).
 const recallDeadlineMsRaw = Number(process.env.BORG_RECALL_DEADLINE_MS ?? 5000);
 const recallDeadlineMs = Number.isFinite(recallDeadlineMsRaw) ? recallDeadlineMsRaw : 5000;
+// Full cognition reserves a repair window; the sidecar keeps its 5s service budget.
+process.env.BORG_RETRIEVAL_RECALL_EXPANSION_TIMEOUT_MS ??= "2000";
 const recentActivityWindowMsRaw = Number(
   process.env.BORG_MEMORY_RECENT_ACTIVITY_WINDOW_MS ?? DEFAULT_RECENT_ACTIVITY_WINDOW_MS,
 );
@@ -171,6 +173,9 @@ const embeddingClient = createCachingEmbeddingClient(
       dims: embeddingDims,
       provider: readEmbeddingProviderEnv(process.env),
       maxInputBytes: readEmbeddingMaxInputBytesEnv(process.env),
+      requestTimeoutMs: Number(process.env.BORG_EMBEDDING_REQUEST_TIMEOUT_MS ?? 120_000),
+      rateLimitMaxRetries: Number(process.env.BORG_EMBEDDING_RATE_LIMIT_MAX_RETRIES ?? 2),
+      rateLimitBaseDelayMs: Number(process.env.BORG_EMBEDDING_RATE_LIMIT_BASE_DELAY_MS ?? 1_000),
     }),
     {
       timeoutMs: embeddingStallTimeoutMs,

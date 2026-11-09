@@ -167,8 +167,6 @@ type InvalidToolDecision = Extract<EmissionDecision, { kind: "invalid_tool" }>;
 type FinalizerCallOptionsContext = {
   context: DeliberationContext;
   effectiveContext: DeliberationContext;
-  baseSystemPrompt: string;
-  cacheableSystemPrompt: ReturnType<typeof buildCacheableBaseSystemPromptParts>;
   baseSystemPromptOptions: BuildBaseSystemPromptOptions;
   initialMessages: RunFinalizerOptions["initialMessages"];
   maxTokens: number;
@@ -269,17 +267,30 @@ function buildFinalizerCallOptions(
     configuredSurfaceVariant,
     context.effectiveContext.turnOrigin,
   );
+  // Verification and earlier finalizer attempts can add degradation notices
+  // after planning. Render from the current context at request assembly time.
+  const baseSystemPrompt = buildBaseSystemPrompt(
+    context.effectiveContext,
+    context.baseSystemPromptOptions,
+  );
+  const cacheableSystemPrompt = buildCacheableBaseSystemPromptParts(
+    context.effectiveContext,
+    context.baseSystemPromptOptions,
+  );
 
   return {
     llmClient: options.llmClient,
     dispatcher: options.toolDispatcher,
     sessionId: context.context.sessionId,
     audienceEntityId: context.context.audienceEntityId,
+    onRetrievalDegraded: (degradation) => {
+      (context.effectiveContext.retrievalDegradations ??= []).push(degradation);
+    },
     model: options.cognitionModel,
-    baseSystemPrompt: context.baseSystemPrompt,
+    baseSystemPrompt,
     shownOpenQuestionIds:
       context.effectiveContext.autonomyTriggerPresentation?.shownOpenQuestionIds,
-    shownGoalIds: context.cacheableSystemPrompt.shownGoalIds,
+    shownGoalIds: cacheableSystemPrompt.shownGoalIds,
     onPromptPresented: (shownGoalIds) => {
       const shown = new Set(shownGoalIds);
       options.goalPresentation?.presented(
@@ -287,7 +298,7 @@ function buildFinalizerCallOptions(
         context.context.turnId ?? "autonomous",
       );
     },
-    cacheableSystemPrompt: context.cacheableSystemPrompt,
+    cacheableSystemPrompt,
     finalizerDynamicPromptCacheEnabled: options.finalizerDynamicPromptCacheEnabled ?? true,
     finalizerTransport: options.finalizerTransport ?? "unary",
     finalizerSurfaceVariant: configuredSurfaceVariant,
@@ -1050,8 +1061,6 @@ export class Deliberator {
         ...effectiveContext,
         evidenceLedger: finalizerEvidenceLedger ?? null,
       },
-      baseSystemPrompt,
-      cacheableSystemPrompt: cacheableBaseSystemPrompt,
       baseSystemPromptOptions,
       initialMessages: dialogueBlockMessages,
       reasoningCallOptions,

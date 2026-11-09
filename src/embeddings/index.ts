@@ -2,19 +2,30 @@ import type { EmbeddingProfile } from "./bank-profile.js";
 import type { EmbeddingProvider } from "../config/embedding-provider.js";
 import OpenAI from "openai";
 
-import { sleep } from "../util/clock.js";
-import { ConfigError, EmbeddingError } from "../util/errors.js";
+import { sleep, SystemClock, type Clock } from "../util/clock.js";
+import { runWithDeadline } from "../util/deadline.js";
+import {
+  EmbeddingBackoffError,
+  embeddingHttpError,
+  embeddingRetryAt,
+  type EmbeddingRequestState,
+} from "./request-retry.js";
+export { EmbeddingBackoffError, type EmbeddingRequestState } from "./request-retry.js";
+import { ConfigError, EmbeddingError, findInErrorCauseChain } from "../util/errors.js";
 import { toWellFormedUtf16 } from "../util/utf16-boundary.js";
 import { utf8SafePrefix } from "../util/utf8-boundary.js";
 
 type OpenAIEmbeddingsClient = {
   embeddings: {
-    create(params: {
-      input: string | string[];
-      model: string;
-      encoding_format?: "float" | "base64";
-      provider?: EmbeddingProvider;
-    }): Promise<{
+    create(
+      params: {
+        input: string | string[];
+        model: string;
+        encoding_format?: "float" | "base64";
+        provider?: EmbeddingProvider;
+      },
+      options?: { signal?: AbortSignal; maxRetries?: number; timeout?: number },
+    ): Promise<{
       data: Array<{
         embedding: number[];
         index: number;
@@ -28,14 +39,23 @@ export type EmbeddingClientStats = {
   input_truncations: number;
 };
 
+export type EmbeddingCallOptions = {
+  signal?: AbortSignal;
+};
+export type EmbeddingBatchOptions = EmbeddingCallOptions & {
+  /** Validated request results, indexed into this call's original input array. */
+  onChunk?: (startIndex: number, embeddings: readonly Float32Array[]) => void;
+};
+
 export type EmbeddingClient = {
   /** Effective transport cap; wrappers must preserve it for bounded scoring text. */
   readonly maxInputBytes?: number | undefined;
   /** Required when injecting into Borg.open; wrappers must preserve this identity. */
   readonly profile?: EmbeddingProfile;
   stats?(): EmbeddingClientStats;
-  embed(text: string): Promise<Float32Array>;
-  embedBatch(texts: readonly string[]): Promise<Float32Array[]>;
+  requestState?(): EmbeddingRequestState;
+  embed(text: string, options?: EmbeddingCallOptions): Promise<Float32Array>;
+  embedBatch(texts: readonly string[], options?: EmbeddingBatchOptions): Promise<Float32Array[]>;
 };
 
 export type OpenAICompatibleEmbeddingClientOptions = {
@@ -48,6 +68,10 @@ export type OpenAICompatibleEmbeddingClientOptions = {
   maxBatchSize?: number;
   maxInputBytes?: number;
   provider?: EmbeddingProvider;
+  requestTimeoutMs?: number;
+  rateLimitMaxRetries?: number;
+  rateLimitBaseDelayMs?: number;
+  clock?: Clock;
 };
 
 const DEFAULT_MODEL_RELOAD_RETRY_DELAYS_MS: readonly number[] = [1000, 4000, 10_000];
@@ -176,6 +200,12 @@ export class OpenAICompatibleEmbeddingClient implements EmbeddingClient {
   readonly maxInputBytes: number | undefined;
   private inputTruncations = 0;
   private readonly provider: EmbeddingProvider | undefined;
+  private readonly requestTimeoutMs: number;
+  private readonly rateLimitMaxRetries: number;
+  private readonly rateLimitBaseDelayMs: number;
+  private readonly clock: Clock;
+  private retryAt: number | null = null;
+  private readonly activeRequests = new Map<object, number>();
 
   constructor(options: OpenAICompatibleEmbeddingClientOptions) {
     if (!Number.isInteger(options.dims) || options.dims <= 0) {
@@ -222,6 +252,17 @@ export class OpenAICompatibleEmbeddingClient implements EmbeddingClient {
       throw new ConfigError("Embedding max input bytes must be a positive integer");
     }
     this.maxInputBytes = options.maxInputBytes;
+    this.requestTimeoutMs = options.requestTimeoutMs ?? 120_000;
+    this.rateLimitMaxRetries = options.rateLimitMaxRetries ?? 2;
+    this.rateLimitBaseDelayMs = options.rateLimitBaseDelayMs ?? 1_000;
+    for (const value of [this.requestTimeoutMs, this.rateLimitBaseDelayMs]) {
+      if (!Number.isSafeInteger(value) || value <= 0)
+        throw new ConfigError("Embedding request budgets must be positive integers");
+    }
+    if (!Number.isSafeInteger(this.rateLimitMaxRetries) || this.rateLimitMaxRetries < 0) {
+      throw new ConfigError("Embedding rateLimitMaxRetries must be a non-negative integer");
+    }
+    this.clock = options.clock ?? new SystemClock();
   }
 
   get profile(): EmbeddingProfile {
@@ -230,6 +271,15 @@ export class OpenAICompatibleEmbeddingClient implements EmbeddingClient {
 
   stats(): EmbeddingClientStats {
     return { input_truncations: this.inputTruncations };
+  }
+
+  requestState(): EmbeddingRequestState {
+    return {
+      retryAt: this.retryAt !== null && this.retryAt > this.clock.now() ? this.retryAt : null,
+      inFlight: this.activeRequests.size,
+      oldestRequestStartedAt:
+        this.activeRequests.size === 0 ? null : Math.min(...this.activeRequests.values()),
+    };
   }
 
   private prepareInput(text: string): string {
@@ -247,8 +297,8 @@ export class OpenAICompatibleEmbeddingClient implements EmbeddingClient {
     return utf8SafePrefix(wellFormed, this.maxInputBytes);
   }
 
-  async embed(text: string): Promise<Float32Array> {
-    const [embedding] = await this.embedBatch([text]);
+  async embed(text: string, options?: EmbeddingCallOptions): Promise<Float32Array> {
+    const [embedding] = await this.embedBatch([text], options);
 
     if (embedding === undefined) {
       throw new EmbeddingError("Embedding response was empty");
@@ -257,7 +307,10 @@ export class OpenAICompatibleEmbeddingClient implements EmbeddingClient {
     return embedding;
   }
 
-  async embedBatch(texts: readonly string[]): Promise<Float32Array[]> {
+  async embedBatch(
+    texts: readonly string[],
+    options: EmbeddingBatchOptions = {},
+  ): Promise<Float32Array[]> {
     if (texts.length === 0) {
       return [];
     }
@@ -265,20 +318,25 @@ export class OpenAICompatibleEmbeddingClient implements EmbeddingClient {
     // Sequential, not parallel: the point is to keep concurrent load off a
     // shared local inference server, so firing the chunks at once would
     // reintroduce the pressure this exists to avoid.
-    if (texts.length > this.maxBatchSize) {
-      const out: Float32Array[] = [];
-      for (let start = 0; start < texts.length; start += this.maxBatchSize) {
-        out.push(...(await this.embedChunk(texts.slice(start, start + this.maxBatchSize))));
-      }
-      return out;
+    const out: Float32Array[] = [];
+    for (let start = 0; start < texts.length; start += this.maxBatchSize) {
+      options.signal?.throwIfAborted();
+      const chunk = await this.embedChunk(texts.slice(start, start + this.maxBatchSize), options);
+      options.onChunk?.(
+        start,
+        chunk.map((vector) => new Float32Array(vector)),
+      );
+      out.push(...chunk);
     }
-
-    return this.embedChunk(texts);
+    return out;
   }
 
-  private async embedChunk(texts: readonly string[]): Promise<Float32Array[]> {
+  private async embedChunk(
+    texts: readonly string[],
+    options: EmbeddingCallOptions,
+  ): Promise<Float32Array[]> {
     try {
-      const response = await this.createWithModelReloadRetry(texts);
+      const response = await this.createWithModelReloadRetry(texts, options);
 
       if (response.data.length !== texts.length) {
         throw new EmbeddingError(
@@ -315,6 +373,7 @@ export class OpenAICompatibleEmbeddingClient implements EmbeddingClient {
   // retry is on the normal path, not an edge case.
   private async createWithModelReloadRetry(
     texts: readonly string[],
+    options: EmbeddingCallOptions,
   ): ReturnType<OpenAIEmbeddingsClient["embeddings"]["create"]> {
     // The gateway rejects a body with a lone surrogate for the WHOLE batch, and
     // reports it as "No model field." (prod, 2026-09-09). Callers are expected to
@@ -334,28 +393,97 @@ export class OpenAICompatibleEmbeddingClient implements EmbeddingClient {
       ...(this.provider === undefined ? {} : { provider: this.provider }),
     };
 
-    const maxAttempts = this.modelReloadRetryDelaysMs.length;
-    let lastError: unknown;
-
-    for (let attempt = 0; attempt <= maxAttempts; attempt += 1) {
-      try {
-        return await this.client.embeddings.create(params);
-      } catch (error) {
-        lastError = error;
-
-        if (!isModelNotLoadedError(error) || attempt === maxAttempts) {
-          throw error;
-        }
-
-        const delayMs = this.modelReloadRetryDelaysMs[attempt] ?? 0;
-
-        if (delayMs > 0) {
-          await sleep(delayMs);
-        }
-      }
+    const requestId = {};
+    const startedAt = this.clock.now();
+    const deadlineAt = startedAt + this.requestTimeoutMs;
+    this.activeRequests.set(requestId, startedAt);
+    try {
+      return await runWithDeadline({
+        timeoutMs: this.requestTimeoutMs,
+        signal: options.signal,
+        timeoutError: () =>
+          new EmbeddingError(`Embedding request exceeded ${this.requestTimeoutMs}ms`, {
+            code: "EMBEDDING_REQUEST_TIMEOUT",
+          }),
+        run: async (signal) => {
+          let reloadRetries = 0;
+          let transportRetries = 0;
+          let rateLimitRetries = 0;
+          while (true) {
+            signal.throwIfAborted();
+            const retryAt = this.requestState().retryAt;
+            if (retryAt !== null) {
+              if (retryAt >= deadlineAt) throw new EmbeddingBackoffError(retryAt);
+              await sleep(Math.max(0, retryAt - this.clock.now()), signal);
+              continue;
+            }
+            try {
+              // This request loop owns HTTP retries, including injected SDK clients.
+              return await this.client.embeddings.create(params, {
+                signal,
+                maxRetries: 0,
+                timeout: this.requestTimeoutMs,
+              });
+            } catch (error) {
+              const http = embeddingHttpError(error);
+              // Retain provider backoff even when this error cannot be retried.
+              // The next caller, and every retry path below, share this floor.
+              const providerRetryAt = embeddingRetryAt(http?.headers, this.clock.now());
+              if (providerRetryAt !== null) {
+                this.retryAt = Math.max(this.retryAt ?? 0, providerRetryAt);
+              }
+              signal.throwIfAborted();
+              if (this.retryAt !== null && this.retryAt >= deadlineAt) {
+                throw new EmbeddingBackoffError(this.retryAt, error);
+              }
+              if (http?.status === 429) {
+                const fallback = this.rateLimitBaseDelayMs * 2 ** Math.min(rateLimitRetries, 16);
+                const at = providerRetryAt ?? this.clock.now() + fallback;
+                this.retryAt = Math.max(this.retryAt ?? 0, at);
+                if (rateLimitRetries++ >= this.rateLimitMaxRetries || at >= deadlineAt) {
+                  throw new EmbeddingBackoffError(this.retryAt, error);
+                }
+                continue;
+              }
+              const reloadDelay = this.modelReloadRetryDelaysMs[reloadRetries];
+              if (isModelNotLoadedError(error) && reloadDelay !== undefined) {
+                reloadRetries += 1;
+                await sleep(reloadDelay, signal);
+                continue;
+              }
+              const connectionFailure = findInErrorCauseChain(
+                error,
+                (cause): cause is InstanceType<typeof OpenAI.APIConnectionError> =>
+                  cause instanceof OpenAI.APIConnectionError,
+              );
+              // The SDK's typed connection failures have no HTTP status. Keep
+              // their recovery in this same bounded owner, never a second loop.
+              if (
+                (connectionFailure !== undefined ||
+                  (http !== undefined &&
+                    (http.status === 408 || http.status === 409 || http.status >= 500))) &&
+                transportRetries++ < this.rateLimitMaxRetries
+              ) {
+                if (providerRetryAt === null) {
+                  await sleep(
+                    this.rateLimitBaseDelayMs * 2 ** Math.min(transportRetries - 1, 16),
+                    signal,
+                  );
+                }
+                continue;
+              }
+              const retainedRetryAt = this.requestState().retryAt;
+              if (retainedRetryAt !== null) {
+                throw new EmbeddingBackoffError(retainedRetryAt, error);
+              }
+              throw error;
+            }
+          }
+        },
+      });
+    } finally {
+      this.activeRequests.delete(requestId);
     }
-
-    throw lastError;
   }
 }
 

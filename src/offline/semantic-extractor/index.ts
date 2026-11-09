@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { SemanticMutationJournal } from "../../memory/semantic/mutation-journal.js";
 
 import { episodeIdSchema, type Episode } from "../../memory/episodic/index.js";
 import { buildParticipantRosterFromRepositories } from "../../cognition/perception/index.js";
@@ -124,56 +125,41 @@ function semanticEdgeSnapshot(edge: SemanticEdge): string {
 
 async function snapshotSemanticNodes(
   ctx: OfflineContext,
+  journal: SemanticMutationJournal,
 ): Promise<Map<SemanticNode["id"], SemanticNode>> {
-  const nodes = await ctx.semanticNodeRepository.list({
+  const nodes = await ctx.semanticNodeRepository.getMany([...journal.nodes.keys()], {
     includeArchived: true,
-    limit: 100_000,
   });
 
-  return new Map(nodes.map((node) => [node.id, node]));
+  return new Map(
+    nodes.filter((node): node is SemanticNode => node !== null).map((node) => [node.id, node]),
+  );
 }
 
-function snapshotSemanticEdges(ctx: OfflineContext): Map<SemanticEdge["id"], SemanticEdge> {
-  const edges = ctx.semanticEdgeRepository.listEdges({
-    includeInvalid: true,
-  });
+function snapshotSemanticEdges(
+  ctx: OfflineContext,
+  journal: SemanticMutationJournal,
+): Map<SemanticEdge["id"], SemanticEdge> {
+  const edges = [...journal.edges.keys()].map((id) => ctx.semanticEdgeRepository.getEdge(id));
 
-  return new Map(edges.map((edge) => [edge.id, edge]));
+  return new Map(
+    edges.filter((edge): edge is SemanticEdge => edge !== null).map((edge) => [edge.id, edge]),
+  );
 }
 
 async function restoreSemanticSnapshot(input: {
   ctx: OfflineContext;
-  beforeNodes: ReadonlyMap<SemanticNode["id"], SemanticNode>;
-  beforeEdges: ReadonlyMap<SemanticEdge["id"], SemanticEdge>;
+  journal: SemanticMutationJournal;
 }): Promise<void> {
-  const afterEdges = snapshotSemanticEdges(input.ctx);
-
-  for (const [edgeId, edge] of afterEdges) {
-    const before = input.beforeEdges.get(edgeId);
-
-    if (before === undefined) {
-      input.ctx.semanticEdgeRepository.delete(edgeId);
-      continue;
-    }
-
-    if (semanticEdgeSnapshot(before) !== semanticEdgeSnapshot(edge)) {
-      input.ctx.semanticEdgeRepository.restoreEdge(before);
-    }
+  for (const [edgeId, before] of input.journal.edges) {
+    if (before === null) input.ctx.semanticEdgeRepository.delete(edgeId);
   }
-
-  const afterNodes = await snapshotSemanticNodes(input.ctx);
-
-  for (const [nodeId, node] of afterNodes) {
-    const before = input.beforeNodes.get(nodeId);
-
-    if (before === undefined) {
-      await input.ctx.semanticNodeRepository.delete(nodeId);
-      continue;
-    }
-
-    if (semanticNodeSnapshot(before) !== semanticNodeSnapshot(node)) {
-      await input.ctx.semanticNodeRepository.restore(before);
-    }
+  for (const [nodeId, before] of input.journal.nodes) {
+    if (before === null) await input.ctx.semanticNodeRepository.delete(nodeId);
+    else await input.ctx.semanticNodeRepository.restore(before);
+  }
+  for (const before of input.journal.edges.values()) {
+    if (before !== null) input.ctx.semanticEdgeRepository.restoreEdge(before);
   }
 }
 
@@ -464,8 +450,7 @@ export class SemanticExtractorProcess implements OfflineProcess<SemanticExtracto
       };
     }
 
-    const beforeNodes = await snapshotSemanticNodes(ctx);
-    const beforeEdges = snapshotSemanticEdges(ctx);
+    const journal = new SemanticMutationJournal();
     const deferredReviews: ReviewQueueInsertInput[] = [];
     let tokensUsed = plan.tokens_used;
     let budgetExhausted = plan.budget_exhausted;
@@ -479,6 +464,7 @@ export class SemanticExtractorProcess implements OfflineProcess<SemanticExtracto
           entityRepository: ctx.entityRepository,
         });
         const extractor = new SemanticExtractor({
+          mutationRecorder: journal,
           similarityConfig: ctx.config,
           nodeRepository: ctx.semanticNodeRepository,
           edgeRepository: ctx.semanticEdgeRepository,
@@ -532,17 +518,30 @@ export class SemanticExtractorProcess implements OfflineProcess<SemanticExtracto
       });
       const extraction = budgeted.result;
       tokensUsed = budgeted.tokens_used;
-      const afterNodes = await snapshotSemanticNodes(ctx);
-      const afterEdges = snapshotSemanticEdges(ctx);
+      // Review hooks share this run's recorder. Finish them before taking the
+      // touched-row diff so their writes and failures have the same reversal.
+      if (ctx.semanticReviewService !== undefined) {
+        const reviewNodes = await snapshotSemanticNodes(ctx, journal);
+        for (const [nodeId, node] of reviewNodes) {
+          if (journal.nodes.get(nodeId) === null)
+            ctx.semanticReviewService.queueDuplicateReview(node, {
+              sourceProcess: this.name,
+              traceTurnId: ctx.runId,
+              mutationRecorder: journal,
+            });
+        }
+      }
+      const afterNodes = await snapshotSemanticNodes(ctx, journal);
+      const afterEdges = snapshotSemanticEdges(ctx, journal);
       const createdNodeIds: SemanticNode["id"][] = [];
       const updatedNodes: Array<z.infer<typeof serializableSemanticNodeSchema>> = [];
       const createdEdgeIds: SemanticEdge["id"][] = [];
       const updatedEdges: SemanticEdge[] = [];
 
       for (const [nodeId, node] of afterNodes) {
-        const before = beforeNodes.get(nodeId);
+        const before = journal.nodes.get(nodeId);
 
-        if (before === undefined) {
+        if (before == null) {
           createdNodeIds.push(nodeId);
           continue;
         }
@@ -553,9 +552,9 @@ export class SemanticExtractorProcess implements OfflineProcess<SemanticExtracto
       }
 
       for (const [edgeId, edge] of afterEdges) {
-        const before = beforeEdges.get(edgeId);
+        const before = journal.edges.get(edgeId);
 
-        if (before === undefined) {
+        if (before == null) {
           createdEdgeIds.push(edgeId);
           continue;
         }
@@ -583,17 +582,6 @@ export class SemanticExtractorProcess implements OfflineProcess<SemanticExtracto
           updated_edges: updatedEdges,
         } satisfies SemanticExtractorReversal,
       });
-
-      for (const nodeId of createdNodeIds) {
-        const node = afterNodes.get(nodeId);
-
-        if (node !== undefined) {
-          ctx.semanticReviewService?.queueDuplicateReview(node, {
-            sourceProcess: this.name,
-            traceTurnId: ctx.runId,
-          });
-        }
-      }
 
       for (const review of deferredReviews) {
         try {
@@ -639,8 +627,7 @@ export class SemanticExtractorProcess implements OfflineProcess<SemanticExtracto
     } catch (error) {
       await restoreSemanticSnapshot({
         ctx,
-        beforeNodes,
-        beforeEdges,
+        journal,
       });
       tokensUsed = getBudgetErrorTokens(error);
       budgetExhausted = error instanceof BudgetExceededError;

@@ -8,6 +8,7 @@ import {
 import { ManualClock } from "../util/clock.js";
 import { createEntityId, createEpisodeId, DEFAULT_SESSION_ID } from "../util/ids.js";
 import { buildToolDispatcher } from "./tools-setup.js";
+import type { CognitionRecallSearchOptions } from "../retrieval/pipeline.js";
 
 describe("buildToolDispatcher", () => {
   it("batches semantic disclosure lookup and pins goal-retirement registration", async () => {
@@ -50,6 +51,13 @@ describe("buildToolDispatcher", () => {
     const getMany = vi.fn(async (episodeIds: readonly string[]) =>
       episodeIds.includes(privateEpisode.id) ? [privateEpisode] : [],
     );
+    const notice = { subsystem: "recall_expansion", reason: "timeout" };
+    const recallEpisodesForCognition = vi.fn(
+      async (_query: string, options: CognitionRecallSearchOptions) => {
+        options.onDegraded?.(notice);
+        return { episodes: [] };
+      },
+    );
     const dispatcher = buildToolDispatcher({
       dataDir: "/tmp/borg-tools-setup-test",
       entryIndex: {} as never,
@@ -61,7 +69,7 @@ describe("buildToolDispatcher", () => {
           goalLabelsById: new Map(),
         }),
       } as never,
-      retrievalPipeline: {} as never,
+      retrievalPipeline: { recallEpisodesForCognition } as never,
       episodicRepository: { getMany } as never,
       semanticNodeRepository: { get: vi.fn(async () => root) } as never,
       semanticGraph: { walk: vi.fn(async () => steps) } as never,
@@ -81,6 +89,17 @@ describe("buildToolDispatcher", () => {
       clock: new ManualClock(1_000),
     });
     const tool = dispatcher.getDefinition("tool.semantic.walk");
+    expect(tool?.timeoutClass).toBe("search");
+    const search = dispatcher.getDefinition("tool.episodic.search")!;
+    const onRetrievalDegraded = vi.fn();
+    const searchOutput = await search.invoke(
+      { query: "input" },
+      { sessionId: DEFAULT_SESSION_ID, origin: "deliberator", onRetrievalDegraded },
+    );
+    expect(onRetrievalDegraded).toHaveBeenCalledExactlyOnceWith(notice);
+    expect(searchOutput).toMatchObject({
+      retrieval_status: { degraded: true, subsystems: [notice.subsystem] },
+    });
 
     expect(tool).not.toBeNull();
     const output = (await tool!.invoke(

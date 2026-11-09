@@ -124,6 +124,47 @@ describe("executeToolLoop", () => {
     expect(llm.converseRequests[0]?.tools).toBeUndefined();
   });
 
+  it("collects internal search degradation and presents its structural marker to the next finalizer round", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const dispatcher = createDispatcher(tempDir);
+    const onRetrievalDegraded = vi.fn();
+    const notice = { subsystem: "recall_expansion", reason: "timeout" };
+    const tool: ToolDefinition = {
+      name: "tool.search",
+      description: "test search",
+      allowedOrigins: ["deliberator"],
+      writeScope: "read",
+      timeoutClass: "search",
+      inputSchema: z.object({}),
+      outputSchema: z.object({
+        retrieval_status: z.object({ degraded: z.literal(true), subsystems: z.array(z.string()) }),
+      }),
+      async invoke(_input, context) {
+        context.onRetrievalDegraded?.(notice);
+        return { retrieval_status: { degraded: true, subsystems: [notice.subsystem] } };
+      },
+    };
+    dispatcher.register(tool);
+    const llm = new FakeLLMClient({
+      responses: [[{ type: "tool_use", id: "toolu_search", name: tool.name, input: {} }], "done"],
+    });
+    const result = await executeToolLoop({
+      llmClient: llm,
+      dispatcher,
+      sessionId: DEFAULT_SESSION_ID,
+      model: "fake",
+      initialMessages: baseMessages(),
+      tools: [tool],
+      origin: "deliberator",
+      budget: "test",
+      onRetrievalDegraded,
+    });
+    expect(result.text).toBe("done");
+    expect(onRetrievalDegraded).toHaveBeenCalledExactlyOnceWith(notice);
+    expect(JSON.stringify(llm.converseRequests[1]?.messages)).toContain("retrieval_status");
+  });
+
   it("returns immediately when a terminal tool is called", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);

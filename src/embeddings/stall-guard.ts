@@ -7,12 +7,18 @@
  * client's hard recall cap — times out instead. A stalled call retried on a fresh
  * request almost always completes at healthy latency, so the guard caps each
  * attempt and retries immediately. Non-timeout errors are NOT retried here:
- * the wrapped client already handles model-reload retries and the SDK retries
- * retryable HTTP failures.
+ * the wrapped client owns model-reload and retryable HTTP failures.
  */
 import { ConfigError, EmbeddingError } from "../util/errors.js";
+import { runWithDeadline } from "../util/deadline.js";
+import { EmbeddingBackoffError } from "./request-retry.js";
 
-import type { EmbeddingClient, EmbeddingClientStats } from "./index.js";
+import type {
+  EmbeddingClient,
+  EmbeddingClientStats,
+  EmbeddingCallOptions,
+  EmbeddingBatchOptions,
+} from "./index.js";
 
 export type EmbeddingStallGuardOptions = {
   // Per-attempt cap for single-input calls (embed / one-element batches).
@@ -57,28 +63,6 @@ function requireNonNegativeInteger(value: number, label: string): number {
   return value;
 }
 
-async function raceWithStallTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-
-  // The abandoned attempt keeps running after a timeout loss; swallow its
-  // eventual rejection so it cannot surface as an unhandled rejection.
-  operation.catch(() => undefined);
-
-  try {
-    return await Promise.race([
-      operation,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new EmbeddingStallTimeout(timeoutMs)), timeoutMs);
-        timer.unref?.();
-      }),
-    ]);
-  } finally {
-    if (timer !== undefined) {
-      clearTimeout(timer);
-    }
-  }
-}
-
 export class StallGuardEmbeddingClient implements EmbeddingClient {
   private readonly inner: EmbeddingClient;
   private readonly timeoutMs: number;
@@ -105,17 +89,34 @@ export class StallGuardEmbeddingClient implements EmbeddingClient {
     return this.inner.profile;
   }
 
+  get maxInputBytes() {
+    return this.inner.maxInputBytes;
+  }
+
+  requestState() {
+    return (
+      this.inner.requestState?.() ?? { retryAt: null, inFlight: 0, oldestRequestStartedAt: null }
+    );
+  }
+
   stats(): EmbeddingClientStats {
     return this.inner.stats?.() ?? { input_truncations: 0 };
   }
 
-  async embed(text: string): Promise<Float32Array> {
-    return this.runGuarded(() => this.inner.embed(text), this.timeoutMs);
+  async embed(text: string, options: EmbeddingCallOptions = {}): Promise<Float32Array> {
+    return this.runGuarded(
+      (signal) => this.inner.embed(text, { ...options, signal }),
+      this.timeoutMs,
+      options.signal,
+    );
   }
 
-  async embedBatch(texts: readonly string[]): Promise<Float32Array[]> {
+  async embedBatch(
+    texts: readonly string[],
+    options: EmbeddingBatchOptions = {},
+  ): Promise<Float32Array[]> {
     if (texts.length === 0) {
-      return this.inner.embedBatch(texts);
+      return this.inner.embedBatch(texts, options);
     }
 
     const timeoutMs =
@@ -123,19 +124,68 @@ export class StallGuardEmbeddingClient implements EmbeddingClient {
         ? this.timeoutMs
         : Math.min(this.batchTimeoutMs + BATCH_PER_INPUT_MS * texts.length, MAX_BATCH_TIMEOUT_MS);
 
-    return this.runGuarded(() => this.inner.embedBatch(texts), timeoutMs);
+    const completed = new Map<number, Float32Array>();
+    let generation = 0;
+    try {
+      await this.runGuarded(
+        async (signal) => {
+          const attempt = ++generation;
+          const indexes = texts.map((_, index) => index).filter((index) => !completed.has(index));
+          const publish = (start: number, vectors: readonly Float32Array[]) => {
+            if (attempt !== generation || signal.aborted) return;
+            vectors.forEach((vector, offset) => {
+              const index = indexes[start + offset];
+              if (index === undefined || completed.has(index)) return;
+              completed.set(index, new Float32Array(vector));
+              options.onChunk?.(index, [new Float32Array(vector)]);
+            });
+          };
+          const vectors = await this.inner.embedBatch(
+            indexes.map((index) => texts[index]!),
+            { ...options, signal, onChunk: publish },
+          );
+          publish(0, vectors);
+        },
+        timeoutMs,
+        options.signal,
+      );
+    } finally {
+      generation += 1;
+    }
+    return texts.map((_, index) => {
+      const vector = completed.get(index);
+      if (vector === undefined)
+        throw new EmbeddingError("Embedding batch response was missing an entry");
+      return new Float32Array(vector);
+    });
   }
 
-  private async runGuarded<T>(run: () => Promise<T>, timeoutMs: number): Promise<T> {
+  private async runGuarded<T>(
+    run: (signal: AbortSignal) => Promise<T>,
+    timeoutMs: number,
+    signal?: AbortSignal,
+  ): Promise<T> {
     const attempts = this.maxRetries + 1;
     let lastTimeout: EmbeddingStallTimeout | undefined;
 
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
       try {
-        return await raceWithStallTimeout(run(), timeoutMs);
+        return await runWithDeadline({
+          run,
+          timeoutMs,
+          signal,
+          timeoutError: () => new EmbeddingStallTimeout(timeoutMs),
+        });
       } catch (error) {
         if (!(error instanceof EmbeddingStallTimeout)) {
           throw error;
+        }
+
+        // A provider-directed wait is not a stalled transport. Do not stack
+        // stall retries over the client's HTTP retry loop.
+        const retryAt = this.requestState().retryAt;
+        if (retryAt !== null) {
+          throw new EmbeddingBackoffError(retryAt, error);
         }
 
         lastTimeout = error;

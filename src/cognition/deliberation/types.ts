@@ -260,6 +260,7 @@ export type DeliberationContext = {
   contradictionRoutingTier?: ContradictionRoutingTier;
   deliberationPath?: "system_1" | "system_2";
   retrievalConfidence?: RetrievalConfidence | null;
+  retrievalDegradations?: import("../../retrieval/degradation.js").RetrievalDegradation[];
   applicableCommitments?: readonly CommitmentRecord[];
   /** Store-read time for the active commitment membership assembled for this turn. */
   applicableCommitmentsReadAtMs?: number;

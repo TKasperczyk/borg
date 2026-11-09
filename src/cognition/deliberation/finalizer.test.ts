@@ -15,6 +15,7 @@ import { FakeLLMClient, createFakeStreamingResponse } from "../../llm/test-suppo
 import { createEpisodeFixture, createRetrievalScoreFixture } from "../../offline/test-support.js";
 import { StreamWriter } from "../../stream/index.js";
 import { ToolDispatcher, type ToolDefinition, type ToolOrigin } from "../../tools/index.js";
+import { createEpisodicSearchTool } from "../../tools/internal/episodic-search.js";
 import { FixedClock } from "../../util/clock.js";
 import { DEFAULT_SESSION_ID, createEntityId } from "../../util/ids.js";
 import {
@@ -81,6 +82,7 @@ async function runEmissionFinalizer(
     turnOrigin?: Parameters<typeof runFinalizer>[0]["turnOrigin"];
     registeredTools?: readonly ToolDefinition[];
     compactSurface?: Parameters<typeof runFinalizer>[0]["compactSurface"];
+    onRetrievalDegraded?: Parameters<typeof runFinalizer>[0]["onRetrievalDegraded"];
   } = {},
 ) {
   return runFinalizer({
@@ -88,6 +90,7 @@ async function runEmissionFinalizer(
     dispatcher: createDispatcher(tempDirs, options.registeredTools),
     sessionId: DEFAULT_SESSION_ID,
     model: "fake",
+    onRetrievalDegraded: options.onRetrievalDegraded,
     baseSystemPrompt: "Legacy base dynamic prompt.",
     shownOpenQuestionIds: options.shownOpenQuestionIds,
     cacheableSystemPrompt: options.cacheableSystemPrompt ?? {
@@ -406,6 +409,45 @@ describe("runFinalizer emission tools", () => {
       "EmitSelfReport",
       "tool.ownRecords.list",
     ]);
+  });
+
+  it("retains internal search degradation without a compact prompt context", async () => {
+    const notice = { subsystem: "recall_expansion", reason: "timeout" };
+    const onRetrievalDegraded = vi.fn();
+    const llm = new FakeLLMClient({
+      responses: [
+        [
+          {
+            type: "tool_use",
+            id: "toolu_search",
+            name: "tool.episodic.search",
+            input: { query: "prior work" },
+          },
+        ],
+        [
+          {
+            type: "tool_use",
+            id: "toolu_done",
+            name: "EmitContinueThought",
+            input: { text: "Search was incomplete." },
+          },
+        ],
+      ],
+    });
+    await runEmissionFinalizer(llm, tempDirs, {
+      turnOrigin: "autonomous",
+      onRetrievalDegraded,
+      registeredTools: [
+        createEpisodicSearchTool({
+          searchEpisodes: async (_query, _limit, context) => {
+            context.onRetrievalDegraded?.(notice);
+            return { episodes: [], degradations: [notice] };
+          },
+        }),
+      ],
+    });
+    expect(onRetrievalDegraded).toHaveBeenCalledExactlyOnceWith(notice);
+    expect(JSON.stringify(llm.converseRequests[1]?.messages)).toContain("retrieval_status");
   });
 
   it("exposes the registered autonomous interior tool set by exact name", async () => {

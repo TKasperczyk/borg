@@ -158,7 +158,11 @@ export {
 export {
   FakeEmbeddingClient,
   OpenAICompatibleEmbeddingClient,
+  EmbeddingBackoffError,
   type EmbeddingClient,
+  type EmbeddingCallOptions,
+  type EmbeddingBatchOptions,
+  type EmbeddingRequestState,
   type EmbeddingClientStats,
   type OpenAICompatibleEmbeddingClientOptions,
 } from "./embeddings/index.js";

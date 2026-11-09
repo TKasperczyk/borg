@@ -1,7 +1,13 @@
 import { createHash } from "node:crypto";
 
 import { ConfigError } from "../util/errors.js";
-import type { EmbeddingClient, EmbeddingClientStats } from "./index.js";
+import type {
+  EmbeddingClient,
+  EmbeddingClientStats,
+  EmbeddingCallOptions,
+  EmbeddingBatchOptions,
+} from "./index.js";
+import { raceWithSignal } from "../util/deadline.js";
 import { assertEmbeddingProfilesMatch } from "./bank-profile.js";
 
 const DEFAULT_MAX_ENTRIES = 5_000;
@@ -71,14 +77,26 @@ class CachingEmbeddingClient implements EmbeddingClient {
     return this.inner.maxInputBytes;
   }
 
-  async embed(text: string): Promise<Float32Array> {
+  requestState() {
+    return (
+      this.inner.requestState?.() ?? { retryAt: null, inFlight: 0, oldestRequestStartedAt: null }
+    );
+  }
+
+  async embed(text: string, options: EmbeddingCallOptions = {}): Promise<Float32Array> {
+    options.signal?.throwIfAborted();
     const promise = this.getOrCreate(text, () => this.inner.embed(text));
-    const embedding = await promise;
+    // A subscriber's cancellation must not cancel work shared by other callers.
+    const embedding = await raceWithSignal(() => promise, options.signal);
 
     return new Float32Array(embedding);
   }
 
-  async embedBatch(texts: readonly string[]): Promise<Float32Array[]> {
+  async embedBatch(
+    texts: readonly string[],
+    options: EmbeddingBatchOptions = {},
+  ): Promise<Float32Array[]> {
+    options.signal?.throwIfAborted();
     if (texts.length === 0) {
       return [];
     }
@@ -108,34 +126,57 @@ class CachingEmbeddingClient implements EmbeddingClient {
     }
 
     if (uniqueMissingTexts.length > 0) {
-      const batchPromise = this.inner.embedBatch(uniqueMissingTexts);
-
+      const pending: Array<{
+        resolve: (vector: Float32Array) => void;
+        reject: (error: unknown) => void;
+      }> = [];
       for (const [key, missing] of missingByKey) {
-        const promise = batchPromise.then((embeddings) => {
-          const embedding = embeddings[missing.index];
-
-          if (embedding === undefined) {
-            throw new Error("Embedding batch response was missing an entry");
-          }
-
-          return new Float32Array(embedding);
+        const promise = new Promise<Float32Array>((resolve, reject) => {
+          pending[missing.index] = { resolve, reject };
         });
-
         promisesByKey.set(key, this.setPending(key, promise, true));
       }
+      // Every entry is installed before the adapter can synchronously publish a
+      // chunk. These resolvers belong to this batch, never a replacement entry.
+      const settleChunk = (start: number, vectors: readonly Float32Array[]) => {
+        vectors.forEach((vector, offset) =>
+          pending[start + offset]?.resolve(new Float32Array(vector)),
+        );
+      };
+      void (async () => {
+        // Publish entries and attach every waiter before invoking an adapter.
+        await Promise.resolve();
+        try {
+          const vectors = await this.inner.embedBatch(uniqueMissingTexts, { onChunk: settleChunk });
+          // Also support injected adapters that only implement the original API.
+          settleChunk(0, vectors);
+          for (let index = vectors.length; index < pending.length; index += 1) {
+            pending[index]?.reject(new Error("Embedding batch response was missing an entry"));
+          }
+        } catch (error) {
+          // Settled successes ignore reject; only failed/unattempted inputs leave
+          // the cache, including when a later request of this batch fails.
+          for (const entry of pending) entry.reject(error);
+        }
+      })();
     }
 
-    return Promise.all(
-      texts.map(async (text) => {
-        const promise = promisesByKey.get(this.keyForText(text));
+    return raceWithSignal(
+      () =>
+        Promise.all(
+          texts.map(async (text, index) => {
+            const promise = promisesByKey.get(this.keyForText(text));
 
-        if (promise === undefined) {
-          throw new Error("Embedding cache failed to resolve a batch entry");
-        }
+            if (promise === undefined) {
+              throw new Error("Embedding cache failed to resolve a batch entry");
+            }
 
-        const embedding = await promise;
-        return new Float32Array(embedding);
-      }),
+            const embedding = await promise;
+            if (!options.signal?.aborted) options.onChunk?.(index, [new Float32Array(embedding)]);
+            return new Float32Array(embedding);
+          }),
+        ),
+      options.signal,
     );
   }
 
@@ -165,8 +206,21 @@ class CachingEmbeddingClient implements EmbeddingClient {
       return cached;
     }
 
-    const promise = create().then((embedding) => new Float32Array(embedding));
-    return this.setPending(key, promise);
+    let resolve!: (embedding: Float32Array) => void;
+    let reject!: (error: unknown) => void;
+    const promise = new Promise<Float32Array>((done, fail) => {
+      resolve = done;
+      reject = fail;
+    });
+    const pending = this.setPending(key, promise);
+    void (async () => {
+      try {
+        resolve(new Float32Array(await create()));
+      } catch (error) {
+        reject(error);
+      }
+    })();
+    return pending;
   }
 
   private getCached(key: string, allowPendingBatch = true): CachedEmbedding | undefined {

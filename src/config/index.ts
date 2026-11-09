@@ -435,6 +435,9 @@ const configBaseSchema = z.object({
       // at 128 inputs, which takes the model down for every consumer on the
       // host. Raise only if your provider is known to handle it.
       maxBatchSize: z.number().int().positive().default(32),
+      requestTimeoutMs: z.number().int().positive().default(120_000),
+      rateLimitMaxRetries: z.number().int().nonnegative().default(2),
+      rateLimitBaseDelayMs: z.number().int().positive().default(1_000),
     })
     .prefault({}),
   anthropic: anthropicConfigSchema,
@@ -444,11 +447,12 @@ const configBaseSchema = z.object({
       // Keep the raw recall vector focused on recent input; bytes work in every
       // language. 6 KiB leaves room for several messages below the transport cap.
       rawQueryMaxBytes: z.number().int().positive().default(DEFAULT_RAW_QUERY_MAX_BYTES),
-      // Hard cap for the recall-expansion LLM call (ms); recall degrades to
-      // raw-query intents on timeout. 0 disables the cap. Sized so expansion
-      // (2000) plus a double-stalled query embedding (2x1000) plus local
-      // retrieval work still fits the memory client's hard 5s recall budget.
-      recallExpansionTimeoutMs: z.number().int().min(0).default(2000),
+      // One outer deadline, including one repair. The sidecar explicitly keeps
+      // its short planner budget; full cognition allows two 40s attempts.
+      recallExpansionTimeoutMs: z.number().int().min(0).default(90_000),
+      recallExpansionAttemptTimeoutMs: z.number().int().positive().default(40_000),
+      recallExpansionMaxTokens: z.number().int().positive().default(3_072),
+      recallExpansionRepairMaxTokens: z.number().int().positive().default(6_144),
       recallExpansionSemanticVariantCount: z.number().int().min(1).max(8).default(3),
       // IANA zone the recall planner resolves relative time references in ("yesterday", "in
       // July"); the audience's calendar, not the pod's.
@@ -804,6 +808,14 @@ const configBaseSchema = z.object({
         ]),
     })
     .prefault({}),
+  tools: z
+    .object({
+      defaultTimeoutMs: z.number().int().positive().default(5_000),
+      searchTimeoutMs: z.number().int().positive().default(60_000),
+      searchMaxTimeoutMs: z.number().int().positive().default(120_000),
+    })
+    .strict()
+    .prefault({}),
   autonomy: z
     .object({
       // Self-initiated cognition is part of the architecture's "autonomous
@@ -817,7 +829,9 @@ const configBaseSchema = z.object({
       // deployments once their records have matured.
       enabled: z.boolean().default(true),
       intervalMs: z.number().int().positive().default(60_000),
-      prepToolTimeoutMs: z.number().int().positive().default(90_000),
+      prepToolTimeoutMs: z.number().int().positive().default(120_000),
+      prepToolMaxTimeoutMs: z.number().int().positive().default(300_000),
+      preparationMaxElapsedMs: z.number().int().positive().default(300_000),
       maxWakesPerWindow: z.number().int().positive().default(6),
       // No per-source cap by default. A deployment allowing 25 wakes can set
       // maxWakesPerWindowBySource: { open_question_dormant: 12 } to retain room
@@ -958,6 +972,36 @@ const configOutputSchema = configBaseSchema.transform(
 );
 
 export const configSchema = configOutputSchema.superRefine((value, context) => {
+  for (const [section, minimumKey, maximumKey, minimum, maximum] of [
+    [
+      "tools",
+      "searchTimeoutMs",
+      "searchMaxTimeoutMs",
+      value.tools.searchTimeoutMs,
+      value.tools.searchMaxTimeoutMs,
+    ],
+    [
+      "autonomy",
+      "prepToolTimeoutMs",
+      "prepToolMaxTimeoutMs",
+      value.autonomy.prepToolTimeoutMs,
+      value.autonomy.prepToolMaxTimeoutMs,
+    ],
+    [
+      "retrieval",
+      "recallExpansionMaxTokens",
+      "recallExpansionRepairMaxTokens",
+      value.retrieval.recallExpansionMaxTokens,
+      value.retrieval.recallExpansionRepairMaxTokens,
+    ],
+  ] as const) {
+    if (maximum < minimum)
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `${maximumKey} must be at least ${minimumKey}`,
+        path: [section, maximumKey],
+      });
+  }
   if (value.anthropic.auth === "api-key" && value.anthropic.apiKey === undefined) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
@@ -1262,6 +1306,13 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
   );
   setConfigOverride(overrides, ["embedding", "provider"], readEmbeddingProviderEnv(env));
   setConfigOverride(overrides, ["embedding", "maxInputBytes"], readEmbeddingMaxInputBytesEnv(env));
+  for (const [key, envKey] of [
+    ["requestTimeoutMs", "BORG_EMBEDDING_REQUEST_TIMEOUT_MS"],
+    ["rateLimitMaxRetries", "BORG_EMBEDDING_RATE_LIMIT_MAX_RETRIES"],
+    ["rateLimitBaseDelayMs", "BORG_EMBEDDING_RATE_LIMIT_BASE_DELAY_MS"],
+  ] as const) {
+    setConfigOverride(overrides, ["embedding", key], readOptionalEnvNumber(env, envKey));
+  }
   setConfigOverride(
     overrides,
     ["anthropic", "auth"],
@@ -1412,6 +1463,13 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     ["retrieval", "recallExpansionTimeoutMs"],
     readOptionalEnvNumber(env, "BORG_RETRIEVAL_RECALL_EXPANSION_TIMEOUT_MS"),
   );
+  for (const [key, envKey] of [
+    ["recallExpansionAttemptTimeoutMs", "BORG_RETRIEVAL_RECALL_EXPANSION_ATTEMPT_TIMEOUT_MS"],
+    ["recallExpansionMaxTokens", "BORG_RETRIEVAL_RECALL_EXPANSION_MAX_TOKENS"],
+    ["recallExpansionRepairMaxTokens", "BORG_RETRIEVAL_RECALL_EXPANSION_REPAIR_MAX_TOKENS"],
+  ] as const) {
+    setConfigOverride(overrides, ["retrieval", key], readOptionalEnvNumber(env, envKey));
+  }
   setConfigOverride(
     overrides,
     ["retrieval", "recallExpansionSemanticVariantCount"],
@@ -2111,6 +2169,19 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     ["autonomy", "prepToolTimeoutMs"],
     readOptionalEnvNumber(env, "BORG_AUTONOMY_PREP_TOOL_TIMEOUT_MS"),
   );
+  for (const [key, envKey] of [
+    ["prepToolMaxTimeoutMs", "BORG_AUTONOMY_PREP_TOOL_MAX_TIMEOUT_MS"],
+    ["preparationMaxElapsedMs", "BORG_AUTONOMY_PREPARATION_MAX_ELAPSED_MS"],
+  ] as const) {
+    setConfigOverride(overrides, ["autonomy", key], readOptionalEnvNumber(env, envKey));
+  }
+  for (const [key, envKey] of [
+    ["defaultTimeoutMs", "BORG_TOOLS_DEFAULT_TIMEOUT_MS"],
+    ["searchTimeoutMs", "BORG_TOOLS_SEARCH_TIMEOUT_MS"],
+    ["searchMaxTimeoutMs", "BORG_TOOLS_SEARCH_MAX_TIMEOUT_MS"],
+  ] as const) {
+    setConfigOverride(overrides, ["tools", key], readOptionalEnvNumber(env, envKey));
+  }
   setConfigOverride(
     overrides,
     ["autonomy", "maxWakesPerWindow"],
@@ -2430,6 +2501,9 @@ export function redactConfig(config: Config): Config {
       semanticOverfetchMultiplier: config.retrieval.semanticOverfetchMultiplier,
       rawQueryMaxBytes: config.retrieval.rawQueryMaxBytes,
       recallExpansionTimeoutMs: config.retrieval.recallExpansionTimeoutMs,
+      recallExpansionAttemptTimeoutMs: config.retrieval.recallExpansionAttemptTimeoutMs,
+      recallExpansionMaxTokens: config.retrieval.recallExpansionMaxTokens,
+      recallExpansionRepairMaxTokens: config.retrieval.recallExpansionRepairMaxTokens,
       recallPlannerTimeZone: config.retrieval.recallPlannerTimeZone,
       recallExpansionSemanticVariantCount: config.retrieval.recallExpansionSemanticVariantCount,
       attentionWeights: {

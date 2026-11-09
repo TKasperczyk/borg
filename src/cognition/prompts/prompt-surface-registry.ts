@@ -492,6 +492,12 @@ export const PROMPT_SURFACE_BLOCKS = [
         "retrieval confidence present",
       ],
       [
+        "borg_retrieval_status",
+        "retrieval",
+        "Structural retrieval execution status.",
+        "retrieval degraded",
+      ],
+      [
         "contradiction_signal",
         "retrieval",
         "Contradiction routing signal.",

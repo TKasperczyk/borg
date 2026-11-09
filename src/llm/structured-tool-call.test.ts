@@ -82,6 +82,66 @@ function queuedClient(responses: Array<LLMCompleteResult | Error>) {
 }
 
 describe("callStructuredTool", () => {
+  it.each(["response", "malformed_arguments"] as const)(
+    "opt-in truncation repair raises the cap and accounts for both attempts: %s",
+    async (shape) => {
+      const truncated =
+        shape === "response"
+          ? completeResult([], "max_tokens")
+          : new LLMToolArgumentsError("truncated", {
+              toolName: TOOL_NAME,
+              stopReason: "max_tokens",
+              usage: { input_tokens: 3, output_tokens: 4 },
+            });
+      const llm = queuedClient([
+        truncated,
+        completeResult([{ id: "repaired", name: TOOL_NAME, input: { value: "ok" } }]),
+      ]);
+      const result = await callStructuredTool({
+        llmClient: llm,
+        toolName: TOOL_NAME,
+        parse: (value) => schema.parse(value),
+        maxAttempts: 2,
+        repairMaxTokens: 6144,
+        request: {
+          model: "model",
+          max_tokens: 3072,
+          messages: [{ role: "user", content: "input" }],
+          tools: [TOOL],
+          budget: "test",
+        },
+      });
+      expect(result.parsed).toEqual({ value: "ok" });
+      expect(result.attemptCount).toBe(2);
+      expect(result.usage).toEqual({ input_tokens: 6, output_tokens: 8 });
+      expect(llm.complete.mock.calls.map(([request]) => request.max_tokens)).toEqual([3072, 6144]);
+    },
+  );
+
+  it("shares two total attempts between schema and truncation repair", async () => {
+    const llm = queuedClient([
+      completeResult([{ id: "invalid", name: TOOL_NAME, input: { value: 1 } }]),
+      completeResult([], "max_tokens"),
+      completeResult([{ id: "unused", name: TOOL_NAME, input: { value: "unused" } }]),
+    ]);
+    await expect(
+      callStructuredTool({
+        llmClient: llm,
+        toolName: TOOL_NAME,
+        parse: (value) => schema.parse(value),
+        maxAttempts: 2,
+        repairMaxTokens: 6144,
+        request: {
+          model: "model",
+          max_tokens: 3072,
+          messages: [{ role: "user", content: "input" }],
+          tools: [TOOL],
+          budget: "test",
+        },
+      }),
+    ).rejects.toMatchObject({ attemptCount: 2, usage: { input_tokens: 6, output_tokens: 8 } });
+    expect(llm.complete).toHaveBeenCalledTimes(2);
+  });
   it("selects the accepted tool call and parses its input", async () => {
     const result = await callStructuredTool({
       llmClient: client(

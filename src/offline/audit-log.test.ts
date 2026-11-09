@@ -17,6 +17,36 @@ describe("offline audit log", () => {
     }
   });
 
+  it("projects completion targets without reading or parsing reversal blobs", async () => {
+    const harness = await createOfflineTestHarness();
+    cleanup.push(harness.cleanup);
+    const runId = createMaintenanceRunId();
+    const audit = harness.auditLog.record({
+      run_id: runId,
+      process: "semantic-extractor",
+      action: "extract",
+      targets: { episode_ids: ["ep_aaaaaaaaaaaaaaaa"] },
+      reversal: { created_node_ids: [], updated_nodes: [], created_edge_ids: [] },
+    });
+    // A malformed reversal proves this projection never hydrates it.
+    harness.db
+      .prepare("UPDATE maintenance_audit SET reversal = ? WHERE id = ?")
+      .run("not JSON", audit.id);
+    const prepare = vi.spyOn(harness.db, "prepare");
+    expect(
+      harness.auditLog.listTargets({
+        process: "semantic-extractor",
+        run_id: runId,
+        reverted: false,
+      }),
+    ).toEqual([{ episode_ids: ["ep_aaaaaaaaaaaaaaaa"] }]);
+    expect(
+      prepare.mock.calls.some(([sql]) => /SELECT targets\s+FROM maintenance_audit/.test(sql)),
+    ).toBe(true);
+    expect(harness.auditLog.listTargets({ reverted: true })).toEqual([]);
+    expect(harness.auditLog.listTargets({ process: "curator" })).toEqual([]);
+  });
+
   it("rejects an unrecoverable serialized vector before starting a reversal transaction", async () => {
     const harness = await createOfflineTestHarness();
     cleanup.push(harness.cleanup);

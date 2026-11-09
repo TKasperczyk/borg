@@ -143,6 +143,7 @@
     "type": "tool",
     "name": "EmitRecallQueryPlan"
   },
-  "max_tokens": 1000,
-  "budget": "recall-expansion"
+  "max_tokens": 3072,
+  "budget": "recall-expansion",
+  "signal": {}
 }

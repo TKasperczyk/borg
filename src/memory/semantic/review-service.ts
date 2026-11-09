@@ -35,6 +35,7 @@ export type SemanticReviewServiceOptions = {
 };
 
 export type SemanticReviewQueueOptions = {
+  mutationRecorder?: import("./mutation-journal.js").SemanticMutationRecorder;
   sourceProcess?: string;
   traceTurnId?: string;
 };

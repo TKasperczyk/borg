@@ -43,11 +43,14 @@ describe("embeddings", () => {
 
     const embeddings = await client.embedBatch(["one", "two"]);
 
-    expect(create).toHaveBeenCalledWith({
-      input: ["one", "two"],
-      model: "embed-model",
-      encoding_format: "float",
-    });
+    expect(create).toHaveBeenCalledWith(
+      {
+        input: ["one", "two"],
+        model: "embed-model",
+        encoding_format: "float",
+      },
+      { signal: expect.any(AbortSignal), maxRetries: 0, timeout: 120_000 },
+    );
     expect(Array.from(embeddings[0] ?? [])).toEqual([1, 2, 3]);
     expect(Array.from(embeddings[1] ?? [])).toEqual([4, 5, 6]);
   });
@@ -461,8 +464,8 @@ describe("embeddings", () => {
     expect(create).toHaveBeenCalledTimes(3);
   });
 
-  it("does not retry on non-model_not_found errors", async () => {
-    const otherError = Object.assign(new Error("500 internal"), { status: 500 });
+  it("does not retry non-retryable provider errors", async () => {
+    const otherError = Object.assign(new Error("400 invalid request"), { status: 400 });
     const create = vi.fn().mockRejectedValue(otherError);
 
     const client = new OpenAICompatibleEmbeddingClient({

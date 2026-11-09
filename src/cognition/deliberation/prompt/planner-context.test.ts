@@ -153,6 +153,20 @@ function allSystemText(result: ReturnType<typeof build>): string {
   return result.system.map((block) => block.text).join("\n\n");
 }
 
+it("renders structural degradation for the planner without changing retrieval confidence", () => {
+  const input = context({
+    retrievalDegradations: [{ subsystem: "recall_expansion", reason: "provider detail" }],
+  });
+  const before = structuredClone(input.retrievalConfidence);
+  const prompt = allSystemText(build(input));
+  expect(prompt).toContain(
+    '<borg_retrieval_status>{"degraded":true,"subsystems":["recall_expansion"]}</borg_retrieval_status>',
+  );
+  expect(prompt).not.toContain("provider detail");
+  expect(input.retrievalConfidence).toEqual(before);
+  expect(allSystemText(build(context()))).not.toContain("<borg_retrieval_status>");
+});
+
 function taggedBlock(text: string, tag: string): string {
   return text.match(new RegExp(`<${tag}(?:\\s[^>]*)?>[\\s\\S]*?</${tag}>`))?.[0] ?? "";
 }

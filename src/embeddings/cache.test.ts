@@ -2,7 +2,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createEmbeddingClient } from "../borg/clients.js";
 import { configSchema, type Config } from "../config/index.js";
-import { OpenAICompatibleEmbeddingClient, type EmbeddingClient } from "./index.js";
+import {
+  OpenAICompatibleEmbeddingClient,
+  type EmbeddingClient,
+  type EmbeddingBatchOptions,
+} from "./index.js";
 import { createCachingEmbeddingClient, type EmbeddingCacheStats } from "./cache.js";
 
 const openAiMocks = vi.hoisted(() => {
@@ -93,6 +97,63 @@ describe("createCachingEmbeddingClient", () => {
     expect(inner.embed).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps validated chunks and re-sends only failed and unattempted texts", async () => {
+    const texts = Array.from({ length: 70 }, (_, index) => `text-${index}`);
+    const create = vi.fn(async (params: { input: string | string[] }) => {
+      if (create.mock.calls.length === 2) throw { status: 429, headers: { "retry-after": "0" } };
+      return {
+        data: (Array.isArray(params.input) ? params.input : [params.input]).map((_, index) => ({
+          index,
+          embedding: [index],
+        })),
+      };
+    });
+    const client = createCachingEmbeddingClient(
+      new OpenAICompatibleEmbeddingClient({
+        model: "test",
+        dims: 1,
+        maxBatchSize: 32,
+        rateLimitMaxRetries: 0,
+        client: { embeddings: { create } },
+      }),
+      { model: "test", dims: 1 },
+    );
+    await expect(client.embedBatch(texts)).rejects.toMatchObject({ code: "EMBEDDING_BACKOFF" });
+    expect(create).toHaveBeenCalledTimes(2);
+    await expect(client.embedBatch([...texts, texts[0]!])).resolves.toHaveLength(71);
+    expect(create.mock.calls.map(([params]) => params.input)).toEqual([
+      texts.slice(0, 32),
+      texts.slice(32, 64),
+      texts.slice(32, 64),
+      texts.slice(64),
+    ]);
+  });
+
+  it("installs pending entries before synchronous chunk callbacks and ignores late superseded chunks", async () => {
+    const batch = createDeferred<Float32Array[]>();
+    let publish!: NonNullable<EmbeddingBatchOptions["onChunk"]>;
+    let joined!: Promise<Float32Array[]>;
+    const inner: EmbeddingClient = {
+      embed: vi.fn(async () => Float32Array.of(42)),
+      embedBatch: vi.fn((_texts, options) => {
+        publish = options!.onChunk!;
+        joined = client.embedBatch(["a"]);
+        return batch.promise;
+      }),
+    };
+    const client = createCachingEmbeddingClient(inner, { model: "test", dims: 1 });
+    const original = client.embedBatch(["a", "b"]);
+    await Promise.resolve();
+    await expect(client.embed("a")).resolves.toEqual(Float32Array.of(42));
+    publish(0, [Float32Array.of(1)]);
+    await expect(joined).resolves.toEqual([Float32Array.of(1)]);
+    batch.reject(new Error("second request failed"));
+    await expect(original).rejects.toThrow("second request failed");
+    await expect(client.embed("a")).resolves.toEqual(Float32Array.of(42));
+    expect(inner.embedBatch).toHaveBeenCalledTimes(1);
+    expect(inner.embed).toHaveBeenCalledTimes(1);
+  });
+
   it("misses for different texts", async () => {
     const inner = createInnerClient();
     const client = createCachingEmbeddingClient(inner.client, {
@@ -131,11 +192,14 @@ describe("createCachingEmbeddingClient", () => {
     const second = await client.embedBatch(["prefix-two", "prefix-one"]);
     const single = await client.embed("prefix-one");
 
-    expect(create).toHaveBeenCalledExactlyOnceWith({
-      input: ["prefix", "prefix"],
-      model: "model-a",
-      encoding_format: "float",
-    });
+    expect(create).toHaveBeenCalledExactlyOnceWith(
+      {
+        input: ["prefix", "prefix"],
+        model: "model-a",
+        encoding_format: "float",
+      },
+      { signal: expect.any(AbortSignal), maxRetries: 0, timeout: 120_000 },
+    );
     expect(first.map((vector) => Array.from(vector))).toEqual([[99], [22], [11]]);
     expect(second.map((vector) => Array.from(vector))).toEqual([[22], [11]]);
     expect(Array.from(single)).toEqual([11]);
@@ -227,7 +291,9 @@ describe("createCachingEmbeddingClient", () => {
     const embeddings = await client.embedBatch(["a", "b", "a", "c", "b"]);
 
     expect(inner.embedBatch).toHaveBeenCalledTimes(1);
-    expect(inner.embedBatch).toHaveBeenCalledWith(["a", "b", "c"]);
+    expect(inner.embedBatch).toHaveBeenCalledWith(["a", "b", "c"], {
+      onChunk: expect.any(Function),
+    });
     expect(embeddings.map((embedding) => Array.from(embedding))).toEqual([
       [97],
       [98],
@@ -495,12 +561,15 @@ describe("createCachingEmbeddingClient", () => {
 
     await createEmbeddingClient(config).embed("foo");
 
-    expect(openAiMocks.createEmbeddings).toHaveBeenCalledExactlyOnceWith({
-      input: "fo",
-      model: "model-a",
-      encoding_format: "float",
-      provider,
-    });
+    expect(openAiMocks.createEmbeddings).toHaveBeenCalledExactlyOnceWith(
+      {
+        input: "fo",
+        model: "model-a",
+        encoding_format: "float",
+        provider,
+      },
+      { signal: expect.any(AbortSignal), maxRetries: 0, timeout: 120_000 },
+    );
   });
 
   it("keeps createEmbeddingClient cache state per factory-created instance", async () => {

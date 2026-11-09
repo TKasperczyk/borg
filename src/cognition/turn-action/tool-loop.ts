@@ -89,6 +89,9 @@ export type ExecuteToolLoopOptions = {
   currentSenderBorgRole?: BorgRole | null;
   sessionAudienceRole?: SessionAudienceRole;
   provenance?: unknown;
+  onRetrievalDegraded?: (
+    degradation: import("../../retrieval/degradation.js").RetrievalDegradation,
+  ) => void;
   budget: string;
   maxTokens?: number;
   timeoutMs?: number;
@@ -260,6 +263,7 @@ async function dispatchToolUseBlock(
     | "currentSenderBorgRole"
     | "sessionAudienceRole"
     | "provenance"
+    | "onRetrievalDegraded"
   >,
   block: LLMToolUseBlock,
 ): Promise<ToolDispatchResult> {
@@ -276,6 +280,7 @@ async function dispatchToolUseBlock(
       currentSenderBorgRole: options.currentSenderBorgRole,
       sessionAudienceRole: options.sessionAudienceRole,
       provenance: options.provenance,
+      onRetrievalDegraded: options.onRetrievalDegraded,
     });
   } catch (error) {
     return {
@@ -635,6 +640,7 @@ export async function executeToolLoop(options: ExecuteToolLoopOptions): Promise<
           currentSenderBorgRole: options.currentSenderBorgRole,
           sessionAudienceRole: options.sessionAudienceRole,
           provenance: options.provenance,
+          onRetrievalDegraded: options.onRetrievalDegraded,
         },
         block,
       );

@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
 import type { LLMConverseOptions } from "../../llm/index.js";
+import type { RetrievalDegradation } from "../../retrieval/degradation.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import {
   CommitmentRepository,
@@ -4228,6 +4229,51 @@ describe("deliberator", () => {
     expect(openQuestionsBlock).toContain("disclosure_class=self_private");
     expect(openQuestionsBlock).not.toContain("disclosure_class=public");
   });
+
+  it.each(["legacy", "compact"] as const)(
+    "renders verification-only degradation in the current %s finalizer prompt",
+    async (finalizerSurfaceVariant) => {
+      const retrievalDegradations: RetrievalDegradation[] = [];
+      const reRetrieve = vi.fn(async () => {
+        retrievalDegradations.push({
+          subsystem: "recall_expansion",
+          reason: "verification transport offline",
+        });
+        return makeRetrievedContext();
+      });
+      const llm = new FakeLLMClient({
+        responses: [
+          emitFinalizerToolResponse({
+            id: "toolu_verify",
+            name: "EmitTurnPlan",
+            input: {
+              uncertainty: "",
+              verification_steps: ["verify prior work"],
+              tensions: [],
+              voice_note: "",
+              intents: [],
+            },
+          }),
+          emitFinalizerTextAnswerResponse("Answer with available evidence."),
+        ],
+      });
+      await createDeliberator(llm, tempDirs, { finalizerSurfaceVariant }).run(
+        simpleDeliberationContext({
+          retrievalDegradations,
+          retrievalResult: [makeRetrievedEpisode("ep_aaaaaaaaaaaaaaaa", 0.9)],
+          options: { stakes: "high" },
+          reRetrieve,
+        }),
+      );
+      expect(reRetrieve).toHaveBeenCalledExactlyOnceWith("verify prior work", { limit: 3 });
+      expect(requestSystemText(llm.requests[0]?.system)).not.toContain("<borg_retrieval_status>");
+      const finalizerSystem = requestSystemText(llm.requests[1]?.system);
+      expect(finalizerSystem.match(/<borg_retrieval_status>/g)).toHaveLength(1);
+      expect(finalizerSystem).toContain('"degraded":true');
+      expect(finalizerSystem).toContain('"subsystems":["recall_expansion"]');
+      expect(finalizerSystem).not.toContain("verification transport offline");
+    },
+  );
 
   it("tags unified additional retrieval evidence in the S2 finalizer prompt", async () => {
     const llm = new FakeLLMClient({

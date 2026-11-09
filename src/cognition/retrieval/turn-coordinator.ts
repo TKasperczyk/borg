@@ -151,6 +151,7 @@ export type TurnRetrievalCoordinatorInput = {
 };
 
 export type TurnRetrievalCoordinatorResult = {
+  retrievalDegradations?: import("../../retrieval/degradation.js").RetrievalDegradation[];
   applicableCommitments: CommitmentRecord[];
   applicableCommitmentsReadAtMs?: number;
   actionApplicableCommitments: CommitmentRecord[];
@@ -317,7 +318,10 @@ export class TurnRetrievalCoordinator {
         Math.abs(retrievalMood.valence) + Math.abs(retrievalMood.arousal) > MOOD_ACTIVITY_THRESHOLD,
       audienceTrust: input.audienceProfile?.trust ?? null,
     });
+    const retrievalDegradations: import("../../retrieval/degradation.js").RetrievalDegradation[] =
+      [];
     const retrievalOptions: CognitionRetrievalOptions = {
+      onDegraded: (degradation) => retrievalDegradations.push(degradation),
       ...retrievalOptionsFromRecallDisclosureContext({
         recallContext: input.recallContext,
         disclosureContext: input.disclosureContext,
@@ -421,6 +425,7 @@ export class TurnRetrievalCoordinator {
 
     return {
       applicableCommitments,
+      retrievalDegradations,
       applicableCommitmentsReadAtMs: nowMs,
       actionApplicableCommitments,
       pendingCorrections,
@@ -436,6 +441,10 @@ export class TurnRetrievalCoordinator {
         this.options.retrievalPipeline.recallEpisodesForCognition(query, {
           ...retrievalOptions,
           ...overrides,
+          onDegraded: (degradation) => {
+            retrievalDegradations.push(degradation);
+            overrides.onDegraded?.(degradation);
+          },
         }),
     };
   }

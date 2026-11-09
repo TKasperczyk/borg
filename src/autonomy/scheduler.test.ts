@@ -3572,10 +3572,204 @@ describe("AutonomyScheduler", () => {
 
       expect((await scheduler.tick()).firedEvents).toBe(1);
       expect(dispatch).toHaveBeenCalledWith(
-        expect.objectContaining({ timeoutMs: prepToolTimeoutMs ?? 90_000 }),
+        expect.objectContaining({
+          timeoutPolicy: { timeoutMs: prepToolTimeoutMs ?? 120_000, maxTimeoutMs: 300_000 },
+          deadlineAt: 1_300_000,
+        }),
       );
     },
   );
+
+  it.each([
+    { firstElapsedMs: 180_000, preparedCount: 3 },
+    { firstElapsedMs: 180_001, preparedCount: 1 },
+    { firstElapsedMs: 299_000, preparedCount: 1 },
+  ])(
+    "preserves $preparedCount prepared questions after a $firstElapsedMs ms search and defers the rest",
+    async ({ firstElapsedMs, preparedCount }) => {
+      const clock = new ManualClock(1_000_000);
+      const harness = await createOfflineTestHarness({ clock });
+      cleanup = harness.cleanup;
+      const watermarkRepository = new StreamWatermarkRepository({ db: harness.db, clock });
+      const questions = Array.from({ length: 3 }, (_, index) =>
+        harness.openQuestionsRepository.add({
+          question: `Question ${index}`,
+          urgency: 0.5,
+          source: "user",
+          provenance: { kind: "system" },
+          last_touched: clock.now() - 100_000 + index,
+        }),
+      );
+      const source = createOpenQuestionDormantTrigger({
+        openQuestionsRepository: harness.openQuestionsRepository,
+        watermarkRepository,
+        dormantMs: 50_000,
+        clock,
+      });
+      const createStreamWriter = (sessionId: typeof DEFAULT_SESSION_ID) =>
+        new StreamWriter({ dataDir: harness.tempDir, sessionId, clock });
+      const dispatcher = new ToolDispatcher({ createStreamWriter, clock });
+      let searches = 0;
+      const dispatch = vi.spyOn(dispatcher, "dispatch").mockImplementation(async () => {
+        if (searches++ === 0) clock.advance(firstElapsedMs);
+        return {
+          callId: "prep",
+          toolName: "tool.episodic.search",
+          ok: true,
+          output: { episodes: [{ id: "ep_prepared" }] },
+          durationMs: 0,
+        };
+      });
+      const turnRunner = {
+        run: vi.fn().mockResolvedValue({
+          ...createStructuralTurnResult({ emissionKind: "suppressed" }),
+          // Other prompt sections can show questions too. Only this admission's
+          // prepared payload may advance the trigger's completion watermarks.
+          shownOpenQuestionIds: questions.map((question) => question.id),
+        }),
+      };
+      const scheduler = createScheduler({
+        db: harness.db,
+        enabled: true,
+        intervalMs: 1000,
+        prepToolTimeoutMs: 120_000,
+        prepToolMaxTimeoutMs: 300_000,
+        preparationMaxElapsedMs: 300_000,
+        maxWakesPerWindow: 6,
+        clock,
+        createStreamWriter,
+        watermarkRepository,
+        turnOrchestrator: turnRunner,
+        toolDispatcher: dispatcher,
+        sources: [source],
+      });
+      expect(await scheduler.tick()).toMatchObject({ firedEvents: 1, errorCount: 0 });
+      expect(dispatch).toHaveBeenCalledTimes(preparedCount);
+      expect(dispatch.mock.calls.map(([call]) => call.deadlineAt)).toEqual(
+        Array(preparedCount).fill(1_300_000),
+      );
+      const payload = turnRunner.run.mock.calls[0]![0].autonomyTrigger.payload;
+      expect(
+        [payload, ...payload.additional_questions].map((question) => question.open_question_id),
+      ).toEqual(questions.slice(0, preparedCount).map((question) => question.id));
+      expect(payload.related_episodes).toEqual([{ id: "ep_prepared" }]);
+      for (const [index, question] of questions.entries()) {
+        const watermark = watermarkRepository.get(
+          `autonomy:open-question-dormant:${question.id}:${question.last_touched}`,
+          DEFAULT_SESSION_ID,
+        );
+        if (index < preparedCount) expect(watermark).not.toBeNull();
+        else {
+          expect(watermark).toBeNull();
+          expect(
+            harness.openQuestionsRepository.get(question.id)?.unresolved_rumination_ticks,
+          ).toBe(0);
+        }
+      }
+      if (preparedCount === 1) {
+        expect((await source.scan())[0]?.payload.open_question_id).toBe(questions[1]!.id);
+        expect(await scheduler.tick()).toMatchObject({ firedEvents: 1, errorCount: 0 });
+        expect(dispatch).toHaveBeenCalledTimes(3);
+        expect(turnRunner.run.mock.calls[1]![0].autonomyTrigger.payload.open_question_id).toBe(
+          questions[1]!.id,
+        );
+      }
+      expect(await source.scan()).toEqual([]);
+    },
+  );
+
+  it("spends one preparation deadline across question searches and traces a bounded timeout", async () => {
+    const clock = new ManualClock(1_000_000);
+    const harness = await createOfflineTestHarness({ clock });
+    cleanup = harness.cleanup;
+    const dispatcher = new ToolDispatcher({
+      createStreamWriter: (sessionId) =>
+        new StreamWriter({ dataDir: harness.tempDir, sessionId, clock }),
+      clock,
+    });
+    const dispatch = vi
+      .spyOn(dispatcher, "dispatch")
+      .mockImplementationOnce(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        clock.advance(20);
+        return {
+          callId: "first",
+          toolName: "tool.episodic.search",
+          ok: true,
+          output: { episodes: [] },
+          durationMs: 20,
+        };
+      })
+      .mockImplementationOnce(
+        async (call) =>
+          await new Promise((_, reject) => {
+            call.signal?.addEventListener("abort", () => reject(call.signal?.reason), {
+              once: true,
+            });
+          }),
+      );
+    const source = createTestDueSource("prep-questions", "open_question_dormant", "contemplative");
+    const events = await source.scan();
+    source.scan = async () => [
+      {
+        ...events[0]!,
+        payload: {
+          open_question_id: "oq_aaaaaaaaaaaaaaaa",
+          question: "First question",
+          urgency: 1,
+          last_touched: 0,
+          unresolved_rumination_ticks: 0,
+          last_ruminated_at: null,
+          additional_questions: [
+            {
+              open_question_id: "oq_bbbbbbbbbbbbbbbb",
+              question: "Second question",
+              urgency: 1,
+              last_touched: 0,
+              unresolved_rumination_ticks: 0,
+              last_ruminated_at: null,
+            },
+            {
+              open_question_id: "oq_cccccccccccccccc",
+              question: "Third question",
+              urgency: 1,
+              last_touched: 0,
+              unresolved_rumination_ticks: 0,
+              last_ruminated_at: null,
+            },
+          ],
+        },
+      },
+    ];
+    const run = vi.fn();
+    const emit = vi.fn();
+    const scheduler = createScheduler({
+      db: harness.db,
+      enabled: true,
+      intervalMs: 1000,
+      prepToolTimeoutMs: 80,
+      prepToolMaxTimeoutMs: 150,
+      preparationMaxElapsedMs: 100,
+      maxWakesPerWindow: 6,
+      clock,
+      createStreamWriter: (sessionId) =>
+        new StreamWriter({ dataDir: harness.tempDir, sessionId, clock }),
+      watermarkRepository: new StreamWatermarkRepository({ db: harness.db, clock }),
+      turnOrchestrator: { run },
+      toolDispatcher: dispatcher,
+      sources: [source],
+      tracer: { enabled: true, includePayloads: false, emit },
+    });
+    expect(await scheduler.tick()).toMatchObject({ errorCount: 1 });
+    expect(run).not.toHaveBeenCalled();
+    expect(dispatch).toHaveBeenCalledTimes(2);
+    expect(dispatch.mock.calls.map(([call]) => call.deadlineAt)).toEqual([1_000_100, 1_000_100]);
+    expect(dispatch.mock.calls[1]?.[0].signal?.aborted).toBe(true);
+    expect(emit).toHaveBeenCalledWith(
+      "autonomy.preparation.completed",
+      expect.objectContaining({ outcome: "timed_out", budgetMs: 100 }),
+    );
+  });
 
   it.each(["operational", "contemplative"] as const)(
     "retains %s preparation failures without spending budget, with 10m-to-1h retry spacing",
@@ -3977,7 +4171,7 @@ describe("AutonomyScheduler", () => {
     });
     expect(dispatch).toHaveBeenCalledWith(
       expect.objectContaining({
-        timeoutMs: 90_000,
+        timeoutPolicy: { timeoutMs: 120_000, maxTimeoutMs: 300_000 },
         toolName: "tool.episodic.search",
         input: { query: "What remains open?", limit: 5 },
       }),

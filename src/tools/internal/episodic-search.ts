@@ -17,6 +17,11 @@ import {
   MAX_RECALLED_SOURCE_MESSAGES_PER_EPISODE,
 } from "../../retrieval/evidence-bounds.js";
 import type { ToolDefinition, ToolInvocationContext } from "../dispatcher.js";
+import {
+  retrievalStatus,
+  retrievalStatusSchema,
+  type RetrievalDegradation,
+} from "../../retrieval/degradation.js";
 
 const DEFAULT_EPISODIC_SEARCH_LIMIT = 5;
 const MAX_EPISODIC_SEARCH_LIMIT = 5;
@@ -28,6 +33,7 @@ const episodicSearchInputSchema = z.object({
 });
 
 const episodicSearchOutputSchema = z.object({
+  retrieval_status: retrievalStatusSchema.optional(),
   episodes: z.array(
     z.object({
       id: z.string().min(1),
@@ -76,7 +82,9 @@ export type EpisodicSearchToolOptions = {
     query: string,
     limit: number | undefined,
     context: ToolInvocationContext,
-  ) => Promise<RetrievedEpisode[]>;
+  ) => Promise<
+    RetrievedEpisode[] | { episodes: RetrievedEpisode[]; degradations: RetrievalDegradation[] }
+  >;
 };
 
 function normalizeWhitespace(text: string): string {
@@ -115,17 +123,20 @@ export function createEpisodicSearchTool(
     // Vector search over the Lance index; between compactions fragment counts
     // climb into the hundreds and honest queries exceed the 5s dispatcher
     // default (observed live: seven consecutive ~5s timeouts across two days).
-    timeoutMs: 15_000,
+    timeoutClass: "search",
     inputSchema: episodicSearchInputSchema,
     outputSchema: episodicSearchOutputSchema,
     async invoke(input, context) {
-      const results = await options.searchEpisodes(
+      const found = await options.searchEpisodes(
         input.query,
         Math.min(input.limit ?? DEFAULT_EPISODIC_SEARCH_LIMIT, MAX_EPISODIC_SEARCH_LIMIT),
         context,
       );
+      const results = Array.isArray(found) ? found : found.episodes;
+      const status = Array.isArray(found) ? undefined : retrievalStatus(found.degradations);
 
       return {
+        ...(status === undefined ? {} : { retrieval_status: status }),
         episodes: results.map((result) => {
           const disclosureLabel =
             result.disclosureLabel ?? memoryDisclosureLabelFromEpisodeAccess(result.episode);

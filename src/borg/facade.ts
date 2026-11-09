@@ -201,8 +201,11 @@ async function countPendingSemanticExtractionEpisodes(
     ...deps.semanticEdgeRepository.listAllEvidenceEpisodeIds(),
   ]);
 
-  for (const audit of deps.auditLog.list({ process: "semantic-extractor", reverted: false })) {
-    const auditEpisodeIds = audit.targets.episode_ids;
+  for (const targets of deps.auditLog.listTargets({
+    process: "semantic-extractor",
+    reverted: false,
+  })) {
+    const auditEpisodeIds = targets.episode_ids;
 
     if (!Array.isArray(auditEpisodeIds)) {
       continue;

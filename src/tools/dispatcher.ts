@@ -6,6 +6,14 @@ import type { SessionAudienceRole } from "../sessions/index.js";
 import { StreamWriter } from "../stream/index.js";
 import { SystemClock, type Clock } from "../util/clock.js";
 import { ToolError } from "../util/errors.js";
+import type { RetrievalDegradation } from "../retrieval/degradation.js";
+import type { TurnTracer } from "../tracing/tracer.js";
+import {
+  runWithTimeoutPolicy,
+  TimeoutBudgetExceeded,
+  type TimeoutBudget,
+  type TimeoutLoadSignals,
+} from "../util/timeout-policy.js";
 import {
   createStreamEntryId,
   DEFAULT_SESSION_ID,
@@ -26,6 +34,8 @@ export type ToolInvocationContext = {
   sessionAudienceRole?: SessionAudienceRole;
   toolCallEntryId?: StreamEntryId;
   provenance?: unknown;
+  signal?: AbortSignal;
+  onRetrievalDegraded?: (degradation: RetrievalDegradation) => void;
 };
 
 export type ToolDefinition<Input = unknown, Output = unknown> = {
@@ -40,6 +50,7 @@ export type ToolDefinition<Input = unknown, Output = unknown> = {
   // than the dispatcher default (vector search over a fragmented index).
   // Structural capacity, not a judgment knob; call-level timeoutMs still wins.
   timeoutMs?: number;
+  timeoutClass?: "search";
   invoke(input: Input, context: ToolInvocationContext): Promise<Output>;
 };
 
@@ -56,6 +67,10 @@ export type ToolDispatchCall = {
   sessionAudienceRole?: SessionAudienceRole;
   provenance?: unknown;
   timeoutMs?: number;
+  timeoutPolicy?: TimeoutBudget;
+  deadlineAt?: number;
+  signal?: AbortSignal;
+  onRetrievalDegraded?: (degradation: RetrievalDegradation) => void;
 };
 
 export type ToolSkippedCall = {
@@ -94,6 +109,10 @@ export type ToolDispatcherOptions = {
   createStreamWriter: (sessionId: SessionId) => StreamWriter;
   clock?: Clock;
   defaultTimeoutMs?: number;
+  searchTimeoutMs?: number;
+  searchMaxTimeoutMs?: number;
+  loadSignals?: (call: ToolDispatchCall) => TimeoutLoadSignals;
+  tracer?: Pick<TurnTracer, "emit">;
 };
 
 type SettledInvocation<Output> =
@@ -112,34 +131,6 @@ function formatToolError(error: unknown): string {
   }
 
   return String(error);
-}
-
-function withTimeout<Output>(
-  promise: Promise<Output>,
-  timeoutMs: number,
-): Promise<SettledInvocation<Output> | { kind: "timeout" }> {
-  const settledPromise = promise.then<SettledInvocation<Output>, SettledInvocation<Output>>(
-    (value) => ({
-      kind: "resolved",
-      value,
-    }),
-    (error) => ({
-      kind: "rejected",
-      error,
-    }),
-  );
-  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-
-  return Promise.race([
-    settledPromise,
-    new Promise<{ kind: "timeout" }>((resolve) => {
-      timeoutHandle = setTimeout(() => resolve({ kind: "timeout" }), timeoutMs);
-    }),
-  ]).finally(() => {
-    if (timeoutHandle !== undefined) {
-      clearTimeout(timeoutHandle);
-    }
-  });
 }
 
 export class ToolDispatcher {
@@ -220,7 +211,21 @@ export class ToolDispatcher {
     const tool = this.tools.get(call.toolName);
     const sessionId = call.sessionId ?? DEFAULT_SESSION_ID;
     const callId = call.callId ?? createStreamEntryId();
-    const timeoutMs = call.timeoutMs ?? tool?.timeoutMs ?? this.defaultTimeoutMs;
+    const timeoutMs =
+      call.timeoutMs ??
+      call.timeoutPolicy?.timeoutMs ??
+      tool?.timeoutMs ??
+      (tool?.timeoutClass === "search"
+        ? (this.options.searchTimeoutMs ?? 60_000)
+        : this.defaultTimeoutMs);
+    const maxTimeoutMs =
+      call.timeoutMs !== undefined ||
+      (call.timeoutPolicy === undefined && tool?.timeoutMs !== undefined)
+        ? timeoutMs
+        : (call.timeoutPolicy?.maxTimeoutMs ??
+          (tool?.timeoutClass === "search"
+            ? (this.options.searchMaxTimeoutMs ?? 120_000)
+            : timeoutMs));
     const startedAt = this.clock.now();
     const writer = this.options.createStreamWriter(sessionId);
 
@@ -287,44 +292,52 @@ export class ToolDispatcher {
           : { sessionAudienceRole: call.sessionAudienceRole }),
         toolCallEntryId: toolCallEntry.id,
         provenance: call.provenance,
+        onRetrievalDegraded: call.onRetrievalDegraded,
       };
-      const invocation =
-        tool.writeScope === "read"
-          ? await withTimeout(tool.invoke(parsedInput.data, context), timeoutMs)
-          : await (async (): Promise<SettledInvocation<unknown>> => {
-              // Write-scoped tools are not raced against the dispatcher timeout:
-              // a timed-out write can still commit after the model sees failure.
-              // Write tools must keep their own execution bounded internally.
-              try {
-                return {
-                  kind: "resolved",
-                  value: await tool.invoke(parsedInput.data, context),
-                };
-              } catch (error) {
-                return {
-                  kind: "rejected",
-                  error,
-                };
-              }
-            })();
-
-      if (invocation.kind === "timeout") {
-        return await this.appendErrorResult(
-          writer,
-          callId,
-          call.toolName,
-          `Timed out after ${timeoutMs}ms`,
-          startedAt,
-          call.turnId,
-        );
-      }
+      const invocation = await (async (): Promise<SettledInvocation<unknown>> => {
+        // Write-scoped tools are not raced against the dispatcher timeout:
+        // a timed-out write can still commit after the model sees failure.
+        // Write tools must keep their own execution bounded internally.
+        try {
+          return {
+            kind: "resolved",
+            value:
+              tool.writeScope === "read"
+                ? await runWithTimeoutPolicy({
+                    timeoutMs,
+                    maxTimeoutMs,
+                    deadlineAt: call.deadlineAt,
+                    signal: call.signal,
+                    clock: this.clock,
+                    loadSignals: () => this.options.loadSignals?.(call) ?? {},
+                    observe: (observation) =>
+                      this.options.tracer?.emit("tool_call.budget", {
+                        turnId: call.turnId ?? callId,
+                        session_id: sessionId,
+                        callId,
+                        toolName: call.toolName,
+                        ...observation,
+                      }),
+                    run: (signal) => tool.invoke(parsedInput.data, { ...context, signal }),
+                  })
+                : await tool.invoke(parsedInput.data, context),
+          };
+        } catch (error) {
+          return {
+            kind: "rejected",
+            error,
+          };
+        }
+      })();
 
       if (invocation.kind === "rejected") {
         return await this.appendErrorResult(
           writer,
           callId,
           call.toolName,
-          formatToolError(invocation.error),
+          invocation.error instanceof TimeoutBudgetExceeded
+            ? invocation.error.message
+            : formatToolError(invocation.error),
           startedAt,
           call.turnId,
         );

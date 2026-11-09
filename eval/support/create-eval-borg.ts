@@ -7,6 +7,7 @@ import { DeterministicEmbeddingClient } from "./embedding.js";
 export const DEFAULT_EVAL_EMBEDDING_DIMS = 64;
 
 type EvalConfigOverrides = {
+  tools?: Partial<Config["tools"]>;
   dataDir?: string;
   defaultUser?: Config["defaultUser"];
   host_capabilities?: Config["host_capabilities"];
@@ -100,6 +101,7 @@ export type CreateEvalBorgOptions = {
 export async function createEvalBorg(options: CreateEvalBorgOptions): Promise<Borg> {
   const embeddingDimensions = options.embeddingDimensions ?? DEFAULT_EVAL_EMBEDDING_DIMS;
   const config: Config = {
+    tools: { ...DEFAULT_CONFIG.tools, ...options.config?.tools },
     dataDir: options.tempDir,
     similarity: similarityConfigSchema.parse(options.config?.similarity),
     defaultUser: options.config?.defaultUser ?? DEFAULT_CONFIG.defaultUser,

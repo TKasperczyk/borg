@@ -32,14 +32,20 @@ import {
 } from "../deliberation/autonomous-finalizer-tools.js";
 import { OUTBOUND_POST_TOOL_NAME } from "../../tools/internal/outbound-post-name.js";
 import { OWN_RECORDS_PAGE_END_CLAIM } from "../../tools/internal/own-records-page-end-claim.js";
-import { renderTaggedPromptBlock } from "../deliberation/prompt/sections.js";
+import {
+  renderTaggedPromptBlock,
+  renderTaggedPromptSection,
+} from "../deliberation/prompt/sections.js";
 import { formatTurnPlanForPrompt } from "../deliberation/prompt/plan-rendering.js";
 import {
   buildCompactPlannerSystemPrompt,
   PLANNER_GOAL_TARGET_TOKENS,
   renderGoalDigest,
 } from "../deliberation/prompt/planner-context.js";
-import { summarizeRetrievedEvidence } from "../deliberation/prompt/retrieval.js";
+import {
+  summarizeRetrievedEvidence,
+  summarizeRetrievalStatus,
+} from "../deliberation/prompt/retrieval.js";
 import {
   buildBaseSystemPrompt,
   buildCacheableBaseSystemPromptParts,
@@ -258,6 +264,7 @@ const FIXTURE_AUTONOMY_SCHEDULER_STATE: NonNullable<
 };
 const COMPACT_PLANNER_FIXTURE_NAME = "s2-planner-system-prompt-compact.txt";
 const FIXTURE_NAMES = [
+  "retrieval-status.txt",
   "base-system-user-group-problem-solving.txt",
   "base-system-autonomous-dm-relational.txt",
   "cacheable-base-static-prefix.txt",
@@ -1781,6 +1788,13 @@ describe("prompt surface fixtures", () => {
   });
 
   it("keeps every registry entry pinned by a fixture or documented exemption", () => {
+    expectFixture(
+      "retrieval-status.txt",
+      `${renderTaggedPromptSection(
+        "borg_retrieval_status",
+        summarizeRetrievalStatus([{ subsystem: "recall_expansion", reason: "provider detail" }]),
+      )}\n`,
+    );
     const text = allFixtureText();
     const registryEntryIds = new Set(PROMPT_SURFACE_BLOCKS.map((entry) => entry.id));
 
