@@ -807,7 +807,7 @@ export function renderOlderActionThreadsSummary(input: {
     : [];
 
   return [
-    `Older action threads omitted from this section: threads=${olderThreads.length}, records=${olderRecordCount}.`,
+    `Action threads omitted from this section: threads=${olderThreads.length}, records=${olderRecordCount}.`,
     `Not counted above: salience_dropped_threads=${input.salienceDroppedThreadCount}, records_below_draw_floor=${recordsBelowDrawFloor} (threads_built=${input.threadsBuiltCount} = rendered ${input.renderedThreadCount} + omitted ${olderThreads.length} + dropped ${input.salienceDroppedThreadCount}; render_slots=${input.renderLimit}, stale_participant_threads_withheld=${input.staleParticipantThreadsWithheldCount} of that omitted count, held out before the slot draw, so rendered can sit below render_slots without render_slots binding; records_considered=${input.consideredRecordCount} records, source_record_limit=${input.sourceRecordLimit}, ${sourceRecordTotalField}).`,
     ...disclosureNote,
     ...groups.map(
