@@ -15,6 +15,7 @@ const ACTION_SNAPSHOT_STATES = [
   "scheduled",
   "completed",
   "not_done",
+  "declined",
   "unknown",
 ] as const;
 const ACTION_SNAPSHOT_ACTIVE_STATES = new Set([

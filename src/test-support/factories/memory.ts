@@ -29,6 +29,7 @@ function timestampForActionState(
   | "scheduled_at"
   | "completed_at"
   | "not_done_at"
+  | "declined_at"
   | "expired_at"
   | "archived_at"
   | "unknown_at"
@@ -39,6 +40,7 @@ function timestampForActionState(
     scheduled_at: state === "scheduled" ? timestamp : null,
     completed_at: state === "completed" ? timestamp : null,
     not_done_at: state === "not_done" ? timestamp : null,
+    declined_at: state === "declined" ? timestamp : null,
     expired_at: state === "expired" ? timestamp : null,
     archived_at: state === "archived" ? timestamp : null,
     unknown_at: state === "unknown" ? timestamp : null,
@@ -69,6 +71,7 @@ export function makeActionRecord(overrides: Partial<ActionRecord> = {}): ActionR
     scheduled_at: stateTimestamps.scheduled_at,
     completed_at: stateTimestamps.completed_at,
     not_done_at: stateTimestamps.not_done_at,
+    declined_at: stateTimestamps.declined_at,
     expired_at: stateTimestamps.expired_at,
     archived_at: stateTimestamps.archived_at,
     unknown_at: stateTimestamps.unknown_at,

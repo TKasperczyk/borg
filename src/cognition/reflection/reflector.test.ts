@@ -93,7 +93,7 @@ function createReflectionResponse(
     description: string;
     next_action: string | null;
     actor: "user" | "borg";
-    status: "completed" | "abandoned";
+    status: "completed" | "abandoned" | "declined";
     evidence: string;
   }> = [],
   traitDemonstrations: Array<{
@@ -2661,160 +2661,169 @@ describe("reflector", () => {
     }
   });
 
-  it("clears completed and abandoned pending actions and persists action records", async () => {
-    const pendingIntents: Array<{
-      description: string;
-      next_action: string | null;
-      pending_action_id?: string;
-    }> = [
-      {
-        pending_action_id: "pact_0000000000000000",
-        description: "Check the Atlas rollout after tests finish",
-        next_action: "review deploy status",
-      },
-      {
-        pending_action_id: "pact_0000000000000001",
-        description: "Open a new incident if rollout fails",
-        next_action: "create incident",
-      },
-    ];
-    const newIntent = {
-      description: "Write a rollback note",
-      next_action: "draft rollback note",
-    };
-    const llm = new FakeLLMClient({
-      responses: [
-        createReflectionResponse(
-          [],
-          [],
-          [
-            {
-              ...pendingIntents[0]!,
-              actor: "borg",
-              status: "completed",
-              evidence: "The response reviewed the deploy status.",
-            },
-            {
-              ...pendingIntents[1]!,
-              actor: "user",
-              status: "abandoned",
-              evidence: "The user said not to create an incident.",
-            },
-            {
-              description: "Hallucinated intent",
-              next_action: null,
-              actor: "borg",
-              status: "completed",
-              evidence: "Not present in prior pending actions.",
-            },
-          ],
-        ),
-      ],
-    });
-    const harness = await createOfflineTestHarness({
-      llmClient: llm,
-    });
-    cleanup.push(harness.cleanup);
-    const tracer = new CaptureTracer();
-    const reflector = createHarnessReflector(harness, {
-      clock: harness.clock,
-      llmClient: harness.llmClient,
-      model: "haiku",
-      proceduralEvidenceRepository: harness.proceduralEvidenceRepository,
-      tracer,
-    });
-    const workingMemory = createWorkingMemoryFixture({
-      turn_counter: 2,
-      hot_entities: ["Atlas"],
-      pending_actions: pendingIntents,
-      mode: "problem_solving" as const,
-    });
-    const currentTurnStreamEntryIds = [createStreamEntryId(), createStreamEntryId()];
-
-    const { workingMemory: reflected } = await reflector.reflect(
-      {
-        turnId: "turn_intent_updates",
-        userMessage: "The rollout passed and don't open a new incident.",
-        workingMemory,
-        selfSnapshot: {
-          values: [],
-          goals: [],
-          traits: [],
+  it.each(["abandoned", "declined"] as const)(
+    "clears completed and %s pending actions and persists action records",
+    async (status) => {
+      const terminalState = status === "declined" ? "declined" : "not_done";
+      const pendingIntents: Array<{
+        description: string;
+        next_action: string | null;
+        pending_action_id?: string;
+      }> = [
+        {
+          pending_action_id: "pact_0000000000000000",
+          description: "Check the Atlas rollout after tests finish",
+          next_action: "review deploy status",
         },
-        deliberationResult: {
-          path: "system_1",
-          response: "Rollout status is clean. I will write a rollback note.",
-          thoughts: [],
-          tool_calls: [],
-          usage: {
-            input_tokens: 1,
-            output_tokens: 1,
-            stop_reason: "end_turn",
+        {
+          pending_action_id: "pact_0000000000000001",
+          description: "Open a new incident if rollout fails",
+          next_action: "create incident",
+        },
+      ];
+      const newIntent = {
+        description: "Write a rollback note",
+        next_action: "draft rollback note",
+      };
+      const llm = new FakeLLMClient({
+        responses: [
+          createReflectionResponse(
+            [],
+            [],
+            [
+              {
+                ...pendingIntents[0]!,
+                actor: "borg",
+                status: "completed",
+                evidence: "The response reviewed the deploy status.",
+              },
+              {
+                ...pendingIntents[1]!,
+                actor: "user",
+                status,
+                evidence: "The user said not to create an incident.",
+              },
+              {
+                description: "Hallucinated intent",
+                next_action: null,
+                actor: "borg",
+                status: "completed",
+                evidence: "Not present in prior pending actions.",
+              },
+            ],
+          ),
+        ],
+      });
+      const harness = await createOfflineTestHarness({
+        llmClient: llm,
+      });
+      cleanup.push(harness.cleanup);
+      const tracer = new CaptureTracer();
+      const reflector = createHarnessReflector(harness, {
+        clock: harness.clock,
+        llmClient: harness.llmClient,
+        model: "haiku",
+        proceduralEvidenceRepository: harness.proceduralEvidenceRepository,
+        tracer,
+      });
+      const workingMemory = createWorkingMemoryFixture({
+        turn_counter: 2,
+        hot_entities: ["Atlas"],
+        pending_actions: pendingIntents,
+        mode: "problem_solving" as const,
+      });
+      const currentTurnStreamEntryIds = [createStreamEntryId(), createStreamEntryId()];
+
+      const { workingMemory: reflected } = await reflector.reflect(
+        {
+          turnId: "turn_intent_updates",
+          userMessage: "The rollout passed and don't open a new incident.",
+          workingMemory,
+          selfSnapshot: {
+            values: [],
+            goals: [],
+            traits: [],
           },
-          decision_reason: "confidence",
+          deliberationResult: {
+            path: "system_1",
+            response: "Rollout status is clean. I will write a rollback note.",
+            thoughts: [],
+            tool_calls: [],
+            usage: {
+              input_tokens: 1,
+              output_tokens: 1,
+              stop_reason: "end_turn",
+            },
+            decision_reason: "confidence",
+            retrievedEpisodes: [],
+            referencedEpisodeIds: null,
+            intents: [newIntent],
+            thoughtsPersisted: false,
+          },
+          actionResult: {
+            response: "Rollout status is clean. I will write a rollback note.",
+            tool_calls: [],
+            intents: [newIntent],
+            workingMemory: {
+              ...workingMemory,
+              pending_actions: [...pendingIntents, newIntent],
+            },
+          },
           retrievedEpisodes: [],
-          referencedEpisodeIds: null,
-          intents: [newIntent],
-          thoughtsPersisted: false,
+          retrievalConfidence: createRetrievalConfidence(),
+          suppressionSet: new SuppressionSet(),
+          currentTurnStreamEntryIds,
         },
-        actionResult: {
-          response: "Rollout status is clean. I will write a rollback note.",
-          tool_calls: [],
-          intents: [newIntent],
-          workingMemory: {
-            ...workingMemory,
-            pending_actions: [...pendingIntents, newIntent],
-          },
-        },
-        retrievedEpisodes: [],
-        retrievalConfidence: createRetrievalConfidence(),
-        suppressionSet: new SuppressionSet(),
-        currentTurnStreamEntryIds,
-      },
-      harness.streamWriter,
-    );
+        harness.streamWriter,
+      );
 
-    expect(reflected.pending_actions).toEqual([newIntent]);
-    expect(harness.actionRepository.list({ state: "completed" })).toEqual([
-      expect.objectContaining({
-        description: "Check the Atlas rollout after tests finish",
-        actor: "borg",
-        state: "completed",
-        completed_at: 1_000_000,
-        provenance_stream_entry_ids: currentTurnStreamEntryIds,
-      }),
-    ]);
-    expect(harness.actionRepository.list({ state: "not_done" })).toEqual([
-      expect.objectContaining({
-        description: "Open a new incident if rollout fails",
-        actor: "user",
-        state: "not_done",
-        not_done_at: 1_000_000,
-        provenance_stream_entry_ids: currentTurnStreamEntryIds,
-      }),
-    ]);
-    expect(
-      tracer.events
-        .filter(
-          (event) =>
-            event.event === "reflector.intent_update.completed" &&
-            event.data["created_durable_actions_count"] !== undefined,
-        )
-        .map((event) => event.data),
-    ).toEqual([
-      expect.objectContaining({
-        created_durable_actions_count: 1,
-        by_state: { completed: 1, not_done: 0 },
-        working_memory_pending_resolved_count: 1,
-      }),
-      expect.objectContaining({
-        created_durable_actions_count: 1,
-        by_state: { completed: 0, not_done: 1 },
-        working_memory_pending_resolved_count: 1,
-      }),
-    ]);
-    expect(llm.requests[0]?.messages[0]?.content).toContain("pending_actions");
-  });
+      expect(reflected.pending_actions).toEqual([newIntent]);
+      expect(harness.actionRepository.list({ state: "completed" })).toEqual([
+        expect.objectContaining({
+          description: "Check the Atlas rollout after tests finish",
+          actor: "borg",
+          state: "completed",
+          completed_at: 1_000_000,
+          provenance_stream_entry_ids: currentTurnStreamEntryIds,
+        }),
+      ]);
+      expect(harness.actionRepository.list({ state: terminalState })).toEqual([
+        expect.objectContaining({
+          description: "Open a new incident if rollout fails",
+          actor: "user",
+          state: terminalState,
+          not_done_at: status === "declined" ? null : 1_000_000,
+          declined_at: status === "declined" ? 1_000_000 : null,
+          provenance_stream_entry_ids: currentTurnStreamEntryIds,
+        }),
+      ]);
+      expect(
+        tracer.events
+          .filter(
+            (event) =>
+              event.event === "reflector.intent_update.completed" &&
+              event.data["created_durable_actions_count"] !== undefined,
+          )
+          .map((event) => event.data),
+      ).toEqual([
+        expect.objectContaining({
+          created_durable_actions_count: 1,
+          by_state: { completed: 1, not_done: 0, declined: 0 },
+          working_memory_pending_resolved_count: 1,
+        }),
+        expect.objectContaining({
+          created_durable_actions_count: 1,
+          by_state: {
+            completed: 0,
+            not_done: status === "declined" ? 0 : 1,
+            declined: status === "declined" ? 1 : 0,
+          },
+          working_memory_pending_resolved_count: 1,
+        }),
+      ]);
+      expect(llm.requests[0]?.messages[0]?.content).toContain("pending_actions");
+    },
+  );
 
   it("persists group-chat user intent updates on the sender entity", async () => {
     const pendingIntent = {

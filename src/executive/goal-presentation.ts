@@ -24,7 +24,32 @@ export type GoalPresentation = {
 
 /** Global scheduling state, independent of recall/disclosure and wake session. */
 export class GoalPresentationStore {
-  constructor(private readonly watermarks: StreamWatermarkRepository) {}
+  constructor(
+    private readonly watermarks: StreamWatermarkRepository,
+    private readonly onAssociatedInput?: (goalId: GoalId) => void,
+  ) {}
+
+  private executiveKey(goalId: GoalId): string {
+    return `autonomy:goal-presentation:executive:${goalId}`;
+  }
+
+  executivePresentedAt(goal: GoalRecord): number | null {
+    const row = this.watermarks.get(this.executiveKey(goal.id), DEFAULT_SESSION_ID);
+    if (row === null) return null;
+    const prior = stateSchema.shape.presented.unwrap().parse(row.metadata);
+    const current = this.snapshot(goal);
+    return prior.inputGeneration === current.inputGeneration &&
+      prior.progressAnchor === current.progressAnchor
+      ? row.updatedAt
+      : null;
+  }
+
+  hasNewExecutiveInput(goal: GoalRecord): boolean {
+    const row = this.watermarks.get(this.executiveKey(goal.id), DEFAULT_SESSION_ID);
+    return row === null
+      ? this.snapshot(goal).inputGeneration > 0
+      : this.executivePresentedAt(goal) === null;
+  }
 
   private read(goalId: GoalId): z.infer<typeof stateSchema> {
     const row = this.watermarks.get(`autonomy:goal-presentation:${goalId}`, DEFAULT_SESSION_ID);
@@ -84,6 +109,7 @@ export class GoalPresentationStore {
       const key = `autonomy:goal-associated-input:${goalId}:${entryId}`;
       if (this.watermarks.get(key, DEFAULT_SESSION_ID) !== null) return;
       const state = this.read(goalId);
+      this.onAssociatedInput?.(goalId);
       this.write(goalId, { ...state, inputGeneration: state.inputGeneration + 1 });
       this.watermarks.set(key, DEFAULT_SESSION_ID, {
         lastTs: state.inputGeneration + 1,
@@ -92,10 +118,38 @@ export class GoalPresentationStore {
     });
   }
 
-  presented(presentations: readonly GoalPresentation[], turnId: string): void {
+  presented(
+    presentations: readonly GoalPresentation[],
+    turnId: string,
+    executiveGoalIds: ReadonlySet<string> = new Set(),
+  ): void {
     this.watermarks.runInTransaction(() => {
       for (const presentation of presentations) {
         const state = this.read(presentation.goalId);
+        if (executiveGoalIds.has(presentation.goalId)) {
+          const key = this.executiveKey(presentation.goalId);
+          const row = this.watermarks.get(key, DEFAULT_SESSION_ID);
+          const prior =
+            row === null ? null : stateSchema.shape.presented.unwrap().parse(row.metadata);
+          // S2 planner and finalizer acknowledge the same presentation once.
+          if (
+            prior?.turnId !== turnId &&
+            (prior === null ||
+              prior.inputGeneration < presentation.inputGeneration ||
+              (prior.inputGeneration === presentation.inputGeneration &&
+                prior.progressAnchor <= presentation.progressAnchor))
+          ) {
+            this.watermarks.set(key, DEFAULT_SESSION_ID, {
+              lastTs: presentation.inputGeneration,
+              lastEntryId: presentation.goalId,
+              metadata: {
+                progressAnchor: presentation.progressAnchor,
+                inputGeneration: presentation.inputGeneration,
+                turnId,
+              },
+            });
+          }
+        }
         const prior = state.presented;
         if (
           prior !== null &&

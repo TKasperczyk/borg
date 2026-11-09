@@ -94,6 +94,7 @@ const ACTIVE_ACTION_STATES: readonly ActionState[] = [
 const TERMINAL_ACTION_STATES: readonly ActionState[] = [
   "completed",
   "not_done",
+  "declined",
   "expired",
   "archived",
 ];

@@ -226,6 +226,7 @@ export const goalSchema = z.object({
   block_history: z.array(goalBlockRecordSchema).optional(),
   progress_notes: z.string().nullable(),
   last_progress_ts: z.number().finite().nullable(),
+  last_interaction_at: z.number().finite().nullable().optional(),
   created_at: z.number().finite(),
   target_at: z.number().finite().nullable(),
   target_assigned_at: z.number().finite().nullable().optional(),

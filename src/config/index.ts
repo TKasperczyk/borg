@@ -1,3 +1,4 @@
+import { DEFAULT_GOAL_MAX_INACTIVITY_MS } from "../memory/self/goal-inactivity.js";
 import { similarityConfigSchema, similarityValuesSchema } from "./similarity.js";
 import { DEFAULT_RAW_QUERY_MAX_BYTES } from "../retrieval/raw-query.js";
 import { AUTONOMY_WAKE_SOURCE_NAMES } from "../autonomy/types.js";
@@ -914,6 +915,7 @@ const configBaseSchema = z.object({
               enabled: z.boolean().default(false),
               lookaheadMs: z.number().int().positive().default(604_800_000),
               staleMs: z.number().int().positive().default(1_209_600_000),
+              maxInactivityMs: z.number().int().positive().default(DEFAULT_GOAL_MAX_INACTIVITY_MS),
               respectStaleBackoff: z.boolean().default(true),
             })
             .prefault({}),
@@ -2285,6 +2287,11 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
     overrides,
     ["autonomy", "triggers", "goalFollowupDue", "staleMs"],
     readOptionalEnvNumber(env, "BORG_AUTONOMY_TRIGGER_GOAL_FOLLOWUP_DUE_STALE_MS"),
+  );
+  setConfigOverride(
+    overrides,
+    ["autonomy", "triggers", "goalFollowupDue", "maxInactivityMs"],
+    readOptionalEnvNumber(env, "BORG_AUTONOMY_TRIGGER_GOAL_FOLLOWUP_DUE_MAX_INACTIVITY_MS"),
   );
   setConfigOverride(
     overrides,

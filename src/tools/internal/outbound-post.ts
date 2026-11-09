@@ -391,6 +391,7 @@ function persistOutboundActionRecord(input: {
     scheduled_at: null,
     completed_at: state === "completed" ? nowMs : null,
     not_done_at: state === "not_done" ? nowMs : null,
+    declined_at: null,
     expired_at: null,
     archived_at: null,
     unknown_at: null,

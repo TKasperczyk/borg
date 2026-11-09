@@ -1,14 +1,37 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { LLMClient } from "../llm/index.js";
+import { createGoalId } from "../util/ids.js";
 
 import {
   createTurnExecutionMetrics,
   observeTurnLlmClient,
+  recordShownGoalPresentations,
+  snapshotTurnExecutionMetrics,
   turnExecutionMetricsStorage,
 } from "./turn-execution-metrics.js";
 
 describe("turn execution metrics", () => {
+  it("keeps rendered goal snapshots with their turn and unions planner/finalizer presentations", () => {
+    const metrics = createTurnExecutionMetrics();
+    const otherTurn = createTurnExecutionMetrics();
+    const first = { goalId: createGoalId(), progressAnchor: 100, inputGeneration: 1 };
+    const second = { goalId: createGoalId(), progressAnchor: 200, inputGeneration: 2 };
+    recordShownGoalPresentations([first]); // outside a turn
+    expect(metrics.shownGoalPresentations).toEqual([]);
+    turnExecutionMetricsStorage.run(metrics, () => {
+      recordShownGoalPresentations([first]);
+      turnExecutionMetricsStorage.run(otherTurn, () => recordShownGoalPresentations([second]));
+      recordShownGoalPresentations([first, second]);
+    });
+    const snapshot = snapshotTurnExecutionMetrics(metrics);
+    expect(snapshot.shownGoalPresentations).toEqual([first, second]);
+    expect(otherTurn.shownGoalPresentations).toEqual([second]);
+    first.inputGeneration = 3;
+    metrics.shownGoalPresentations![0]!.inputGeneration = 4;
+    expect(snapshot.shownGoalPresentations![0]!.inputGeneration).toBe(1);
+  });
+
   it("resolves shared clients per call and keeps retries with their owning context", async () => {
     const complete = vi.fn<LLMClient["complete"]>().mockResolvedValue({
       text: "",
@@ -33,8 +56,8 @@ describe("turn execution metrics", () => {
       kind: "stall",
       retry_transport: "unary",
     });
-    expect(first).toEqual({ finalizer_rounds: 1, stall_retries: 1 });
-    expect(second).toEqual({ finalizer_rounds: 1, stall_retries: 0 });
+    expect(first).toEqual({ shownGoalPresentations: [], finalizer_rounds: 1, stall_retries: 1 });
+    expect(second).toEqual({ shownGoalPresentations: [], finalizer_rounds: 1, stall_retries: 0 });
     expect(complete.mock.calls[2]![0]).toBe(options);
   });
 
@@ -113,7 +136,7 @@ describe("turn execution metrics", () => {
       });
     });
 
-    expect(metrics).toEqual({ finalizer_rounds: 3, stall_retries: 2 });
+    expect(metrics).toEqual({ shownGoalPresentations: [], finalizer_rounds: 3, stall_retries: 2 });
     expect(priorRetryObserver).toHaveBeenCalledTimes(4);
   });
 });

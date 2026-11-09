@@ -82,12 +82,13 @@ export type GoalFollowupDueCandidate = {
 export type GoalFollowupDueCandidateOptions = {
   lookaheadMs: number;
   staleMs: number;
+  inactivityCutoff?: number;
   limit: number;
 };
 
 const GOAL_SELECT_COLUMNS = `
   id, record_version, description, terminal_condition, priority, parent_goal_id, status,
-  progress_notes, last_progress_ts, created_at, target_at, target_assigned_at, block_history_json, audience_entity_id, owner_entity_id,
+  progress_notes, last_progress_ts, last_interaction_at, created_at, target_at, target_assigned_at, block_history_json, audience_entity_id, owner_entity_id,
   counterparty_entity_id, source_stream_entry_ids, canonicalized_by_artifact_entry_id, provenance_kind,
   provenance_episode_ids, provenance_stream_entry_ids, provenance_process
 `;
@@ -134,7 +135,22 @@ export class GoalsRepository {
     this.presentation =
       options.watermarkRepository === undefined
         ? undefined
-        : new GoalPresentationStore(options.watermarkRepository);
+        : new GoalPresentationStore(options.watermarkRepository, (goalId) =>
+            this.stampInteraction(goalId),
+          );
+  }
+
+  private stampInteraction(goalId: GoalId, at = this.clock.now()): void {
+    this.db
+      .prepare(
+        "UPDATE goals SET last_interaction_at = MAX(COALESCE(last_interaction_at, created_at), ?) WHERE id = ?",
+      )
+      .run(at, goalId);
+  }
+
+  private interactionWritten(goalId: GoalId, recordVersion: number, at = this.clock.now()): void {
+    this.stampInteraction(goalId, at);
+    this.presentation?.progressWritten(goalId, recordVersion);
   }
 
   private get db(): SqliteDatabase {
@@ -405,6 +421,7 @@ export class GoalsRepository {
                 FROM json_each(block_history_json) WHERE json_extract(value, '$.unblocked_at') IS NOT NULL
               ), 0) AS scheduling_target_at
             FROM goals WHERE status = 'active'
+              AND MAX(created_at, COALESCE(last_progress_ts, created_at), COALESCE(last_interaction_at, created_at)) >= ?
           )
           SELECT ${GOAL_SELECT_COLUMNS},
             CASE
@@ -420,6 +437,7 @@ export class GoalsRepository {
         `,
       )
       .all(
+        options.inactivityCutoff ?? Number.MIN_SAFE_INTEGER,
         options.staleMs,
         options.lookaheadMs,
         options.staleMs,
@@ -589,6 +607,7 @@ export class GoalsRepository {
         parsedReason,
         provenance,
         "unblock",
+        effectiveAt,
       );
     });
   }
@@ -600,6 +619,7 @@ export class GoalsRepository {
     reason: string,
     provenance: Provenance,
     action: string,
+    effectiveAt = this.clock.now(),
   ): GoalRecord {
     const parsedProvenance = requireProvenance(provenance, "Goal block transition");
     const expectedVersion = expectedRecordVersion(goal);
@@ -609,6 +629,7 @@ export class GoalsRepository {
       )
       .run(status, serializeJsonValue(history), goal.id, expectedVersion);
     assertIdentityCasUpdated({ result, recordType: "goal", recordId: goal.id, expectedVersion });
+    this.interactionWritten(goal.id, nextRecordVersion(expectedVersion), effectiveAt);
     const next = this.get(goal.id)!;
     recordIdentityEvent(this.identityEventRepository, {
       record_type: "goal",
@@ -755,6 +776,8 @@ export class GoalsRepository {
         });
       }
 
+      if (current.status !== parsedStatus)
+        this.interactionWritten(goalId, nextRecordVersion(expectedVersion));
       this.abandonOpenStepsWhenClosingGoal(current, parsedStatus);
 
       recordIdentityEvent(this.identityEventRepository, {
@@ -819,7 +842,7 @@ export class GoalsRepository {
         });
       }
 
-      this.presentation?.progressWritten(goalId, nextRecordVersion(expectedVersion));
+      this.interactionWritten(goalId, nextRecordVersion(expectedVersion));
       recordIdentityEvent(this.identityEventRepository, {
         record_type: "goal",
         record_id: goalId,
@@ -830,6 +853,7 @@ export class GoalsRepository {
           record_version: nextRecordVersion(expectedVersion),
           progress_notes: progressNotes,
           last_progress_ts: nowMs,
+          last_interaction_at: nowMs,
           provenance: parsedProvenance,
         },
         provenance: parsedProvenance,
@@ -936,8 +960,8 @@ export class GoalsRepository {
 
       this.abandonOpenStepsWhenClosingGoal(current, next.status);
 
-      if (parsedPatch.progress_notes !== undefined) {
-        this.presentation?.progressWritten(goalId, nextRecordVersion(expectedVersion));
+      if (Object.keys(patch).length > 0) {
+        this.interactionWritten(goalId, nextRecordVersion(expectedVersion));
       }
 
       recordIdentityEvent(this.identityEventRepository, {
@@ -971,7 +995,7 @@ export class GoalsRepository {
           `
             UPDATE goals
             SET description = ?, terminal_condition = ?, priority = ?, parent_goal_id = ?,
-                status = ?, progress_notes = ?, last_progress_ts = ?, created_at = ?,
+                status = ?, progress_notes = ?, last_progress_ts = ?, last_interaction_at = ?, created_at = ?,
                 target_at = ?, target_assigned_at = ?, audience_entity_id = ?, owner_entity_id = ?,
                 counterparty_entity_id = ?, source_stream_entry_ids = ?,
                 canonicalized_by_artifact_entry_id = ?, provenance_kind = ?, provenance_episode_ids = ?,
@@ -987,6 +1011,7 @@ export class GoalsRepository {
           parsed.status,
           parsed.progress_notes,
           parsed.last_progress_ts,
+          parsed.last_interaction_at ?? null,
           parsed.created_at,
           parsed.target_at,
           parsed.target_assigned_at ?? null,

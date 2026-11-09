@@ -9,6 +9,7 @@ const EXECUTIVE_FOCUS_GOAL_STALE_BACKOFF_PREFIX = "autonomy:executive-focus-due:
 export type ExecutiveFocusGoalStaleBackoffMetadata = {
   empty_count: number;
   action_availability_key?: string;
+  input_generation?: number;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -33,6 +34,10 @@ export function readExecutiveFocusGoalStaleBackoffMetadata(
     typeof metadata.empty_count !== "number" ||
     !Number.isInteger(metadata.empty_count) ||
     metadata.empty_count < 0 ||
+    (metadata.input_generation !== undefined &&
+      (typeof metadata.input_generation !== "number" ||
+        !Number.isInteger(metadata.input_generation) ||
+        metadata.input_generation < 0)) ||
     (metadata.action_availability_key !== undefined &&
       (typeof metadata.action_availability_key !== "string" ||
         metadata.action_availability_key.length === 0))
@@ -44,6 +49,9 @@ export function readExecutiveFocusGoalStaleBackoffMetadata(
 
   return {
     empty_count: metadata.empty_count,
+    ...(metadata.input_generation === undefined
+      ? {}
+      : { input_generation: metadata.input_generation }),
     ...(metadata.action_availability_key === undefined
       ? {}
       : { action_availability_key: metadata.action_availability_key }),
@@ -76,6 +84,8 @@ export type GoalStaleBackoffState = {
 export function goalStaleBackoffState(input: {
   watermark: Pick<StreamWatermark, "metadata" | "updatedAt"> | null;
   lastProgressTs: number | null;
+  lastInteractionTs?: number | null;
+  inputGeneration?: number;
   baseCooldownMs: number;
   multiplier: number;
   maxCooldownMs: number;
@@ -86,11 +96,22 @@ export function goalStaleBackoffState(input: {
     return { endMs: null, actionAvailabilityChanged: false, dormant: false };
   }
 
-  if (input.lastProgressTs !== null && input.lastProgressTs >= input.watermark.updatedAt) {
+  const metadata = readExecutiveFocusGoalStaleBackoffMetadata(input.watermark);
+  // Freshness belongs to this shared brake, not to either source's presentation
+  // acknowledgement. Generations also preserve ordering within one clock tick.
+  // Legacy backoffs have only timestamps; keep their progress-release semantics.
+  if (
+    (input.inputGeneration !== undefined &&
+      metadata.input_generation !== undefined &&
+      input.inputGeneration > metadata.input_generation) ||
+    (input.lastProgressTs !== null &&
+      (input.lastProgressTs > input.watermark.updatedAt ||
+        (metadata.input_generation === undefined &&
+          input.lastProgressTs === input.watermark.updatedAt))) ||
+    (input.lastInteractionTs != null && input.lastInteractionTs > input.watermark.updatedAt)
+  ) {
     return { endMs: null, actionAvailabilityChanged: false, dormant: false };
   }
-
-  const metadata = readExecutiveFocusGoalStaleBackoffMetadata(input.watermark);
 
   // Empty-wake dormancy lasts fourteen days. A newly rendered, structurally
   // executable action path invalidates the old brake once; the next empty wake

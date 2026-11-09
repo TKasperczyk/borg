@@ -7,6 +7,7 @@ import {
   AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS,
   formatAutonomyTriggerContext,
   renderAutonomyTriggerPresentation,
+  executivePresentationGoalIds,
 } from "./autonomy-trigger.js";
 
 const BASE = {
@@ -15,6 +16,29 @@ const BASE = {
   event_id: "goal_aaaaaaaaaaaaaaaa:1787050000000:1785840551552:deadline",
   sort_ts: 1_787_050_000_000,
 } as const;
+
+it.each(["goal_followup_due", "executive_focus_due"])(
+  "attributes executive ownership per mixed batch row with primary %s",
+  (source) => {
+    const primary = "goal_aaaaaaaaaaaaaaaa";
+    const secondary = "goal_bbbbbbbbbbbbbbbb";
+    const ids = executivePresentationGoalIds({
+      ...BASE,
+      source_name: source,
+      payload: {
+        selected_goal_id: primary,
+        secondary_due_goals: [
+          {
+            goal_id: secondary,
+            source_name:
+              source === "executive_focus_due" ? "goal_followup_due" : "executive_focus_due",
+          },
+        ],
+      },
+    });
+    expect([...ids]).toEqual([source === "executive_focus_due" ? primary : secondary]);
+  },
+);
 
 describe("formatAutonomyTriggerContext epoch annotation", () => {
   it("reports only goal handles retained by structural prompt bounding", () => {

@@ -358,6 +358,7 @@ describe("simulator memory snapshot", () => {
         scheduled_at: null,
         completed_at: clock.now(),
         not_done_at: null,
+        declined_at: null,
         expired_at: null,
         archived_at: null,
         unknown_at: null,
@@ -446,7 +447,7 @@ describe("simulator memory snapshot", () => {
       expect(snapshot).toContain("Remember Maya as the user's partner");
       expect(snapshot).toContain("- total_actions=1");
       expect(snapshot).toContain(
-        "- state_counts considering=0 committed_to_do=0 scheduled=0 completed=1 not_done=0 unknown=0",
+        "- state_counts considering=0 committed_to_do=0 scheduled=0 completed=1 not_done=0 declined=0 unknown=0",
       );
       expect(snapshot).toContain("- lifecycle_counts active=0 canonicalized=0");
       expect(snapshot).toContain("relationship.role");

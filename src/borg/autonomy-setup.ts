@@ -104,6 +104,7 @@ export function buildAutonomyScheduler(options: BuildAutonomySchedulerOptions): 
             watermarkRepository: options.streamWatermarkRepository,
             lookaheadMs: options.config.autonomy.triggers.goalFollowupDue.lookaheadMs,
             staleMs: options.config.autonomy.triggers.goalFollowupDue.staleMs,
+            maxInactivityMs: options.config.autonomy.triggers.goalFollowupDue.maxInactivityMs,
             // goal_followup_due and executive_focus_due intentionally share
             // one per-goal empty-wake policy and its historical watermark.
             staleBackoff: {
@@ -148,8 +149,11 @@ export function buildAutonomyScheduler(options: BuildAutonomySchedulerOptions): 
             deadlineLookaheadMs: options.config.autonomy.triggers.goalFollowupDue.lookaheadMs,
             goalFollowupDue: {
               enabled: options.config.autonomy.triggers.goalFollowupDue.enabled,
+              respectStaleBackoff:
+                options.config.autonomy.triggers.goalFollowupDue.respectStaleBackoff,
               lookaheadMs: options.config.autonomy.triggers.goalFollowupDue.lookaheadMs,
               staleMs: options.config.autonomy.triggers.goalFollowupDue.staleMs,
+              maxInactivityMs: options.config.autonomy.triggers.goalFollowupDue.maxInactivityMs,
             },
             clock: options.clock,
             tracer: options.tracer,

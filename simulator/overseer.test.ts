@@ -147,6 +147,7 @@ function metricsRow(turn: number): MetricsRow {
       scheduled: 0,
       completed: 0,
       not_done: 0,
+      declined: 0,
       expired: 0,
       archived: 0,
       unknown: 0,

@@ -108,14 +108,19 @@ export function completeAction(input: {
   };
 }
 
-export function markActionNotDone(input: {
+type UncompletedActionInput = {
   actionId: ActionId;
   repository: MarkActionNotDoneRepository;
   patch?: ActionTerminalClosurePatch;
   tracer?: LifecycleTracer;
   turnId?: string;
   traceSource?: string;
-}): LifecycleOperationResult<{ actionId: ActionId; previous: ActionRecord | null }> {
+};
+
+function closeUncompletedAction(
+  input: UncompletedActionInput,
+  state: "not_done" | "declined",
+): LifecycleOperationResult<{ actionId: ActionId; previous: ActionRecord | null }> {
   const previous = input.repository.get?.(input.actionId);
 
   if (input.repository.get !== undefined && previous == null) {
@@ -143,7 +148,7 @@ export function markActionNotDone(input: {
   try {
     input.repository.update(input.actionId, {
       ...input.patch,
-      state: "not_done",
+      state,
     });
   } catch (error) {
     if (error instanceof IdentityCasMismatchError) {
@@ -160,7 +165,7 @@ export function markActionNotDone(input: {
     input.tracer.emit("action_state.transitioned", {
       turnId: input.turnId,
       action_id: input.actionId,
-      terminal_state: "not_done",
+      terminal_state: state,
       source: input.traceSource,
     });
   }
@@ -172,4 +177,12 @@ export function markActionNotDone(input: {
       previous: previous ?? null,
     },
   };
+}
+
+export function markActionNotDone(input: UncompletedActionInput) {
+  return closeUncompletedAction(input, "not_done");
+}
+
+export function declineAction(input: UncompletedActionInput) {
+  return closeUncompletedAction(input, "declined");
 }

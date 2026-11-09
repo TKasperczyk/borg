@@ -180,6 +180,7 @@ function makeAction(
     scheduled_at: state === "scheduled" ? NOW_MS : null,
     completed_at: null,
     not_done_at: null,
+    declined_at: null,
     expired_at: null,
     archived_at: null,
     unknown_at: null,

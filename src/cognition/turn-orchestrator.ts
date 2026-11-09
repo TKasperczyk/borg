@@ -11,6 +11,7 @@ import type {
 import type { Config } from "../config/index.js";
 import type { AutonomySchedulerDescription } from "../autonomy/index.js";
 import type { ExecutiveStepsRepository } from "../executive/index.js";
+import type { GoalPresentation } from "../executive/goal-presentation.js";
 import type { EmbeddingClient } from "../embeddings/index.js";
 import type { LLMClient } from "../llm/index.js";
 import { MoodRepository } from "../memory/affective/index.js";
@@ -105,6 +106,7 @@ import {
 
 export type TurnResult = {
   shownOpenQuestionIds?: readonly string[];
+  shownGoalPresentations?: readonly GoalPresentation[];
   turn_id: string;
   mode: CognitiveMode;
   path: "system_1" | "system_2" | "suppressed";

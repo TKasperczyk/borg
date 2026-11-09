@@ -28,6 +28,7 @@ import {
 import {
   completeAction,
   markActionNotDone,
+  declineAction,
   type LifecycleOperationResult,
 } from "../../memory/lifecycle-ops/index.js";
 import type { SharedStateEntry } from "../../memory/shared-state/index.js";
@@ -80,6 +81,7 @@ const extractedActionStateSchema = z.enum([
   "scheduled",
   "completed",
   "not_done",
+  "declined",
 ]);
 
 const actionStateCandidateSchema = z
@@ -578,6 +580,7 @@ function toActionRecord(input: {
     scheduled_at: null,
     completed_at: null,
     not_done_at: null,
+    declined_at: null,
     expired_at: null,
     archived_at: null,
     unknown_at: null,
@@ -598,7 +601,9 @@ function zeroActionStateCounts(): Record<ActionState, number> {
   >;
 }
 
-function isTerminalEmissionState(state: ActionState): state is "completed" | "not_done" {
+function isTerminalEmissionState(
+  state: ActionState,
+): state is "completed" | "not_done" | "declined" {
   return ACTION_STATE_METADATA[state].terminal;
 }
 
@@ -610,7 +615,7 @@ function mergeUniqueIds<T extends string>(left: readonly T[], right: readonly T[
   return [...new Set([...left, ...right])];
 }
 
-type TerminalClosureState = "completed" | "not_done";
+type TerminalClosureState = "completed" | "not_done" | "declined";
 type TerminalClosurePatch = Omit<ActionRecordPatch, "state">;
 type TerminalClosureRepository = Pick<ActionRepository, "update"> &
   Partial<Pick<ActionRepository, "get">>;
@@ -631,7 +636,7 @@ function closeActionThroughLifecycle(input: {
         repository: input.repository,
         patch: input.patch,
       })
-    : markActionNotDone({
+    : (input.state === "declined" ? declineAction : markActionNotDone)({
         actionId: input.actionId,
         repository: input.repository,
         patch: input.patch,
@@ -1342,7 +1347,7 @@ function traceTerminalEmissionClosure(options: {
   sessionId?: SessionId;
   candidateIndex: number;
   matchedActionId: ActionId;
-  terminalState: "completed" | "not_done";
+  terminalState: "completed" | "not_done" | "declined";
   description: string;
   similarity: number;
 }): void {
@@ -1367,7 +1372,7 @@ function traceBorgSelfPerformanceClosure(options: {
   sessionId?: SessionId;
   candidateIndex: number;
   matchedActionId: ActionId;
-  terminalState: "completed" | "not_done";
+  terminalState: "completed" | "not_done" | "declined";
   description: string;
 }): void {
   if (options.tracer?.enabled !== true || options.turnId === undefined) {

@@ -210,6 +210,7 @@ describe("config", () => {
     expect(config.autonomy.executiveFocus.wakeCooldownMaxSec).toBe(86_400);
     expect(config.autonomy.executiveFocus.emptyWakeDormancyCount).toBe(3);
     expect(config.autonomy.triggers.goalFollowupDue.respectStaleBackoff).toBe(true);
+    expect(config.autonomy.triggers.goalFollowupDue.maxInactivityMs).toBe(2_592_000_000);
     expect(config.streamIngestion.settle).toEqual({
       settleMs: 0,
       maxSettleMs: 30_000,
@@ -966,6 +967,7 @@ describe("config", () => {
         BORG_AUTONOMY_FLEET_BRAKE_ERROR_MAX_PAUSE_MS: "900000",
         BORG_AUTONOMY_FLEET_BRAKE_FRESHNESS_BYPASS_CAP: "2",
         BORG_AUTONOMY_TRIGGER_GOAL_FOLLOWUP_DUE_RESPECT_STALE_BACKOFF: "false",
+        BORG_AUTONOMY_TRIGGER_GOAL_FOLLOWUP_DUE_MAX_INACTIVITY_MS: "86400000",
       },
     });
 
@@ -981,6 +983,7 @@ describe("config", () => {
       freshnessBypassCap: 2,
     });
     expect(config.autonomy.triggers.goalFollowupDue.respectStaleBackoff).toBe(false);
+    expect(config.autonomy.triggers.goalFollowupDue.maxInactivityMs).toBe(86_400_000);
   });
 
   it("loads autonomous proactive outbound gates from config and env", () => {

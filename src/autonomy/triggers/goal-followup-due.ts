@@ -1,3 +1,8 @@
+import {
+  isGoalInactive,
+  goalActivityAnchor,
+  DEFAULT_GOAL_MAX_INACTIVITY_MS,
+} from "../../memory/self/goal-inactivity.js";
 import { goalSchedulingTimes } from "../../memory/self/goal-blocks.js";
 import { computeExecutiveContextFits, selectExecutiveFocus } from "../../executive/index.js";
 import { GoalPresentationStore } from "../../executive/goal-presentation.js";
@@ -43,6 +48,7 @@ export type GoalFollowupDueTriggerOptions = {
   watermarkRepository: StreamWatermarkRepository;
   lookaheadMs: number;
   staleMs: number;
+  maxInactivityMs?: number;
   staleBackoff: {
     baseCooldownMs: number;
     multiplier: number;
@@ -80,6 +86,33 @@ function phaseLatchProcessName(goal: GoalRecord, phase: GoalFollowupPhase): stri
   return `${legacyLatchProcessName(goal)}:${phase}`;
 }
 
+export function goalFollowupAdmission(
+  goal: GoalRecord,
+  nowMs: number,
+  options: Pick<
+    GoalFollowupDueTriggerOptions,
+    "maxInactivityMs" | "lookaheadMs" | "staleMs" | "watermarkRepository"
+  >,
+  presentations: GoalPresentationStore,
+  backoff: GoalStaleBackoffState,
+  sessionId = DEFAULT_SESSION_ID,
+): boolean {
+  if (isGoalInactive(goal, nowMs, options.maxInactivityMs) || presentations.wasPresented(goal))
+    return false;
+  const { progressAnchor, targetAt } = goalSchedulingTimes(goal);
+  const deadlineDue = targetAt !== null && targetAt - nowMs < options.lookaheadMs;
+  if (!deadlineDue && progressAnchor + options.staleMs >= nowMs) return false;
+  const phase = deadlineDue ? "deadline" : "stale";
+  if (
+    !presentations.hasNewInput(goal) &&
+    !backoff.actionAvailabilityChanged &&
+    (options.watermarkRepository.get(legacyLatchProcessName(goal), sessionId) !== null ||
+      options.watermarkRepository.get(phaseLatchProcessName(goal, phase), sessionId) !== null)
+  )
+    return false;
+  return deadlineDue || backoff.endMs === null || backoff.endMs <= nowMs;
+}
+
 export function createGoalFollowupDueTrigger(
   options: GoalFollowupDueTriggerOptions,
 ): AutonomyTrigger<GoalFollowupDuePayload> {
@@ -92,7 +125,7 @@ export function createGoalFollowupDueTrigger(
     goal: GoalRecord,
     actionAvailabilityKey: string | null,
   ): GoalStaleBackoffState {
-    if (!options.respectStaleBackoff || presentations.hasNewInput(goal)) {
+    if (!options.respectStaleBackoff) {
       return { endMs: null, actionAvailabilityChanged: false, dormant: false };
     }
 
@@ -102,6 +135,8 @@ export function createGoalFollowupDueTrigger(
         sessionId,
       ),
       lastProgressTs: goal.last_progress_ts,
+      lastInteractionTs: goal.last_interaction_at,
+      inputGeneration: presentations.snapshot(goal).inputGeneration,
       actionAvailabilityKey,
       ...options.staleBackoff,
     });
@@ -217,40 +252,18 @@ export function createGoalFollowupDueTrigger(
         rawGoals;
       const dueEvents = goals
         .map<DueEvent<GoalFollowupDuePayload> | null>((goal) => {
-          if (presentations.wasPresented(goal)) return null;
-          const hasNewInput = presentations.hasNewInput(goal);
+          // Shared admission applies age exclusion before deadline/topology/backoff bypasses.
+          const backoff = staleBackoff(goal, actionAvailabilityKey);
+          if (!goalFollowupAdmission(goal, nowMs, options, presentations, backoff, sessionId))
+            return null;
           const { progressAnchor: baseProgressTs, targetAt } = goalSchedulingTimes(goal);
           const deadlineDue = targetAt !== null && targetAt - nowMs < options.lookaheadMs;
           const staleDue = baseProgressTs + options.staleMs < nowMs;
 
-          if (!deadlineDue && !staleDue) {
-            return null;
-          }
-
           const targetAtKey = targetAt ?? "no-target";
           const progressKey = baseProgressTs;
           const phase: GoalFollowupPhase = deadlineDue ? "deadline" : "stale";
-          const legacyProcessName = legacyLatchProcessName(goal);
           const watermarkProcessName = phaseLatchProcessName(goal, phase);
-          const backoff = staleBackoff(goal, actionAvailabilityKey);
-
-          // Old phase latches remain useful for pre-presentation history, but
-          // neither they nor topology/backoff may override the shared input
-          // generation. New goal input reopens either scheduling lane.
-          if (
-            !hasNewInput &&
-            !backoff.actionAvailabilityChanged &&
-            (options.watermarkRepository.get(legacyProcessName, sessionId) !== null ||
-              options.watermarkRepository.get(watermarkProcessName, sessionId) !== null)
-          ) {
-            return null;
-          }
-
-          if (!deadlineDue) {
-            if (backoff.endMs !== null && backoff.endMs > nowMs) {
-              return null;
-            }
-          }
 
           const reason = deadlineDue && staleDue ? "both" : deadlineDue ? "deadline" : "stale";
           const staleSinceMs = Math.max(0, nowMs - baseProgressTs);
@@ -301,6 +314,7 @@ export function createGoalFollowupDueTrigger(
       const candidates = options.goalsRepository.listActiveFollowupDueCandidatesReadOnly({
         lookaheadMs: options.lookaheadMs,
         staleMs: options.staleMs,
+        inactivityCutoff: nowMs - (options.maxInactivityMs ?? DEFAULT_GOAL_MAX_INACTIVITY_MS),
         limit: NEXT_DUE_CANDIDATE_LIMIT + 1,
       });
 
@@ -312,7 +326,11 @@ export function createGoalFollowupDueTrigger(
 
       for (const candidate of candidates) {
         const goal = candidate.goal;
-        if (presentations.wasPresented(goal)) continue;
+        if (
+          isGoalInactive(goal, nowMs, options.maxInactivityMs) ||
+          presentations.wasPresented(goal)
+        )
+          continue;
         const hasNewInput = presentations.hasNewInput(goal);
         const { progressAnchor: baseProgressTs, targetAt } = goalSchedulingTimes(goal);
         const deadlineDue = targetAt !== null && targetAt - nowMs < options.lookaheadMs;
@@ -364,7 +382,11 @@ export function createGoalFollowupDueTrigger(
             : Number.POSITIVE_INFINITY;
         const effectiveDueAt = Math.min(staleCandidateAt, deadlineCandidateAt);
 
-        if (effectiveDueAt === Number.POSITIVE_INFINITY) {
+        if (
+          effectiveDueAt === Number.POSITIVE_INFINITY ||
+          effectiveDueAt >
+            goalActivityAnchor(goal) + (options.maxInactivityMs ?? DEFAULT_GOAL_MAX_INACTIVITY_MS)
+        ) {
           continue;
         }
 

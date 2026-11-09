@@ -128,7 +128,188 @@ describe("executive focus due trigger", () => {
     ).toHaveLength(2);
   });
 
-  it("does not re-present a goal on score drift, expired cooldown, new steps or action topology, but accepts new input", async () => {
+  it("keeps executive ownership across other presentations and schedules the earliest eligible due step", async () => {
+    const h = await createHarness();
+    const goals = ["First", "Second"].map((description) =>
+      h.goalsRepository.add({ description, priority: 9, provenance: { kind: "manual" } }),
+    );
+    for (const [index, goal] of goals.entries())
+      h.executiveStepsRepository.add({
+        goalId: goal.id,
+        description: "Due",
+        kind: "think",
+        dueAt: h.clock.now() - 10 + index,
+        provenance: { kind: "manual" },
+      });
+    const store = h.goalsRepository.presentation!;
+    store.presented([store.snapshot(goals[0]!)], "executive", new Set([goals[0]!.id]));
+    const at = store.executivePresentedAt(goals[0]!)!;
+    h.clock.advance(500);
+    store.presented(
+      goals.map((g) => store.snapshot(g)),
+      "dormant-question",
+    );
+    expect(store.executivePresentedAt(goals[0]!)).toBe(at);
+    expect(store.executivePresentedAt(goals[1]!)).toBeNull();
+    const trigger = createTrigger(h, { threshold: 0 });
+    expect((await trigger.scan()).map((e) => e.payload.selected_goal_id)).toEqual([goals[1]!.id]);
+    expect(await trigger.nextDueAt!()).toBe(h.clock.now());
+    store.presented([store.snapshot(goals[1]!)], "executive-second", new Set([goals[1]!.id]));
+    expect(await trigger.nextDueAt!()).toBe(at + 3_600_000);
+    h.clock.advance(3_599_500);
+    expect((await trigger.scan()).map((e) => e.payload.selected_goal_id)).toEqual([goals[0]!.id]);
+  });
+
+  it.each([true, false])(
+    "excludes inactive goals from executive stale fallback before deadline/topology bypasses (followup enabled=%s)",
+    async (enabled) => {
+      const h = await createHarness(4_000_000_000);
+      const goal = h.goalsRepository.add({
+        description: "Old goal",
+        priority: 10,
+        createdAt: h.clock.now() - 2_592_000_001,
+        targetAt: h.clock.now() - 1,
+        provenance: { kind: "manual" },
+      });
+      const executive = createTrigger(h, {
+        threshold: 0,
+        goalFollowupDue: {
+          enabled,
+          lookaheadMs: 20_000,
+          staleMs: 100_000,
+          respectStaleBackoff: false,
+        },
+        goalStaleBackoffActionAvailabilityKey: () => "new-topology",
+      });
+      expect(await executive.scan()).toEqual([]);
+      const store = h.goalsRepository.presentation!;
+      store.presented([store.snapshot(goal)], "unrelated-render");
+      expect(await executive.scan()).toEqual([]);
+      expect(h.goalsRepository.get(goal.id)?.status).toBe("active");
+      expect(h.goalsRepository.get(goal.id)?.last_interaction_at).toBeNull();
+      // A fresh association restores eligibility. A followup presentation consumes
+      // only that lane's latch, so the executive can now own its first presentation.
+      store.associateInbound(goal.id, createStreamEntryId());
+      store.presented([store.snapshot(h.goalsRepository.get(goal.id)!)], "followup-after-input");
+      expect((await executive.scan()).map((e) => e.payload.selected_goal_id)).toEqual([goal.id]);
+    },
+  );
+
+  it.each([
+    { priorExecutive: false, dormancyCount: 3 },
+    { priorExecutive: true, dormancyCount: 3 },
+    { priorExecutive: false, dormancyCount: 1 },
+    { priorExecutive: true, dormancyCount: 1 },
+  ])(
+    "orders shared backoff against input independently of executive acknowledgement: %j",
+    async ({ priorExecutive, dormancyCount }) => {
+      const h = await createHarness();
+      const goal = h.goalsRepository.add({
+        description: "Shared input and empty wake",
+        priority: 9,
+        createdAt: h.clock.now() - 200_000,
+        provenance: { kind: "manual" },
+      });
+      const store = h.goalsRepository.presentation!;
+      if (priorExecutive)
+        store.presented([store.snapshot(goal)], "old-executive", new Set([goal.id]));
+      const inbound = createStreamEntryId();
+      store.associateInbound(goal.id, inbound);
+      const followup = createGoalFollowupDueTrigger({
+        goalsRepository: h.goalsRepository,
+        watermarkRepository: h.watermarkRepository,
+        lookaheadMs: 20_000,
+        staleMs: 100_000,
+        respectStaleBackoff: true,
+        staleBackoff: {
+          baseCooldownMs: 1_000,
+          multiplier: 2,
+          maxCooldownMs: 60_000,
+          dormancyCount,
+        },
+        clock: h.clock,
+      });
+      const executive = createTrigger(h, {
+        threshold: 0,
+        stalenessMs: 100_000,
+        wakeCooldownMs: 1_000,
+        wakeCooldownMaxMs: 60_000,
+        wakeEmptyDormancyCount: dormancyCount,
+        goalFollowupDue: { enabled: true, lookaheadMs: 20_000, staleMs: 100_000 },
+      });
+      expect(await executive.scan()).toEqual([]); // followup owns this generation
+      const { scheduler } = createScheduler({
+        harness: h,
+        sources: [followup],
+        turnRun: vi.fn().mockImplementation(async () => {
+          const shown = [store.snapshot(h.goalsRepository.get(goal.id)!)];
+          store.presented(shown, "followup");
+          return { ...suppressedTurnResult(), shownGoalPresentations: shown };
+        }),
+      });
+      await scheduler.tick();
+      const backoffKey = goalBackoffProcessName(goal.id);
+      const backoff = h.watermarkRepository.get(backoffKey, DEFAULT_SESSION_ID)!;
+      expect(backoff.metadata).toMatchObject({ empty_count: 1, input_generation: 1 });
+      expect(store.executivePresentedAt(h.goalsRepository.get(goal.id)!)).toBeNull();
+      expect(await followup.scan()).toEqual([]);
+      expect(await executive.scan()).toEqual([]);
+      expect(executive.dormantGoalIds!()).toEqual(dormancyCount === 1 ? [goal.id] : []);
+
+      store.associateInbound(goal.id, inbound); // replay cannot release the brake
+      expect(await executive.scan()).toEqual([]);
+      // Reverse the order at the very same timestamp: new input after backoff
+      // releases it, even after another source acknowledges that generation.
+      store.associateInbound(goal.id, createStreamEntryId());
+      expect(await followup.scan()).toHaveLength(1);
+      expect(await executive.scan()).toEqual([]); // delegation is available again
+      store.presented([store.snapshot(h.goalsRepository.get(goal.id)!)], "other-source");
+      expect(await executive.scan()).toHaveLength(1);
+      expect(executive.dormantGoalIds!()).toEqual([]);
+      h.watermarkRepository.set(backoffKey, DEFAULT_SESSION_ID, {
+        lastTs: backoff.lastTs,
+        lastEntryId: backoff.lastEntryId,
+        metadata: { empty_count: 1, input_generation: 2 },
+      });
+      expect(await executive.scan()).toEqual([]);
+      h.clock.advance(dormancyCount === 1 ? 14 * 86_400_000 : 2_000);
+      expect(await executive.scan()).toHaveLength(1);
+    },
+  );
+
+  it("uses structural timestamps for legacy shared backoff independently of presentation ownership", async () => {
+    const h = await createHarness();
+    const goal = h.goalsRepository.add({
+      description: "Legacy shared brake",
+      priority: 9,
+      createdAt: h.clock.now() - 200_000,
+      provenance: { kind: "manual" },
+    });
+    const store = h.goalsRepository.presentation!;
+    store.associateInbound(goal.id, createStreamEntryId());
+    store.presented([store.snapshot(h.goalsRepository.get(goal.id)!)], "followup");
+    h.clock.advance(1);
+    setGoalStaleBackoff({ harness: h, goalId: goal.id, emptyCount: 2 });
+    const executive = createTrigger(h, {
+      threshold: 0,
+      stalenessMs: 100_000,
+      wakeEmptyDormancyCount: 2,
+    });
+    expect(await executive.scan()).toEqual([]);
+    expect(executive.dormantGoalIds!()).toEqual([goal.id]);
+    h.clock.advance(1);
+    store.associateInbound(goal.id, createStreamEntryId());
+    store.presented([store.snapshot(h.goalsRepository.get(goal.id)!)], "followup-after-input");
+    expect(await executive.scan()).toHaveLength(1);
+    expect(executive.dormantGoalIds!()).toEqual([]);
+    setGoalStaleBackoff({ harness: h, goalId: goal.id, emptyCount: 2 });
+    expect(await executive.scan()).toEqual([]);
+    h.clock.advance(1);
+    store.presented([store.snapshot(h.goalsRepository.get(goal.id)!)], "later-render");
+    expect(await executive.scan()).toEqual([]);
+  });
+
+  it("re-admits an executive-owned presentation after cooldown, and accepts new structural input", async () => {
     const h = await createHarness();
     const goal = h.goalsRepository.add({
       description: "目的",
@@ -146,7 +327,9 @@ describe("executive focus due trigger", () => {
     h.goalsRepository.presentation!.presented(
       [h.goalsRepository.presentation!.snapshot(goal)],
       "turn_presented",
+      new Set([goal.id]),
     );
+    expect(await trigger.scan()).toEqual([]);
     h.clock.advance(10 * 86_400_000);
     actionKey = "after";
     h.executiveStepsRepository.add({
@@ -156,12 +339,13 @@ describe("executive focus due trigger", () => {
       dueAt: h.clock.now() - 1,
       provenance: { kind: "manual" },
     });
-    expect(await trigger.scan()).toEqual([]);
+    expect(await trigger.scan()).toHaveLength(1);
     h.goalsRepository.presentation!.associateInbound(goal.id, createStreamEntryId());
     expect(await trigger.scan()).toHaveLength(1);
     h.goalsRepository.presentation!.presented(
       [h.goalsRepository.presentation!.snapshot(h.goalsRepository.get(goal.id)!)],
       "turn_input",
+      new Set([goal.id]),
     );
     expect(await trigger.scan()).toEqual([]);
     h.goalsRepository.updateProgress(goal.id, "進捗", { kind: "manual" });
@@ -169,7 +353,7 @@ describe("executive focus due trigger", () => {
   });
 
   it.each([false, true])(
-    "shares re-presentation eligibility with followup, due step=%s",
+    "delegates only to an eligible followup, whose presentations never own executive acknowledgements, due step=%s",
     async (dueStep) => {
       const h = await createHarness();
       const goal = h.goalsRepository.add({
@@ -217,7 +401,7 @@ describe("executive focus due trigger", () => {
       presentations.presented([presentations.snapshot(goal)], "presented-by-either-lane");
       actionKey = "changed-topology";
       h.clock.advance(15 * 86_400_000);
-      expect(await executive.scan()).toEqual([]);
+      expect(await executive.scan()).toHaveLength(1);
       expect(await followup.scan()).toEqual([]);
       for (const input of ["association", "progress"]) {
         if (input === "association") presentations.associateInbound(goal.id, createStreamEntryId());
@@ -229,6 +413,12 @@ describe("executive focus due trigger", () => {
         expect(await executive.scan()).toHaveLength(dueStep ? 1 : 0);
         expect(await followup.scan()).toHaveLength(1);
         presentations.presented([presentations.snapshot(h.goalsRepository.get(goal.id)!)], input);
+        expect(await executive.scan()).toHaveLength(1);
+        presentations.presented(
+          [presentations.snapshot(h.goalsRepository.get(goal.id)!)],
+          `${input}-executive`,
+          new Set([goal.id]),
+        );
         expect(await executive.scan()).toEqual([]);
         expect(await followup.scan()).toEqual([]);
       }

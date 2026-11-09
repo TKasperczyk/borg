@@ -66,6 +66,9 @@ import { turnExecutionMetricsFromError } from "./turn-execution-metrics.js";
 import { TurnPhaseCoordinator } from "./lifecycle/turn-phase-coordinator.js";
 import { AutonomyScheduler, type AutonomySchedulerOptions } from "../autonomy/scheduler.js";
 import { DEFAULT_FLEET_BRAKE_OPTIONS } from "../autonomy/fleet-brake.js";
+import { createGoalFollowupDueTrigger } from "../autonomy/triggers/goal-followup-due.js";
+import { getExecutiveFocusGoalStaleBackoffProcessName } from "../autonomy/executive-focus-stale-backoff.js";
+import { TurnSelfContextBuilder } from "./self/turn-self-context.js";
 
 type TraceEvent = {
   event: string;
@@ -3328,6 +3331,7 @@ describe("TurnOrchestrator evidence ledger", () => {
           failure,
         );
         expect(turnExecutionMetricsFromError(failure)).toEqual({
+          shownGoalPresentations: [],
           finalizer_rounds: 1,
           stall_retries: 2,
         });
@@ -4624,6 +4628,107 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
       await removeTempDir(tempDirs.pop() as string);
     }
   });
+
+  it.each(["before", "after"])(
+    "accounts for input arriving %s the real self snapshot through rendering and wake completion",
+    async (timing) => {
+      const tempDir = mkdtempSync(join(tmpdir(), "borg-rendered-goal-generation-"));
+      tempDirs.push(tempDir);
+      const clock = new ManualClock(1_000_000);
+      const llm = new FakeLLMClient({
+        responses: [createEmitNoOutputResponse(), createEmptyReflectionResponse()],
+      });
+      const borg = await openTestBorg(tempDir, llm, clock);
+      const { options } = borg.autonomy.scheduler as unknown as {
+        options: AutonomySchedulerOptions;
+      };
+      const { goalsRepository: goals } = (
+        borg as unknown as { deps: Pick<BorgDependencies, "goalsRepository"> }
+      ).deps;
+      const store = goals.presentation!;
+      const goal = goals.add({
+        description: "Evaluate this goal once per associated input",
+        priority: 9,
+        createdAt: clock.now() - 20_000,
+        provenance: { kind: "manual" },
+      });
+      store.associateInbound(goal.id, createStreamEntryId());
+      const build = TurnSelfContextBuilder.prototype.buildSelfSnapshot;
+      const snapshotSpy = vi
+        .spyOn(TurnSelfContextBuilder.prototype, "buildSelfSnapshot")
+        .mockImplementationOnce(async function (this: TurnSelfContextBuilder, audience) {
+          if (timing === "before") {
+            clock.advance(1);
+            store.associateInbound(goal.id, createStreamEntryId());
+          }
+          const snapshot = await build.call(this, audience);
+          if (timing === "after") {
+            clock.advance(1);
+            store.associateInbound(goal.id, createStreamEntryId());
+          }
+          clock.advance(1);
+          return snapshot;
+        });
+      const run = vi.spyOn(options.turnOrchestrator, "run");
+      const source = createGoalFollowupDueTrigger({
+        goalsRepository: goals,
+        watermarkRepository: options.watermarkRepository,
+        lookaheadMs: 0,
+        staleMs: 1_000,
+        respectStaleBackoff: true,
+        staleBackoff: {
+          baseCooldownMs: 1_000,
+          multiplier: 2,
+          maxCooldownMs: 60_000,
+          dormancyCount: 1,
+        },
+        clock,
+      });
+      const scheduler = new AutonomyScheduler({
+        ...options,
+        enabled: true,
+        fleetBrake: { ...DEFAULT_FLEET_BRAKE_OPTIONS, enabled: false },
+        respectGoalFollowupStaleBackoff: true,
+        sources: [source],
+      });
+      try {
+        expect(await scheduler.tick()).toMatchObject({ firedEvents: 1, bookkeepingErrorCount: 0 });
+        expect(run).toHaveBeenCalledOnce();
+        expect(snapshotSpy).toHaveBeenCalledOnce();
+        const result = await run.mock.results[0]!.value;
+        expect(result.emission.kind).toBe("suppressed");
+        const snapshot = await snapshotSpy.mock.results[0]!.value;
+        expect(result.shownGoalPresentations).toEqual(snapshot.goalPresentations);
+        expect(result.shownGoalPresentations).toEqual([
+          {
+            goalId: goal.id,
+            progressAnchor: goal.created_at,
+            inputGeneration: timing === "before" ? 2 : 1,
+          },
+        ]);
+        expect(systemText(firstFinalizerRequest(llm.requests))).toContain(goal.id);
+        expect(
+          options.watermarkRepository.get(
+            getExecutiveFocusGoalStaleBackoffProcessName(goal.id),
+            DEFAULT_SESSION_ID,
+          )?.metadata,
+        ).toMatchObject({
+          empty_count: 1,
+          input_generation: timing === "before" ? 2 : 1,
+        });
+        expect(store.snapshot(goals.get(goal.id)!).inputGeneration).toBe(2);
+        expect((await source.scan()).map((event) => event.payload.goal_id)).toEqual(
+          timing === "before" ? [] : [goal.id],
+        );
+        expect(source.dormantGoalIds!()).toEqual(timing === "before" ? [goal.id] : []);
+        expect(await source.nextDueAt!()).toBe(timing === "before" ? null : clock.now());
+      } finally {
+        snapshotSpy.mockRestore();
+        run.mockRestore();
+        await borg.close();
+      }
+    },
+  );
 
   it("uses post-construction llmFactory overrides on subsequent turns", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
@@ -7210,6 +7315,7 @@ describe("TurnOrchestrator self snapshot audience visibility", () => {
             by_state: {
               completed: 1,
               not_done: 0,
+              declined: 0,
             },
             working_memory_pending_resolved_count: 1,
           }),

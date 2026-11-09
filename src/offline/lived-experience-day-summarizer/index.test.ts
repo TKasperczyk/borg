@@ -247,6 +247,7 @@ describe("LivedExperienceDaySummarizerProcess", () => {
         scheduled_at: null,
         completed_at: null,
         not_done_at: targetDayStart + 150_000,
+        declined_at: null,
         expired_at: null,
         archived_at: null,
         unknown_at: null,

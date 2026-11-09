@@ -296,6 +296,7 @@ export async function buildActionThreads(input: {
 // from the metadata table for every state, so a new state inherits the phrasing instead of falling
 // through to the misreading.
 function renderActionStateDisposition(state: ActionState): string {
+  if (state === "declined") return "closed by choice to decline";
   const metadata = ACTION_STATE_METADATA[state];
 
   if (metadata.active) {
@@ -453,7 +454,7 @@ export function isActiveActionState(state: ActionState): boolean {
 }
 
 export function isTerminalRenderedActionState(state: ActionState): boolean {
-  return state === "completed" || state === "not_done" || state === "expired";
+  return ACTION_STATE_METADATA[state].terminal || state === "expired";
 }
 
 function isCurrentTurnAction(

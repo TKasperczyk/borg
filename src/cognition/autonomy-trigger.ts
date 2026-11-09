@@ -20,6 +20,25 @@ export function autonomyTriggerGoalIds(payload: Record<string, unknown>): GoalId
   ];
 }
 
+/** Presentation ownership follows each batch row, not every source coalesced into a wake. */
+export function executivePresentationGoalIds(
+  context: AutonomyTriggerContext | null | undefined,
+): Set<GoalId> {
+  if (context == null) return new Set();
+  const { secondary_due_goals, ...primary } = context.payload;
+  const rows = [
+    { ...primary, source_name: context.source_name },
+    ...(Array.isArray(secondary_due_goals) ? secondary_due_goals : []),
+  ];
+  return new Set(
+    rows.flatMap((row) => {
+      if (row === null || typeof row !== "object" || row.source_name !== "executive_focus_due")
+        return [];
+      return autonomyTriggerGoalIds(row);
+    }),
+  );
+}
+
 export const AUTONOMY_TRIGGER_CONTEXT_MAX_CHARS = 32_000;
 
 export type AutonomyTriggerContext = {

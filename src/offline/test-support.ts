@@ -1,3 +1,4 @@
+import { registerContradictionRetirementReverser } from "../memory/semantic/contradiction-retirement.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -697,6 +698,7 @@ export async function createOfflineTestHarness(
     clock,
     enqueueReview: (input) => reviewQueueRepository.enqueue(input),
   });
+  registerContradictionRetirementReverser(registry, semanticEdgeRepository);
   const semanticBeliefDependencyRepository = new SemanticBeliefDependencyRepository({
     db,
     clock,

@@ -4,6 +4,7 @@ import { summarizeSemanticContext } from "../../cognition/deliberation/prompt/re
 import { type LLMCompleteOptions, type LLMCompleteResult } from "../../llm/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { SemanticGraph, type SemanticEdge } from "../../memory/semantic/index.js";
+import { CONTRADICTION_RETIREMENT_ACTION } from "../../memory/semantic/contradiction-retirement.js";
 import { type ReviewQueueItem } from "../../memory/review-queue/index.js";
 import {
   resolveSemanticContextForCognition,
@@ -48,7 +49,7 @@ function addEdge(
   harness: OfflineTestHarness,
   from: TestNode,
   to: TestNode,
-  relation: "supports" | "causes" = "supports",
+  relation: SemanticEdge["relation"] = "supports",
   evidenceEpisodeIds: EpisodeId[] = [EPISODE_ID],
 ) {
   return harness.semanticEdgeRepository.addEdge({
@@ -183,6 +184,71 @@ function vectorSyncOutboxCount(harness: OfflineTestHarness): number {
 }
 
 describe("belief reviser process", () => {
+  it.each(["review", "supersession"])(
+    "does not revise a dependency after idempotent reversal of %s retirement",
+    async (source) => {
+      const harness = await createOfflineTestHarness({
+        clock: new FixedClock(2_000),
+        reviewOpenQuestionExtractor: null,
+      });
+      try {
+        const a = await insertNode(harness, "First", [1, 0, 0, 0]);
+        const b = await insertNode(harness, "Second", [0, 1, 0, 0]);
+        const dependent = await harness.semanticNodeRepository.insert(
+          createSemanticNodeFixture(
+            {
+              confidence: 0.8,
+              source_episode_ids: [FRESH_EPISODE_ID],
+            },
+            [0, 0, 1, 0],
+          ),
+        );
+        const edge = addEdge(harness, a, b, "contradicts");
+        const dependency = harness.semanticBeliefDependencyRepository.addDependency({
+          target_type: "semantic_node",
+          target_id: dependent.id,
+          source_edge_id: edge.id,
+          dependency_kind: "derived_from",
+        });
+        if (source === "review") {
+          const review = harness.reviewQueueRepository.list({
+            kind: "contradiction",
+            openOnly: true,
+          })[0]!;
+          await harness.reviewQueueRepository.resolve(review.id, "keep_both");
+        } else {
+          await harness.semanticNodeRepository.markSuperseded(a.id, b.id, harness.clock.now());
+        }
+        expect(invalidationEvents(harness)).toEqual([{ edge_id: edge.id, processed_at: null }]);
+        const reviser = new BeliefReviserProcess({ db: harness.db });
+        const ctx = harness.createContext();
+        const prepared = await reviser.plan(ctx);
+        expect(
+          prepared.items.flatMap((item) => item.reviews).map((review) => review.target_id),
+        ).toContain(dependent.id);
+        const audit = harness.auditLog
+          .list({})
+          .find((row) => row.action === CONTRADICTION_RETIREMENT_ACTION)!;
+        const reversed = await harness.auditLog.revert(audit.id);
+        expect(await harness.auditLog.revert(audit.id)).toEqual(reversed);
+        expect(harness.semanticEdgeRepository.getEdge(edge.id)).toEqual(edge);
+        expect(harness.semanticBeliefDependencyRepository.listBySourceEdge(edge.id)).toEqual([
+          dependency,
+        ]);
+        expect(invalidationEvents(harness)).toEqual([]);
+
+        // A previously prepared plan also sees the event cancellation at apply.
+        await reviser.apply(ctx, prepared);
+        await runBeliefReviser(harness);
+        expect(beliefRevisionItems(harness)).toEqual([]);
+        expect((await harness.semanticNodeRepository.get(dependent.id))?.confidence).toBe(0.8);
+        expect(vectorSyncOutboxCount(harness)).toBe(0);
+      } finally {
+        await harness.cleanup();
+      }
+    },
+  );
+
   it("enqueues a belief_revision review for an invalidated support target", async () => {
     const harness = await createOfflineTestHarness({
       clock: new FixedClock(2_000),

@@ -262,7 +262,7 @@ const reflectionIntentUpdateSchema = intentRecordSchema.extend({
     .describe(
       "Actor responsible for the resolved action: user for user actions, borg for Borg actions.",
     ),
-  status: z.enum(["completed", "abandoned"]),
+  status: z.enum(["completed", "abandoned", "declined"]),
   confidence: z.number().min(0).max(1).default(0.8),
   evidence: z.string().min(1),
 });
@@ -323,7 +323,7 @@ const strictReflectionOutputSchema = z.object({
   intent_updates: z
     .array(reflectionIntentUpdateSchema)
     .describe(
-      "Prior pending actions resolved by this completed turn. Include only exact prior actions with clear evidence, marked completed or abandoned, and identify whether the resolved action belonged to the user or Borg.",
+      "Prior pending actions resolved by this completed turn. Include only exact prior actions with clear evidence, marked completed, abandoned (failed/non-completed), or declined (voluntary non-execution), and identify whether the resolved action belonged to the user or Borg.",
     )
     .default([]),
   step_outcomes: z
@@ -541,12 +541,12 @@ function isProgressOnlyGoalPatch(patch: Record<string, unknown>): boolean {
   );
 }
 
-type IntentUpdateActionState = "completed" | "not_done";
+type IntentUpdateActionState = "completed" | "not_done" | "declined";
 
 function actionStateFromIntentStatus(
   status: ReflectionOutput["intent_updates"][number]["status"],
 ): IntentUpdateActionState {
-  return status === "completed" ? "completed" : "not_done";
+  return status === "abandoned" ? "not_done" : status;
 }
 
 function stateTimestampPatch(
@@ -1391,9 +1391,10 @@ export class Reflector {
     const selectedGoalId = context.executiveFocus?.selected_goal?.id ?? null;
     const selectedOpenQuestionId = focusedReflectionOpenQuestionId(context, selectedGoalId);
     const createdActionIdsBefore = effects.createdActionIds.length;
-    const byState: Record<"completed" | "not_done", number> = {
+    const byState: Record<"completed" | "not_done" | "declined", number> = {
       completed: 0,
       not_done: 0,
+      declined: 0,
     };
 
     for (const update of updates) {
@@ -1429,6 +1430,7 @@ export class Reflector {
             scheduled_at: null,
             completed_at: null,
             not_done_at: null,
+            declined_at: null,
             expired_at: null,
             archived_at: null,
             unknown_at: null,
@@ -1464,7 +1466,7 @@ export class Reflector {
     context: ReflectionContext,
     input: {
       createdDurableActionsCount: number;
-      byState: Record<"completed" | "not_done", number>;
+      byState: Record<"completed" | "not_done" | "declined", number>;
       workingMemoryPendingResolvedCount: number;
     },
   ): void {

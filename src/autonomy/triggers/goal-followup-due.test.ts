@@ -24,6 +24,49 @@ describe("goal followup due trigger", () => {
     cleanup = undefined;
   });
 
+  it("excludes inactive goals before deadline and topology bypasses, and reopens only on structural interaction", async () => {
+    const clock = new ManualClock(4_000_000_000);
+    const h = await createOfflineTestHarness({ clock });
+    cleanup = h.cleanup;
+    const watermarks = new StreamWatermarkRepository({ db: h.db, clock });
+    const goal = h.goalsRepository.add({
+      description: "Unchanged for weeks",
+      priority: 9,
+      createdAt: clock.now() - 2_592_000_001,
+      targetAt: clock.now() - 1,
+      provenance: { kind: "manual" },
+    });
+    const trigger = createGoalFollowupDueTrigger({
+      goalsRepository: h.goalsRepository,
+      watermarkRepository: watermarks,
+      lookaheadMs: 20_000,
+      staleMs: 100_000,
+      staleBackoff: STALE_BACKOFF,
+      respectStaleBackoff: false,
+      goalStaleBackoffActionAvailabilityKey: () => "new-topology",
+      clock,
+    });
+    expect(await trigger.scan()).toEqual([]);
+    expect(await trigger.nextDueAt!()).toBeNull();
+    expect(h.goalsRepository.get(goal.id)?.status).toBe("active");
+    expect(h.goalsRepository.list({ status: "active" })).toHaveLength(1);
+    const store = h.goalsRepository.presentation!;
+    store.presented([store.snapshot(goal)], "unrelated-render");
+    expect(h.goalsRepository.get(goal.id)?.last_interaction_at).toBeNull();
+    expect(await trigger.scan()).toEqual([]);
+    const entry = createStreamEntryId();
+    store.associateInbound(goal.id, entry);
+    expect(await trigger.scan()).toHaveLength(1);
+    expect(await trigger.nextDueAt!()).toBe(clock.now());
+    clock.advance(2_592_000_001);
+    store.associateInbound(goal.id, entry); // replay cannot revive it
+    expect(await trigger.scan()).toEqual([]);
+    expect(await trigger.nextDueAt!()).toBeNull();
+    h.goalsRepository.update(goal.id, { priority: 8 }, { kind: "manual" });
+    expect(await trigger.scan()).toHaveLength(1);
+    expect(h.goalsRepository.get(goal.id)?.last_progress_ts).toBeNull();
+  });
+
   it.each(["deadline", "stale"] as const)(
     "shares the presentation generation across old %s latches, topology drift and new input",
     async (phase) => {
@@ -66,7 +109,11 @@ describe("goal followup due trigger", () => {
         {
           lastTs: clock.now(),
           lastEntryId: first.id,
-          metadata: { empty_count: 3, action_availability_key: actionKey },
+          metadata: {
+            empty_count: 3,
+            action_availability_key: actionKey,
+            input_generation: presentations.snapshot(goal).inputGeneration,
+          },
         },
       );
       expect(await trigger.scan()).toEqual([]);
@@ -87,7 +134,11 @@ describe("goal followup due trigger", () => {
         {
           lastTs: clock.now(),
           lastEntryId: first.id,
-          metadata: { empty_count: 3, action_availability_key: actionKey },
+          metadata: {
+            empty_count: 3,
+            action_availability_key: actionKey,
+            input_generation: presentations.snapshot(goal).inputGeneration,
+          },
         },
       );
       presentations.associateInbound(goal.id, createStreamEntryId());

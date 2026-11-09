@@ -1,3 +1,5 @@
+import { goalFollowupAdmission } from "./goal-followup-due.js";
+import { isGoalInactive } from "../../memory/self/goal-inactivity.js";
 import { goalSchedulingTimes, goalBlockStateFields } from "../../memory/self/goal-blocks.js";
 import {
   DEFAULT_EXECUTIVE_GOAL_FOCUS_THRESHOLD,
@@ -111,6 +113,8 @@ export type ExecutiveFocusDueTriggerOptions = {
     enabled: boolean;
     lookaheadMs: number;
     staleMs: number;
+    maxInactivityMs?: number;
+    respectStaleBackoff?: boolean;
   };
   clock?: Clock;
   tracer?: TurnTracer;
@@ -289,19 +293,6 @@ function buildScorePayload(input: {
   };
 }
 
-function isGoalFollowupDueMatch(input: {
-  goal: GoalRecord;
-  nowMs: number;
-  lookaheadMs: number;
-  staleMs: number;
-}): boolean {
-  const { progressAnchor: baseProgressTs, targetAt } = goalSchedulingTimes(input.goal);
-  const deadlineDue = targetAt !== null && targetAt - input.nowMs < input.lookaheadMs;
-  const staleDue = baseProgressTs + input.staleMs < input.nowMs;
-
-  return deadlineDue || staleDue;
-}
-
 export function createExecutiveFocusDueTrigger(
   options: ExecutiveFocusDueTriggerOptions,
 ): AutonomyTrigger<ExecutiveFocusDuePayload> {
@@ -320,7 +311,9 @@ export function createExecutiveFocusDueTrigger(
     last_progress_ts: number | null;
   }): number | null {
     const current = options.goalsRepository.get(input.goal_id);
-    if (current !== null && presentations.hasNewInput(current)) return null;
+    if (current !== null && presentations.hasNewExecutiveInput(current)) return null;
+    const presentedAt = current === null ? null : presentations.executivePresentedAt(current);
+    if (presentedAt !== null) return presentedAt + options.wakeCooldownMs;
     const cooldown = options.watermarkRepository.get(
       getGoalCooldownProcessName(input.goal_id),
       sessionId,
@@ -347,18 +340,17 @@ export function createExecutiveFocusDueTrigger(
   }
 
   function getGoalStaleBackoff(
-    input: {
-      goal_id: GoalRecord["id"];
-      last_progress_ts: number | null;
-    },
+    goal: GoalRecord,
     actionAvailabilityKey: string | null,
   ): GoalStaleBackoffState {
     return goalStaleBackoffState({
       watermark: options.watermarkRepository.get(
-        getExecutiveFocusGoalStaleBackoffProcessName(input.goal_id),
+        getExecutiveFocusGoalStaleBackoffProcessName(goal.id),
         sessionId,
       ),
-      lastProgressTs: input.last_progress_ts,
+      lastProgressTs: goal.last_progress_ts,
+      lastInteractionTs: goal.last_interaction_at,
+      inputGeneration: presentations.snapshot(goal).inputGeneration,
       baseCooldownMs: options.wakeCooldownMs,
       multiplier: options.wakeCooldownBackoffMultiplier,
       maxCooldownMs: options.wakeCooldownMaxMs,
@@ -372,29 +364,32 @@ export function createExecutiveFocusDueTrigger(
     nowMs: number,
     actionAvailabilityKey: string | null,
   ): boolean {
-    if (presentations.hasNewInput(goal)) return false;
-    const { endMs: backoffEnd } = getGoalStaleBackoff(
-      {
-        goal_id: goal.id,
-        last_progress_ts: goal.last_progress_ts,
-      },
-      actionAvailabilityKey,
-    );
+    const { endMs: backoffEnd } = getGoalStaleBackoff(goal, actionAvailabilityKey);
 
     return backoffEnd !== null && backoffEnd > nowMs;
   }
 
-  function shouldDeferToGoalFollowup(goal: GoalRecord, nowMs: number): boolean {
+  function shouldDeferToGoalFollowup(
+    goal: GoalRecord,
+    nowMs: number,
+    actionAvailabilityKey: string | null,
+  ): boolean {
     if (options.goalFollowupDue?.enabled !== true) {
       return false;
     }
 
-    return isGoalFollowupDueMatch({
+    const backoff =
+      options.goalFollowupDue.respectStaleBackoff === false
+        ? { endMs: null, actionAvailabilityChanged: false, dormant: false }
+        : getGoalStaleBackoff(goal, actionAvailabilityKey);
+    return goalFollowupAdmission(
       goal,
       nowMs,
-      lookaheadMs: options.goalFollowupDue.lookaheadMs,
-      staleMs: options.goalFollowupDue.staleMs,
-    });
+      { ...options.goalFollowupDue, watermarkRepository: options.watermarkRepository },
+      presentations,
+      backoff,
+      sessionId,
+    );
   }
 
   async function scoreGoals(input: {
@@ -445,11 +440,7 @@ export function createExecutiveFocusDueTrigger(
       const actionKey = options.goalStaleBackoffActionAvailabilityKey?.() ?? null;
       return listActiveGoalsForCognition(options.goalsRepository)
         .filter((goal) => {
-          if (presentations.hasNewInput(goal)) return false;
-          const state = getGoalStaleBackoff(
-            { goal_id: goal.id, last_progress_ts: goal.last_progress_ts },
-            actionKey,
-          );
+          const state = getGoalStaleBackoff(goal, actionKey);
           return state.dormant && state.endMs !== null && state.endMs > nowMs;
         })
         .map((goal) => goal.id);
@@ -498,7 +489,7 @@ export function createExecutiveFocusDueTrigger(
       const eventGoalIds = new Set<GoalRecord["id"]>();
 
       for (const goal of goals) {
-        if (presentations.wasPresented(goal) || isGoalCoolingDown(goal, nowMs)) {
+        if (isGoalCoolingDown(goal, nowMs)) {
           continue;
         }
 
@@ -583,11 +574,11 @@ export function createExecutiveFocusDueTrigger(
 
         return (
           candidate.score >= threshold &&
-          !presentations.wasPresented(candidateGoal) &&
           !eventGoalIds.has(candidateGoal.id) &&
+          !isGoalInactive(candidateGoal, nowMs, options.goalFollowupDue?.maxInactivityMs) &&
           !isGoalCoolingDown(candidateGoal, nowMs) &&
           !isGoalStaleBackedOff(candidateGoal, nowMs, actionAvailabilityKey) &&
-          !shouldDeferToGoalFollowup(candidateGoal, nowMs)
+          !shouldDeferToGoalFollowup(candidateGoal, nowMs, actionAvailabilityKey)
         );
       });
 
@@ -652,9 +643,8 @@ export function createExecutiveFocusDueTrigger(
         return null;
       }
 
+      let nextAt: number | null = null;
       for (const candidate of candidates) {
-        const goal = options.goalsRepository.get(candidate.goal_id);
-        if (goal !== null && presentations.wasPresented(goal)) continue;
         const cooldownEnd = getGoalCooldownEnd({
           goal_id: candidate.goal_id,
           last_progress_ts: candidate.goal_last_progress_ts,
@@ -666,11 +656,11 @@ export function createExecutiveFocusDueTrigger(
         );
 
         if (Number.isFinite(dueAt)) {
-          return dueAt;
+          nextAt = nextAt === null ? dueAt : Math.min(nextAt, dueAt);
         }
       }
 
-      return null;
+      return nextAt;
     },
     buildTurn(event) {
       return {

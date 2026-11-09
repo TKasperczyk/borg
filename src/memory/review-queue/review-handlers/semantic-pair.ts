@@ -3,7 +3,11 @@ import { z } from "zod";
 import { SemanticError } from "../../../util/errors.js";
 import { markSemanticContradicted, markSemanticSuperseded } from "../../lifecycle-ops/index.js";
 import { episodeIdSchema } from "../../episodic/index.js";
-import { semanticEdgeIdSchema, semanticNodeIdSchema, type SemanticNode } from "../../semantic/types.js";
+import {
+  semanticEdgeIdSchema,
+  semanticNodeIdSchema,
+  type SemanticNode,
+} from "../../semantic/types.js";
 import {
   reviewResolutionSchema,
   type ReviewKind,
@@ -12,6 +16,10 @@ import {
   type ReviewResolution,
 } from "../review-queue.js";
 import { closeSemanticEdgeFromReview } from "./semantic-edge-closure.js";
+import {
+  retireContradictionEdges,
+  isContradictionForNodePair,
+} from "../../semantic/contradiction-retirement.js";
 
 const SEMANTIC_PAIR_REVIEW_RESOLUTIONS = new Set<ReviewResolution>([
   "keep_both",
@@ -150,6 +158,38 @@ export function createSemanticPairReviewQueueHandler(
     },
     async apply({ item, refs, resolution, ctx }) {
       if (resolution.decision === "keep_both" || resolution.decision === "dismiss") {
+        if (kind === "contradiction" && !isEdgeClosureRefs(refs) && refs.edge_id !== undefined) {
+          const repository = ctx.semanticEdgeRepository;
+          const edge = repository?.getEdge(refs.edge_id);
+          if (
+            repository === undefined ||
+            edge == null ||
+            !isContradictionForNodePair(edge, refs.node_ids)
+          )
+            throw new SemanticError("Contradiction review edge does not match its node pair", {
+              code: "REVIEW_QUEUE_EDGE_MISMATCH",
+            });
+          const reason = `review resolution ${resolution.decision}: ${resolution.reason ?? item.reason}`;
+          retireContradictionEdges({
+            db: ctx.db,
+            clock: ctx.clock,
+            repository,
+            edges: [edge],
+            provenance: {
+              at: ctx.clock.now(),
+              by_process: "review",
+              by_review_id: item.id,
+              reason,
+            },
+            context: {
+              review_item_id: item.id,
+              resolution: resolution.decision,
+              source_process: "review-resolver",
+            },
+            close: () =>
+              closeSemanticEdgeFromReview({ item, repair: { edgeId: edge.id, reason }, ctx }),
+          });
+        }
         return;
       }
 

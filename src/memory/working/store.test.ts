@@ -465,6 +465,7 @@ describe("working memory store", () => {
           scheduled_at: null,
           completed_at: 200,
           not_done_at: null,
+          declined_at: null,
           unknown_at: null,
         });
         actionRepository.add(completion);
@@ -565,6 +566,7 @@ describe("working memory store", () => {
               scheduled_at: null,
               completed_at: 200,
               not_done_at: null,
+              declined_at: null,
               unknown_at: null,
             }),
           );

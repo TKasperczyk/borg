@@ -462,6 +462,7 @@ describe("tool.outbound.post", () => {
         state: "not_done",
         completed_at: null,
         not_done_at: expect.any(Number),
+        declined_at: null,
         // The pre-flight refusal never calls postOutbound, so this row is the whole record of the
         // reach. It must not read as a post that was written and then stranded.
         description:

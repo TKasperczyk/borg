@@ -40,6 +40,10 @@ import type {
 import { createEpisodeFixture, createRetrievalScoreFixture } from "../../offline/test-support.js";
 import type { EvidenceLedger } from "../evidence-ledger/index.js";
 import { renderEvidenceLedger } from "../evidence-ledger/index.js";
+import {
+  createTurnExecutionMetrics,
+  turnExecutionMetricsStorage,
+} from "../turn-execution-metrics.js";
 import type { CognitionThinkingConfig } from "./types.js";
 import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../../tracing/tracer.js";
 import { buildInvalidToolFinalizerRetryPromptSection, Deliberator } from "./deliberator.js";
@@ -1320,18 +1324,27 @@ describe("deliberator", () => {
                 {
                   ...rows[1],
                   goal_id: rows[1]!.id,
+                  source_name: "goal_followup_due",
                   disclosure_label: { disclosure_class: "self_private" },
                 },
               ],
             },
           },
         });
-        const result = createDeliberator(llm, tempDirs, { goalPresentation: store }).run(context);
+        const metrics = createTurnExecutionMetrics();
+        const result = turnExecutionMetricsStorage.run(metrics, () =>
+          createDeliberator(llm, tempDirs, { goalPresentation: store }).run(context),
+        );
         if (fails) await expect(result).rejects.toThrow("before response");
         else expect((await result).emitted).toBe(false);
         expect(store.wasPresented(rows[0]!)).toBe(!fails);
         expect(store.wasPresented(rows[1]!)).toBe(!fails);
         expect(store.wasPresented(rows[2]!)).toBe(false);
+        expect(store.executivePresentedAt(rows[0]!) !== null).toBe(!fails);
+        expect(store.executivePresentedAt(rows[1]!)).toBeNull();
+        expect(metrics.shownGoalPresentations).toEqual(
+          fails ? [] : context.selfSnapshot.goalPresentations!.slice(0, 2),
+        );
       } finally {
         db.close();
       }
@@ -1386,43 +1399,49 @@ describe("deliberator", () => {
             }),
           ],
         });
-        const result = await createDeliberator(llm, tempDirs, {
+        const deliberator = createDeliberator(llm, tempDirs, {
           goalPresentation: store,
           plannerSurfaceVariant: variant,
           finalizerSurfaceVariant: variant,
-        }).run(
-          simpleDeliberationContext({
-            turnOrigin: "autonomous",
-            turnId: "digest-latch",
-            options: { stakes: path === "system_2" ? "high" : "low" },
-            selfSnapshot: {
-              values: [],
-              traits: [],
-              goals: rows.slice(0, 2),
-              goalPresentations: rows.map((goal) => store.snapshot(goal)),
-            },
-            autonomyTrigger: {
-              source_name: "executive_focus_due",
-              source_type: "trigger",
-              event_id: "batch",
-              sort_ts: 1_000,
-              payload: {
-                selected_goal_id: rows[0]!.id,
-                selected_goal: {
-                  ...rows[0],
+        });
+        const context = simpleDeliberationContext({
+          turnOrigin: "autonomous",
+          turnId: "digest-latch",
+          options: { stakes: path === "system_2" ? "high" : "low" },
+          selfSnapshot: {
+            values: [],
+            traits: [],
+            goals: rows.slice(0, 2),
+            goalPresentations: rows.map((goal) => store.snapshot(goal)),
+          },
+          autonomyTrigger: {
+            source_name: "executive_focus_due",
+            source_type: "trigger",
+            event_id: "batch",
+            sort_ts: 1_000,
+            payload: {
+              selected_goal_id: rows[0]!.id,
+              selected_goal: {
+                ...rows[0],
+                disclosure_label: { disclosure_class: "self_private" },
+              },
+              secondary_due_goals: [
+                {
+                  goal_id: rows[1]!.id,
+                  source_name: "goal_followup_due",
+                  description: rows[1]!.description,
+                  disclosure: "private ".repeat(10_000),
                   disclosure_label: { disclosure_class: "self_private" },
                 },
-                secondary_due_goals: [
-                  {
-                    goal_id: rows[1]!.id,
-                    description: rows[1]!.description,
-                    disclosure: "private ".repeat(10_000),
-                    disclosure_label: { disclosure_class: "self_private" },
-                  },
-                ],
-              },
+              ],
             },
-          }),
+          },
+        });
+        // Input arriving after the context freezes must not replace what was rendered.
+        store.associateInbound(rows[1]!.id, createStreamEntryId());
+        const metrics = createTurnExecutionMetrics();
+        const result = await turnExecutionMetricsStorage.run(metrics, () =>
+          deliberator.run(context),
         );
         expect(result).toMatchObject({ path, emitted: false });
         const prompt = requestSystemText(llm.requests[0]?.system);
@@ -1434,9 +1453,16 @@ describe("deliberator", () => {
         expect(trigger).not.toContain(rows[1]!.id);
         expect(prompt).toContain(rows[1]!.description);
         expect(store.wasPresented(rows[0]!)).toBe(true);
-        expect(store.wasPresented(rows[1]!)).toBe(true);
+        expect(store.wasPresented(rows[1]!)).toBe(false);
         expect(store.wasPresented(rows[2]!)).toBe(false);
+        expect(store.executivePresentedAt(rows[0]!)).not.toBeNull();
+        expect(store.executivePresentedAt(rows[1]!)).toBeNull();
         expect(presented.mock.calls).toHaveLength(path === "system_1" ? 1 : 2);
+        expect(metrics.shownGoalPresentations).toEqual(
+          context.selfSnapshot.goalPresentations!.slice(0, 2),
+        );
+        expect(metrics.shownGoalPresentations![1]!.inputGeneration).toBe(0);
+        expect(store.snapshot(rows[1]!).inputGeneration).toBe(1);
         for (const [snapshots] of presented.mock.calls) {
           expect(snapshots.map((goal) => goal.goalId)).toEqual(
             rows.slice(0, 2).map((goal) => goal.id),

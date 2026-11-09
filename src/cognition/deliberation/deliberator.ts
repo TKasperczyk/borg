@@ -1,3 +1,5 @@
+import { executivePresentationGoalIds } from "../autonomy-trigger.js";
+import { recordShownGoalPresentations } from "../turn-execution-metrics.js";
 // Thin deliberation orchestrator: selects S1/S2, calls planner/finalizer, and assembles results.
 import { computeRetrievalConfidence, type RetrievedEpisode } from "../../retrieval/index.js";
 import type { StreamWriter } from "../../stream/index.js";
@@ -282,9 +284,14 @@ function buildFinalizerCallOptions(
     shownGoalIds: context.cacheableSystemPrompt.shownGoalIds,
     onPromptPresented: (shownGoalIds) => {
       const shown = new Set(shownGoalIds);
+      const presentations = (context.effectiveContext.goalPresentations ?? []).filter((goal) =>
+        shown.has(goal.goalId),
+      );
+      recordShownGoalPresentations(presentations);
       options.goalPresentation?.presented(
-        (context.effectiveContext.goalPresentations ?? []).filter((goal) => shown.has(goal.goalId)),
+        presentations,
         context.context.turnId ?? "autonomous",
+        executivePresentationGoalIds(context.effectiveContext.autonomyTrigger),
       );
     },
     cacheableSystemPrompt: context.cacheableSystemPrompt,
@@ -1224,9 +1231,14 @@ export class Deliberator {
               ? (plannerSurface.shownGoalIds ?? [])
               : cacheableBaseSystemPrompt.shownGoalIds,
           );
+          const presentations = (effectiveContext.goalPresentations ?? []).filter((goal) =>
+            shown.has(goal.goalId),
+          );
+          recordShownGoalPresentations(presentations);
           this.options.goalPresentation?.presented(
-            (effectiveContext.goalPresentations ?? []).filter((goal) => shown.has(goal.goalId)),
+            presentations,
             context.turnId ?? "autonomous",
+            executivePresentationGoalIds(effectiveContext.autonomyTrigger),
           );
         },
         ...(captureSelected

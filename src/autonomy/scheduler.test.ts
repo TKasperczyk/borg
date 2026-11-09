@@ -11,7 +11,7 @@ import {
   createIdentityEventsListForCognitionTool,
 } from "../tools/index.js";
 import { ManualClock } from "../util/clock.js";
-import { DEFAULT_SESSION_ID } from "../util/ids.js";
+import { DEFAULT_SESSION_ID, createStreamEntryId } from "../util/ids.js";
 import { createOfflineTestHarness } from "../offline/test-support.js";
 import { openDatabase, type SqliteDatabase } from "../storage/sqlite/index.js";
 import { LLMError, SessionBusyError } from "../util/errors.js";
@@ -20,6 +20,8 @@ import { selectSelfDecisionIntrospection } from "../memory/self-decisions/projec
 import { TrainOfThoughtRepository } from "../memory/train-of-thought/index.js";
 import type { TurnResult } from "../cognition/index.js";
 import { associateTurnExecutionMetricsWithError } from "../cognition/turn-execution-metrics.js";
+import { TurnSelfContextBuilder } from "../cognition/self/turn-self-context.js";
+import { NOOP_TRACER } from "../tracing/tracer.js";
 
 import {
   createCommitmentExpiringTrigger,
@@ -444,6 +446,142 @@ describe("AutonomyScheduler", () => {
     await cleanup?.();
     cleanup = undefined;
   });
+
+  it.each([
+    { goalCount: 1, timing: "before" },
+    { goalCount: 2, timing: "before" },
+    { goalCount: 1, timing: "after" },
+    { goalCount: 2, timing: "after" },
+  ])(
+    "accounts for input associated $timing the real self snapshot in a $goalCount-goal wake",
+    async ({ goalCount, timing }) => {
+      const clock = new ManualClock(1_000_000);
+      const harness = await createOfflineTestHarness({ clock });
+      cleanup = harness.cleanup;
+      const watermarkRepository = new StreamWatermarkRepository({ db: harness.db, clock });
+      const store = harness.goalsRepository.presentation!;
+      const goals = Array.from({ length: goalCount }, (_, index) =>
+        harness.goalsRepository.add({
+          description: `Goal ${index}`,
+          priority: 10 - index,
+          createdAt: clock.now() - 20_000,
+          provenance: { kind: "manual" },
+        }),
+      );
+      // In a batch, new input targets the secondary goal, not just the primary.
+      const changed = goals[goals.length - 1]!;
+      store.associateInbound(changed.id, createStreamEntryId());
+      const source = createGoalFollowupDueTrigger({
+        goalsRepository: harness.goalsRepository,
+        watermarkRepository,
+        lookaheadMs: 0,
+        staleMs: 1_000,
+        respectStaleBackoff: true,
+        staleBackoff: {
+          baseCooldownMs: 1_000,
+          multiplier: 2,
+          maxCooldownMs: 60_000,
+          dormancyCount: 1,
+        },
+        clock,
+      });
+      const selfContext = new TurnSelfContextBuilder({
+        embeddingClient: harness.embeddingClient,
+        valuesRepository: harness.valuesRepository,
+        goalsRepository: harness.goalsRepository,
+        traitsRepository: harness.traitsRepository,
+        executiveStepsRepository: harness.executiveStepsRepository,
+        clock,
+        tracer: NOOP_TRACER,
+        goalFocusThreshold: 0,
+        goalFollowupLookaheadMs: 0,
+        goalFollowupStaleMs: 1_000,
+      });
+      let shown: readonly ReturnType<typeof store.snapshot>[] = [];
+      let turns = 0;
+      const runner = {
+        run: vi.fn(async () => {
+          turns++;
+          if (turns === 1 && timing === "before") {
+            clock.advance(1);
+            store.associateInbound(changed.id, createStreamEntryId());
+          }
+          // This is inside run(), after the scheduler's former capture point.
+          shown = (await selfContext.buildSelfSnapshot(null)).goalPresentations ?? [];
+          if (turns === 1 && timing === "after") {
+            clock.advance(1);
+            store.associateInbound(changed.id, createStreamEntryId());
+          }
+          store.presented(shown, `wake-${turns}`);
+          clock.advance(1); // completion's timestamp is later than the new input
+          return {
+            ...createStructuralTurnResult({ emissionKind: "suppressed" }),
+            shownGoalPresentations: shown,
+          };
+        }),
+      };
+      const writer = (sessionId: typeof DEFAULT_SESSION_ID) =>
+        new StreamWriter({ dataDir: harness.tempDir, sessionId, clock });
+      const scheduler = createScheduler({
+        db: harness.db,
+        enabled: true,
+        intervalMs: 1_000,
+        maxWakesPerWindow: 6,
+        goalWakeBatchMax: goalCount,
+        clock,
+        createStreamWriter: writer,
+        watermarkRepository,
+        goalsRepository: harness.goalsRepository,
+        turnOrchestrator: runner,
+        toolDispatcher: new ToolDispatcher({ createStreamWriter: writer, clock }),
+        sources: [source],
+      });
+
+      expect(await scheduler.tick()).toMatchObject({ firedEvents: 1, bookkeepingErrorCount: 0 });
+      for (const presentation of shown) {
+        expect(
+          watermarkRepository.get(
+            getExecutiveFocusGoalStaleBackoffProcessName(presentation.goalId),
+            DEFAULT_SESSION_ID,
+          )?.metadata,
+        ).toMatchObject({ empty_count: 1, input_generation: presentation.inputGeneration });
+      }
+      const current = harness.goalsRepository.get(changed.id)!;
+      expect(store.snapshot(current).inputGeneration).toBe(2);
+      expect(shown.find((goal) => goal.goalId === changed.id)?.inputGeneration).toBe(
+        timing === "before" ? 2 : 1,
+      );
+      if (timing === "before") {
+        expect(store.hasNewInput(current)).toBe(false);
+        expect(await source.scan()).toEqual([]);
+        expect(source.dormantGoalIds!()).toContain(changed.id);
+        expect(await source.nextDueAt!()).toBeNull();
+        expect(await scheduler.tick()).toMatchObject({ firedEvents: 0 });
+        expect(runner.run).toHaveBeenCalledOnce();
+        return;
+      }
+      expect(store.hasNewInput(current)).toBe(true);
+      expect((await source.scan()).map((event) => event.payload.goal_id)).toEqual([changed.id]);
+      expect(await source.nextDueAt!()).toBe(clock.now());
+      expect(source.dormantGoalIds!()).toEqual(
+        goals.filter((goal) => goal.id !== changed.id).map((goal) => goal.id),
+      );
+
+      // The next wake evaluates that new generation. Without further input its
+      // completion may finally apply the shared brake to this goal too.
+      expect(await scheduler.tick()).toMatchObject({ firedEvents: 1, bookkeepingErrorCount: 0 });
+      expect(
+        watermarkRepository.get(
+          getExecutiveFocusGoalStaleBackoffProcessName(changed.id),
+          DEFAULT_SESSION_ID,
+        )?.metadata,
+      ).toMatchObject({ empty_count: 2, input_generation: 2 });
+      expect(store.hasNewInput(harness.goalsRepository.get(changed.id)!)).toBe(false);
+      expect(await source.scan()).toEqual([]);
+      expect(source.dormantGoalIds!()).toContain(changed.id);
+      expect(runner.run).toHaveBeenCalledTimes(2);
+    },
+  );
 
   it.each(["ended", "expired"])(
     "defers operational scans without consuming state until maintenance %s",
@@ -1984,9 +2122,7 @@ describe("AutonomyScheduler", () => {
         "secondary_due_goals",
       );
       expect(batched.followupLatch).toMatchObject({ lastEntryId: "shared-accounting-event" });
-      expect(batched.executiveLatch).toMatchObject({
-        lastEntryId: "zz-duplicate-executive-event",
-      });
+      expect(batched.executiveLatch).toBeNull(); // The follow-up row owned this presentation.
       expect(batched.backoff).toEqual(control.backoff);
       expect(batched.backoff).toEqual({
         processName: backoffProcessName,

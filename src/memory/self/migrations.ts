@@ -500,4 +500,11 @@ export const selfMigrations = [
       for (const object of objects) db.exec(object.sql);
     },
   },
+  {
+    id: 15,
+    name: "goal_last_interaction_at",
+    up: (db) => {
+      db.exec("ALTER TABLE goals ADD COLUMN last_interaction_at INTEGER NULL");
+    },
+  },
 ] as const satisfies readonly Migration[];
