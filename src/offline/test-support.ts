@@ -201,6 +201,7 @@ export function createTestConfig(
     ...DEFAULT_CONFIG,
     ...overrides,
     dataDir: overrides.dataDir ?? "/tmp/borg-test",
+    tools: { ...DEFAULT_CONFIG.tools, ...overrides.tools },
     similarity: similarityConfigSchema.parse(overrides.similarity),
     perception: {
       ...DEFAULT_CONFIG.perception,

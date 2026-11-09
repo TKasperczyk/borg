@@ -28,6 +28,83 @@ describe("ToolDispatcher", () => {
     }
   });
 
+  it("uses explicit search metadata, extends only read budgets, and honors a caller override", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const emit = vi.fn();
+    const dispatcher = new ToolDispatcher({
+      defaultTimeoutMs: 5,
+      searchTimeoutMs: 40,
+      searchMaxTimeoutMs: 100,
+      loadSignals: () => ({ maintenanceActive: true }),
+      tracer: { emit },
+      createStreamWriter: (sessionId) => new StreamWriter({ dataDir: tempDir, sessionId }),
+    });
+    const invoke = vi.fn(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      return {};
+    });
+    dispatcher.register({
+      name: "tool.custom.query",
+      description: "search",
+      allowedOrigins: ["deliberator"],
+      writeScope: "read",
+      timeoutClass: "search",
+      inputSchema: z.object({}),
+      outputSchema: z.object({}),
+      invoke,
+    });
+    expect(
+      (
+        await dispatcher.dispatch({
+          toolName: "tool.custom.query",
+          input: {},
+          origin: "deliberator",
+        })
+      ).ok,
+    ).toBe(true);
+    expect(emit).toHaveBeenCalledWith(
+      "tool_call.budget",
+      expect.objectContaining({
+        budgetMs: 100,
+        extensionReasons: ["maintenance_active"],
+        outcome: "selected",
+      }),
+    );
+    expect(
+      await dispatcher.dispatch({
+        toolName: "tool.custom.query",
+        input: {},
+        origin: "deliberator",
+        timeoutMs: 5,
+      }),
+    ).toMatchObject({ ok: false, error: "Timed out after 5ms" });
+    expect(emit).toHaveBeenCalledWith(
+      "tool_call.budget",
+      expect.objectContaining({ budgetMs: 5, extensionReasons: [], outcome: "timed_out" }),
+    );
+    dispatcher.register({
+      name: "tool.search.fast",
+      description: "not search metadata",
+      allowedOrigins: ["deliberator"],
+      writeScope: "read",
+      inputSchema: z.object({}),
+      outputSchema: z.object({}),
+      invoke,
+    });
+    expect(
+      (
+        await dispatcher.dispatch({
+          toolName: "tool.search.fast",
+          input: {},
+          origin: "deliberator",
+        })
+      ).ok,
+    ).toBe(false);
+    // Drain the harmless timed-out readers before the filesystem fixture closes.
+    await new Promise((resolve) => setTimeout(resolve, 65));
+  });
+
   it("writes tool_call and tool_result entries for successful dispatches", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);

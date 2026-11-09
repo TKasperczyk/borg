@@ -71,6 +71,7 @@ import {
   COMPACT_PLANNER_FIELD_CONTRACT,
 } from "./planner-contract.js";
 import { PLANNER_GOAL_EXPANSION_LIMIT } from "../constants.js";
+import { summarizeRetrievalStatus } from "./retrieval.js";
 
 export type PlannerSurfaceVariant = "compact" | "legacy";
 
@@ -2271,6 +2272,7 @@ function renderTurnStateAutonomyScheduler(
 }
 
 function renderTurnState(context: DeliberationContext): RenderedPlannerSection {
+  const retrievalStatus = summarizeRetrievalStatus(context.retrievalDegradations);
   const nowMs = promptTimestamp(context);
   const currentTimeLines = renderTurnStateCurrentTimeLines(context, nowMs);
   const selfDisclosure = renderedDisclosure(selfPrivateMemoryDisclosureLabel());
@@ -2300,6 +2302,9 @@ function renderTurnState(context: DeliberationContext): RenderedPlannerSection {
     "turn_state",
     [
       "<borg_planner_turn_state>",
+      ...(retrievalStatus === null
+        ? []
+        : [`  <borg_retrieval_status>${retrievalStatus}</borg_retrieval_status>`]),
       ...currentTimeLines,
       `  <participation_policy>${escapeXmlText(context.participationPolicy ?? "active")}</participation_policy>`,
       `  <perception mode="${escapeXmlAttribute(context.perception.mode)}" valence="${context.perception.affectiveSignal.valence.toFixed(2)}" arousal="${context.perception.affectiveSignal.arousal.toFixed(2)}" />`,

@@ -35,6 +35,14 @@ import {
   DELIBERATION_S2_CONFIDENCE_FLOOR,
 } from "../constants.js";
 import type { ContradictionRoutingTier } from "../types.js";
+import { retrievalStatus, type RetrievalDegradation } from "../../../retrieval/degradation.js";
+
+export function summarizeRetrievalStatus(
+  degradations?: readonly RetrievalDegradation[],
+): string | null {
+  const status = retrievalStatus(degradations);
+  return status === undefined ? null : escapeXmlText(JSON.stringify(status));
+}
 
 // Not a second threshold that happens to coincide with the routing floor: it is
 // the routing floor, read from the constant the path ladder tests against, so

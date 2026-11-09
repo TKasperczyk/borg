@@ -641,6 +641,16 @@ describe("TurnRetrievalCoordinator", () => {
     expect(cognitionCalls).toHaveLength(2);
     expect(cognitionCalls[1]?.[1]).not.toHaveProperty("rawQueryMessages");
     expect(result.retrievalOptions).not.toHaveProperty("rawQueryMessages");
+    const initialOptions = cognitionCalls[0]?.[1] as {
+      onDegraded: (notice: { subsystem: string; reason: string }) => void;
+    };
+    initialOptions.onDegraded({ subsystem: "recall_expansion", reason: "truncated" });
+    const secondaryOptions = cognitionCalls[1]?.[1] as typeof initialOptions;
+    secondaryOptions.onDegraded({ subsystem: "episodic_candidates", reason: "timeout" });
+    expect(result.retrievalDegradations).toEqual([
+      { subsystem: "recall_expansion", reason: "truncated" },
+      { subsystem: "episodic_candidates", reason: "timeout" },
+    ]);
     for (const call of cognitionCalls) {
       expect(call[1]).toEqual(
         expect.objectContaining({

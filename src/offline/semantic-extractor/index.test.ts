@@ -21,6 +21,7 @@ import type {
   OfflineResult,
 } from "../types.js";
 import { SemanticExtractorProcess } from "./index.js";
+import type { SemanticReviewQueueOptions } from "../../memory/semantic/review-service.js";
 
 const SEMANTIC_TOOL_NAME = "EmitSemanticCandidates";
 
@@ -136,6 +137,7 @@ describe("semantic extractor process", () => {
   const cleanup: Array<() => Promise<void>> = [];
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     while (cleanup.length > 0) {
       await cleanup.pop()?.();
     }
@@ -213,6 +215,10 @@ describe("semantic extractor process", () => {
       {
         sourceProcess: "semantic-extractor",
         traceTurnId: ctx.runId,
+        mutationRecorder: expect.objectContaining({
+          nodes: expect.any(Map),
+          edges: expect.any(Map),
+        }),
       },
     );
     expect(tracer.events).toContainEqual({
@@ -413,6 +419,18 @@ describe("semantic extractor process", () => {
     await harness.episodicRepository.createEpisode(episode);
     const process = createProcess(harness);
     const ctx = harness.createContext();
+    const fullNodes = vi
+      .spyOn(harness.semanticNodeRepository, "list")
+      .mockRejectedValue(new Error("full node hydration forbidden"));
+    const fullEdges = vi
+      .spyOn(harness.semanticEdgeRepository, "listEdges")
+      .mockImplementation(() => {
+        throw new Error("full edge hydration forbidden");
+      });
+    const fullAudits = vi.spyOn(harness.auditLog, "list").mockImplementation(() => {
+      throw new Error("full audit hydration forbidden");
+    });
+    const touched = vi.spyOn(harness.semanticNodeRepository, "getMany");
 
     const firstPlan = await process.plan(ctx);
     const result = await process.apply(ctx, firstPlan);
@@ -425,6 +443,118 @@ describe("semantic extractor process", () => {
       rejected: 0,
     });
     expect(secondPlan.episode_ids).toEqual([]);
+    expect(fullNodes).not.toHaveBeenCalled();
+    expect(fullEdges).not.toHaveBeenCalled();
+    expect(fullAudits).not.toHaveBeenCalled();
+    expect(touched.mock.calls.every(([ids]) => ids.length === 0)).toBe(true);
+  });
+
+  it("diffs only touched rows, includes review callback writes, and reverses exact before-images", async () => {
+    const episode = createEpisodeFixture();
+    const prior = createEpisodeFixture();
+    const original = createSemanticNodeFixture({
+      kind: "concept",
+      label: "Existing concept",
+      description: "Original description",
+      confidence: 0.4,
+      source_episode_ids: [prior.id],
+    });
+    const target = createSemanticNodeFixture({
+      label: "Untouched target",
+      source_episode_ids: [prior.id],
+    });
+    const llm = new FakeLLMClient({
+      responses: [
+        createSemanticToolResponse({
+          nodes: [
+            {
+              kind: "concept",
+              label: original.label,
+              description: "Updated description",
+              domain: null,
+              aliases: [],
+              confidence: 0.8,
+              source_episode_ids: [episode.id],
+            },
+            {
+              kind: "concept",
+              label: "Created concept",
+              description: "Created description",
+              domain: null,
+              aliases: [],
+              confidence: 0.7,
+              source_episode_ids: [episode.id],
+            },
+          ],
+          edges: [],
+        }),
+      ],
+    });
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      embeddingClient: new TestEmbeddingClient(
+        new Map([
+          [
+            semanticNodeEmbeddingText({
+              label: original.label,
+              description: "Updated description",
+            }),
+            [0, 0, 1, 0],
+          ],
+          [
+            semanticNodeEmbeddingText({
+              label: "Created concept",
+              description: "Created description",
+            }),
+            [1, 0, 0, 0],
+          ],
+        ]),
+      ),
+    });
+    cleanup.push(harness.cleanup);
+    await harness.episodicRepository.createEpisode(episode);
+    await harness.episodicRepository.createEpisode(prior);
+    await harness.semanticNodeRepository.insert(original);
+    await harness.semanticNodeRepository.insert(target);
+    const edge = harness.semanticEdgeRepository.addEdge(
+      createSemanticEdgeFixture({
+        from_node_id: original.id,
+        to_node_id: target.id,
+        confidence: 0.4,
+      }),
+    );
+    const beforeNode = await harness.semanticNodeRepository.get(original.id);
+    const ctx = harness.createContext();
+    ctx.semanticReviewService = {
+      queueDuplicateReview: (_node: unknown, options: SemanticReviewQueueOptions) => {
+        expect(options.mutationRecorder).toBeDefined();
+        harness.semanticEdgeRepository.mergeOpenEdgeEvidence({ ...edge, confidence: 0.9 }, options);
+      },
+    } as OfflineContext["semanticReviewService"];
+    const fullNodes = vi
+      .spyOn(harness.semanticNodeRepository, "list")
+      .mockRejectedValue(new Error("full scan"));
+    const fullEdges = vi
+      .spyOn(harness.semanticEdgeRepository, "listEdges")
+      .mockImplementation(() => {
+        throw new Error("full scan");
+      });
+    const touched = vi.spyOn(harness.semanticNodeRepository, "getMany");
+    const process = createProcess(harness);
+    const result = await process.apply(ctx, await process.plan(ctx));
+    expect(result.errors).toEqual([]);
+    expect(fullNodes).not.toHaveBeenCalled();
+    expect(fullEdges).not.toHaveBeenCalled();
+    expect(touched.mock.calls.flatMap(([ids]) => ids)).not.toContain(target.id);
+    const audit = harness.auditLog.list({ process: "semantic-extractor" })[0]!;
+    expect(audit.reversal.updated_nodes).toEqual([
+      { ...beforeNode, embedding: Array.from(beforeNode!.embedding) },
+    ]);
+    expect(audit.reversal.updated_edges).toEqual([edge]);
+    expect(audit.reversal.created_node_ids).toHaveLength(1);
+    await harness.auditLog.revert(audit.id);
+    expect(await harness.semanticNodeRepository.get(original.id)).toEqual(beforeNode);
+    expect(harness.semanticEdgeRepository.getEdge(edge.id)).toEqual(edge);
   });
 
   it("reports capped semantic extraction backlog after selected episodes", async () => {

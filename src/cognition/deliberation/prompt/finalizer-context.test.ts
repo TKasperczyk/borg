@@ -185,6 +185,19 @@ function text(result: ReturnType<typeof build>): string {
   return result.system.map((block) => block.text).join("\n\n");
 }
 
+it("carries the structural retrieval-status marker to the finalizer, including later retrievals", () => {
+  const notices = [{ subsystem: "recall_expansion", reason: "provider detail" }];
+  const input = context({ retrievalDegradations: notices });
+  const prompt = text(build(input));
+  expect(prompt).toContain("<borg_retrieval_status>");
+  expect(prompt).toContain('"degraded":true');
+  expect(prompt).toContain('"recall_expansion"');
+  expect(prompt).not.toContain("provider detail");
+  notices.push({ subsystem: "episodic_candidates", reason: "second lookup" });
+  expect(text(build(input))).toContain('"episodic_candidates"');
+  expect(text(build(context()))).not.toContain("<borg_retrieval_status>");
+});
+
 function projectionRows(prompt: string, tag: string): Record<string, unknown>[] {
   const table = prompt.match(new RegExp(`<${tag} columns="([^"]*)">([\\s\\S]*?)</${tag}>`))!;
   const columns = table[1]!.split(" ");

@@ -478,6 +478,9 @@ export async function selectScriptClients(options: {
         dims: loaded.embedding.dims,
         provider: loaded.embedding.provider,
         maxInputBytes: loaded.embedding.maxInputBytes,
+        requestTimeoutMs: loaded.embedding.requestTimeoutMs,
+        rateLimitMaxRetries: loaded.embedding.rateLimitMaxRetries,
+        rateLimitBaseDelayMs: loaded.embedding.rateLimitBaseDelayMs,
       });
       await realEmbeddings.embed("ping");
       embeddings = realEmbeddings;

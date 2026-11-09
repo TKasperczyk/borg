@@ -208,6 +208,18 @@ export async function openBorgDependencies(
       entryIndex: repositories.entryIndex,
     });
     const toolDispatcher = buildToolDispatcher({
+      toolTimeouts: config.tools,
+      budgetTracer: tracer,
+      loadSignals: (call) => {
+        const state = embeddingClient.requestState?.();
+        return {
+          maintenanceActive: offline.maintenanceOrchestrator.getActivePassStartedAt() !== null,
+          embeddingRetryAt: state?.retryAt,
+          embeddingRequestStartedAt: state?.oldestRequestStartedAt,
+          // A turn owns its own session lock. Only preparation observes it as contention.
+          sessionBusy: call.turnId === undefined && sessionLock.isHeld(call.sessionId),
+        };
+      },
       dataDir: config.dataDir,
       entryIndex: repositories.entryIndex,
       sourceStreamAudienceDisclosureResolver: repositories.sourceStreamAudienceDisclosureResolver,

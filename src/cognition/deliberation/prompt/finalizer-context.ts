@@ -1011,6 +1011,7 @@ const UNTRUSTED_TURN_BASE_SECTION_IDS = [
   "borg_thread_roster",
   "borg_retrieved_evidence",
   "borg_retrieval_confidence",
+  "borg_retrieval_status",
   "contradiction_signal",
   "borg_open_questions",
   "borg_pending_corrections",

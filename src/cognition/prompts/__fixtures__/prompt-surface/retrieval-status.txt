@@ -1,0 +1,3 @@
+<borg_retrieval_status>
+{"degraded":true,"subsystems":["recall_expansion"]}
+</borg_retrieval_status>

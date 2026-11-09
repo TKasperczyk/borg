@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { ConfigError, EmbeddingError } from "../util/errors.js";
 
-import type { EmbeddingClient } from "./index.js";
+import type { EmbeddingClient, EmbeddingBatchOptions } from "./index.js";
 import { StallGuardEmbeddingClient } from "./stall-guard.js";
 
 const VECTOR = Float32Array.from([1, 0, 0, 0]);
@@ -28,6 +28,45 @@ function stallThenSucceed(stalledAttempts: number): EmbeddingClient & { calls: n
 }
 
 describe("StallGuardEmbeddingClient", () => {
+  it("retries only unfinished inputs and fences late callbacks from the abandoned attempt", async () => {
+    const calls: string[][] = [];
+    let abandoned!: EmbeddingBatchOptions;
+    const inner: EmbeddingClient = {
+      embed: async () => VECTOR,
+      embedBatch: async (texts, options) => {
+        calls.push([...texts]);
+        if (calls.length === 1) {
+          abandoned = options!;
+          options?.onChunk?.(0, [VECTOR]);
+          return never();
+        }
+        return texts.map(() => Float32Array.of(2, 0, 0, 0));
+      },
+    };
+    const guarded = new StallGuardEmbeddingClient(inner, { batchTimeoutMs: 1 });
+    const result = await guarded.embedBatch(["a", "b"]);
+    expect(calls).toEqual([["a", "b"], ["b"]]);
+    expect(abandoned.signal?.aborted).toBe(true);
+    abandoned.onChunk?.(1, [VECTOR]);
+    expect(result.map((vector) => Array.from(vector))).toEqual([
+      [1, 0, 0, 0],
+      [2, 0, 0, 0],
+    ]);
+  });
+
+  it("forwards retry-at and does not stack a stall retry over provider backoff", async () => {
+    const inner = Object.assign(stallThenSucceed(2), {
+      requestState: () => ({
+        retryAt: Date.now() + 60_000,
+        inFlight: 1,
+        oldestRequestStartedAt: 1,
+      }),
+    });
+    const guarded = new StallGuardEmbeddingClient(inner, { timeoutMs: 5 });
+    await expect(guarded.embed("query")).rejects.toMatchObject({ code: "EMBEDDING_BACKOFF" });
+    expect(inner.calls).toBe(1);
+    expect(guarded.requestState().retryAt).toBeGreaterThan(Date.now());
+  });
   it("forwards current transport statistics through the stall guard", () => {
     let truncations = 2;
     const inner: EmbeddingClient = {

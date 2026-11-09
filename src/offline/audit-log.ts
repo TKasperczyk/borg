@@ -46,6 +46,11 @@ export const maintenanceAuditSchema = z.object({
 });
 
 export type MaintenanceAuditRecord = z.infer<typeof maintenanceAuditSchema>;
+type AuditListOptions = {
+  run_id?: MaintenanceRunId;
+  process?: MaintenanceAuditProcessName;
+  reverted?: boolean;
+};
 
 export type MaintenanceAuditRecordInput = {
   run_id: MaintenanceRunId;
@@ -168,13 +173,18 @@ export class AuditLog {
     return mapAuditRow(row);
   }
 
-  list(
-    options: {
-      run_id?: MaintenanceRunId;
-      process?: MaintenanceAuditProcessName;
-      reverted?: boolean;
-    } = {},
-  ): MaintenanceAuditRecord[] {
+  list(options: AuditListOptions = {}): MaintenanceAuditRecord[] {
+    return this.readRows(options, "*").map(mapAuditRow);
+  }
+
+  /** Completion markers without hydrating the potentially large reversal blobs. */
+  listTargets(options: AuditListOptions = {}): Record<string, unknown>[] {
+    return this.readRows(options, "targets").map((row) =>
+      parseJsonRecord(String(row.targets), "targets"),
+    );
+  }
+
+  private readRows(options: AuditListOptions, columns: "*" | "targets"): Record<string, unknown>[] {
     const filters: string[] = [];
     const values: unknown[] = [];
 
@@ -198,7 +208,7 @@ export class AuditLog {
     const rows = this.db
       .prepare(
         `
-          SELECT *
+          SELECT ${columns}
           FROM maintenance_audit
           ${whereClause}
           ORDER BY applied_at DESC, id DESC
@@ -206,7 +216,7 @@ export class AuditLog {
       )
       .all(...values) as Record<string, unknown>[];
 
-    return rows.map((row) => mapAuditRow(row));
+    return rows;
   }
 
   get(id: AuditId): MaintenanceAuditRecord | null {

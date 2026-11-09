@@ -20,6 +20,7 @@ import {
   createSemanticNodesTableSchema,
 } from "./repository.js";
 import type { SemanticRelation } from "./types.js";
+import { SemanticMutationJournal } from "./mutation-journal.js";
 
 async function createSemanticFixture() {
   const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
@@ -159,6 +160,29 @@ describe("semantic repositories", () => {
     while (cleanup.length > 0) {
       await cleanup.pop()?.();
     }
+  });
+
+  it("records a node creation before a vector write that commits and then throws", async () => {
+    const fixture = await createSemanticFixture();
+    cleanup.push(async () => {
+      fixture.db.close();
+      await fixture.store.close();
+      rmSync(fixture.tempDir, { recursive: true, force: true });
+    });
+    const journal = new SemanticMutationJournal();
+    const node = buildNode(createSemanticNodeId(), "Commit then fail");
+    const upsert = fixture.table.upsert.bind(fixture.table);
+    vi.spyOn(fixture.table, "upsert").mockImplementationOnce(async (...args) => {
+      expect(journal.nodes.has(node.id)).toBe(true);
+      expect(journal.nodes.get(node.id)).toBeNull();
+      await upsert(...args);
+      throw new Error("after vector commit");
+    });
+    await expect(
+      fixture.nodeRepository.insert(node, { mutationRecorder: journal }),
+    ).rejects.toMatchObject({ code: "SEMANTIC_NODE_INSERT_FAILED" });
+    expect(journal.nodes.get(node.id)).toBeNull();
+    expect(await fixture.nodeRepository.get(node.id)).not.toBeNull();
   });
 
   it("migrates an empty semantic edge table with validity columns and indexes", () => {
@@ -378,9 +402,9 @@ describe("semantic repositories", () => {
     expect(secondPage.items.map((node) => node.id)).toEqual([third.id, fourth.id]);
     expect(secondPage.nextCursor).toBeUndefined();
 
-    await expect(
-      fixture.nodeRepository.list({ limit: 2, cursor }),
-    ).resolves.toEqual(secondPage.items);
+    await expect(fixture.nodeRepository.list({ limit: 2, cursor })).resolves.toEqual(
+      secondPage.items,
+    );
   });
 
   it("preserves observation metadata when unrelated patches omit it", async () => {

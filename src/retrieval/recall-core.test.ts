@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ImagePerceptionRepository } from "../attachments/perception.js";
 import type { TurnTracer } from "../tracing/tracer.js";
-import { type LLMCompleteResult } from "../llm/index.js";
+import { type LLMCompleteResult, type LLMCompleteOptions } from "../llm/index.js";
 import { FakeLLMClient } from "../llm/test-support/fake-client.js";
 import {
   createEpisodeFixture,
@@ -228,8 +228,80 @@ describe("Recall Core", () => {
   let harness: OfflineTestHarness | undefined;
 
   afterEach(async () => {
+    vi.useRealTimers();
     await harness?.cleanup();
     harness = undefined;
+  });
+
+  it("repairs truncation within one absolute outer deadline, even with an uncooperative repair", async () => {
+    vi.useFakeTimers();
+    const seenSignals: AbortSignal[] = [];
+    const llm = new FakeLLMClient({
+      responses: [
+        async (request: LLMCompleteOptions) => {
+          seenSignals.push(request.signal!);
+          await new Promise((resolve) => setTimeout(resolve, 30));
+          return { ...recallExpansion({}), stop_reason: "max_tokens" as const };
+        },
+        async (request: LLMCompleteOptions) => {
+          seenSignals.push(request.signal!);
+          return await new Promise<never>(() => {});
+        },
+      ],
+    });
+    const result = expandRecall({
+      llmClient: llm,
+      model: "planner",
+      focus: "input",
+      semanticVariantCount: 3,
+      timeoutMs: 60,
+      attemptTimeoutMs: 40,
+    });
+    const rejected = expect(result).rejects.toThrow("60ms deadline");
+    await vi.advanceTimersByTimeAsync(30);
+    expect(llm.requests.map((request) => request.max_tokens)).toEqual([3072, 6144]);
+    await vi.advanceTimersByTimeAsync(30);
+    await rejected;
+    expect(seenSignals.at(-1)?.aborted).toBe(true);
+    expect(llm.requests).toHaveLength(2);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("caps each planner attempt and repairs a truncated plan when time remains", async () => {
+    vi.useFakeTimers();
+    const llm = new FakeLLMClient({
+      responses: [
+        async () => {
+          await new Promise((resolve) => setTimeout(resolve, 30));
+          return { ...recallExpansion({}), stop_reason: "max_tokens" as const };
+        },
+        async () => {
+          await new Promise((resolve) => setTimeout(resolve, 30));
+          return recallExpansion({ resolved_query: "repaired" });
+        },
+      ],
+    });
+    const result = expandRecall({
+      llmClient: llm,
+      model: "planner",
+      focus: "input",
+      semanticVariantCount: 3,
+      timeoutMs: 90,
+      attemptTimeoutMs: 40,
+    });
+    await vi.advanceTimersByTimeAsync(60);
+    await expect(result).resolves.toMatchObject({ resolved_query: "repaired" });
+    const stalled = expandRecall({
+      llmClient: new FakeLLMClient({ responses: [async () => await new Promise<never>(() => {})] }),
+      model: "planner",
+      focus: "input",
+      semanticVariantCount: 3,
+      timeoutMs: 90,
+      attemptTimeoutMs: 40,
+    });
+    const rejected = expect(stalled).rejects.toThrow("attempt exceeded 40ms");
+    await vi.advanceTimersByTimeAsync(40);
+    await rejected;
   });
 
   it("keeps the new N=1 planner request byte-identical to its frozen fixture", async () => {
@@ -305,6 +377,7 @@ describe("Recall Core", () => {
     });
     expect(repaired.resolved_query).toBe("used by the single repair attempt");
     expect(repairedClient.requests).toHaveLength(2);
+    expect(repairedClient.requests.map((request) => request.max_tokens)).toEqual([3072, 6144]);
 
     // A second malformed emission is not retried again: the planner degrades.
     const invalidClient = new FakeLLMClient({

@@ -301,6 +301,24 @@ describe("internal tools", () => {
     expect(result.episodes[0]?.narrative).toContain("The team traced the retrieval path");
   });
 
+  it("marks a degraded search structurally and identifies search timing explicitly", async () => {
+    const tool = createEpisodicSearchTool({
+      searchEpisodes: async () => ({
+        episodes: [],
+        degradations: [{ subsystem: "recall_expansion", reason: "internal transport detail" }],
+      }),
+    });
+    expect(tool.timeoutClass).toBe("search");
+    const output = await tool.invoke(
+      { query: "input" },
+      { sessionId: DEFAULT_SESSION_ID, origin: "deliberator" },
+    );
+    expect(output).toMatchObject({
+      retrieval_status: { degraded: true, subsystems: ["recall_expansion"] },
+    });
+    expect(JSON.stringify(output)).not.toContain("internal transport detail");
+  });
+
   it("reads one full episode or indexed stream record across sessions with disclosure labels", async () => {
     const harness = await createOfflineTestHarness();
     try {

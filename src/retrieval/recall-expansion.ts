@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { runWithDeadline } from "../util/deadline.js";
 
 import {
   callStructuredTool,
@@ -601,6 +602,10 @@ export type RecallExpansionOptions = RecallQueryPlanInput & {
   // expansion, so callers with a latency budget cap this call instead of
   // inheriting the client's request timeout during gateway stalls.
   timeoutMs?: number;
+  attemptTimeoutMs?: number;
+  maxTokens?: number;
+  repairMaxTokens?: number;
+  signal?: AbortSignal;
   tracer?: TurnTracer;
   turnId?: string;
   sessionId?: SessionId;
@@ -620,8 +625,8 @@ export async function expandRecall(options: RecallExpansionOptions): Promise<Rec
   let parsed: z.infer<typeof schema>;
 
   try {
-    parsed = (
-      await callStructuredTool({
+    const run = (signal?: AbortSignal) =>
+      callStructuredTool({
         llmClient: options.llmClient,
         request: {
           model: options.model,
@@ -629,11 +634,9 @@ export async function expandRecall(options: RecallExpansionOptions): Promise<Rec
           messages,
           tools: [tool],
           tool_choice: { type: "tool", name: RECALL_EXPANSION_TOOL_NAME },
-          max_tokens: 1_000,
+          max_tokens: options.maxTokens ?? 3_072,
           budget: "recall-expansion",
-          ...(options.timeoutMs !== undefined && options.timeoutMs > 0
-            ? { signal: AbortSignal.timeout(options.timeoutMs) }
-            : {}),
+          signal,
         },
         toolName: RECALL_EXPANSION_TOOL_NAME,
         parse: (value) => schema.parse(value),
@@ -642,6 +645,8 @@ export async function expandRecall(options: RecallExpansionOptions): Promise<Rec
         // plan (e.g. an array field emitted as a string) is salvaged when time
         // remains and still degrades to the raw query when it does not.
         maxAttempts: 2,
+        repairMaxTokens: options.repairMaxTokens ?? 6_144,
+        attemptTimeoutMs: options.attemptTimeoutMs ?? 40_000,
         trace: {
           tracer: options.tracer,
           turnId: options.turnId,
@@ -651,7 +656,17 @@ export async function expandRecall(options: RecallExpansionOptions): Promise<Rec
           messages,
           tools: [tool],
         },
-      })
+      });
+    const timeoutMs = options.timeoutMs ?? 90_000;
+    parsed = (
+      timeoutMs > 0
+        ? await runWithDeadline({
+            timeoutMs,
+            signal: options.signal,
+            timeoutError: () => new Error(`recall expansion exceeded ${timeoutMs}ms deadline`),
+            run,
+          })
+        : await run(options.signal)
     ).parsed;
   } catch (error) {
     if (isStructuredToolCallError(error, "missing_tool_call")) {

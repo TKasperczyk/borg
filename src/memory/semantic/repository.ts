@@ -60,6 +60,9 @@ import {
   type SemanticObservationMetadata,
 } from "./types.js";
 import { canonicalizeDomain } from "./domain.js";
+import type { SemanticMutationRecorder } from "./mutation-journal.js";
+
+export type SemanticMutationOptions = { mutationRecorder?: SemanticMutationRecorder };
 
 const semanticEdgeInvalidationInputSchema = z.object({
   at: z.number().finite(),
@@ -728,13 +731,19 @@ export class SemanticNodeRepository {
       );
   }
 
-  async insert(input: z.input<typeof semanticNodeSchema>): Promise<SemanticNode> {
+  async insert(
+    input: z.input<typeof semanticNodeSchema>,
+    options: SemanticMutationOptions = {},
+  ): Promise<SemanticNode> {
     const parsed = semanticNodeSchema.parse(input);
     const normalizedNode = semanticNodeSchema.parse({
       ...parsed,
       domain: canonicalizeDomain(parsed.domain),
     });
     const row = nodeToRow(normalizedNode);
+    if (options.mutationRecorder !== undefined) {
+      options.mutationRecorder.nodeBefore(normalizedNode.id, await this.get(normalizedNode.id));
+    }
 
     try {
       await this.table.upsert([row], {
@@ -1302,7 +1311,11 @@ export class SemanticNodeRepository {
     return rows.map((row) => semanticNodeKindSchema.parse(row.kind) as SemanticNodeKind);
   }
 
-  async update(id: SemanticNodeId, patch: SemanticNodePatch): Promise<SemanticNode | null> {
+  async update(
+    id: SemanticNodeId,
+    patch: SemanticNodePatch,
+    options: SemanticMutationOptions = {},
+  ): Promise<SemanticNode | null> {
     const current = await this.get(id);
 
     if (current === null) {
@@ -1345,6 +1358,7 @@ export class SemanticNodeRepository {
       updated_at: this.clock.now(),
     });
     const previousRow = nodeToRow(current);
+    options.mutationRecorder?.nodeBefore(id, current);
 
     try {
       await this.table.upsert([nodeToRow(next)], {
@@ -1629,7 +1643,9 @@ export class SemanticEdgeRepository {
 
   addEdge(
     input: SemanticEdgeInsertInput,
-    options: { enqueueReview?: (input: ReviewQueueInsertInput) => unknown } = {},
+    options: SemanticMutationOptions & {
+      enqueueReview?: (input: ReviewQueueInsertInput) => unknown;
+    } = {},
   ): SemanticEdge {
     const now = this.clock.now();
     const edge = semanticEdgeSchema.parse({
@@ -1665,6 +1681,7 @@ export class SemanticEdgeRepository {
       }
     }
 
+    options.mutationRecorder?.edgeBefore(edge.id, this.getEdge(edge.id));
     this.insertEdgeWithDependencies(edge);
 
     const enqueueReview = options.enqueueReview ?? this.options.enqueueReview;
@@ -1693,7 +1710,10 @@ export class SemanticEdgeRepository {
     return edge;
   }
 
-  mergeOpenEdgeEvidence(input: SemanticEdgeEvidenceMergeInput): SemanticEdge | null {
+  mergeOpenEdgeEvidence(
+    input: SemanticEdgeEvidenceMergeInput,
+    options: SemanticMutationOptions = {},
+  ): SemanticEdge | null {
     const now = this.clock.now();
     const parsed = z
       .object({
@@ -1740,6 +1760,7 @@ export class SemanticEdgeRepository {
       valid_from: Math.min(current.valid_from, parsed.valid_from ?? now),
     });
 
+    options.mutationRecorder?.edgeBefore(current.id, current);
     const result = this.db
       .prepare(
         `

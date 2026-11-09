@@ -142,6 +142,7 @@ export const EXTRACT_SEMANTIC_TOOL = {
 } satisfies LLMToolDefinition;
 
 export type SemanticExtractorOptions = {
+  mutationRecorder?: import("./mutation-journal.js").SemanticMutationRecorder;
   similarityConfig?: SimilarityConfigSource;
   nodeRepository: SemanticNodeRepository;
   edgeRepository: SemanticEdgeRepository;
@@ -927,23 +928,26 @@ export class SemanticExtractor {
       const nowMs = this.clock.now();
 
       if (existing === undefined) {
-        const inserted = await this.options.nodeRepository.insert({
-          id: createSemanticNodeId(),
-          kind: candidateKind,
-          label: candidateLabel,
-          description: candidateDescription,
-          domain: canonicalizeDomain(candidate.domain),
-          aliases: candidateAliases,
-          observation_metadata: candidate.observation_metadata,
-          confidence: Math.min(candidate.confidence, this.confidenceCeiling),
-          source_episode_ids: sourceEpisodeIds,
-          created_at: nowMs,
-          updated_at: nowMs,
-          last_verified_at: nowMs,
-          embedding,
-          archived: false,
-          superseded_by: null,
-        });
+        const inserted = await this.options.nodeRepository.insert(
+          {
+            id: createSemanticNodeId(),
+            kind: candidateKind,
+            label: candidateLabel,
+            description: candidateDescription,
+            domain: canonicalizeDomain(candidate.domain),
+            aliases: candidateAliases,
+            observation_metadata: candidate.observation_metadata,
+            confidence: Math.min(candidate.confidence, this.confidenceCeiling),
+            source_episode_ids: sourceEpisodeIds,
+            created_at: nowMs,
+            updated_at: nowMs,
+            last_verified_at: nowMs,
+            embedding,
+            archived: false,
+            superseded_by: null,
+          },
+          { mutationRecorder: this.options.mutationRecorder },
+        );
         if (vectorOnlyMatch !== undefined) {
           this.queueVectorOnlyDuplicateReview({
             candidate: inserted,
@@ -951,7 +955,13 @@ export class SemanticExtractor {
             similarity: vectorOnlyMatch.similarity,
           });
         }
-        this.options.semanticReviewService?.queueDuplicateReview(inserted);
+        if (this.options.mutationRecorder === undefined) {
+          this.options.semanticReviewService?.queueDuplicateReview(inserted);
+        } else {
+          this.options.semanticReviewService?.queueDuplicateReview(inserted, {
+            mutationRecorder: this.options.mutationRecorder,
+          });
+        }
 
         return {
           status: "inserted",
@@ -972,20 +982,24 @@ export class SemanticExtractor {
           observationMetadata: candidate.observation_metadata,
         }),
       );
-      const updated = await this.options.nodeRepository.update(existing.id, {
-        description: nextDescription,
-        domain: existing.domain ?? canonicalizeDomain(candidate.domain),
-        aliases: nextAliases,
-        observation_metadata: existing.observation_metadata,
-        confidence: Math.max(
-          existing.confidence * 0.99,
-          Math.min(candidate.confidence, this.confidenceCeiling),
-        ),
-        source_episode_ids: sourceEpisodeIds,
-        last_verified_at: nowMs,
-        embedding: updatedEmbedding,
-        archived: false,
-      });
+      const updated = await this.options.nodeRepository.update(
+        existing.id,
+        {
+          description: nextDescription,
+          domain: existing.domain ?? canonicalizeDomain(candidate.domain),
+          aliases: nextAliases,
+          observation_metadata: existing.observation_metadata,
+          confidence: Math.max(
+            existing.confidence * 0.99,
+            Math.min(candidate.confidence, this.confidenceCeiling),
+          ),
+          source_episode_ids: sourceEpisodeIds,
+          last_verified_at: nowMs,
+          embedding: updatedEmbedding,
+          archived: false,
+        },
+        { mutationRecorder: this.options.mutationRecorder },
+      );
 
       return updated === null
         ? {
@@ -1366,27 +1380,31 @@ export class SemanticExtractor {
               ...(candidate.valid_from_ts === null ? {} : { valid_from: candidate.valid_from_ts }),
               ...(candidate.valid_to_ts === null ? {} : { valid_to: candidate.valid_to_ts }),
             },
-            this.options.reviewEnqueue === undefined
-              ? undefined
-              : { enqueueReview: this.options.reviewEnqueue },
+            {
+              enqueueReview: this.options.reviewEnqueue,
+              mutationRecorder: this.options.mutationRecorder,
+            },
           );
           insertedEdges += 1;
         } catch (error) {
           if (error instanceof SemanticError) {
             if (error.code === "SEMANTIC_EDGE_DUPLICATE") {
               const nowMs = this.clock.now();
-              const merged = this.options.edgeRepository.mergeOpenEdgeEvidence({
-                from_node_id: fromNode.id,
-                to_node_id: toNode.id,
-                relation: candidate.relation,
-                confidence: Math.min(candidate.confidence, this.confidenceCeiling),
-                evidence_episode_ids: evidenceEpisodeIds,
-                last_verified_at: nowMs,
-                ...(candidate.valid_from_ts === null
-                  ? {}
-                  : { valid_from: candidate.valid_from_ts }),
-                ...(candidate.valid_to_ts === null ? {} : { valid_to: candidate.valid_to_ts }),
-              });
+              const merged = this.options.edgeRepository.mergeOpenEdgeEvidence(
+                {
+                  from_node_id: fromNode.id,
+                  to_node_id: toNode.id,
+                  relation: candidate.relation,
+                  confidence: Math.min(candidate.confidence, this.confidenceCeiling),
+                  evidence_episode_ids: evidenceEpisodeIds,
+                  last_verified_at: nowMs,
+                  ...(candidate.valid_from_ts === null
+                    ? {}
+                    : { valid_from: candidate.valid_from_ts }),
+                  ...(candidate.valid_to_ts === null ? {} : { valid_to: candidate.valid_to_ts }),
+                },
+                { mutationRecorder: this.options.mutationRecorder },
+              );
 
               if (merged !== null) {
                 updatedEdges += 1;

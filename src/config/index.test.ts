@@ -42,6 +42,52 @@ describe("config", () => {
     }
   });
 
+  it("loads, validates and preserves the sprint retrieval and timing budgets when redacting", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    const settings = [
+      ["embedding", "requestTimeoutMs", "BORG_EMBEDDING_REQUEST_TIMEOUT_MS", 120000],
+      ["embedding", "rateLimitMaxRetries", "BORG_EMBEDDING_RATE_LIMIT_MAX_RETRIES", 2],
+      ["embedding", "rateLimitBaseDelayMs", "BORG_EMBEDDING_RATE_LIMIT_BASE_DELAY_MS", 1000],
+      ["retrieval", "recallExpansionMaxTokens", "BORG_RETRIEVAL_RECALL_EXPANSION_MAX_TOKENS", 3072],
+      [
+        "retrieval",
+        "recallExpansionRepairMaxTokens",
+        "BORG_RETRIEVAL_RECALL_EXPANSION_REPAIR_MAX_TOKENS",
+        6144,
+      ],
+      [
+        "retrieval",
+        "recallExpansionAttemptTimeoutMs",
+        "BORG_RETRIEVAL_RECALL_EXPANSION_ATTEMPT_TIMEOUT_MS",
+        40000,
+      ],
+      [
+        "retrieval",
+        "recallExpansionTimeoutMs",
+        "BORG_RETRIEVAL_RECALL_EXPANSION_TIMEOUT_MS",
+        90000,
+      ],
+      ["autonomy", "prepToolTimeoutMs", "BORG_AUTONOMY_PREP_TOOL_TIMEOUT_MS", 120000],
+      ["autonomy", "prepToolMaxTimeoutMs", "BORG_AUTONOMY_PREP_TOOL_MAX_TIMEOUT_MS", 300000],
+      ["autonomy", "preparationMaxElapsedMs", "BORG_AUTONOMY_PREPARATION_MAX_ELAPSED_MS", 300000],
+      ["tools", "defaultTimeoutMs", "BORG_TOOLS_DEFAULT_TIMEOUT_MS", 5000],
+      ["tools", "searchTimeoutMs", "BORG_TOOLS_SEARCH_TIMEOUT_MS", 60000],
+      ["tools", "searchMaxTimeoutMs", "BORG_TOOLS_SEARCH_MAX_TIMEOUT_MS", 120000],
+    ] as const;
+    const env = Object.fromEntries(
+      settings.map(([, , envKey, value]) => [envKey, String(value + 1)]),
+    );
+    const config = loadConfig({ dataDir: tempDir, env });
+    const redacted = redactConfig(config);
+    for (const [section, key, envKey, value] of settings) {
+      expect(DEFAULT_CONFIG[section]).toHaveProperty(key, value);
+      expect(config[section]).toHaveProperty(key, value + 1);
+      expect(redacted[section]).toHaveProperty(key, value + 1);
+      expect(() => loadConfig({ dataDir: tempDir, env: { [envKey]: "-1" } })).toThrow(ConfigError);
+    }
+  });
+
   it("accepts the documented Sol demo config keys without sidecar embedding environment variables", () => {
     // Hand-authored from the accepted merge plan; never read the live bank/config.
     const config = configSchema.parse(solDemoConfigKeys);
@@ -193,7 +239,7 @@ describe("config", () => {
     expect(config.executive.goalFocusThreshold).toBe(0.45);
     expect(config.autonomy.maxWakesPerWindow).toBe(6);
     expect(config.autonomy.maxWakesPerWindowBySource).toEqual({});
-    expect(config.autonomy.prepToolTimeoutMs).toBe(90_000);
+    expect(config.autonomy.prepToolTimeoutMs).toBe(120_000);
     expect(config.autonomy.goalWakeBatchMax).toBe(5);
     expect(config.autonomy.budgetWindowMs).toBe(24 * 60 * 60 * 1_000);
     expect(config.autonomy.reservedContemplativeWakesPerWindow).toBe(1);
@@ -681,7 +727,7 @@ describe("config", () => {
     },
   );
 
-  it("loads the recall-expansion timeout from the environment and defaults it to 2000ms", () => {
+  it("loads the recall-expansion timeout from the environment and defaults it to 90000ms", () => {
     const overrideDir = mkdtempSync(join(tmpdir(), "borg-"));
     const disabledDir = mkdtempSync(join(tmpdir(), "borg-"));
     const defaultDir = mkdtempSync(join(tmpdir(), "borg-"));
@@ -700,7 +746,7 @@ describe("config", () => {
       }).retrieval.recallExpansionTimeoutMs,
     ).toBe(0);
     expect(loadConfig({ dataDir: defaultDir, env: {} }).retrieval.recallExpansionTimeoutMs).toBe(
-      2000,
+      90000,
     );
     expect(() =>
       configSchema.parse({

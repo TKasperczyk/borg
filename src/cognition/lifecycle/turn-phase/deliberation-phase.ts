@@ -146,6 +146,7 @@ export async function runDeliberationPhase(input: {
       contradictionPresent: input.retrievalPhase.retrieval.contradiction_present,
       contradictionRouting: input.retrievalPhase.retrieval.contradictionRouting,
       retrievalConfidence: input.retrievalPhase.retrieval.confidence,
+      retrievalDegradations: input.retrievalPhase.retrievalContext.retrievalDegradations,
       applicableCommitments: input.retrievalPhase.applicableCommitments,
       ...(input.retrievalPhase.retrievalContext.applicableCommitmentsReadAtMs === undefined
         ? {}

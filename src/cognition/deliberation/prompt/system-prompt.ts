@@ -97,6 +97,7 @@ import {
   summarizeContradictionSignal,
   summarizeRetrievedEvidence,
   summarizeRetrievalConfidence,
+  summarizeRetrievalStatus,
 } from "./retrieval.js";
 import { renderTaggedPromptSection, type TaggedPromptSection } from "./sections.js";
 import {
@@ -1243,6 +1244,10 @@ function buildUntrustedBasePromptSections(
     {
       tag: "borg_retrieval_confidence",
       content: summarizeRetrievalConfidence(context.retrievalConfidence ?? null),
+    },
+    {
+      tag: "borg_retrieval_status",
+      content: summarizeRetrievalStatus(context.retrievalDegradations),
     },
     {
       tag: "contradiction_signal",

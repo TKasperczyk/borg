@@ -13,6 +13,7 @@ import {
   willSendThinkingUnderAutoToolChoice,
 } from "../../llm/index.js";
 import type { ToolDefinition, ToolDispatcher } from "../../tools/dispatcher.js";
+import type { RetrievalDegradation } from "../../retrieval/degradation.js";
 import type { BorgRole } from "../../memory/commitments/index.js";
 import type { SessionAudienceRole, SessionParticipationPolicy } from "../../sessions/index.js";
 import type { EntityId, SessionId } from "../../util/ids.js";
@@ -437,6 +438,7 @@ export type RunFinalizerOptions = {
   turnId?: string;
   finalizerAttempt?: "initial" | "regenerate";
   onRequestPrepared?: (request: LLMConverseOptions, attempt: number) => void;
+  onRetrievalDegraded?: (degradation: RetrievalDegradation) => void;
   finalizerContextCapture?: FinalizerContextCapture;
 };
 
@@ -1159,6 +1161,12 @@ export async function runFinalizer(options: RunFinalizerOptions): Promise<Finali
       currentSenderBorgRole: options.currentSenderBorgRole,
       sessionAudienceRole: options.sessionAudienceRole,
       provenance: toolProvenance,
+      onRetrievalDegraded:
+        options.onRetrievalDegraded ??
+        ((degradation) => {
+          const context = options.compactSurface?.context;
+          if (context !== undefined) (context.retrievalDegradations ??= []).push(degradation);
+        }),
       maxTokens: options.maxTokens,
       // Buffered delivery keeps the finalizer's existing streaming deadline.
       timeoutMs: LLM_STREAMING_CALL_TIMEOUT_MS,

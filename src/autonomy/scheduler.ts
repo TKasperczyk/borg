@@ -1,4 +1,6 @@
 import { FailureReportTracker } from "../util/failure-reports.js";
+import { runWithDeadline } from "../util/deadline.js";
+import { TimeoutBudgetExceeded } from "../util/timeout-policy.js";
 import { StreamWatermarkRepository, StreamWriter } from "../stream/index.js";
 import { SystemClock, type Clock } from "../util/clock.js";
 import {
@@ -124,8 +126,8 @@ const WAKE_PRUNE_SAFETY_BUFFER_MS = 7 * 24 * 60 * 60 * 1_000;
 // search = embed + LanceDB vector search) before a background wake. It is not
 // latency-sensitive, and the dispatcher's 5s default is too tight for that
 // search under load, which made prep fail and the trigger retry-loop. Live/
-// reactive tool calls keep the 5s default; only prep gets this longer bound.
-const DEFAULT_AUTONOMY_PREP_TOOL_TIMEOUT_MS = 90_000;
+// fast tools keep the 5s default; search tools have their own bounded policy.
+const DEFAULT_AUTONOMY_PREP_TOOL_TIMEOUT_MS = 120_000;
 const MAX_MAINTENANCE_HOLD_MS = 90 * 60_000;
 const ZERO_TURN_EXECUTION_COUNTS: AutonomyWakeExecutionCounts = {
   finalizer_rounds: 0,
@@ -160,6 +162,9 @@ export type AutonomySchedulerOptions = {
   enabled: boolean;
   intervalMs: number;
   prepToolTimeoutMs?: number;
+  prepToolMaxTimeoutMs?: number;
+  preparationMaxElapsedMs?: number;
+  tracer?: import("../tracing/tracer.js").TurnTracer;
   maxWakesPerWindow: number;
   maxWakesPerWindowBySource?: Partial<Record<AutonomyWakeSourceName, number>>;
   goalWakeBatchMax?: number;
@@ -1683,7 +1688,12 @@ export class AutonomyScheduler {
               }
 
               for (const { source, event } of wakeBatch.events) {
-                const completion = source.commitFired?.(event, {
+                const completionEvent =
+                  event.id === preparedEvent.event.id &&
+                  event.sourceName === preparedEvent.event.sourceName
+                    ? preparedEvent.event
+                    : event;
+                const completion = source.commitFired?.(completionEvent, {
                   shownOpenQuestionIds: turnResult.shownOpenQuestionIds ?? [],
                 });
                 if (completion?.watermark === "source_owned") continue;
@@ -2259,7 +2269,40 @@ export class AutonomyScheduler {
     );
   }
 
-  private async prepareEvent(dueEvent: DueEvent): Promise<
+  private async prepareEvent(dueEvent: DueEvent) {
+    const timeoutMs = this.options.preparationMaxElapsedMs ?? 300_000;
+    const deadlineAt = this.clock.now() + timeoutMs;
+    const startedAt = performance.now();
+    let outcome = "failed";
+    try {
+      const prepared = await runWithDeadline({
+        timeoutMs,
+        timeoutError: () => new TimeoutBudgetExceeded(timeoutMs),
+        run: (signal) => this.prepareEventWithBudget(dueEvent, { deadlineAt, signal }),
+      });
+      outcome = "toolError" in prepared ? "failed" : "completed";
+      return prepared;
+    } catch (error) {
+      outcome = error instanceof TimeoutBudgetExceeded ? "timed_out" : "failed";
+      if (error instanceof TimeoutBudgetExceeded) return { toolError: error.message };
+      throw error;
+    } finally {
+      this.options.tracer?.emit("autonomy.preparation.completed", {
+        turnId: dueEvent.id,
+        session_id: this.sessionId,
+        source: dueEvent.sourceName,
+        eventId: dueEvent.id,
+        budgetMs: timeoutMs,
+        elapsedMs: Math.max(0, performance.now() - startedAt),
+        outcome,
+      });
+    }
+  }
+
+  private async prepareEventWithBudget(
+    dueEvent: DueEvent,
+    budget: { deadlineAt: number; signal: AbortSignal },
+  ): Promise<
     | {
         source: AutonomyWakeSource;
         event: DueEvent;
@@ -2268,7 +2311,7 @@ export class AutonomyScheduler {
         toolError: string;
       }
   > {
-    const prepared = await this.prepareSourceEvent(dueEvent);
+    const prepared = await this.prepareSourceEvent(dueEvent, budget);
 
     if ("toolError" in prepared) {
       return prepared;
@@ -2301,7 +2344,10 @@ export class AutonomyScheduler {
     };
   }
 
-  private async prepareSourceEvent(dueEvent: DueEvent): Promise<
+  private async prepareSourceEvent(
+    dueEvent: DueEvent,
+    budget: { deadlineAt: number; signal: AbortSignal },
+  ): Promise<
     | {
         source: AutonomyWakeSource;
         event: DueEvent;
@@ -2331,7 +2377,11 @@ export class AutonomyScheduler {
           origin: "autonomous",
           sessionId: this.sessionId,
           provenance,
-          timeoutMs: this.prepToolTimeoutMs,
+          ...budget,
+          timeoutPolicy: {
+            timeoutMs: this.prepToolTimeoutMs,
+            maxTimeoutMs: this.options.prepToolMaxTimeoutMs ?? 300_000,
+          },
         });
 
         if (!result.ok) {
@@ -2360,13 +2410,27 @@ export class AutonomyScheduler {
         const payload = dueEvent.payload as OpenQuestionDormantPayload;
         const preparedQuestions = [];
         for (const question of [payload, ...(payload.additional_questions ?? [])]) {
+          budget.signal.throwIfAborted();
+          // Do not sacrifice completed preparation to a search with only the
+          // tail of the shared deadline left. Unprepared questions keep their
+          // source-owned watermarks unset and remain eligible for the next wake.
+          if (
+            preparedQuestions.length > 0 &&
+            budget.deadlineAt - this.clock.now() < this.prepToolTimeoutMs
+          ) {
+            break;
+          }
           const result = await this.options.toolDispatcher.dispatch({
             toolName: "tool.episodic.search",
             input: { query: question.question, limit: 5 },
             origin: "autonomous",
             sessionId: this.sessionId,
             provenance,
-            timeoutMs: this.prepToolTimeoutMs,
+            ...budget,
+            timeoutPolicy: {
+              timeoutMs: this.prepToolTimeoutMs,
+              maxTimeoutMs: this.options.prepToolMaxTimeoutMs ?? 300_000,
+            },
           });
           if (!result.ok) return { toolError: result.error };
           const output = result.output as { episodes: unknown[] };
@@ -2397,7 +2461,11 @@ export class AutonomyScheduler {
           origin: "autonomous",
           sessionId: this.sessionId,
           provenance,
-          timeoutMs: this.prepToolTimeoutMs,
+          ...budget,
+          timeoutPolicy: {
+            timeoutMs: this.prepToolTimeoutMs,
+            maxTimeoutMs: this.options.prepToolMaxTimeoutMs ?? 300_000,
+          },
         });
 
         if (!result.ok) {
