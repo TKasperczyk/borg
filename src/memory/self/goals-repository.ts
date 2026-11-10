@@ -1,7 +1,11 @@
 import { z } from "zod";
 
 import type { ExecutiveStepsRepository } from "../../executive/index.js";
-import { GoalPresentationStore } from "../../executive/goal-presentation.js";
+import {
+  GoalPresentationStore,
+  type GoalWriteKind,
+  type GoalBlockEnd,
+} from "../../executive/goal-presentation.js";
 import type { StreamWatermarkRepository } from "../../stream/watermark.js";
 import { type SqliteDatabase } from "../../storage/sqlite/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
@@ -148,9 +152,9 @@ export class GoalsRepository {
       .run(at, goalId);
   }
 
-  private interactionWritten(goalId: GoalId, recordVersion: number, at = this.clock.now()): void {
-    this.stampInteraction(goalId, at);
-    this.presentation?.progressWritten(goalId, recordVersion);
+  private interactionWritten(goalId: GoalId, recordVersion: number, write: GoalWriteKind): void {
+    this.stampInteraction(goalId);
+    this.presentation?.goalWritten(goalId, recordVersion, write);
   }
 
   private get db(): SqliteDatabase {
@@ -577,6 +581,7 @@ export class GoalsRepository {
     reason: string,
     provenance: Provenance,
     effectiveAt = this.clock.now(),
+    end: GoalBlockEnd = { ended_by: "manual" },
   ): GoalRecord {
     const parsedReason = z.string().trim().min(1).parse(reason);
     return this.runGoalWrite(() => {
@@ -606,7 +611,7 @@ export class GoalsRepository {
         history,
         parsedReason,
         provenance,
-        "unblock",
+        end,
         effectiveAt,
       );
     });
@@ -618,7 +623,7 @@ export class GoalsRepository {
     history: GoalBlockRecord[],
     reason: string,
     provenance: Provenance,
-    action: string,
+    transition: "block" | GoalBlockEnd,
     effectiveAt = this.clock.now(),
   ): GoalRecord {
     const parsedProvenance = requireProvenance(provenance, "Goal block transition");
@@ -629,12 +634,23 @@ export class GoalsRepository {
       )
       .run(status, serializeJsonValue(history), goal.id, expectedVersion);
     assertIdentityCasUpdated({ result, recordType: "goal", recordId: goal.id, expectedVersion });
-    this.interactionWritten(goal.id, nextRecordVersion(expectedVersion), effectiveAt);
+    // A block records an attempt, but only its end reopens presentation.
+    this.stampInteraction(goal.id, effectiveAt);
+    if (transition !== "block") {
+      this.presentation?.blockEnded(goal.id, {
+        record_version: nextRecordVersion(expectedVersion),
+        ...transition,
+        // The stored block label already combines the blocker entity's or goal's label.
+        disclosure_label:
+          history.at(-1)?.disclosure_label ??
+          memoryDisclosureLabelMetadata(unknownMemoryDisclosureLabel()),
+      });
+    }
     const next = this.get(goal.id)!;
     recordIdentityEvent(this.identityEventRepository, {
       record_type: "goal",
       record_id: goal.id,
-      action,
+      action: transition === "block" ? "block" : "unblock",
       old_value: goal,
       new_value: next,
       reason,
@@ -664,6 +680,7 @@ export class GoalsRepository {
               `until timestamp ${blocker.until} passed; observed at ${nowMs}`,
               { kind: "system" },
               blocker.until,
+              { ended_by: "until_elapsed", until: blocker.until, blocked_at: block.blocked_at },
             );
           } else if (blocker.kind === "goal") {
             // Only a terminal status releases the dependency. Becoming blocked
@@ -683,6 +700,7 @@ export class GoalsRepository {
                 `blocker goal ${dependency.id} is ${dependency.status}; identity event ${event?.id ?? "unrecorded"} at ${event?.ts ?? nowMs}; observed at ${nowMs}`,
                 { kind: "system" },
                 event?.ts ?? nowMs,
+                { ended_by: "goal_terminal", goal_id: dependency.id, status: dependency.status },
               );
             }
           } else if (blocker.kind === "entity") {
@@ -699,6 +717,11 @@ export class GoalsRepository {
                 `inbound stream entry ${entry.entry_id} from entity ${blocker.entity_id} at ${entry.timestamp}; observed at ${nowMs}`,
                 { kind: "system" },
                 entry.timestamp,
+                {
+                  ended_by: "entity_inbound",
+                  entity_id: blocker.entity_id,
+                  entry_id: entry.entry_id as StreamEntryId,
+                },
               );
             }
           }
@@ -777,7 +800,7 @@ export class GoalsRepository {
       }
 
       if (current.status !== parsedStatus)
-        this.interactionWritten(goalId, nextRecordVersion(expectedVersion));
+        this.interactionWritten(goalId, nextRecordVersion(expectedVersion), "update_status");
       this.abandonOpenStepsWhenClosingGoal(current, parsedStatus);
 
       recordIdentityEvent(this.identityEventRepository, {
@@ -842,7 +865,7 @@ export class GoalsRepository {
         });
       }
 
-      this.interactionWritten(goalId, nextRecordVersion(expectedVersion));
+      this.interactionWritten(goalId, nextRecordVersion(expectedVersion), "update_progress");
       recordIdentityEvent(this.identityEventRepository, {
         record_type: "goal",
         record_id: goalId,
@@ -961,7 +984,7 @@ export class GoalsRepository {
       this.abandonOpenStepsWhenClosingGoal(current, next.status);
 
       if (Object.keys(patch).length > 0) {
-        this.interactionWritten(goalId, nextRecordVersion(expectedVersion));
+        this.interactionWritten(goalId, nextRecordVersion(expectedVersion), "update");
       }
 
       recordIdentityEvent(this.identityEventRepository, {

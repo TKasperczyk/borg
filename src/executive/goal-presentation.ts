@@ -1,12 +1,70 @@
 import { z } from "zod";
 import type { GoalRecord } from "../memory/self/types.js";
+import { goalBlockerSchema } from "../memory/self/goal-blocks.js";
+import { memoryDisclosureLabelMetadataSchema } from "../memory/common/disclosure-label.js";
 import type { StreamWatermarkRepository } from "../stream/watermark.js";
+import { streamEntryIdSchema } from "../util/id-schemas.js";
 import { DEFAULT_SESSION_ID, type GoalId, type StreamEntryId } from "../util/ids.js";
+
+const INPUT_EVENT_LIMIT = 16;
+const goalBlockEndSchema = z.discriminatedUnion("ended_by", [
+  z.object({
+    ended_by: z.literal("until_elapsed"),
+    until: goalBlockerSchema.options[2].shape.until,
+    blocked_at: z.number().finite(),
+  }),
+  z.object({
+    ended_by: z.literal("entity_inbound"),
+    entity_id: goalBlockerSchema.options[1].shape.entity_id,
+    entry_id: streamEntryIdSchema,
+  }),
+  z.object({
+    ended_by: z.literal("goal_terminal"),
+    goal_id: goalBlockerSchema.options[0].shape.goal_id,
+    status: z.enum(["done", "superseded", "abandoned"]),
+  }),
+  z.object({ ended_by: z.literal("manual") }),
+]);
+export type GoalBlockEnd = z.infer<typeof goalBlockEndSchema>;
+const blockEndedFields = z.object({
+  record_version: z.number().int().positive(),
+  disclosure_label: memoryDisclosureLabelMetadataSchema,
+});
+const goalInputSchema = z.union([
+  z.object({ kind: z.literal("associated_inbound"), entry_id: streamEntryIdSchema }),
+  z.object({
+    kind: z.literal("goal_write"),
+    write: z.enum(["update", "update_status", "update_progress"]),
+    record_version: z.number().int().positive(),
+  }),
+  blockEndedFields.extend({ kind: z.literal("block_ended") }).and(goalBlockEndSchema),
+]);
+type GoalInput = z.infer<typeof goalInputSchema>;
+export type GoalWriteKind = Extract<GoalInput, { kind: "goal_write" }>["write"];
+const goalInputEventSchema = goalInputSchema.and(
+  z.object({ generation: z.number().int().positive() }),
+);
+export type GoalInputEvent = z.infer<typeof goalInputEventSchema>;
+
+export type GoalAdmission = {
+  basis: "first_presentation" | "new_input";
+  new_inputs: GoalInputEvent[];
+  unitemized_input_count: number;
+  previous_progress_anchor?: number;
+  current_progress_anchor?: number;
+};
+
+export type GoalPresentationEvaluation = {
+  wasPresented: boolean;
+  hasNewInput: boolean;
+  admission: GoalAdmission;
+};
 
 const stateSchema = z.object({
   version: z.literal(1),
   inputGeneration: z.number().int().nonnegative(),
   lastProgressVersion: z.number().int().nonnegative().nullable(),
+  inputEvents: z.array(goalInputEventSchema).max(INPUT_EVENT_LIMIT).default([]),
   presented: z
     .object({
       progressAnchor: z.number(),
@@ -34,27 +92,23 @@ export class GoalPresentationStore {
   }
 
   wasExecutivePresented(goal: GoalRecord): boolean {
-    const row = this.watermarks.get(this.executiveKey(goal.id), DEFAULT_SESSION_ID);
-    if (row === null) return false;
-    const prior = stateSchema.shape.presented.unwrap().parse(row.metadata);
-    const current = this.snapshot(goal);
-    return (
-      prior.inputGeneration === current.inputGeneration &&
-      prior.progressAnchor === current.progressAnchor
-    );
+    return this.evaluate(goal, "executive").wasPresented;
   }
 
   hasNewExecutiveInput(goal: GoalRecord): boolean {
-    const row = this.watermarks.get(this.executiveKey(goal.id), DEFAULT_SESSION_ID);
-    return row === null
-      ? this.snapshot(goal).inputGeneration > 0
-      : !this.wasExecutivePresented(goal);
+    return this.evaluate(goal, "executive").hasNewInput;
   }
 
   private read(goalId: GoalId): z.infer<typeof stateSchema> {
     const row = this.watermarks.get(`autonomy:goal-presentation:${goalId}`, DEFAULT_SESSION_ID);
     return row === null
-      ? { version: 1, inputGeneration: 0, lastProgressVersion: null, presented: null }
+      ? {
+          version: 1,
+          inputGeneration: 0,
+          lastProgressVersion: null,
+          inputEvents: [],
+          presented: null,
+        }
       : stateSchema.parse(row.metadata);
   }
 
@@ -75,31 +129,87 @@ export class GoalPresentationStore {
   }
 
   wasPresented(goal: GoalRecord): boolean {
-    const current = this.snapshot(goal);
-    const presented = this.read(goal.id).presented;
-    return (
-      presented !== null &&
-      presented.inputGeneration === current.inputGeneration &&
-      presented.progressAnchor === current.progressAnchor
-    );
+    return this.evaluate(goal, "followup").wasPresented;
   }
 
   hasNewInput(goal: GoalRecord): boolean {
-    const state = this.read(goal.id);
-    // A new association also supersedes legacy timestamp/phase latches before
-    // the first recorded presentation of this goal.
-    return state.presented === null ? state.inputGeneration > 0 : !this.wasPresented(goal);
+    return this.evaluate(goal, "followup").hasNewInput;
   }
 
-  progressWritten(goalId: GoalId, recordVersion: number): void {
+  admission(
+    goal: Pick<GoalRecord, "id" | "last_progress_ts" | "created_at">,
+    lane: "executive" | "followup",
+  ): GoalAdmission {
+    return this.evaluate(goal, lane).admission;
+  }
+
+  /** The latch and its explanation share one captured presentation state. */
+  evaluate(
+    goal: Pick<GoalRecord, "id" | "last_progress_ts" | "created_at">,
+    lane: "executive" | "followup",
+  ): GoalPresentationEvaluation {
+    const state = this.read(goal.id);
+    const currentAnchor = goal.last_progress_ts ?? goal.created_at;
+    const executiveRow =
+      lane === "executive"
+        ? this.watermarks.get(this.executiveKey(goal.id), DEFAULT_SESSION_ID)
+        : null;
+    const prior =
+      lane === "followup"
+        ? state.presented
+        : executiveRow === null
+          ? null
+          : stateSchema.shape.presented.unwrap().parse(executiveRow.metadata);
+    const previousGeneration = prior?.inputGeneration ?? 0;
+    const newInputs = state.inputEvents.filter((event) => event.generation > previousGeneration);
+    const wasPresented =
+      prior !== null &&
+      prior.inputGeneration === state.inputGeneration &&
+      prior.progressAnchor === currentAnchor;
+    return {
+      wasPresented,
+      hasNewInput: prior === null ? state.inputGeneration > 0 : !wasPresented,
+      admission: {
+        basis: prior === null && state.inputGeneration === 0 ? "first_presentation" : "new_input",
+        new_inputs: newInputs,
+        unitemized_input_count: Math.max(
+          0,
+          state.inputGeneration - previousGeneration - newInputs.length,
+        ),
+        ...(prior !== null && prior.progressAnchor !== currentAnchor
+          ? {
+              previous_progress_anchor: prior.progressAnchor,
+              current_progress_anchor: currentAnchor,
+            }
+          : {}),
+      },
+    };
+  }
+
+  private recordInput(goalId: GoalId, input: GoalInput, recordVersion?: number): number {
     const state = this.read(goalId);
+    const generation = state.inputGeneration + 1;
     // The successful goal CAS and this increment share a transaction; failed
     // CAS attempts cannot advance the input generation.
     this.write(goalId, {
       ...state,
-      inputGeneration: state.inputGeneration + 1,
-      lastProgressVersion: recordVersion,
+      inputGeneration: generation,
+      lastProgressVersion: recordVersion ?? state.lastProgressVersion,
+      inputEvents: [...state.inputEvents, { ...input, generation }].slice(-INPUT_EVENT_LIMIT),
     });
+    return generation;
+  }
+
+  goalWritten(goalId: GoalId, recordVersion: number, write: GoalWriteKind): void {
+    this.recordInput(
+      goalId,
+      { kind: "goal_write", write, record_version: recordVersion },
+      recordVersion,
+    );
+  }
+
+  blockEnded(goalId: GoalId, input: GoalBlockEnd & z.infer<typeof blockEndedFields>): void {
+    this.recordInput(goalId, { kind: "block_ended", ...input }, input.record_version);
   }
 
   associateInbound(goalId: GoalId, entryId: StreamEntryId): void {
@@ -108,11 +218,13 @@ export class GoalPresentationStore {
     this.watermarks.runInTransaction(() => {
       const key = `autonomy:goal-associated-input:${goalId}:${entryId}`;
       if (this.watermarks.get(key, DEFAULT_SESSION_ID) !== null) return;
-      const state = this.read(goalId);
       this.onAssociatedInput?.(goalId);
-      this.write(goalId, { ...state, inputGeneration: state.inputGeneration + 1 });
+      const generation = this.recordInput(goalId, {
+        kind: "associated_inbound",
+        entry_id: entryId,
+      });
       this.watermarks.set(key, DEFAULT_SESSION_ID, {
-        lastTs: state.inputGeneration + 1,
+        lastTs: generation,
         lastEntryId: entryId,
       });
     });

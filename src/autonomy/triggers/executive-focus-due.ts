@@ -1,4 +1,5 @@
 import { goalFollowupAdmission } from "./goal-followup-due.js";
+import { goalAdmissionPayload, type GoalAdmissionPayload } from "./goal-admission.js";
 import { isGoalInactive } from "../../memory/self/goal-inactivity.js";
 import { goalSchedulingTimes, goalBlockStateFields } from "../../memory/self/goal-blocks.js";
 import {
@@ -30,7 +31,10 @@ import type { TurnTracer } from "../../tracing/tracer.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { DEFAULT_SESSION_ID, type EpisodeId, type SessionId } from "../../util/ids.js";
 import type { AutonomyTrigger, DueEvent } from "../types.js";
-import { GoalPresentationStore } from "../../executive/goal-presentation.js";
+import {
+  GoalPresentationStore,
+  type GoalPresentationEvaluation,
+} from "../../executive/goal-presentation.js";
 import {
   getExecutiveFocusGoalStaleBackoffProcessName,
   goalStaleBackoffState,
@@ -63,6 +67,7 @@ type ExecutiveFocusDueStepPayload = Pick<
   ExecutiveFocusDisclosurePayload;
 
 export type ExecutiveFocusDuePayload = {
+  admission?: GoalAdmissionPayload;
   reason: ExecutiveFocusDueReason;
   selected_goal_id: GoalRecord["id"];
   force_executive_focus_goal_id?: GoalRecord["id"];
@@ -90,6 +95,11 @@ export type ExecutiveFocusDuePayload = {
   };
   top_open_step: ExecutiveFocusDueStepPayload | null;
   due_step?: ExecutiveFocusDueStepPayload;
+};
+
+type GoalPresentationSnapshot = {
+  goal: GoalRecord;
+  evaluation: GoalPresentationEvaluation;
 };
 
 export type ExecutiveFocusDueTriggerOptions = {
@@ -247,9 +257,11 @@ function buildScorePayload(input: {
   reason: ExecutiveFocusDueReason;
   disclosure: ExecutiveFocusGoalDisclosurePayload;
   dueStep?: ExecutiveStep;
+  admission?: GoalAdmissionPayload;
 }): ExecutiveFocusDuePayload {
   return {
     reason: input.reason,
+    ...(input.admission === undefined ? {} : { admission: input.admission }),
     selected_goal_id: input.goal.id,
     ...(input.reason === "step_due" ? { force_executive_focus_goal_id: input.goal.id } : {}),
     selected_goal: {
@@ -309,12 +321,16 @@ export function createExecutiveFocusDueTrigger(
   function getGoalCooldownEnd(input: {
     goal_id: GoalRecord["id"];
     last_progress_ts: number | null;
+    presentationByGoalId?: Map<GoalRecord["id"], GoalPresentationSnapshot>;
   }): number | null {
     const current = options.goalsRepository.get(input.goal_id);
-    if (current !== null && presentations.hasNewExecutiveInput(current)) return null;
-    // An executive-owned presentation stays latched until structural input changes.
-    if (current !== null && presentations.wasExecutivePresented(current))
-      return Number.POSITIVE_INFINITY;
+    if (current !== null) {
+      const evaluation = presentations.evaluate(current, "executive");
+      input.presentationByGoalId?.set(current.id, { goal: current, evaluation });
+      if (evaluation.hasNewInput) return null;
+      // An executive-owned presentation stays latched until structural input changes.
+      if (evaluation.wasPresented) return Number.POSITIVE_INFINITY;
+    }
     const cooldown = options.watermarkRepository.get(
       getGoalCooldownProcessName(input.goal_id),
       sessionId,
@@ -331,10 +347,15 @@ export function createExecutiveFocusDueTrigger(
     return cooldown.updatedAt + options.wakeCooldownMs;
   }
 
-  function isGoalCoolingDown(goal: GoalRecord, nowMs: number): boolean {
+  function isGoalCoolingDown(
+    goal: GoalRecord,
+    nowMs: number,
+    presentationByGoalId?: Map<GoalRecord["id"], GoalPresentationSnapshot>,
+  ): boolean {
     const cooldownEnd = getGoalCooldownEnd({
       goal_id: goal.id,
       last_progress_ts: goal.last_progress_ts,
+      presentationByGoalId,
     });
 
     return cooldownEnd !== null && cooldownEnd > nowMs;
@@ -387,7 +408,7 @@ export function createExecutiveFocusDueTrigger(
       goal,
       nowMs,
       { ...options.goalFollowupDue, watermarkRepository: options.watermarkRepository },
-      presentations,
+      presentations.evaluate(goal, "followup"),
       backoff,
       sessionId,
     );
@@ -570,6 +591,7 @@ export function createExecutiveFocusDueTrigger(
           reason: "goal_stale",
         },
       });
+      const presentationByGoalId = new Map<GoalRecord["id"], GoalPresentationSnapshot>();
       const topEligibleCandidate = focus.candidates.find((candidate) => {
         const candidateGoal = goalsById.get(candidate.goal_id) ?? candidate.goal;
 
@@ -577,7 +599,7 @@ export function createExecutiveFocusDueTrigger(
           candidate.score >= threshold &&
           !eventGoalIds.has(candidateGoal.id) &&
           !isGoalInactive(candidateGoal, nowMs, options.goalFollowupDue?.maxInactivityMs) &&
-          !isGoalCoolingDown(candidateGoal, nowMs) &&
+          !isGoalCoolingDown(candidateGoal, nowMs, presentationByGoalId) &&
           !isGoalStaleBackedOff(candidateGoal, nowMs, actionAvailabilityKey) &&
           !shouldDeferToGoalFollowup(candidateGoal, nowMs, actionAvailabilityKey)
         );
@@ -587,6 +609,7 @@ export function createExecutiveFocusDueTrigger(
         const selectedGoal =
           goalsById.get(topEligibleCandidate.goal_id) ?? topEligibleCandidate.goal;
         const progressAnchor = goalSchedulingTimes(selectedGoal).progressAnchor;
+        const presentation = presentationByGoalId.get(selectedGoal.id);
 
         // Keep staleness out of the skip predicate: a fresh top-eligible goal
         // must suppress goal_stale rather than reaching past it to a lower stale one.
@@ -611,6 +634,14 @@ export function createExecutiveFocusDueTrigger(
               threshold,
               topOpenStep: options.executiveStepsRepository.topOpen(selectedGoal.id),
               reason: "goal_stale",
+              admission:
+                presentation === undefined
+                  ? undefined
+                  : goalAdmissionPayload(
+                      presentation.evaluation.admission,
+                      presentation.goal,
+                      options.sourceStreamAudienceDisclosureResolver,
+                    ),
               disclosure:
                 goalDisclosureById.get(selectedGoal.id) ??
                 goalDisclosurePayload({

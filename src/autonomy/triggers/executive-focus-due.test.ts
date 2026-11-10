@@ -5,17 +5,19 @@ import { AutonomyWakesRepository } from "../wakes-repository.js";
 import { TestEmbeddingClient, createOfflineTestHarness } from "../../offline/test-support.js";
 import type { TurnResult } from "../../cognition/index.js";
 import type { EmbeddingClient } from "../../embeddings/index.js";
+import { SourceStreamAudienceDisclosureResolver } from "../../memory/common/source-stream-audience-disclosure.js";
 import { clearGoalScoringElisionTraceCache } from "../../retrieval/scoring-features.js";
 import {
   StreamWatermarkRepository,
   StreamWriter,
+  StreamEntryIndexRepository,
   streamWatermarkMigrations,
 } from "../../stream/index.js";
 import { ToolDispatcher } from "../../tools/index.js";
 import { OUTBOUND_POST_TOOL_NAME } from "../../tools/internal/outbound-post-name.js";
 import { ManualClock } from "../../util/clock.js";
 import { SessionBusyError } from "../../util/errors.js";
-import { DEFAULT_SESSION_ID, createStreamEntryId } from "../../util/ids.js";
+import { DEFAULT_SESSION_ID, createStreamEntryId, createSessionId } from "../../util/ids.js";
 import type { AutonomyWakeSource } from "../types.js";
 import {
   executiveFocusGoalStaleBackoffCooldownMs,
@@ -24,6 +26,7 @@ import {
 } from "../executive-focus-stale-backoff.js";
 
 import { createExecutiveFocusDueTrigger } from "./executive-focus-due.js";
+import { goalAdmissionPayload } from "./goal-admission.js";
 import { createGoalFollowupDueTrigger } from "./goal-followup-due.js";
 
 describe("executive focus due trigger", () => {
@@ -104,6 +107,271 @@ describe("executive focus due trigger", () => {
       ...overrides,
     });
   }
+
+  it("explains first presentation, associated inbound, block end and legacy generations on the executive lane", async () => {
+    const h = await createHarness(1_000_000_000);
+    const goal = h.goalsRepository.add({
+      description: "目的",
+      priority: 10,
+      createdAt: h.clock.now() - 3 * 86_400_000,
+      provenance: { kind: "manual" },
+    });
+    const entryIndex = new StreamEntryIndexRepository({ db: h.db, dataDir: h.tempDir });
+    const resolver = new SourceStreamAudienceDisclosureResolver({
+      dataDir: h.tempDir,
+      entryIndex,
+      entityRepository: h.entityRepository,
+      sessionsRepository: { getMany: () => [] },
+    });
+    const trigger = createTrigger(h, { sourceStreamAudienceDisclosureResolver: resolver });
+    const store = h.goalsRepository.presentation!;
+    expect((await trigger.scan())[0]?.payload.admission).toEqual({
+      basis: "first_presentation",
+      new_inputs: [],
+      unitemized_input_count: 0,
+    });
+    store.presented([store.snapshot(goal)], "first", new Set([goal.id]));
+    const audience = h.entityRepository.resolve("別の部屋");
+    const sender = h.entityRepository.resolve("李", { kind: "person" });
+    const writer = new StreamWriter({
+      dataDir: h.tempDir,
+      entryIndex,
+      clock: h.clock,
+      sessionId: createSessionId(),
+    });
+    const entry = await writer.append({
+      kind: "user_msg",
+      sender_entity_id: sender,
+      audience: "別の部屋",
+      content: "新しい情報",
+    });
+    writer.close();
+    store.associateInbound(goal.id, entry.id);
+    const admission = (await trigger.scan())[0]?.payload.admission;
+    expect(admission).toEqual({
+      basis: "new_input",
+      new_inputs: [
+        {
+          generation: 1,
+          kind: "associated_inbound",
+          entry_id: entry.id,
+          timestamp: entry.timestamp,
+          sender_entity_id: sender,
+          session_id: entry.session_id,
+          audience: "別の部屋",
+          disclosure: expect.any(String),
+          disclosure_label: {
+            disclosure_class: "relationship_private",
+            origin_audience_entity_ids: [audience],
+            private_to_entity_ids: [audience],
+            public_to_entity_ids: [],
+          },
+        },
+      ],
+      unitemized_input_count: 0,
+    });
+    expect(JSON.stringify(admission)).not.toContain("新しい情報");
+    store.presented([store.snapshot(goal)], "shared-only");
+    expect((await trigger.scan())[0]?.payload.admission).toEqual(admission);
+    store.presented([store.snapshot(goal)], "inbound", new Set([goal.id]));
+    expect(await trigger.scan()).toEqual([]);
+    const blockedAt = h.clock.now();
+    h.goalsRepository.block(
+      goal.id,
+      {
+        blocker: { kind: "until", until: blockedAt + 1_000 },
+        attempt_status: "attempted_unavailable",
+        reason: "待機",
+      },
+      { kind: "manual" },
+    );
+    expect(store.snapshot(goal).inputGeneration).toBe(1);
+    expect(await trigger.scan()).toEqual([]);
+    h.clock.advance(1_000);
+    h.goalsRepository.reconcileBlocks();
+    expect((await trigger.scan())[0]?.payload.admission).toEqual({
+      basis: "new_input",
+      new_inputs: [
+        {
+          generation: 2,
+          kind: "block_ended",
+          record_version: 3,
+          ended_by: "until_elapsed",
+          until: blockedAt + 1_000,
+          blocked_at: blockedAt,
+          disclosure: expect.any(String),
+          disclosure_label: h.goalsRepository.get(goal.id)!.block_history![0]!.disclosure_label,
+        },
+      ],
+      unitemized_input_count: 0,
+    });
+    store.presented([store.snapshot(goal)], "block-ended", new Set([goal.id]));
+    h.watermarkRepository.set(`autonomy:goal-presentation:${goal.id}`, DEFAULT_SESSION_ID, {
+      lastTs: 9,
+      lastEntryId: goal.id,
+      metadata: { version: 1, inputGeneration: 9, lastProgressVersion: null, presented: null },
+    });
+    expect((await trigger.scan())[0]?.payload.admission).toEqual({
+      basis: "new_input",
+      new_inputs: [],
+      unitemized_input_count: 7,
+    });
+    const missingEntryId = createStreamEntryId();
+    store.associateInbound(goal.id, missingEntryId);
+    expect((await trigger.scan())[0]?.payload.admission).toMatchObject({
+      new_inputs: [
+        {
+          generation: 10,
+          kind: "associated_inbound",
+          entry_id: missingEntryId,
+          timestamp: null,
+          sender_entity_id: null,
+          session_id: null,
+          audience: null,
+          disclosure_label: { disclosure_class: "unknown" },
+        },
+      ],
+      unitemized_input_count: 7,
+    });
+  });
+
+  it("renders a changed executive progress anchor without inventing a generation", async () => {
+    const h = await createHarness(1_000_000_000);
+    const goal = h.goalsRepository.add({
+      description: "目的",
+      priority: 10,
+      createdAt: h.clock.now() - 3 * 86_400_000,
+      provenance: { kind: "manual" },
+    });
+    const store = h.goalsRepository.presentation!;
+    store.presented(
+      [{ ...store.snapshot(goal), progressAnchor: goal.created_at - 1_000 }],
+      "legacy",
+      new Set([goal.id]),
+    );
+    expect(store.snapshot(goal).inputGeneration).toBe(0);
+    expect((await createTrigger(h).scan())[0]?.payload.admission).toEqual({
+      basis: "new_input",
+      new_inputs: [],
+      unitemized_input_count: 0,
+      previous_progress_anchor: goal.created_at - 1_000,
+      current_progress_anchor: goal.created_at,
+    });
+  });
+
+  it.each([false, true])(
+    "explains the latch's evaluation after scoring mutates the anchor (linked input: %s)",
+    async (linkInput) => {
+      const h = await createHarness(1_000_000_000);
+      const goal = h.goalsRepository.add({
+        description: "目的",
+        priority: 10,
+        createdAt: h.clock.now() - 3 * 86_400_000,
+        provenance: { kind: "manual" },
+      });
+      const store = h.goalsRepository.presentation!;
+      store.presented([store.snapshot(goal)], "before", new Set([goal.id]));
+      const evaluations = vi.spyOn(store, "evaluate");
+      const currentAnchor = goal.created_at + 1_000;
+      const entryId = createStreamEntryId();
+      const embed = h.embeddingClient.embed.bind(h.embeddingClient);
+      const mutation = vi.spyOn(h.embeddingClient, "embed").mockImplementationOnce(async (text) => {
+        h.goalsRepository.restore({ ...goal, last_progress_ts: currentAnchor });
+        if (linkInput) store.associateInbound(goal.id, entryId);
+        return await embed(text);
+      });
+      const trigger = createTrigger(h);
+      const events = await trigger.scan();
+      expect(mutation).toHaveBeenCalledOnce();
+      expect(events).toHaveLength(1);
+      const payload = events[0]!.payload;
+      const latchIndex = evaluations.mock.calls.findLastIndex(([, lane]) => lane === "executive");
+      const [latchGoal] = evaluations.mock.calls[latchIndex]!;
+      const latchResult = evaluations.mock.results[latchIndex]!;
+      expect(latchResult.type).toBe("return");
+      expect(payload.admission).toEqual(
+        goalAdmissionPayload(latchResult.value.admission, latchGoal as typeof goal),
+      );
+      expect(payload.admission).toMatchObject({
+        basis: "new_input",
+        unitemized_input_count: 0,
+        previous_progress_anchor: goal.created_at,
+        current_progress_anchor: currentAnchor,
+      });
+      expect(payload.admission!.new_inputs).toHaveLength(linkInput ? 1 : 0);
+      if (linkInput)
+        expect(payload.admission!.new_inputs[0]).toMatchObject({
+          generation: 1,
+          kind: "associated_inbound",
+          entry_id: entryId,
+        });
+      store.presented(
+        [store.snapshot(h.goalsRepository.get(goal.id)!)],
+        "after",
+        new Set([goal.id]),
+      );
+      expect(await trigger.scan()).toEqual([]);
+    },
+  );
+
+  it.each(["progress", "close", "link_input_to_inactive"] as const)(
+    "preserves 632981aa selection when scoring writes %s on the top candidate",
+    async (change) => {
+      const h = await createHarness(4_000_000_000);
+      const top = h.goalsRepository.add({
+        description: "第一の目的",
+        priority: 10,
+        createdAt:
+          h.clock.now() - (change === "link_input_to_inactive" ? 2_592_000_001 : 3 * 86_400_000),
+        provenance: { kind: "manual" },
+      });
+      const other = h.goalsRepository.add({
+        description: "第二の目的",
+        priority: 5,
+        createdAt: h.clock.now() - 3 * 86_400_000,
+        provenance: { kind: "manual" },
+      });
+      const embed = h.embeddingClient.embed.bind(h.embeddingClient);
+      const mutation = vi.spyOn(h.embeddingClient, "embed").mockImplementationOnce(async (text) => {
+        if (change === "progress")
+          h.goalsRepository.updateProgress(top.id, "進みました", { kind: "manual" });
+        else if (change === "close")
+          h.goalsRepository.updateStatus(top.id, "done", { kind: "manual" });
+        else h.goalsRepository.presentation!.associateInbound(top.id, createStreamEntryId());
+        return await embed(text);
+      });
+      const events = await createTrigger(h, { threshold: 0 }).scan();
+      expect(mutation).toHaveBeenCalledOnce();
+      expect(events).toHaveLength(1);
+      const selected = change === "link_input_to_inactive" ? other : top;
+      expect(events[0]!.payload.selected_goal).toMatchObject({
+        goal_id: selected.id,
+        status: "active",
+        last_progress_ts: null,
+      });
+      expect(events[0]!.stateTs).toBe(selected.created_at);
+      expect(events[0]!.executiveGoalRank).toBe(change === "link_input_to_inactive" ? 1 : 0);
+    },
+  );
+
+  it("omits admission when the selected goal has no current latch evaluation", async () => {
+    const h = await createHarness(1_000_000_000);
+    const goal = h.goalsRepository.add({
+      description: "目的",
+      priority: 10,
+      createdAt: h.clock.now() - 3 * 86_400_000,
+      provenance: { kind: "manual" },
+    });
+    const embed = h.embeddingClient.embed.bind(h.embeddingClient);
+    vi.spyOn(h.embeddingClient, "embed").mockImplementationOnce(async (text) => {
+      h.db.prepare("DELETE FROM goals WHERE id = ?").run(goal.id);
+      return await embed(text);
+    });
+    const events = await createTrigger(h).scan();
+    expect(events).toHaveLength(1);
+    expect(events[0]!.payload.selected_goal_id).toBe(goal.id);
+    expect(events[0]!.payload).not.toHaveProperty("admission");
+  });
 
   it("reports over-cap goal scoring once across repeated scheduler scans", async () => {
     const embeddingClient = Object.assign(new TestEmbeddingClient(), { maxInputBytes: 20 });

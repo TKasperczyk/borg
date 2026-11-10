@@ -178,15 +178,10 @@ export class SourceStreamAudienceDisclosureResolver {
       : selfPrivateMemoryDisclosureLabel(origin);
   }
 
-  resolveLabels(
-    input: ResolveCommitmentGoalDisclosureLabelsInput,
-  ): ResolvedCommitmentGoalDisclosureLabels {
-    const commitments = input.commitments ?? [];
-    const goals = input.goals ?? [];
-    const sourceStreamEntryIds = dedupePreservingOrder([
-      ...commitments.flatMap((commitment) => commitment.source_stream_entry_ids ?? []),
-      ...goals.flatMap((goal) => goal.source_stream_entry_ids ?? []),
-    ]);
+  /** Global indexed source reads; audience is resolved as a label, never a filter. */
+  readStreamEntries(
+    sourceStreamEntryIds: readonly StreamEntryId[],
+  ): ReadonlyMap<string, ResolvedSource> {
     const indexedSources = this.options.entryIndex.lookupMany(sourceStreamEntryIds);
     const sourcesById = new Map<string, ResolvedSource>();
 
@@ -208,6 +203,20 @@ export class SourceStreamAudienceDisclosureResolver {
 
       sourcesById.set(sourceStreamEntryId, { entry, indexRecord });
     }
+
+    return sourcesById;
+  }
+
+  resolveLabels(
+    input: ResolveCommitmentGoalDisclosureLabelsInput,
+  ): ResolvedCommitmentGoalDisclosureLabels {
+    const commitments = input.commitments ?? [];
+    const goals = input.goals ?? [];
+    const sourceStreamEntryIds = dedupePreservingOrder([
+      ...commitments.flatMap((commitment) => commitment.source_stream_entry_ids ?? []),
+      ...goals.flatMap((goal) => goal.source_stream_entry_ids ?? []),
+    ]);
+    const sourcesById = this.readStreamEntries(sourceStreamEntryIds);
 
     const audienceLabels = dedupePreservingOrder(
       [...sourcesById.values()].flatMap(({ entry }) =>

@@ -1,9 +1,14 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createOfflineTestHarness } from "../../offline/test-support.js";
-import { StreamWatermarkRepository } from "../../stream/index.js";
+import {
+  StreamWatermarkRepository,
+  StreamEntryIndexRepository,
+  StreamWriter,
+} from "../../stream/index.js";
+import { SourceStreamAudienceDisclosureResolver } from "../../memory/common/source-stream-audience-disclosure.js";
 import { ManualClock } from "../../util/clock.js";
-import { DEFAULT_SESSION_ID, createStreamEntryId } from "../../util/ids.js";
+import { DEFAULT_SESSION_ID, createStreamEntryId, createSessionId } from "../../util/ids.js";
 import { formatAutonomyTriggerContext } from "../../cognition/autonomy-trigger.js";
 import { getExecutiveFocusGoalStaleBackoffProcessName } from "../executive-focus-stale-backoff.js";
 
@@ -22,6 +27,227 @@ describe("goal followup due trigger", () => {
   afterEach(async () => {
     await cleanup?.();
     cleanup = undefined;
+  });
+
+  it("explains first presentation, associated inbound, block end and legacy generations on the shared lane", async () => {
+    const clock = new ManualClock(1_000_000);
+    const h = await createOfflineTestHarness({ clock });
+    cleanup = h.cleanup;
+    const watermarkRepository = new StreamWatermarkRepository({ db: h.db, clock });
+    const goal = h.goalsRepository.add({
+      description: "目的",
+      priority: 10,
+      createdAt: clock.now() - 200_000,
+      provenance: { kind: "manual" },
+    });
+    const entryIndex = new StreamEntryIndexRepository({ db: h.db, dataDir: h.tempDir });
+    const resolver = new SourceStreamAudienceDisclosureResolver({
+      dataDir: h.tempDir,
+      entryIndex,
+      entityRepository: h.entityRepository,
+      sessionsRepository: { getMany: () => [] },
+    });
+    const trigger = createGoalFollowupDueTrigger({
+      goalsRepository: h.goalsRepository,
+      watermarkRepository,
+      sourceStreamAudienceDisclosureResolver: resolver,
+      lookaheadMs: 20_000,
+      staleMs: 100_000,
+      staleBackoff: STALE_BACKOFF,
+      respectStaleBackoff: true,
+      clock,
+    });
+    const store = h.goalsRepository.presentation!;
+    expect((await trigger.scan())[0]?.payload.admission).toEqual({
+      basis: "first_presentation",
+      new_inputs: [],
+      unitemized_input_count: 0,
+    });
+    store.presented([store.snapshot(goal)], "first");
+    const audience = h.entityRepository.resolve("別の部屋");
+    const sender = h.entityRepository.resolve("李", { kind: "person" });
+    const writer = new StreamWriter({
+      dataDir: h.tempDir,
+      entryIndex,
+      clock,
+      sessionId: createSessionId(),
+    });
+    const entry = await writer.append({
+      kind: "user_msg",
+      sender_entity_id: sender,
+      audience: "別の部屋",
+      content: "新しい情報",
+    });
+    writer.close();
+    store.associateInbound(goal.id, entry.id);
+    const admission = (await trigger.scan())[0]?.payload.admission;
+    expect(admission).toEqual({
+      basis: "new_input",
+      new_inputs: [
+        {
+          generation: 1,
+          kind: "associated_inbound",
+          entry_id: entry.id,
+          timestamp: entry.timestamp,
+          sender_entity_id: sender,
+          session_id: entry.session_id,
+          audience: "別の部屋",
+          disclosure: expect.any(String),
+          disclosure_label: {
+            disclosure_class: "relationship_private",
+            origin_audience_entity_ids: [audience],
+            private_to_entity_ids: [audience],
+            public_to_entity_ids: [],
+          },
+        },
+      ],
+      unitemized_input_count: 0,
+    });
+    expect(JSON.stringify(admission)).not.toContain("新しい情報");
+    store.presented([store.snapshot(goal)], "inbound");
+    expect(await trigger.scan()).toEqual([]);
+    const blockedAt = clock.now();
+    h.goalsRepository.block(
+      goal.id,
+      {
+        blocker: { kind: "until", until: blockedAt + 1_000 },
+        attempt_status: "attempted_unavailable",
+        reason: "待機",
+      },
+      { kind: "manual" },
+    );
+    expect(store.snapshot(goal).inputGeneration).toBe(1);
+    expect(await trigger.scan()).toEqual([]);
+    clock.advance(1_000);
+    h.goalsRepository.reconcileBlocks();
+    expect((await trigger.scan())[0]?.payload.admission).toEqual({
+      basis: "new_input",
+      new_inputs: [
+        {
+          generation: 2,
+          kind: "block_ended",
+          record_version: 3,
+          ended_by: "until_elapsed",
+          until: blockedAt + 1_000,
+          blocked_at: blockedAt,
+          disclosure: expect.any(String),
+          disclosure_label: h.goalsRepository.get(goal.id)!.block_history![0]!.disclosure_label,
+        },
+      ],
+      unitemized_input_count: 0,
+    });
+    store.presented([store.snapshot(goal)], "block-ended");
+    const key = `autonomy:goal-presentation:${goal.id}`;
+    watermarkRepository.set(key, DEFAULT_SESSION_ID, {
+      lastTs: 9,
+      lastEntryId: goal.id,
+      metadata: {
+        version: 1,
+        inputGeneration: 9,
+        lastProgressVersion: 3,
+        presented: { inputGeneration: 2, progressAnchor: goal.created_at, turnId: "block-ended" },
+      },
+    });
+    expect((await trigger.scan())[0]?.payload.admission).toEqual({
+      basis: "new_input",
+      new_inputs: [],
+      unitemized_input_count: 7,
+    });
+  });
+
+  it("renders a changed shared progress anchor without inventing a generation", async () => {
+    const clock = new ManualClock(1_000_000);
+    const h = await createOfflineTestHarness({ clock });
+    cleanup = h.cleanup;
+    const goal = h.goalsRepository.add({
+      description: "目的",
+      priority: 10,
+      createdAt: clock.now() - 200_000,
+      provenance: { kind: "manual" },
+    });
+    const store = h.goalsRepository.presentation!;
+    store.presented(
+      [{ ...store.snapshot(goal), progressAnchor: goal.created_at - 1_000 }],
+      "legacy",
+    );
+    const trigger = createGoalFollowupDueTrigger({
+      goalsRepository: h.goalsRepository,
+      watermarkRepository: new StreamWatermarkRepository({ db: h.db, clock }),
+      lookaheadMs: 20_000,
+      staleMs: 100_000,
+      staleBackoff: STALE_BACKOFF,
+      respectStaleBackoff: true,
+      clock,
+    });
+    expect(store.snapshot(goal).inputGeneration).toBe(0);
+    expect((await trigger.scan())[0]?.payload.admission).toEqual({
+      basis: "new_input",
+      new_inputs: [],
+      unitemized_input_count: 0,
+      previous_progress_anchor: goal.created_at - 1_000,
+      current_progress_anchor: goal.created_at,
+    });
+  });
+
+  it("retains one follow-up admission snapshot when scoring changes the goal and presentation state", async () => {
+    const clock = new ManualClock(1_000_000);
+    const h = await createOfflineTestHarness({ clock });
+    cleanup = h.cleanup;
+    const goal = h.goalsRepository.add({
+      description: "目的",
+      priority: 10,
+      createdAt: clock.now() - 200_000,
+      provenance: { kind: "manual" },
+    });
+    const store = h.goalsRepository.presentation!;
+    store.presented([store.snapshot(goal)], "before");
+    const firstInput = createStreamEntryId();
+    store.associateInbound(goal.id, firstInput);
+    const currentAnchor = goal.created_at + 1_000;
+    const secondInput = createStreamEntryId();
+    const embed = h.embeddingClient.embed.bind(h.embeddingClient);
+    const mutation = vi.spyOn(h.embeddingClient, "embed").mockImplementationOnce(async (text) => {
+      h.goalsRepository.restore({ ...goal, last_progress_ts: currentAnchor });
+      store.associateInbound(goal.id, secondInput);
+      return await embed(text);
+    });
+    const trigger = createGoalFollowupDueTrigger({
+      goalsRepository: h.goalsRepository,
+      watermarkRepository: new StreamWatermarkRepository({ db: h.db, clock }),
+      lookaheadMs: 20_000,
+      staleMs: 100_000,
+      staleBackoff: STALE_BACKOFF,
+      respectStaleBackoff: true,
+      clock,
+      executiveScoring: {
+        embeddingClient: h.embeddingClient,
+        threshold: 0,
+        deadlineLookaheadMs: 20_000,
+        staleMs: 100_000,
+      },
+    });
+    const events = await trigger.scan();
+    expect(mutation).toHaveBeenCalledOnce();
+    expect(events).toHaveLength(1);
+    const payload = events[0]!.payload;
+    // Follow-up admission happens before awaited scoring. Its payload retains
+    // that goal and generation; later facts belong to the next scan.
+    expect(payload.selected_goal.last_progress_ts).toBeNull();
+    expect(payload.admission.new_inputs).toMatchObject([
+      { kind: "associated_inbound", entry_id: firstInput, generation: 1 },
+    ]);
+    expect(payload.admission.new_inputs).toHaveLength(1);
+    expect(payload.admission).not.toHaveProperty("previous_progress_anchor");
+    expect(payload.admission).not.toHaveProperty("current_progress_anchor");
+    const next = (await trigger.scan())[0]!.payload.admission;
+    expect(next).toMatchObject({
+      previous_progress_anchor: goal.created_at,
+      current_progress_anchor: currentAnchor,
+    });
+    expect(next.new_inputs).toMatchObject([
+      { entry_id: firstInput, generation: 1 },
+      { entry_id: secondInput, generation: 2 },
+    ]);
   });
 
   it("excludes inactive goals before deadline and topology bypasses, and reopens only on structural interaction", async () => {
