@@ -1,5 +1,8 @@
 import { readEmbeddingProviderEnv } from "../src/config/embedding-provider.js";
-import { readEmbeddingMaxInputBytesEnv } from "../src/config/embedding-input.js";
+import {
+  DEFAULT_EMBEDDING_MAX_BATCH_BYTES,
+  readEmbeddingMaxInputBytesEnv,
+} from "../src/config/embedding-input.js";
 import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -34,6 +37,7 @@ export function parseEmbeddingMigrationArgs(args: string[]) {
       "verify-only": { type: "boolean" },
       "backup-dir": { type: "string" },
       "batch-size": { type: "string", default: "32" },
+      "batch-bytes": { type: "string", default: String(DEFAULT_EMBEDDING_MAX_BATCH_BYTES) },
       concurrency: { type: "string", default: "2" },
       help: { type: "boolean" },
     },
@@ -58,6 +62,11 @@ export function parseEmbeddingMigrationArgs(args: string[]) {
     .int()
     .positive()
     .parse(parsePositiveIntegerValue(values.concurrency!));
+  const batchBytes = z
+    .number()
+    .int()
+    .positive()
+    .parse(parsePositiveIntegerValue(values["batch-bytes"]!));
   // Bound operator mistakes before allocating workers or gateway requests.
   if (batchSize > 1024 || concurrency > 32)
     throw new ConfigError("--batch-size must be <= 1024 and --concurrency <= 32");
@@ -67,6 +76,7 @@ export function parseEmbeddingMigrationArgs(args: string[]) {
     backupDir,
     target,
     batchSize,
+    batchBytes,
     concurrency,
     tenants: [...new Set(values.tenant ?? [])],
     allTenants: values["all-tenants"] ?? false,
@@ -108,7 +118,7 @@ export async function embeddingMigrationMain(args = process.argv.slice(2)): Prom
   const options = parseEmbeddingMigrationArgs(args);
   if (!options) {
     process.stdout.write(
-      "Usage: node --import tsx scripts/migrate-embeddings.ts --data-root /data (--tenant ID ... | --all-tenants) --target-model MODEL --target-dims N [--source-model MODEL] [--legacy-consolidation-input longest-prefix] [--dry-run | --resume | --verify-only] [--backup-dir PATH] [--batch-size 32] [--concurrency 2]\nRestored pre-profile backup: node --import tsx scripts/migrate-embeddings.ts label-source-profile --data-dir /data/TENANT --model MODEL --dims N\n",
+      `Usage: node --import tsx scripts/migrate-embeddings.ts --data-root /data (--tenant ID ... | --all-tenants) --target-model MODEL --target-dims N [--source-model MODEL] [--legacy-consolidation-input longest-prefix] [--dry-run | --resume | --verify-only] [--backup-dir PATH] [--batch-size 32] [--batch-bytes ${DEFAULT_EMBEDDING_MAX_BATCH_BYTES}] [--concurrency 2]\nRestored pre-profile backup: node --import tsx scripts/migrate-embeddings.ts label-source-profile --data-dir /data/TENANT --model MODEL --dims N\n`,
     );
     return 0;
   }
@@ -148,6 +158,7 @@ export async function embeddingMigrationMain(args = process.argv.slice(2)): Prom
           model: options.target.model,
           dims: options.target.dimensions,
           maxBatchSize: options.batchSize,
+          maxBatchBytes: options.batchBytes,
           provider,
           maxInputBytes,
           modelReloadRetryDelaysMs: [],

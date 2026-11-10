@@ -154,6 +154,51 @@ describe("createCachingEmbeddingClient", () => {
     expect(inner.embed).toHaveBeenCalledTimes(1);
   });
 
+  it("settles uneven byte-limited chunks and retries only failed or unattempted inputs", async () => {
+    const texts = ["a", "bb", "cccc", "dd", "ee", "f", "gggg", "h"];
+    const create = vi.fn(async (params: { input: string | string[] }) => {
+      if (create.mock.calls.length === 3) throw { status: 429, headers: { "retry-after": "0" } };
+      const inputs = Array.isArray(params.input) ? params.input : [params.input];
+      return {
+        data: inputs.map((text, index) => ({ index, embedding: Array.from(vectorFor(text)) })),
+      };
+    });
+    const client = createCachingEmbeddingClient(
+      new OpenAICompatibleEmbeddingClient({
+        model: "test",
+        dims: 1,
+        maxBatchBytes: 5,
+        rateLimitMaxRetries: 0,
+        client: { embeddings: { create } },
+      }),
+      { model: "test", dims: 1 },
+    );
+    const onChunk = vi.fn();
+
+    await expect(client.embedBatch(texts, { onChunk })).rejects.toMatchObject({
+      code: "EMBEDDING_BACKOFF",
+    });
+    expect(onChunk.mock.calls).toEqual([
+      [0, [vectorFor("a")]],
+      [1, [vectorFor("bb")]],
+      [2, [vectorFor("cccc")]],
+    ]);
+    await expect(client.embedBatch(texts.slice(0, 3))).resolves.toEqual(
+      texts.slice(0, 3).map(vectorFor),
+    );
+    expect(create).toHaveBeenCalledTimes(3);
+
+    const retriedTexts = [...texts, texts[0]!];
+    await expect(client.embedBatch(retriedTexts)).resolves.toEqual(retriedTexts.map(vectorFor));
+    expect(create.mock.calls.map(([params]) => params.input)).toEqual([
+      ["a", "bb"],
+      "cccc",
+      ["dd", "ee", "f"],
+      ["dd", "ee", "f"],
+      ["gggg", "h"],
+    ]);
+  });
+
   it("misses for different texts", async () => {
     const inner = createInnerClient();
     const client = createCachingEmbeddingClient(inner.client, {
@@ -570,6 +615,22 @@ describe("createCachingEmbeddingClient", () => {
       },
       { signal: expect.any(AbortSignal), maxRetries: 0, timeout: 120_000 },
     );
+  });
+
+  it("carries the configured batch byte budget through the production client factory", async () => {
+    const config = configSchema.parse({
+      embedding: { model: "model-a", dims: 1, maxBatchBytes: 5 },
+    });
+    const texts = ["aa", "bbb", "cccc"];
+
+    await expect(createEmbeddingClient(config).embedBatch(texts)).resolves.toEqual(
+      texts.map(vectorFor),
+    );
+
+    expect(openAiMocks.createEmbeddings.mock.calls.map(([params]) => params.input)).toEqual([
+      ["aa", "bbb"],
+      "cccc",
+    ]);
   });
 
   it("keeps createEmbeddingClient cache state per factory-created instance", async () => {

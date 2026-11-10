@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { DEFAULT_EMBEDDING_MAX_BATCH_BYTES } from "../../src/config/embedding-input.js";
 import { writeFileAtomic } from "../../src/util/atomic-write.js";
 import { isPathWithin, resolveRealPathForCreation } from "../../src/util/path.js";
 
@@ -25,6 +26,7 @@ type CliArgs =
       judgeRequested: boolean;
       judgeModel?: string;
       batchSize: number;
+      batchBytes: number;
     };
 
 function usage(): string {
@@ -36,6 +38,7 @@ function usage(): string {
     `  --gold-size <n>              Seeded synthetic-gold sample size (default ${DEFAULT_GOLD_SIZE}; 0 disables)`,
     "  --judge-model [model-id]     Judge model top-5 relevance; omit id to use auto-selected strong model",
     `  --batch-size <n>             Embedding inputs per gateway call (default ${DEFAULT_BATCH_SIZE})`,
+    `  --batch-bytes <n>            Embedding input UTF-8 bytes per gateway call (default ${DEFAULT_EMBEDDING_MAX_BATCH_BYTES})`,
     "  --help                       Show this help",
     "",
     "Environment:",
@@ -104,6 +107,7 @@ export function parseCliArgs(argv: readonly string[]): CliArgs {
   let judgeRequested = false;
   let judgeModel: string | undefined;
   let batchSize = DEFAULT_BATCH_SIZE;
+  let batchBytes = DEFAULT_EMBEDDING_MAX_BATCH_BYTES;
 
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
@@ -139,6 +143,14 @@ export function parseCliArgs(argv: readonly string[]): CliArgs {
     }
     if (argument === "--batch-size") {
       batchSize = parsePositiveInteger(requiredValue(argv, index, argument), argument);
+      index += 1;
+      continue;
+    }
+    if (argument === "--batch-bytes") {
+      batchBytes = parsePositiveInteger(requiredValue(argv, index, argument), argument);
+      if (!Number.isSafeInteger(batchBytes)) {
+        throw new Error("--batch-bytes must be a safe integer");
+      }
       index += 1;
       continue;
     }
@@ -182,6 +194,7 @@ export function parseCliArgs(argv: readonly string[]): CliArgs {
     judgeRequested,
     ...(judgeModel === undefined ? {} : { judgeModel }),
     batchSize,
+    batchBytes,
   };
 }
 
@@ -223,6 +236,7 @@ export async function main(
     judgeRequested: args.judgeRequested,
     ...(args.judgeModel === undefined ? {} : { judgeModel: args.judgeModel }),
     batchSize: args.batchSize,
+    batchBytes: args.batchBytes,
     baseUrl: requiredEnv(env, "KRATOS_BASE_URL"),
     apiKey: requiredEnv(env, "LLM_API_KEY"),
     log: (message) => process.stderr.write(`${message}\n`),

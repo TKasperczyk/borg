@@ -1116,6 +1116,29 @@ describe("config", () => {
     expect(config.host_capabilities).not.toContain("Proactive outbound messaging");
   });
 
+  it("defaults embedding batches to 32 inputs and 48,000 bytes and loads a file override", () => {
+    expect(DEFAULT_CONFIG.embedding).toMatchObject({ maxBatchSize: 32, maxBatchBytes: 48_000 });
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+    tempDirs.push(tempDir);
+    expect(loadConfig({ dataDir: tempDir, env: {} }).embedding).toMatchObject({
+      maxBatchSize: 32,
+      maxBatchBytes: 48_000,
+    });
+    writeJsonFileAtomic(join(tempDir, "config.json"), {
+      embedding: { maxBatchBytes: 24_000 },
+    });
+    const config = loadConfig({ dataDir: tempDir, env: {} });
+    expect(config.embedding).toMatchObject({ maxBatchSize: 32, maxBatchBytes: 24_000 });
+    expect(redactConfig(config).embedding.maxBatchBytes).toBe(24_000);
+  });
+
+  it.each([0, -1, 1.5, "48000", null, true, Infinity, NaN, Number.MAX_SAFE_INTEGER + 1])(
+    "rejects invalid batch byte budget config %j",
+    (maxBatchBytes) => {
+      expect(configSchema.safeParse({ embedding: { maxBatchBytes } }).success).toBe(false);
+    },
+  );
+
   it("leaves the input byte cap absent by default and loads a file cap", () => {
     expect(DEFAULT_CONFIG.embedding).not.toHaveProperty("maxInputBytes");
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));

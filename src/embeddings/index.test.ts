@@ -301,6 +301,167 @@ describe("embeddings", () => {
     expect(create).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps the default count cap for 6,776 tiny inputs", async () => {
+    const texts = Array.from({ length: 6_776 }, (_, index) => String(index).padStart(11, "0"));
+    const create = vi.fn(async (params: { input: string | string[] }) => {
+      const inputs = Array.isArray(params.input) ? params.input : [params.input];
+      return { data: inputs.map((text, index) => ({ index, embedding: [Number(text)] })) };
+    });
+    const client = new OpenAICompatibleEmbeddingClient({
+      model: "embed-model",
+      dims: 1,
+      client: { embeddings: { create } },
+    });
+
+    const result = await client.embedBatch(texts);
+
+    expect(create).toHaveBeenCalledTimes(212);
+    expect(
+      create.mock.calls.map(([params]) => (Array.isArray(params.input) ? params.input.length : 1)),
+    ).toEqual([...Array<number>(211).fill(32), 24]);
+    expect(result.map((vector) => vector[0])).toEqual(texts.map(Number));
+  });
+
+  it.each<{
+    name: string;
+    texts: string[];
+    maxBatchSize?: number;
+    maxBatchBytes?: number;
+    maxInputBytes?: number;
+    prepared?: string[];
+    sizes: number[];
+    offsets: number[];
+    truncations?: number;
+  }>([
+    {
+      name: "bytes alone at the default 48,000-byte budget",
+      texts: ["a".repeat(32_000), "b".repeat(32_000), "c".repeat(32_000)],
+      sizes: [1, 1, 1],
+      offsets: [0, 1, 2],
+    },
+    {
+      name: "mixed count and byte limits",
+      texts: ["a", "b", "c", "d".repeat(8), "ee", "f", "g", "h".repeat(6)],
+      maxBatchSize: 3,
+      maxBatchBytes: 10,
+      sizes: [3, 2, 3],
+      offsets: [0, 3, 5],
+    },
+    {
+      name: "an oversized input alone, including beside empty inputs",
+      texts: ["", "a", "z".repeat(11), "", "b"],
+      maxBatchBytes: 10,
+      sizes: [2, 1, 2],
+      offsets: [0, 2, 3],
+    },
+    {
+      name: "the exact default byte boundary",
+      texts: ["a".repeat(24_000), "b".repeat(24_000), "c"],
+      sizes: [2, 1],
+      offsets: [0, 2],
+    },
+    {
+      name: "an overridden byte budget",
+      texts: ["a".repeat(32_000), "b".repeat(32_000), "c"],
+      maxBatchBytes: 64_000,
+      sizes: [2, 1],
+      offsets: [0, 2],
+    },
+    {
+      name: "UTF-8 bytes after repairing lone surrogates",
+      texts: ["ż", "中", "😀", "\ud800", "a"],
+      maxBatchBytes: 5,
+      prepared: ["ż", "中", "😀", "\ufffd", "a"],
+      sizes: [2, 1, 2],
+      offsets: [0, 2, 3],
+    },
+    {
+      name: "prepared byte lengths without truncating look-ahead inputs twice",
+      texts: ["aaaaa", "中文尾", "😀tail", "bbbbb", "z"],
+      maxInputBytes: 4,
+      maxBatchBytes: 7,
+      prepared: ["aaaa", "中", "😀", "bbbb", "z"],
+      sizes: [2, 1, 2],
+      offsets: [0, 2, 3],
+      truncations: 4,
+    },
+    {
+      name: "empty inputs still respecting the count cap",
+      texts: ["", "", "", "", ""],
+      maxBatchSize: 2,
+      maxBatchBytes: 1,
+      sizes: [2, 2, 1],
+      offsets: [0, 2, 4],
+    },
+    {
+      name: "an empty batch",
+      texts: [],
+      sizes: [],
+      offsets: [],
+    },
+  ])("chunks by $name, preserving order and callback offsets", async (testCase) => {
+    let activeRequests = 0;
+    let maxActiveRequests = 0;
+    const create = vi.fn(async (params: { input: string | string[] }) => {
+      activeRequests += 1;
+      maxActiveRequests = Math.max(maxActiveRequests, activeRequests);
+      await Promise.resolve();
+      activeRequests -= 1;
+      const inputs = Array.isArray(params.input) ? params.input : [params.input];
+      return {
+        data: inputs
+          .map((text, index) => ({ index, embedding: [text.codePointAt(0) ?? -1] }))
+          .reverse(),
+      };
+    });
+    const client = new OpenAICompatibleEmbeddingClient({
+      model: "embed-model",
+      dims: 1,
+      maxBatchSize: testCase.maxBatchSize,
+      maxBatchBytes: testCase.maxBatchBytes,
+      maxInputBytes: testCase.maxInputBytes,
+      client: { embeddings: { create } },
+    });
+    const onChunk = vi.fn();
+    const original = [...testCase.texts];
+
+    const result = await client.embedBatch(testCase.texts, { onChunk });
+
+    const prepared = testCase.prepared ?? testCase.texts;
+    const expectedVectors = prepared.map((text) => Float32Array.of(text.codePointAt(0) ?? -1));
+    expect(create.mock.calls.map(([params]) => params.input)).toEqual(
+      testCase.sizes.map((size, index) => {
+        const start = testCase.offsets[index]!;
+        return size === 1 ? prepared[start] : prepared.slice(start, start + size);
+      }),
+    );
+    expect(onChunk.mock.calls).toEqual(
+      testCase.sizes.map((size, index) => {
+        const start = testCase.offsets[index]!;
+        return [start, expectedVectors.slice(start, start + size)];
+      }),
+    );
+    expect(result).toEqual(expectedVectors);
+    expect(maxActiveRequests).toBe(testCase.sizes.length === 0 ? 0 : 1);
+    expect(client.stats().input_truncations).toBe(testCase.truncations ?? 0);
+    expect(testCase.texts).toEqual(original);
+  });
+
+  it.each([0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])(
+    "rejects an invalid max batch byte budget: %s",
+    (maxBatchBytes) => {
+      expect(
+        () =>
+          new OpenAICompatibleEmbeddingClient({
+            model: "embed-model",
+            dims: 1,
+            maxBatchBytes,
+            client: { embeddings: { create: vi.fn() } },
+          }),
+      ).toThrow(ConfigError);
+    },
+  );
+
   it("retries when the server reports an evicted model, in any observed error shape", async () => {
     // 404/model_not_found = never loaded. 400 "Model has unloaded or crashed."
     // = evicted after sitting idle. 400 "Failed to load model ... Model does

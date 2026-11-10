@@ -170,6 +170,7 @@ export type EmbeddingAbResults = {
     queries: string[];
     requested_gold_size: number;
     batch_size: number;
+    batch_bytes: number;
     embedding_timeout_ms: number;
     judge_requested: boolean;
     requested_judge_model: string | null;

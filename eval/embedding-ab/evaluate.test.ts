@@ -71,7 +71,8 @@ describe("embedding A/B evaluation", () => {
     rmSync(outDir, { recursive: true, force: true });
   });
 
-  it("uses a common corpus and preserves completed results after an initialization failure", async () => {
+  it("uses a common corpus, preserves failures, and forwards the byte budget", async () => {
+    const batchBytes = 24_000;
     const episodes = [episode("source"), episode("failed-distractor"), episode("shared")];
     mocks.loadActiveEpisodeBank.mockResolvedValue({
       dataDir: "/copied-bank",
@@ -165,10 +166,15 @@ describe("embedding A/B evaluation", () => {
       goldSize: 1,
       judgeRequested: false,
       batchSize: 8,
+      batchBytes,
       baseUrl: "https://gateway.example/v1",
       apiKey: "test-key",
     });
 
+    expect(results.inputs.batch_bytes).toBe(batchBytes);
+    for (const [input] of mocks.createModelEmbeddingRuntime.mock.calls) {
+      expect(input).toMatchObject({ batchSize: 8, batchBytes });
+    }
     expect(results.comparison_corpus).toMatchObject({
       participating_models: ["left", "right"],
       active_bank_episode_count: 3,

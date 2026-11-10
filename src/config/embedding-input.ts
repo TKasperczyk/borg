@@ -2,6 +2,8 @@ import { z } from "zod";
 
 import { ConfigError } from "../util/errors.js";
 
+export const DEFAULT_EMBEDDING_MAX_BATCH_BYTES = 48_000;
+
 export const embeddingMaxInputBytesSchema = z.number().int().positive();
 
 export function readEmbeddingMaxInputBytesEnv(env: NodeJS.ProcessEnv): number | undefined {

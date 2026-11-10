@@ -3,7 +3,11 @@ import { similarityConfigSchema, similarityValuesSchema } from "./similarity.js"
 import { DEFAULT_RAW_QUERY_MAX_BYTES } from "../retrieval/raw-query.js";
 import { AUTONOMY_WAKE_SOURCE_NAMES } from "../autonomy/types.js";
 import { embeddingProviderSchema, readEmbeddingProviderEnv } from "./embedding-provider.js";
-import { embeddingMaxInputBytesSchema, readEmbeddingMaxInputBytesEnv } from "./embedding-input.js";
+import {
+  DEFAULT_EMBEDDING_MAX_BATCH_BYTES,
+  embeddingMaxInputBytesSchema,
+  readEmbeddingMaxInputBytesEnv,
+} from "./embedding-input.js";
 export {
   similarityThresholds,
   logSimilarityProfile,
@@ -442,6 +446,9 @@ const configBaseSchema = z.object({
       // at 128 inputs, which takes the model down for every consumer on the
       // host. Raise only if your provider is known to handle it.
       maxBatchSize: z.number().int().positive().default(32),
+      // Sum of prepared input UTF-8 bytes per request; a larger single input
+      // travels alone, still bounded by maxInputBytes when configured.
+      maxBatchBytes: z.number().int().positive().default(DEFAULT_EMBEDDING_MAX_BATCH_BYTES),
       requestTimeoutMs: z.number().int().positive().default(120_000),
       rateLimitMaxRetries: z.number().int().nonnegative().default(2),
       rateLimitBaseDelayMs: z.number().int().positive().default(1_000),

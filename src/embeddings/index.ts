@@ -1,5 +1,6 @@
 import type { EmbeddingProfile } from "./bank-profile.js";
 import type { EmbeddingProvider } from "../config/embedding-provider.js";
+import { DEFAULT_EMBEDDING_MAX_BATCH_BYTES } from "../config/embedding-input.js";
 import OpenAI from "openai";
 
 import { sleep, SystemClock, type Clock } from "../util/clock.js";
@@ -66,6 +67,7 @@ export type OpenAICompatibleEmbeddingClientOptions = {
   client?: OpenAIEmbeddingsClient;
   modelReloadRetryDelaysMs?: readonly number[];
   maxBatchSize?: number;
+  maxBatchBytes?: number;
   maxInputBytes?: number;
   provider?: EmbeddingProvider;
   requestTimeoutMs?: number;
@@ -197,6 +199,7 @@ export class OpenAICompatibleEmbeddingClient implements EmbeddingClient {
   private readonly dims: number;
   private readonly modelReloadRetryDelaysMs: readonly number[];
   private readonly maxBatchSize: number;
+  private readonly maxBatchBytes: number;
   readonly maxInputBytes: number | undefined;
   private inputTruncations = 0;
   private readonly provider: EmbeddingProvider | undefined;
@@ -245,6 +248,12 @@ export class OpenAICompatibleEmbeddingClient implements EmbeddingClient {
     }
     this.maxBatchSize = requestedBatchSize;
 
+    const requestedBatchBytes = options.maxBatchBytes ?? DEFAULT_EMBEDDING_MAX_BATCH_BYTES;
+    if (!Number.isSafeInteger(requestedBatchBytes) || requestedBatchBytes <= 0) {
+      throw new ConfigError("Embedding max batch bytes must be a positive integer");
+    }
+    this.maxBatchBytes = requestedBatchBytes;
+
     if (
       options.maxInputBytes !== undefined &&
       (!Number.isSafeInteger(options.maxInputBytes) || options.maxInputBytes <= 0)
@@ -283,6 +292,8 @@ export class OpenAICompatibleEmbeddingClient implements EmbeddingClient {
   }
 
   private prepareInput(text: string): string {
+    // A lone surrogate makes the gateway reject the whole batch as "No model
+    // field." This is the last line of defence for transport input hygiene.
     // Repair first: a replacement character occupies three UTF-8 bytes. Only
     // the transport copy is shortened; callers retain their original text.
     const wellFormed = toWellFormedUtf16(text);
@@ -319,14 +330,29 @@ export class OpenAICompatibleEmbeddingClient implements EmbeddingClient {
     // shared local inference server, so firing the chunks at once would
     // reintroduce the pressure this exists to avoid.
     const out: Float32Array[] = [];
-    for (let start = 0; start < texts.length; start += this.maxBatchSize) {
+    // Retain one prepared look-ahead input across a byte boundary so truncation
+    // happens once, without preparing the entire caller array in advance.
+    let nextInput: string | undefined;
+    for (let start = 0; start < texts.length; ) {
       options.signal?.throwIfAborted();
-      const chunk = await this.embedChunk(texts.slice(start, start + this.maxBatchSize), options);
+      const inputs: string[] = [];
+      let bytes = 0;
+      while (inputs.length < this.maxBatchSize && start + inputs.length < texts.length) {
+        nextInput ??= this.prepareInput(texts[start + inputs.length]!);
+        const inputBytes = Buffer.byteLength(nextInput, "utf8");
+        // An oversized input must still make progress, alone in its request.
+        if (inputs.length > 0 && bytes + inputBytes > this.maxBatchBytes) break;
+        inputs.push(nextInput);
+        bytes += inputBytes;
+        nextInput = undefined;
+      }
+      const chunk = await this.embedChunk(inputs, options);
       options.onChunk?.(
         start,
         chunk.map((vector) => new Float32Array(vector)),
       );
       out.push(...chunk);
+      start += inputs.length;
     }
     return out;
   }
@@ -375,13 +401,10 @@ export class OpenAICompatibleEmbeddingClient implements EmbeddingClient {
     texts: readonly string[],
     options: EmbeddingCallOptions,
   ): ReturnType<OpenAIEmbeddingsClient["embeddings"]["create"]> {
-    // The gateway rejects a body with a lone surrogate for the WHOLE batch, and
-    // reports it as "No model field." (prod, 2026-09-09). Callers are expected to
-    // cut text on code-point boundaries; this is the last line of defence.
-    const wellFormed = texts.map((text) => this.prepareInput(text));
-    const singleInput = wellFormed[0];
+    // Inputs are already repaired and capped before byte-budget chunking.
+    const singleInput = texts[0];
     const params = {
-      input: wellFormed.length === 1 && singleInput !== undefined ? singleInput : wellFormed,
+      input: texts.length === 1 && singleInput !== undefined ? singleInput : [...texts],
       model: this.model,
       // Explicit -- the OpenAI SDK defaults to "base64", which we then have
       // to decode ourselves. Many OpenAI-compatible providers (LM Studio,

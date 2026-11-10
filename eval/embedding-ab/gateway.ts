@@ -334,6 +334,7 @@ export async function createModelEmbeddingRuntime(input: {
   models: readonly GatewayModel[];
   openai: OpenAI;
   batchSize: number;
+  batchBytes?: number;
 }): Promise<ModelEmbeddingRuntime> {
   const transport = new InstrumentedEmbeddingTransport(input.openai);
 
@@ -348,6 +349,7 @@ export async function createModelEmbeddingRuntime(input: {
       client: transport.adapter,
       modelReloadRetryDelaysMs: [],
       maxBatchSize: input.batchSize,
+      maxBatchBytes: input.batchBytes,
     });
 
     return {

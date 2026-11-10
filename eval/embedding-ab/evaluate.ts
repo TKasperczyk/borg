@@ -1,6 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 
+import { DEFAULT_EMBEDDING_MAX_BATCH_BYTES } from "../../src/config/embedding-input.js";
 import { loadActiveEpisodeBank } from "./bank.js";
 import { JsonlValueCache, VectorCache } from "./cache.js";
 import { embedItems, type EmbeddedItems } from "./embed-items.js";
@@ -62,6 +63,7 @@ export type EmbeddingAbOptions = {
   judgeRequested: boolean;
   judgeModel?: string;
   batchSize: number;
+  batchBytes?: number;
   baseUrl: string;
   apiKey: string;
   log?: (message: string) => void;
@@ -234,6 +236,7 @@ export async function runEmbeddingAbEvaluation(
         models: availableModels,
         openai,
         batchSize: options.batchSize,
+        batchBytes: options.batchBytes,
       });
     } catch (error) {
       const calls =
@@ -493,6 +496,7 @@ export async function runEmbeddingAbEvaluation(
       queries: [...options.queries],
       requested_gold_size: options.goldSize,
       batch_size: options.batchSize,
+      batch_bytes: options.batchBytes ?? DEFAULT_EMBEDDING_MAX_BATCH_BYTES,
       embedding_timeout_ms: EMBEDDING_TIMEOUT_MS,
       judge_requested: options.judgeRequested,
       requested_judge_model: options.judgeModel ?? null,

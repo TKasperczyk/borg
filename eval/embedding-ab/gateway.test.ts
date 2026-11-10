@@ -27,6 +27,27 @@ describe("embedding A/B gateway retry policy", () => {
     expect(runtime.transport.calls.map((call) => call.attempt)).toEqual([1]);
   });
 
+  it.each([undefined, 5])("passes through the batch byte budget %s", async (batchBytes) => {
+    const create = vi.fn(async (params: { input: string | string[] }) => {
+      const inputs = Array.isArray(params.input) ? params.input : [params.input];
+      return { data: inputs.map((_, index) => ({ index, embedding: [1, 0] })) };
+    });
+    const runtime = await createModelEmbeddingRuntime({
+      model: "test-model",
+      models: [{ id: "test-model", metadata: { dimensions: 2 } }],
+      openai: { embeddings: { create } } as never,
+      batchSize: 8,
+      batchBytes,
+    });
+    const texts =
+      batchBytes === undefined ? ["a".repeat(32_000), "b".repeat(32_000)] : ["aaa", "bbb"];
+
+    await expect(runtime.client.embedBatch(texts)).resolves.toHaveLength(2);
+
+    expect(create.mock.calls.map(([params]) => params.input)).toEqual(texts);
+    expect(runtime.transport.calls.map((call) => call.batch_size)).toEqual([1, 1]);
+  });
+
   it("records the instrumented transport's two retries as monotonic attempts", async () => {
     vi.useFakeTimers();
     const providerError = Object.assign(new Error("temporarily unavailable"), { status: 503 });

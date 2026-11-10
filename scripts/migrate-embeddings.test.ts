@@ -1376,8 +1376,17 @@ describe("storage-only embedding migration", () => {
     ).toMatchObject({
       tenants: ["team-agent-ai", "team-agent-esb"],
       batchSize: 32,
+      batchBytes: 48_000,
       concurrency: 2,
     });
+    expect(
+      parseEmbeddingMigrationArgs([...args, "--all-tenants", "--batch-bytes", "24000"]),
+    ).toMatchObject({ batchSize: 32, batchBytes: 24_000 });
+    for (const value of ["0", "-1", "1.5", "NaN", "Infinity", "9007199254740992"]) {
+      expect(() =>
+        parseEmbeddingMigrationArgs([...args, "--all-tenants", "--batch-bytes", value]),
+      ).toThrow();
+    }
     expect(() =>
       parseEmbeddingMigrationArgs([...args, "--tenant", "team-agent-ai", "--all-tenants"]),
     ).toThrow("Choose");
