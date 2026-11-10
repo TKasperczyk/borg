@@ -3,7 +3,15 @@ import { makeAutobiographicalPeriod } from "../../../test-support/factories/memo
 
 import type { CommitmentRecord } from "../../../memory/commitments/index.js";
 import { memoryDisclosurePayloadFields } from "../../../memory/common/disclosure-serializers.js";
-import { selfPrivateMemoryDisclosureLabel } from "../../../memory/common/disclosure-label.js";
+import {
+  memoryDisclosureLabelMetadata,
+  selfPrivateMemoryDisclosureLabel,
+} from "../../../memory/common/disclosure-label.js";
+import {
+  goalBlockStateFields,
+  legacyUnknownGoalBlock,
+  type GoalBlockRecord,
+} from "../../../memory/self/goal-blocks.js";
 import { pendingActionResolutionId } from "../../../memory/working/index.js";
 import {
   buildCompactPlannerLedgerPrompt,
@@ -34,6 +42,7 @@ import {
   COMPACT_PLANNER_TARGET_TOKENS,
   headTailPlannerExcerpt,
   PLANNER_GOAL_TARGET_TOKENS,
+  renderGoalDigest,
 } from "./planner-context.js";
 
 const NOW_MS = Date.UTC(2026, 7, 13, 0, 0, 0);
@@ -170,6 +179,18 @@ it("renders structural degradation for the planner without changing retrieval co
 
 function taggedBlock(text: string, tag: string): string {
   return text.match(new RegExp(`<${tag}(?:\\s[^>]*)?>[\\s\\S]*?</${tag}>`))?.[0] ?? "";
+}
+
+function goalBlockStateFromRow(row: string) {
+  const encoded = / block_state="([^"]*)"/.exec(row)?.[1];
+  expect(encoded).toBeDefined();
+  return JSON.parse(
+    encoded!
+      .replaceAll("&quot;", '"')
+      .replaceAll("&lt;", "<")
+      .replaceAll("&gt;", ">")
+      .replaceAll("&amp;", "&"),
+  );
 }
 
 function entityMembership(text: string, entityIds: readonly string[]): string[] {
@@ -1404,6 +1425,365 @@ describe("compact planner context", () => {
     expect(planner.traceSummary.sections.goal_index?.estimatedTokens).toBeLessThanOrEqual(
       PLANNER_GOAL_TARGET_TOKENS,
     );
+  });
+
+  it("keeps all 71 goals at the maximum description budget with long block histories", () => {
+    // Eight measured live shapes. The two combined lengths are split evenly
+    // here; all text, timestamps, handles and disclosure metadata are synthetic.
+    const reasonLengths = [
+      [1_401],
+      [1_543, 1_543],
+      [1_317, 1_318],
+      [2_143],
+      [1_712],
+      [1_218],
+      [1_044],
+      [961],
+    ];
+    const historyGoals = reasonLengths.map((lengths, index) => {
+      const blocked = index < 3;
+      return goal(`HISTORY_${index}_${"d".repeat(512)}`, {
+        status: blocked ? "blocked" : "active",
+        priority: 8 - index,
+        target_assigned_at: NOW_MS - 100_000,
+        block_history: lengths.map((length, interval) => ({
+          blocker: { kind: "until", until: NOW_MS + 60_000 },
+          attempt_status: "attempted_unavailable",
+          reason: `REASON_${index}_${interval}_`.padEnd(length, "r"),
+          attempt_evidence: { kind: "journal_entry", id: index * 10 + interval + 1 },
+          disclosure_label: memoryDisclosureLabelMetadata(selfPrivateMemoryDisclosureLabel()),
+          blocked_at: NOW_MS - 60_000 + interval * 20_000,
+          unblocked_at:
+            blocked && interval === lengths.length - 1 ? null : NOW_MS - 50_000 + interval * 20_000,
+          unblock_reason:
+            blocked && interval === lengths.length - 1
+              ? null
+              : `RELEASE_${index}_${interval}_${"u".repeat(300)}`,
+        })),
+      });
+    });
+    const goals = [
+      ...Array.from({ length: 63 }, (_, index) => goal(`GOAL_${index}_${"d".repeat(512)}`)),
+      ...historyGoals,
+    ];
+    const candidates = goals
+      .filter((entry) => entry.status === "active")
+      .map((entry, index) => ({
+        goal_id: entry.id,
+        goal: entry,
+        score: 1 - index / 100,
+        components: { priority: 1, deadline_pressure: 0, context_fit: 1, progress_debt: 0 },
+        reason: "ranked globally",
+      }));
+    const planner = build(
+      context({
+        selfSnapshot: { values: [], goals, traits: [] },
+        executiveFocus: {
+          selected_goal: goals[0]!,
+          selected_score: candidates[0]!,
+          candidates,
+          threshold: 0,
+          score_basis: {
+            score_context: "turn_selection",
+            deadline_lookahead_ms: 1,
+            progress_debt_stale_ms: 1,
+          },
+        },
+      }),
+    );
+    const digest = taggedBlock(allSystemText(planner), "borg_planner_goal_digest");
+    const indexBlock = taggedBlock(digest, "goal_index");
+
+    expect(indexBlock).toContain('description_excerpt_budget_chars="96"');
+    expect(indexBlock.match(/<goal /g)).toHaveLength(goals.length);
+    expect(indexBlock).toContain('complete_membership="true"');
+    expect(indexBlock).toContain("<omitted_count>0</omitted_count>");
+    expect(planner.shownGoalIds).toEqual(expect.arrayContaining(goals.map((entry) => entry.id)));
+    for (const entry of historyGoals.filter((entry) => entry.status === "blocked")) {
+      expect(indexBlock).toContain(entry.block_history!.at(-1)!.reason);
+    }
+    expect(planner.traceSummary.sections.goal_index?.estimatedTokens).toBeLessThanOrEqual(
+      PLANNER_GOAL_TARGET_TOKENS,
+    );
+  });
+
+  it.each(["blocked", "active"] as const)(
+    "renders compact closed intervals and full expanded history for a %s goal",
+    (status) => {
+      const current: GoalBlockRecord = {
+        blocker: { kind: "entity", entity_id: createEntityId() },
+        attempt_status: "attempted_unavailable",
+        reason: `CURRENT_試み "<&quot;>"\n${"待".repeat(2_000)}_END`,
+        attempt_evidence: { kind: "journal_entry", id: 77 },
+        disclosure_label: memoryDisclosureLabelMetadata(selfPrivateMemoryDisclosureLabel()),
+        blocked_at: NOW_MS - 10_000,
+        unblocked_at: null,
+        unblock_reason: null,
+      };
+      const closed: GoalBlockRecord[] = [1, 2].map((interval) => ({
+        ...current,
+        blocker: { kind: "goal", goal_id: createGoalId() },
+        reason: `CLOSED_${interval}_${"過".repeat(1_500)}`,
+        attempt_evidence: { kind: "journal_entry", id: interval },
+        blocked_at: NOW_MS - (4 - interval) * 20_000,
+        unblocked_at: NOW_MS - (4 - interval) * 20_000 + 10_000,
+        unblock_reason: `RELEASE_${interval}_${"了".repeat(1_000)}`,
+      }));
+      const entry = goal("Remember why I parked this goal", {
+        status,
+        block_history: status === "blocked" ? [...closed, current] : closed,
+        target_assigned_at: NOW_MS - 100_000,
+      });
+      const before = structuredClone(entry);
+      const digest = renderGoalDigest(
+        context({
+          selfSnapshot: { values: [], goals: [entry], traits: [] },
+          executiveFocus: {
+            selected_goal: entry,
+            selected_score: null,
+            candidates: [],
+            threshold: 0,
+            score_basis: {
+              score_context: "turn_selection",
+              deadline_lookahead_ms: 1,
+              progress_debt_stale_ms: 1,
+            },
+          },
+        }),
+      ).text;
+      const indexRow = digest.match(/<goal [^>]*\/>/)![0];
+      const detailRow = digest.match(/<goal_detail [^>]*\/>/)![0];
+      const indexState = goalBlockStateFromRow(indexRow);
+      const detailState = goalBlockStateFromRow(detailRow);
+
+      expect(indexState).toEqual({
+        block:
+          status === "blocked"
+            ? {
+                blocker: current.blocker,
+                attempt_status: current.attempt_status,
+                reason: current.reason,
+                attempt_evidence: current.attempt_evidence,
+                blocked_at: current.blocked_at,
+                disclosure_label: current.disclosure_label,
+              }
+            : null,
+        block_history: closed.map((block) => ({
+          blocked_at: block.blocked_at,
+          unblocked_at: block.unblocked_at,
+        })),
+        target_assigned_at: entry.target_assigned_at,
+      });
+      expect(detailState).toEqual({
+        block: status === "blocked" ? current : null,
+        block_history: closed,
+        target_assigned_at: entry.target_assigned_at,
+      });
+      for (const row of [indexRow, detailRow]) {
+        expect(row.match(/CURRENT_試み/g) ?? []).toHaveLength(status === "blocked" ? 1 : 0);
+      }
+      for (const interval of closed) {
+        expect(indexRow).not.toContain(interval.reason);
+        expect(indexRow).not.toContain(interval.unblock_reason);
+        expect(detailRow).toContain(interval.reason);
+        expect(detailRow).toContain(interval.unblock_reason);
+      }
+      expect(entry).toEqual(before);
+      expect(goalBlockStateFields(entry).block_history).toEqual(before.block_history);
+    },
+  );
+
+  it.each([
+    { name: "open, open", unblockedAts: [null, null], currentIndex: 1 },
+    {
+      name: "closed, open, closed",
+      unblockedAts: [NOW_MS - 25_000, null, NOW_MS - 5_000],
+      currentIndex: null,
+    },
+  ])(
+    "represents every interval once in both row kinds for [$name] history",
+    ({ unblockedAts, currentIndex }) => {
+      const history: GoalBlockRecord[] = unblockedAts.map((unblocked_at, index) => ({
+        blocker: { kind: "until", until: NOW_MS + 60_000 },
+        attempt_status: "attempted_unavailable",
+        reason: `ANOMALOUS_REASON_${index}`,
+        attempt_evidence: { kind: "journal_entry", id: index + 1 },
+        disclosure_label: memoryDisclosureLabelMetadata(selfPrivateMemoryDisclosureLabel()),
+        blocked_at: NOW_MS - (unblockedAts.length - index) * 10_000,
+        unblocked_at,
+        unblock_reason: unblocked_at === null ? null : `ANOMALOUS_RELEASE_${index}`,
+      }));
+      const entry = goal("Goal with restored history", {
+        status: currentIndex === null ? "active" : "blocked",
+        block_history: history,
+      });
+      const digest = renderGoalDigest(
+        context({
+          selfSnapshot: { values: [], goals: [entry], traits: [] },
+          executiveFocus: {
+            selected_goal: entry,
+            selected_score: null,
+            candidates: [],
+            threshold: 0,
+            score_basis: {
+              score_context: "turn_selection",
+              deadline_lookahead_ms: 1,
+              progress_debt_stale_ms: 1,
+            },
+          },
+        }),
+      ).text;
+      const indexState = goalBlockStateFromRow(digest.match(/<goal [^>]*\/>/)![0]);
+      const detailState = goalBlockStateFromRow(digest.match(/<goal_detail [^>]*\/>/)![0]);
+      const otherHistory = history.filter((_, index) => index !== currentIndex);
+
+      expect(detailState.block).toEqual(currentIndex === null ? null : history[currentIndex]);
+      expect(indexState.block?.blocked_at ?? null).toBe(
+        currentIndex === null ? null : history[currentIndex]!.blocked_at,
+      );
+      expect(detailState.block_history).toEqual(otherHistory);
+      expect(indexState.block_history).toEqual(
+        otherHistory.map((block) => ({
+          blocked_at: block.blocked_at,
+          unblocked_at: block.unblocked_at,
+        })),
+      );
+      for (const state of [indexState, detailState]) {
+        const represented: { blocked_at: number | null }[] = [
+          ...state.block_history,
+          ...(state.block === null ? [] : [state.block]),
+        ];
+        expect(represented.map((block) => block.blocked_at)).toEqual(
+          history.map((block) => block.blocked_at),
+        );
+      }
+    },
+  );
+
+  it("explains that an unexpanded goal's historical reasons are absent from the page", () => {
+    const history: GoalBlockRecord[] = [0, 1].map((index) => ({
+      blocker: { kind: "until", until: NOW_MS - (2 - index) * 10_000 },
+      attempt_status: "attempted_unavailable",
+      reason: `UNEXPANDED_PAST_REASON_${index}`,
+      attempt_evidence: { kind: "journal_entry", id: index + 1 },
+      disclosure_label: memoryDisclosureLabelMetadata(selfPrivateMemoryDisclosureLabel()),
+      blocked_at: NOW_MS - (3 - index) * 10_000,
+      unblocked_at: NOW_MS - (2 - index) * 10_000,
+      unblock_reason: `UNEXPANDED_RELEASE_REASON_${index}`,
+    }));
+    const unexpanded = goal("Goal outside the expanded candidates", { block_history: history });
+    const goals = [
+      ...Array.from({ length: 4 }, (_, index) => goal(`Expanded goal ${index}`)),
+      unexpanded,
+    ];
+    const candidates = goals.map((entry, index) => ({
+      goal_id: entry.id,
+      goal: entry,
+      score: 1 - index / 10,
+      components: { priority: 1, deadline_pressure: 0, context_fit: 1, progress_debt: 0 },
+      reason: "ranked globally",
+    }));
+    const digest = renderGoalDigest(
+      context({
+        turnOrigin: "user",
+        selfSnapshot: { values: [], goals, traits: [] },
+        executiveFocus: {
+          selected_goal: goals[0]!,
+          selected_score: candidates[0]!,
+          candidates,
+          threshold: 0,
+          score_basis: {
+            score_context: "turn_selection",
+            deadline_lookahead_ms: 1,
+            progress_debt_stale_ms: 1,
+          },
+        },
+      }),
+    ).text;
+    const indexRow = digest.match(new RegExp(`<goal i="${unexpanded.id}"[^>]*\\/>`))![0];
+
+    expect([...digest.matchAll(/<goal_detail i="([^"]+)"/g)].map((match) => match[1])).toEqual(
+      goals.slice(0, 4).map((entry) => entry.id),
+    );
+    expect(goalBlockStateFromRow(indexRow)).toEqual({
+      block: null,
+      block_history: history.map((block) => ({
+        blocked_at: block.blocked_at,
+        unblocked_at: block.unblocked_at,
+      })),
+      target_assigned_at: null,
+    });
+    for (const block of history) {
+      expect(digest).not.toContain(block.reason);
+      expect(digest).not.toContain(block.unblock_reason);
+    }
+    expect(digest).toContain(
+      "The reasons, release reasons, handles and labels of those intervals are shown only in a goal_detail row or a wake payload for that goal, where budgets may shorten them; otherwise they are not on this page, and a pair says only that the interval existed.",
+    );
+  });
+
+  it("preserves unknown legacy block metadata without inventing times or evidence", () => {
+    const legacy = legacyUnknownGoalBlock();
+    const { disclosure_label, ...unlabeled } = legacy;
+    const entry = goal("Legacy blocked goal", {
+      status: "blocked",
+      block_history: [unlabeled as GoalBlockRecord],
+    });
+    const digest = renderGoalDigest(
+      context({
+        selfSnapshot: { values: [], goals: [entry], traits: [] },
+        executiveFocus: {
+          selected_goal: entry,
+          selected_score: null,
+          candidates: [],
+          threshold: 0,
+          score_basis: {
+            score_context: "turn_selection",
+            deadline_lookahead_ms: 1,
+            progress_debt_stale_ms: 1,
+          },
+        },
+      }),
+    ).text;
+    const indexState = goalBlockStateFromRow(digest.match(/<goal [^>]*\/>/)![0]);
+    const detailState = goalBlockStateFromRow(digest.match(/<goal_detail [^>]*\/>/)![0]);
+
+    expect(indexState).toEqual({
+      block: {
+        blocker: { kind: "legacy_unknown" },
+        attempt_status: "not_recorded",
+        reason: legacy.reason,
+        blocked_at: null,
+        disclosure_label,
+      },
+      block_history: [],
+      target_assigned_at: null,
+    });
+    expect(detailState).toEqual({ block: legacy, block_history: [], target_assigned_at: null });
+  });
+
+  it("omits block_state from both rows of a never-blocked goal", () => {
+    const entry = goal("Never blocked");
+    const digest = renderGoalDigest(
+      context({
+        selfSnapshot: { values: [], goals: [entry], traits: [] },
+        executiveFocus: {
+          selected_goal: entry,
+          selected_score: null,
+          candidates: [],
+          threshold: 0,
+          score_basis: {
+            score_context: "turn_selection",
+            deadline_lookahead_ms: 1,
+            progress_debt_stale_ms: 1,
+          },
+        },
+      }),
+    ).text;
+
+    expect(digest).toContain(`<goal i="${entry.id}"`);
+    expect(digest).toContain(`<goal_detail i="${entry.id}"`);
+    expect(digest).not.toContain("block_state");
   });
 
   it("drops only a ranked goal-index suffix and includes that remainder in trace omissions", () => {

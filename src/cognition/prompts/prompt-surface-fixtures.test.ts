@@ -1868,6 +1868,17 @@ it("pins blocked goal labels and visible unblock history", () => {
   const digest = renderGoalDigest({
     ...context,
     selfSnapshot: { ...context.selfSnapshot, goals: [blocked] },
+    executiveFocus: {
+      selected_goal: blocked,
+      selected_score: null,
+      candidates: [],
+      threshold: 0,
+      score_basis: {
+        score_context: "turn_selection",
+        deadline_lookahead_ms: 1,
+        progress_debt_stale_ms: 1,
+      },
+    },
   });
   const active = {
     ...blocked,
@@ -1881,6 +1892,17 @@ it("pins blocked goal labels and visible unblock history", () => {
   const resumed = renderGoalDigest({
     ...context,
     selfSnapshot: { ...context.selfSnapshot, goals: [active] },
+    executiveFocus: {
+      selected_goal: active,
+      selected_score: null,
+      candidates: [],
+      threshold: 0,
+      score_basis: {
+        score_context: "turn_selection",
+        deadline_lookahead_ms: 1,
+        progress_debt_stale_ms: 1,
+      },
+    },
   });
   expectFixture("goal-block-history.txt", `${digest.text}\n\n${resumed.text}`);
 });

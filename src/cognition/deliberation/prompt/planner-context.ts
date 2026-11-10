@@ -1,5 +1,5 @@
 import { renderNarrativeCoverage } from "../../../memory/self/narrative-coverage.js";
-import { goalBlockStateText } from "../../../memory/self/goal-blocks.js";
+import { goalBlockStateFields } from "../../../memory/self/goal-blocks.js";
 import {
   COMMITMENT_KINDS,
   effectiveCommitmentCriticalDomain,
@@ -449,6 +449,40 @@ function goalDisclosureAttributes(goal: SelfSnapshotGoal): string {
   );
 }
 
+function goalDigestBlockStateText(goal: SelfSnapshotGoal, rowKind: "index" | "detail"): string {
+  const state = goalBlockStateFields(goal);
+  // The current block can only be the last entry. Preserve every other interval,
+  // including unexpected open entries in restored history.
+  const otherHistory =
+    state.block === null ? state.block_history : state.block_history.slice(0, -1);
+
+  // Keep the current reason whole and labeled, once per row. Only the index
+  // reduces other intervals to times; other cognition surfaces keep full records.
+  return JSON.stringify({
+    ...state,
+    block:
+      rowKind === "index" && state.block !== null
+        ? {
+            blocker: state.block.blocker,
+            attempt_status: state.block.attempt_status,
+            reason: state.block.reason,
+            ...(state.block.attempt_evidence === undefined
+              ? {}
+              : { attempt_evidence: state.block.attempt_evidence }),
+            blocked_at: state.block.blocked_at,
+            disclosure_label: state.block.disclosure_label,
+          }
+        : state.block,
+    block_history:
+      rowKind === "index"
+        ? otherHistory.map((block) => ({
+            blocked_at: block.blocked_at,
+            unblocked_at: block.unblocked_at,
+          }))
+        : otherHistory,
+  });
+}
+
 function renderGoalIndexRows(
   goals: readonly SelfSnapshotGoal[],
   scoreById: ReadonlyMap<string, number>,
@@ -464,7 +498,7 @@ function renderGoalIndexRows(
     truncationCount += description.truncated ? 1 : 0;
     const score = scoreById.get(goal.id);
 
-    return `<goal i="${escapeXmlAttribute(goal.id)}" s="${escapeXmlAttribute(goal.status)}"${(goal.block_history?.length ?? 0) === 0 && goal.status !== "blocked" ? "" : ` block_state="${escapeXmlSingleLineAttribute(goalBlockStateText(goal))}"`} ca="${escapeXmlAttribute(relativeAge(goal.created_at, nowMs))}" pa="${escapeXmlAttribute(relativeAge(goal.last_progress_ts, nowMs))}" ta="${escapeXmlAttribute(relativeUntil(goal.target_at, nowMs))}" p="${goal.priority}" x="${score === undefined ? "unscored" : score.toFixed(4)}"${goal.counterparty_entity_id === null || goal.counterparty_entity_id === undefined ? "" : ` cp="${escapeXmlAttribute(goal.counterparty_entity_id)}"`} ${goalDisclosureAttributes(goal)} d="${escapeXmlSingleLineAttribute(description.text)}" />`;
+    return `<goal i="${escapeXmlAttribute(goal.id)}" s="${escapeXmlAttribute(goal.status)}"${(goal.block_history?.length ?? 0) === 0 && goal.status !== "blocked" ? "" : ` block_state="${escapeXmlSingleLineAttribute(goalDigestBlockStateText(goal, "index"))}"`} ca="${escapeXmlAttribute(relativeAge(goal.created_at, nowMs))}" pa="${escapeXmlAttribute(relativeAge(goal.last_progress_ts, nowMs))}" ta="${escapeXmlAttribute(relativeUntil(goal.target_at, nowMs))}" p="${goal.priority}" x="${score === undefined ? "unscored" : score.toFixed(4)}"${goal.counterparty_entity_id === null || goal.counterparty_entity_id === undefined ? "" : ` cp="${escapeXmlAttribute(goal.counterparty_entity_id)}"`} ${goalDisclosureAttributes(goal)} d="${escapeXmlSingleLineAttribute(description.text)}" />`;
   });
 
   return { rows, truncationCount };
@@ -492,7 +526,7 @@ function renderExpandedGoalRow(
     PLANNER_GOAL_EXPANDED_FIELD_CHARS,
   );
   return {
-    row: `<goal_detail i="${escapeXmlAttribute(goal.id)}" s="${escapeXmlAttribute(goal.status)}"${(goal.block_history?.length ?? 0) === 0 && goal.status !== "blocked" ? "" : ` block_state="${escapeXmlSingleLineAttribute(goalBlockStateText(goal))}"`} sel="${context.executiveFocus?.selected_goal?.id === goal.id}" rv="${goal.record_version ?? "unknown"}" cat="${new Date(goal.created_at).toISOString()}" ca="${escapeXmlAttribute(relativeAge(goal.created_at, nowMs))}" pa="${escapeXmlAttribute(relativeAge(goal.last_progress_ts, nowMs))}" ta="${escapeXmlAttribute(relativeUntil(goal.target_at, nowMs))}" p="${goal.priority}" x="${(scoreById.get(goal.id) ?? 0).toFixed(4)}"${goal.counterparty_entity_id === null || goal.counterparty_entity_id === undefined ? "" : ` cp="${escapeXmlAttribute(goal.counterparty_entity_id)}"`} ${goalDisclosureAttributes(goal)} d="${escapeXmlSingleLineAttribute(description.text)}" tc="${escapeXmlSingleLineAttribute(terminal.text)}" pn="${escapeXmlSingleLineAttribute(progress.text)}"${candidate === undefined ? "" : ` sp="${candidate.components.priority.toFixed(4)}" sd="${candidate.components.deadline_pressure.toFixed(4)}" sc="${candidate.components.context_fit.toFixed(4)}" sdebt="${candidate.components.progress_debt.toFixed(4)}"`} er="${escapeXmlSingleLineAttribute(executiveReason.text)}" owner="${escapeXmlAttribute(goal.owner_entity_id ?? "none")}" audience="${escapeXmlAttribute(goal.audience_entity_id ?? "none")}" />`,
+    row: `<goal_detail i="${escapeXmlAttribute(goal.id)}" s="${escapeXmlAttribute(goal.status)}"${(goal.block_history?.length ?? 0) === 0 && goal.status !== "blocked" ? "" : ` block_state="${escapeXmlSingleLineAttribute(goalDigestBlockStateText(goal, "detail"))}"`} sel="${context.executiveFocus?.selected_goal?.id === goal.id}" rv="${goal.record_version ?? "unknown"}" cat="${new Date(goal.created_at).toISOString()}" ca="${escapeXmlAttribute(relativeAge(goal.created_at, nowMs))}" pa="${escapeXmlAttribute(relativeAge(goal.last_progress_ts, nowMs))}" ta="${escapeXmlAttribute(relativeUntil(goal.target_at, nowMs))}" p="${goal.priority}" x="${(scoreById.get(goal.id) ?? 0).toFixed(4)}"${goal.counterparty_entity_id === null || goal.counterparty_entity_id === undefined ? "" : ` cp="${escapeXmlAttribute(goal.counterparty_entity_id)}"`} ${goalDisclosureAttributes(goal)} d="${escapeXmlSingleLineAttribute(description.text)}" tc="${escapeXmlSingleLineAttribute(terminal.text)}" pn="${escapeXmlSingleLineAttribute(progress.text)}"${candidate === undefined ? "" : ` sp="${candidate.components.priority.toFixed(4)}" sd="${candidate.components.deadline_pressure.toFixed(4)}" sc="${candidate.components.context_fit.toFixed(4)}" sdebt="${candidate.components.progress_debt.toFixed(4)}"`} er="${escapeXmlSingleLineAttribute(executiveReason.text)}" owner="${escapeXmlAttribute(goal.owner_entity_id ?? "none")}" audience="${escapeXmlAttribute(goal.audience_entity_id ?? "none")}" />`,
     truncationCount: [description, terminal, progress, executiveReason].filter(
       (entry) => entry.truncated,
     ).length,
@@ -629,7 +663,7 @@ export function renderGoalDigest(context: DeliberationContext): RenderedPlannerS
         "  <field_legend>goal: i=id, s=status, ca=created_age, pa=last_progress_age, ta=target_rel, p=priority, x=global_executive_score, cp=counterparty_entity_id (absent means no counterparty recorded: either none was named, or the row was written before the field existed (compare cat with 2026-09-04T16:32Z)), dc=disclosure_class, oa=origin_audience, pt=private_to, pub=public_to, d=description. cp is the participant the responsibility runs toward, not an owner or audience. goal_detail adds sel=selected, rv=record_version, cat=created_at, tc=terminal_condition, pn=progress_notes, sp/sd/sc/sdebt=score priority/deadline_pressure/context_fit/progress_debt, er=executive_reason, owner=owner_entity_id, audience=audience_entity_id. rv counts writes to the row rather than edits to one field, though some writes leave it unchanged, and is a count, not a time: goals carry no last-written stamp, so no attribute here reports when the row last changed. rv-1 exceeding the row's non-create identity events marks a write that left no audit event. That comparison's other term is not on this page: no attribute here counts a row's identity events, and no reader offered to me inside a turn returns them, so rv can raise the question and never settle it alone. Those events carry the whole prior row, so a pn entry a later write replaced survives in them, out of reach from this page rather than gone. pn is an append-ordered log, not a current note: oldest entry first, so pa dates its tail and never its head. It is also an excerpt and not the log - a head slice and a tail slice of one text column that on an established goal runs to thousands of characters - so a long log has no middle here at all, and an entry missing from pn is not evidence it was never written. Appending is a habit of the writers that reach this field rather than a property the field enforces: every write replaces the whole column, the online turn reflector on user and autonomous turns and the retire verb replace it with the old text plus one line, and the operator progress writer replaces it with the single note it was handed. The reflector appends only when its own structured judgment says the turn made concrete movement; an emission alone does not write progress. So an entry can be rewritten or dropped by a write from outside a turn, nothing in the row marks that this happened, and rv counts such a write exactly as it counts an append. The excerpt is sized by a character budget, printed as field_excerpt_budget_chars on top_global_candidates_expanded and covering d, tc, pn and er alike, and that budget is spent on the whole excerpt including the marker that announces the cut. So the rendered= figure inside the marker is the budget less the marker's own length and never reaches it, and because the marker carries three numbers whose digit widths differ between rows, two rows can print different rendered= values under one unchanged budget: rendered= cannot be read back as the budget. The budget is a fixed size rather than a share, so a longer log earns no more of this page than a short one and the fraction of it reaching you falls as it grows. The one-line index rows carry a d of their own, sized against a separate, smaller, dynamically selected budget printed as description_excerpt_budget_chars on goal_index. A cut there uses a mechanical head+tail [ELIDED] marker with no rendered= figure, so its width cannot be read or compared through the expanded row marker. A budget printed on one container governs that container alone, so a number matching it elsewhere is a different budget that happens to agree. next_step: i=id, g=goal_id, sel=selected, k=kind, s=status, due=due_rel, attempt=last_attempt_age, dc/oa/pt/pub=disclosure label, d=description. The lane follows top_global_candidates_expanded membership and order: one top open step per expanded candidate that has one, doing before queued then by due date; sel=true marks the selected goal if present. executive_next_step_omitted_count at scope=expanded_candidates_top_open counts open steps beyond those per-goal tops. Steps of goals outside the expansion are not queried and remain uncounted. membership_order declares global executive score descending, then priority descending, created_at ascending, and id ascending. target_tokens prices the whole block: prose, rows, steps, counts, and markers. complete_membership=true means every rows_total goal has an index row. Otherwise goal_index_not_enumerated_budget=N, the marker total=N, and goal_index omitted_count=N all name the exact rank-ordered suffix excluded by the whole-block token budget. The status draw that decides which goals reach the snapshot runs before this index, so these fields report nothing about goals that draw left out.</field_legend>",
         ...(goals.some((goal) => goal.status === "blocked" || (goal.block_history?.length ?? 0) > 0)
           ? [
-              "  <block_state_legend>block_state carries the blocker, attempt declaration, blocked_at, reason, optional artifact handle, and intervals with unblock bases and their own disclosure labels. legacy_unknown means the blocker, attempt and start were not recorded; it remains blocked until a manual release. Absent means no history recorded. Blocked goals remain recalled and unscored, without scheduling pressure. Known intervals pause sdebt after real progress and sd only after target_assigned_at; null assignment is unknown, never guessed. Actual progress and target dates stay unchanged.</block_state_legend>",
+              "  <block_state_legend>block_state: block is the current block with its reason and disclosure label, once per row (null if none). block_history lists the other intervals: blocked_at/unblocked_at pairs in goal rows, full records in goal_detail rows. The reasons, release reasons, handles and labels of those intervals are shown only in a goal_detail row or a wake payload for that goal, where budgets may shorten them; otherwise they are not on this page, and a pair says only that the interval existed. legacy_unknown means blocker, attempt and start were not recorded; manual release is required. Absent means no history recorded. Blocked goals remain recalled and unscored, without scheduling pressure. Known intervals pause sdebt after real progress and sd after target_assigned_at; null assignment stays unknown. Actual progress and target dates stay unchanged.</block_state_legend>",
             ]
           : []),
         `  <goal_index complete_membership="${indexOmissionCount === 0}" rows="${includedGoals.length}" statuses_present="${escapeXmlAttribute(statusesPresent.length === 0 ? "none" : statusesPresent.join(","))}" description_excerpt_budget_chars="${descriptionExcerptBudget}">`,

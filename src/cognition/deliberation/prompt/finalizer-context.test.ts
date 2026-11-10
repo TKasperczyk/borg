@@ -40,7 +40,8 @@ import { buildFinalizerSystemPrompt } from "../finalizer.js";
 import { TRUSTED_GUIDANCE_PREAMBLE } from "../../prompts/base-identity.js";
 import { buildCacheableBaseSystemPromptParts } from "./system-prompt.js";
 import { TurnSelfContextBuilder } from "../../self/turn-self-context.js";
-import { headTailPlannerExcerpt } from "./planner-context.js";
+import { headTailPlannerExcerpt, renderGoalDigest } from "./planner-context.js";
+import { legacyUnknownGoalBlock } from "../../../memory/self/goal-blocks.js";
 import { OUTBOUND_POST_TOOL_NAME } from "../../../tools/internal/outbound-post-name.js";
 
 const NOW_MS = Date.UTC(2026, 7, 14, 12, 0, 0);
@@ -2020,6 +2021,50 @@ describe("compact terminal finalizer context", () => {
       turn.indexOf("<borg_s2_plan>"),
     );
   });
+
+  it.each(["system_1", "system_2"] as const)(
+    "shares the compact goal block index and full expanded history in %s",
+    (path) => {
+      const entry: SelfSnapshotGoal = {
+        ...goal("Remember parked work", null),
+        status: "blocked",
+        block_history: [
+          {
+            ...legacyUnknownGoalBlock(),
+            reason: "Previous block reason",
+            unblocked_at: NOW_MS - 10_000,
+            unblock_reason: "Previous release basis",
+          },
+          { ...legacyUnknownGoalBlock(), reason: "Current block reason" },
+        ],
+      };
+      const source = context({
+        selfSnapshot: { values: [], goals: [entry], traits: [] },
+        executiveFocus: {
+          selected_goal: entry,
+          selected_score: null,
+          candidates: [],
+          threshold: 0,
+          score_basis: {
+            score_context: "turn_selection",
+            deadline_lookahead_ms: 1,
+            progress_debt_stale_ms: 1,
+          },
+        },
+      });
+      const rendered = text(build(source, path));
+      const indexRow = rendered.match(/<goal [^>]*\/>/)![0];
+      const detailRow = rendered.match(/<goal_detail [^>]*\/>/)![0];
+
+      expect(rendered).toContain(renderGoalDigest(source).text);
+      expect(indexRow.match(/Current block reason/g)).toHaveLength(1);
+      expect(indexRow).not.toContain("Previous block reason");
+      expect(indexRow).not.toContain("Previous release basis");
+      expect(detailRow.match(/Current block reason/g)).toHaveLength(1);
+      expect(detailRow).toContain("Previous block reason");
+      expect(detailRow).toContain("Previous release basis");
+    },
+  );
 
   it.each(["system_1", "system_2"] as const)(
     "reports goal membership from the trigger and bounded digest in %s",
