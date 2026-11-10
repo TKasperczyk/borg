@@ -1718,7 +1718,7 @@ describe("compact planner context", () => {
       expect(digest).not.toContain(block.unblock_reason);
     }
     expect(digest).toContain(
-      "The reasons, release reasons, handles and labels of those intervals are shown only in a goal_detail row or a wake payload for that goal, where budgets may shorten them; otherwise they are not on this page, and a pair says only that the interval existed.",
+      "A pair says only that the interval existed; its reasons, release reasons, handles and labels are not in goal rows. They are in a goal_detail row when the goal has one, and other sections of a page that carry the goal, or a wake payload for it, may show them under their own budgets.",
     );
   });
 
