@@ -10,6 +10,9 @@ describe("embedding request retry policy", () => {
     [{ "Retry-After": "1.25" }, 2250],
     [{ "retry-after-ms": "250", "retry-after": "5" }, 1250],
     [new Headers({ "retry-after": "Thu, 01 Jan 1970 00:00:05 GMT" }), 5000],
+    [{ "retry-after": "599" }, 600_000],
+    [{ "retry-after-ms": "599000" }, 600_000],
+    [{ "retry-after": "Thu, 01 Jan 1970 00:10:00 GMT" }, 600_000],
     [{ "retry-after": "Thu, 01 Jan 1970 00:00:00 GMT" }, 1000],
     [{ "retry-after": "-1" }, null],
     [{ "retry-after": "invalid" }, null],
@@ -17,6 +20,14 @@ describe("embedding request retry policy", () => {
     [{ "retry-after-ms": "bad", "retry-after": "2" }, 3000],
   ])("parses provider headers %j without shortening the wait", (headers, expected) => {
     expect(embeddingRetryAt(headers, 1000)).toBe(expected);
+  });
+
+  it.each([
+    { "retry-after": "86400" },
+    { "retry-after-ms": "86400000" },
+    { "retry-after": "Fri, 02 Jan 1970 00:00:01 GMT" },
+  ])("caps a one-day provider backoff at ten minutes: %j", (headers) => {
+    expect(embeddingRetryAt(headers, 1000)).toBe(601_000);
   });
 
   it("owns SDK retries and waits for retry-after on the failing request only", async () => {

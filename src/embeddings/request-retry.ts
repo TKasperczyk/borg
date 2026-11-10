@@ -1,5 +1,7 @@
 import { EmbeddingError, findInErrorCauseChain } from "../util/errors.js";
 
+export const EMBEDDING_PROVIDER_BACKOFF_MAX_MS = 600_000;
+
 export type EmbeddingRequestState = {
   retryAt: number | null;
   inFlight: number;
@@ -51,8 +53,9 @@ export function embeddingRetryAt(headers: unknown, now: number): number | null {
     return Number.isSafeInteger(at) && at <= 8.64e15 ? at : null;
   };
   const numeric = numericDelay(milliseconds, 1) ?? numericDelay(seconds, 1000);
-  if (numeric !== null) return numeric;
+  const maxRetryAt = now + EMBEDDING_PROVIDER_BACKOFF_MAX_MS;
+  if (numeric !== null) return Math.min(numeric, maxRetryAt);
   if (seconds === undefined || /^[-+\d.]+$/.test(seconds.trim())) return null;
   const date = Date.parse(seconds);
-  return Number.isFinite(date) ? Math.max(now, date) : null;
+  return Number.isFinite(date) ? Math.min(Math.max(now, date), maxRetryAt) : null;
 }
