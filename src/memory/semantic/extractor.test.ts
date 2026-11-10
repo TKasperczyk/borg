@@ -9,7 +9,7 @@ import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { LanceDbStore } from "../../storage/lancedb/index.js";
 import { openDatabase } from "../../storage/sqlite/index.js";
 import { FixedClock } from "../../util/clock.js";
-import { LLMError } from "../../util/errors.js";
+import { LLMError, SemanticError } from "../../util/errors.js";
 import {
   createEntityId,
   createRelationalSlotId,
@@ -1705,6 +1705,66 @@ describe("semantic extractor", () => {
       skippedEdges: 2,
     });
     expect(edgeRepository.listEdges()).toHaveLength(1);
+  });
+
+  it("traces superseded edge endpoints as invalid_endpoint", async () => {
+    const repositories = await createSemanticRepositories(cleanup);
+    const episode = buildEpisode("ep_aaaaaaaaaaaaaaaa" as Episode["id"], "Atlas contradiction");
+    const addEdge = vi.spyOn(repositories.edgeRepository, "addEdge").mockImplementationOnce(() => {
+      throw new SemanticError("Open contradiction cannot reference a superseded node", {
+        code: "SEMANTIC_EDGE_SUPERSEDED_ENDPOINT",
+      });
+    });
+    const tracer: TurnTracer = {
+      enabled: true,
+      includePayloads: false,
+      emit: vi.fn(),
+    };
+    const extractor = new SemanticExtractor({
+      ...repositories,
+      embeddingClient: new SemanticEmbeddingClient(),
+      episodicRepository: createEpisodeLookup([episode]),
+      llmClient: new FakeLLMClient({
+        responses: [
+          createSemanticToolResponse({
+            nodes: ["Atlas", "Rollback"].map((label) => ({
+              kind: "concept",
+              label,
+              description: `${label} plan.`,
+              domain: "process",
+              aliases: [],
+              confidence: 0.7,
+              source_episode_ids: [episode.id],
+            })),
+            edges: [
+              {
+                from_label: "Atlas",
+                to_label: "Rollback",
+                relation: "contradicts",
+                confidence: 0.7,
+                evidence_episode_ids: [episode.id],
+              },
+            ],
+          }),
+        ],
+      }),
+      model: "haiku",
+      tracer,
+    });
+
+    const result = await extractor.extractFromEpisodes([episode]);
+
+    expect(addEdge).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({ insertedEdges: 0, skippedEdges: 1 });
+    expect(repositories.edgeRepository.listEdges()).toEqual([]);
+    expect(tracer.emit).toHaveBeenCalledWith(
+      "semantic_insert.skipped",
+      expect.objectContaining({ kind: "edge", reason: "invalid_endpoint" }),
+    );
+    expect(tracer.emit).toHaveBeenCalledWith(
+      "semantic_extractor.started",
+      expect.objectContaining({ skip_reasons: ["invalid_endpoint"] }),
+    );
   });
 
   it("skips malformed node items and traces schema-invalid counts independently", async () => {

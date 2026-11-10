@@ -1096,7 +1096,10 @@ export class SemanticExtractor {
       return "dedupe_match";
     }
 
-    if (error.code === "SEMANTIC_EDGE_DANGLING") {
+    if (
+      error.code === "SEMANTIC_EDGE_DANGLING" ||
+      error.code === "SEMANTIC_EDGE_SUPERSEDED_ENDPOINT"
+    ) {
       return "invalid_endpoint";
     }
 
