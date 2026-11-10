@@ -657,7 +657,7 @@ export async function expandRecall(options: RecallExpansionOptions): Promise<Rec
           tools: [tool],
         },
       });
-    const timeoutMs = options.timeoutMs ?? 90_000;
+    const timeoutMs = options.timeoutMs ?? 45_000;
     parsed = (
       timeoutMs > 0
         ? await runWithDeadline({

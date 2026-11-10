@@ -66,7 +66,7 @@ describe("config", () => {
         "retrieval",
         "recallExpansionTimeoutMs",
         "BORG_RETRIEVAL_RECALL_EXPANSION_TIMEOUT_MS",
-        90000,
+        45000,
       ],
       ["autonomy", "prepToolTimeoutMs", "BORG_AUTONOMY_PREP_TOOL_TIMEOUT_MS", 120000],
       ["autonomy", "prepToolMaxTimeoutMs", "BORG_AUTONOMY_PREP_TOOL_MAX_TIMEOUT_MS", 300000],
@@ -728,7 +728,7 @@ describe("config", () => {
     },
   );
 
-  it("loads the recall-expansion timeout from the environment and defaults it to 90000ms", () => {
+  it("loads the recall-expansion timeout from the environment and defaults it to 45000ms", () => {
     const overrideDir = mkdtempSync(join(tmpdir(), "borg-"));
     const disabledDir = mkdtempSync(join(tmpdir(), "borg-"));
     const defaultDir = mkdtempSync(join(tmpdir(), "borg-"));
@@ -747,7 +747,7 @@ describe("config", () => {
       }).retrieval.recallExpansionTimeoutMs,
     ).toBe(0);
     expect(loadConfig({ dataDir: defaultDir, env: {} }).retrieval.recallExpansionTimeoutMs).toBe(
-      90000,
+      45000,
     );
     expect(() =>
       configSchema.parse({

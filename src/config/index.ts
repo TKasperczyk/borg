@@ -454,9 +454,11 @@ const configBaseSchema = z.object({
       // Keep the raw recall vector focused on recent input; bytes work in every
       // language. 6 KiB leaves room for several messages below the transport cap.
       rawQueryMaxBytes: z.number().int().positive().default(DEFAULT_RAW_QUERY_MAX_BYTES),
-      // One outer deadline, including one repair. The sidecar explicitly keeps
-      // its short planner budget; full cognition allows two 40s attempts.
-      recallExpansionTimeoutMs: z.number().int().min(0).default(90_000),
+      // One outer deadline, including one repair. It stays below the search-tool
+      // budget (tools.searchTimeoutMs) so that inside a tool call a slow plan
+      // degrades to the raw query instead of timing the whole search out. The
+      // sidecar explicitly keeps its short planner budget.
+      recallExpansionTimeoutMs: z.number().int().min(0).default(45_000),
       recallExpansionAttemptTimeoutMs: z.number().int().positive().default(40_000),
       recallExpansionMaxTokens: z.number().int().positive().default(3_072),
       recallExpansionRepairMaxTokens: z.number().int().positive().default(6_144),

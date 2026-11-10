@@ -164,7 +164,7 @@ export type RetrievalPipelineOptions = {
   recallExpansionSemanticVariantCount?: number;
   rawQueryMaxBytes?: number;
   // Hard cap for the recall-expansion LLM call; on timeout recall proceeds
-  // without expansion via the existing degraded path. Defaults to 90s; 0 disables it.
+  // without expansion via the existing degraded path. Defaults to 45s; 0 disables it.
   recallExpansionTimeoutMs?: number;
   recallExpansionAttemptTimeoutMs?: number;
   recallExpansionMaxTokens?: number;
