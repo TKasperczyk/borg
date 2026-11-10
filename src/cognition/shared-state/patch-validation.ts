@@ -1116,9 +1116,10 @@ export function normalizePatch<
 
   // Check each effective write before lifecycle pruning can hide it. Reuse the
   // operation materializer so promotions and multiple writes to one id see the
-  // same text/kind as storage. Existing oversized bodies may pass through metadata
-  // updates, but new text and newly locked bodies must fit. Never truncate text.
-  const maxTextChars = input.maxLockedEntryTextChars ?? DEFAULT_MAX_LOCKED_ENTRY_TEXT_CHARS;
+  // same text/kind as storage. Existing locked bodies may be rewritten up to their
+  // prior length; adds and promotions must fit the configured cap. Never truncate.
+  const configuredMaxTextChars =
+    input.maxLockedEntryTextChars ?? DEFAULT_MAX_LOCKED_ENTRY_TEXT_CHARS;
   let priorWriteEntries = input.previousArtifact?.entries ?? [];
   const oversizedWrites: PatchRejection[] = [];
   plan.compilerOperations.forEach((operation, index) => {
@@ -1135,13 +1136,18 @@ export function normalizePatch<
     if (operation.type === "prune" || operation.type === "transition_kind") return;
     const writtenId = operation.type === "supersede" ? operation.replacement.id : operation.id;
     const written = priorWriteEntries.find((entry) => entry.id === writtenId);
-    if (written === undefined || written.text.length <= maxTextChars) return;
+    if (written === undefined) return;
+    const previous = operation.type === "add" ? undefined : previousEntries.get(operation.id);
     const lockedTarget =
-      operation.type !== "add" &&
-      (before?.kind === "locked" || previousEntries.get(operation.id)?.kind === "locked");
+      operation.type !== "add" && (before?.kind === "locked" || previous?.kind === "locked");
     const writesText = operation.type !== "update" || operation.text !== undefined;
     const promotesToLocked = written.kind === "locked" && before?.kind !== "locked";
     if (!(writesText && (lockedTarget || written.kind === "locked")) && !promotesToLocked) return;
+    const maxTextChars =
+      writesText && lockedTarget
+        ? Math.max(configuredMaxTextChars, previous?.text.length ?? 0, before?.text.length ?? 0)
+        : configuredMaxTextChars;
+    if (written.text.length <= maxTextChars) return;
     const operationIndex = remainingIndices[index]!;
     oversizedWrites.push(
       rejection(input.patch.operations[operationIndex]!, operationIndex, "locked_text_too_long", {

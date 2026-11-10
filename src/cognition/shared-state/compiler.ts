@@ -497,7 +497,7 @@ function patchRejectionRepairMessage(rejections: readonly PatchRejection[]): str
         return [
           `operation ${rejection.operationIndex} ${rejection.operationType} state_key=${rejection.stateKey ?? "unknown"}`,
           `locked_text_too_long: ${rejection.actualTextChars} UTF-16 code units; maximum ${rejection.maxTextChars}`,
-          "rewrite the complete row shorter within the maximum; no text was truncated or stored",
+          "rewrite within this per-row maximum; existing locked targets may use their length before the patch or this operation if longer than the configured limit, never longer; adds and promotions use the configured limit; no text was truncated or stored",
         ].join("; ");
       }
       if (rejection.reason === "live_entry_cap_exceeded_for_key") {

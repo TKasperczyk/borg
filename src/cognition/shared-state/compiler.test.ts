@@ -445,8 +445,11 @@ describe("compileSharedStateArtifact", () => {
           : { type: "supersede", id: target.id, replacement: shortBody };
       const oversizedOperation =
         type === "update"
-          ? { ...operation, text: "x".repeat(4_001) }
-          : { ...operation, replacement: { ...shortBody, text: "x".repeat(4_001) } };
+          ? { ...operation, text: "x".repeat(target.text.length + 1) }
+          : {
+              ...operation,
+              replacement: { ...shortBody, text: "x".repeat(target.text.length + 1) },
+            };
       const llmClient = new FakeLLMClient({
         responses: [
           ...(path === "direct"
@@ -524,7 +527,7 @@ describe("compileSharedStateArtifact", () => {
       }
       if (path === "patch_repair") {
         expect(llmClient.requests[1]!.messages.at(-1)!.content).toContain(
-          "4001 UTF-16 code units; maximum 4000",
+          `${target.text.length + 1} UTF-16 code units; maximum ${target.text.length}`,
         );
       }
       expect(
@@ -676,6 +679,9 @@ describe("compileSharedStateArtifact", () => {
     expect(llmClient.requests[1]!.messages.at(-1)!.content).toContain(
       "26 UTF-16 code units; maximum 24",
     );
+    expect(llmClient.requests[1]!.messages.at(-1)!.content).toContain(
+      "existing locked targets may use their length before the patch or this operation if longer than the configured limit, never longer",
+    );
     expect(onDegraded).toHaveBeenCalledWith(
       "invalid_patch",
       expect.objectContaining({
@@ -778,6 +784,11 @@ describe("compileSharedStateArtifact", () => {
     (compilePass) => {
       const prompt = buildSharedStateSystemPrompt(compilePass);
 
+      expect(prompt).toContain("Locked adds and promotions are limited to 4000 UTF-16 code units");
+      expect(prompt).toContain(
+        "Rewriting an existing locked target (update, supersede, or kind change) allows the maximum of this limit and its text lengths before the patch and before this operation",
+      );
+      expect(prompt).toContain("a row already longer may keep that length, never grow");
       expect(prompt).toContain("A correction or contradiction of an existing entry must supersede");
       expect(prompt).toContain("Never add a sibling entry");
       expect(prompt).toContain("even under a different state_key");

@@ -252,6 +252,116 @@ describe("normalizePatch locked text write limit", () => {
     }
   });
 
+  it.each([
+    { type: "update", length: 4_700 },
+    { type: "update", length: 4_810 },
+    { type: "update", length: 3_999 },
+    { type: "supersede", length: 4_809 },
+    { type: "supersede", length: 4_810 },
+    { type: "kind_change", length: 4_809 },
+    { type: "kind_change", length: 4_810 },
+    { type: "shrink_then_rewrite", length: 4_809 },
+    { type: "shrink_then_rewrite", length: 4_810 },
+  ] as const)("preserves the legacy length allowance for $type at $length", ({ type, length }) => {
+    const audienceEntityId = createEntityId();
+    const sourceStreamEntryId = createStreamEntryId();
+    const entry = makeEntry({
+      audienceEntityId,
+      sourceStreamEntryId,
+      stateKey: "decision.rule",
+      kind: "locked",
+      text: "規".repeat(4_809),
+    });
+    const update = {
+      type: "update" as const,
+      id: entry.id,
+      state_key: entry.state_key!,
+      source_stream_entry_ids: [sourceStreamEntryId],
+    };
+    const text = "則".repeat(length);
+    const operation: EmitSharedStatePatch["operations"][number] =
+      type === "supersede"
+        ? {
+            type,
+            id: entry.id,
+            replacement: {
+              state_key: entry.state_key!,
+              kind: "locked",
+              text,
+              source_stream_entry_ids: [sourceStreamEntryId],
+            },
+          }
+        : { ...update, text, ...(type === "kind_change" ? { kind: "live" as const } : {}) };
+    const operations: EmitSharedStatePatch["operations"] =
+      type === "shrink_then_rewrite"
+        ? [{ ...update, text: "Shorter row" }, operation]
+        : [operation];
+    const result = normalizeKeyedPatch({
+      previousEntries: [entry],
+      operations,
+      audienceEntityId,
+      sourceStreamEntryId,
+      summaryOptions: { fullLockedEntries: true },
+    });
+    if (length > entry.text.length) {
+      expect(result.plan.operations).toEqual([]);
+      expect(result.rejected).toEqual([
+        expect.objectContaining({
+          reason: "locked_text_too_long",
+          operationIndex: operations.length - 1,
+          actualTextChars: 4_810,
+          maxTextChars: 4_809,
+        }),
+      ]);
+    } else {
+      expect(result.rejected).toEqual([]);
+      expect(result.plan.compilerOperations).toHaveLength(operations.length);
+    }
+  });
+
+  it.each(["add", "promotion"] as const)("keeps the configured cap for %s", (type) => {
+    const audienceEntityId = createEntityId();
+    const sourceStreamEntryId = createStreamEntryId();
+    const entry = makeEntry({
+      audienceEntityId,
+      sourceStreamEntryId,
+      stateKey: "decision.rule",
+      kind: "live",
+      text: "規".repeat(4_500),
+    });
+    const result = normalizeKeyedPatch({
+      previousEntries: type === "add" ? [] : [entry],
+      operations: [
+        type === "add"
+          ? {
+              ...addOperation({
+                stateKey: "decision.rule",
+                kind: "locked",
+                sourceStreamEntryId,
+              }),
+              text: "規".repeat(4_001),
+            }
+          : {
+              type: "update",
+              id: entry.id,
+              state_key: entry.state_key!,
+              kind: "locked",
+              source_stream_entry_ids: [sourceStreamEntryId],
+            },
+      ],
+      audienceEntityId,
+      sourceStreamEntryId,
+    });
+    expect(result.plan.operations).toEqual([]);
+    expect(result.rejected).toEqual([
+      expect.objectContaining({
+        reason: "locked_text_too_long",
+        actualTextChars: type === "add" ? 4_001 : 4_500,
+        maxTextChars: 4_000,
+      }),
+    ]);
+  });
+
   it.each(["metadata", "shrink", "unrelated"] as const)(
     "allows %s with a legacy oversized locked body",
     (change) => {
