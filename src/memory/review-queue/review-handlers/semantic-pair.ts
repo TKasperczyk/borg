@@ -164,11 +164,11 @@ export function createSemanticPairReviewQueueHandler(
           if (
             repository === undefined ||
             edge == null ||
+            edge.valid_to !== null ||
             !isContradictionForNodePair(edge, refs.node_ids)
           )
-            throw new SemanticError("Contradiction review edge does not match its node pair", {
-              code: "REVIEW_QUEUE_EDGE_MISMATCH",
-            });
+            // The judgment still settles the review when its edge cannot be retired.
+            return;
           const reason = `review resolution ${resolution.decision}: ${resolution.reason ?? item.reason}`;
           retireContradictionEdges({
             db: ctx.db,

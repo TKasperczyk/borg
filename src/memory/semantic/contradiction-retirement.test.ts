@@ -1,4 +1,8 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  ReviewQueueRepository,
+  createSemanticPairReviewQueueHandler,
+} from "../review-queue/index.js";
 import {
   createOfflineTestHarness,
   createSemanticNodeFixture,
@@ -165,7 +169,10 @@ describe("audited contradiction retirement", () => {
           relation: "contradicts",
         }),
       );
+      const invalidateEdge = vi.spyOn(h.semanticEdgeRepository, "invalidateEdge");
       await h.reviewQueueRepository.resolve(h.item.id, decision);
+      expect(invalidateEdge).toHaveBeenCalledOnce();
+      expect(h.reviewQueueRepository.get(h.item.id)?.resolution).toBe(decision);
       expect(h.semanticEdgeRepository.getEdge(h.edge.id)).toMatchObject({
         valid_to: expect.any(Number),
         invalidated_by_process: "review",
@@ -199,14 +206,51 @@ describe("audited contradiction retirement", () => {
     ).toEqual([]);
   });
 
-  it("rejects mismatched relation or endpoints without closing an unrelated edge", async () => {
+  it.each(
+    (["keep_both", "dismiss"] as const).flatMap((decision) =>
+      (
+        ["missing_repository", "missing_edge", "wrong_relation", "wrong_pair", "closed"] as const
+      ).map((state) => ({ decision, state })),
+    ),
+  )("settles $decision with $state without edge or audit writes", async ({ decision, state }) => {
     const h = await fixture();
-    h.db.prepare("UPDATE semantic_edges SET relation = 'supports' WHERE id = ?").run(h.edge.id);
-    await expect(h.reviewQueueRepository.resolve(h.item.id, "keep_both")).rejects.toThrow(
-      "does not match",
-    );
-    expect(h.semanticEdgeRepository.getEdge(h.edge.id)?.valid_to).toBeNull();
-    expect(audits(h)).toEqual([]);
+    if (state === "missing_edge")
+      h.db.prepare("DELETE FROM semantic_edges WHERE id = ?").run(h.edge.id);
+    if (state === "wrong_relation")
+      h.db.prepare("UPDATE semantic_edges SET relation = 'supports' WHERE id = ?").run(h.edge.id);
+    if (state === "wrong_pair") {
+      const other = await h.semanticNodeRepository.insert(createSemanticNodeFixture());
+      h.db
+        .prepare("UPDATE semantic_edges SET to_node_id = ? WHERE id = ?")
+        .run(other.id, h.edge.id);
+    }
+    if (state === "closed")
+      h.semanticEdgeRepository.invalidateEdge(h.edge.id, {
+        at: h.clock.now(),
+        by_process: "manual",
+      });
+    const queue = new ReviewQueueRepository({
+      db: h.db,
+      clock: h.clock,
+      semanticEdgeRepository: state === "missing_repository" ? undefined : h.semanticEdgeRepository,
+      identityEventRepository: h.identityEventRepository,
+    });
+    queue.registerHandler(createSemanticPairReviewQueueHandler("contradiction"));
+    const before = h.db.prepare("SELECT * FROM semantic_edges").all();
+    const events = h.db.prepare("SELECT * FROM semantic_edge_invalidation_events").all();
+    const invalidateEdge = vi.spyOn(h.semanticEdgeRepository, "invalidateEdge");
+    await queue.resolve(h.item.id, decision);
+    expect(queue.get(h.item.id)).toMatchObject({
+      resolution: decision,
+      resolved_at: h.clock.now(),
+    });
+    expect(invalidateEdge).not.toHaveBeenCalled();
+    expect(h.db.prepare("SELECT * FROM semantic_edges").all()).toEqual(before);
+    expect(h.db.prepare("SELECT * FROM semantic_edge_invalidation_events").all()).toEqual(events);
+    expect(h.auditLog.list({})).toEqual([]);
+    expect(
+      h.db.prepare("SELECT * FROM identity_events WHERE record_type = 'semantic_edge'").all(),
+    ).toEqual([]);
   });
 
   it.each(["markSuperseded", "update", "restore", "insert"] as const)(
