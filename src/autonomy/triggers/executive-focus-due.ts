@@ -312,8 +312,9 @@ export function createExecutiveFocusDueTrigger(
   }): number | null {
     const current = options.goalsRepository.get(input.goal_id);
     if (current !== null && presentations.hasNewExecutiveInput(current)) return null;
-    const presentedAt = current === null ? null : presentations.executivePresentedAt(current);
-    if (presentedAt !== null) return presentedAt + options.wakeCooldownMs;
+    // An executive-owned presentation stays latched until structural input changes.
+    if (current !== null && presentations.wasExecutivePresented(current))
+      return Number.POSITIVE_INFINITY;
     const cooldown = options.watermarkRepository.get(
       getGoalCooldownProcessName(input.goal_id),
       sessionId,

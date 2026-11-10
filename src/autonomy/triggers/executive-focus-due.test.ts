@@ -6,7 +6,11 @@ import { TestEmbeddingClient, createOfflineTestHarness } from "../../offline/tes
 import type { TurnResult } from "../../cognition/index.js";
 import type { EmbeddingClient } from "../../embeddings/index.js";
 import { clearGoalScoringElisionTraceCache } from "../../retrieval/scoring-features.js";
-import { StreamWatermarkRepository, StreamWriter } from "../../stream/index.js";
+import {
+  StreamWatermarkRepository,
+  StreamWriter,
+  streamWatermarkMigrations,
+} from "../../stream/index.js";
 import { ToolDispatcher } from "../../tools/index.js";
 import { OUTBOUND_POST_TOOL_NAME } from "../../tools/internal/outbound-post-name.js";
 import { ManualClock } from "../../util/clock.js";
@@ -143,21 +147,21 @@ describe("executive focus due trigger", () => {
       });
     const store = h.goalsRepository.presentation!;
     store.presented([store.snapshot(goals[0]!)], "executive", new Set([goals[0]!.id]));
-    const at = store.executivePresentedAt(goals[0]!)!;
     h.clock.advance(500);
     store.presented(
       goals.map((g) => store.snapshot(g)),
       "dormant-question",
     );
-    expect(store.executivePresentedAt(goals[0]!)).toBe(at);
-    expect(store.executivePresentedAt(goals[1]!)).toBeNull();
+    expect(store.wasExecutivePresented(goals[0]!)).toBe(true);
+    expect(store.wasExecutivePresented(goals[1]!)).toBe(false);
     const trigger = createTrigger(h, { threshold: 0 });
     expect((await trigger.scan()).map((e) => e.payload.selected_goal_id)).toEqual([goals[1]!.id]);
     expect(await trigger.nextDueAt!()).toBe(h.clock.now());
     store.presented([store.snapshot(goals[1]!)], "executive-second", new Set([goals[1]!.id]));
-    expect(await trigger.nextDueAt!()).toBe(at + 3_600_000);
+    expect(await trigger.nextDueAt!()).toBeNull();
     h.clock.advance(3_599_500);
-    expect((await trigger.scan()).map((e) => e.payload.selected_goal_id)).toEqual([goals[0]!.id]);
+    expect(await trigger.scan()).toEqual([]);
+    expect(await trigger.nextDueAt!()).toBeNull();
   });
 
   it.each([true, false])(
@@ -251,7 +255,7 @@ describe("executive focus due trigger", () => {
       const backoffKey = goalBackoffProcessName(goal.id);
       const backoff = h.watermarkRepository.get(backoffKey, DEFAULT_SESSION_ID)!;
       expect(backoff.metadata).toMatchObject({ empty_count: 1, input_generation: 1 });
-      expect(store.executivePresentedAt(h.goalsRepository.get(goal.id)!)).toBeNull();
+      expect(store.wasExecutivePresented(h.goalsRepository.get(goal.id)!)).toBe(false);
       expect(await followup.scan()).toEqual([]);
       expect(await executive.scan()).toEqual([]);
       expect(executive.dormantGoalIds!()).toEqual(dormancyCount === 1 ? [goal.id] : []);
@@ -309,7 +313,7 @@ describe("executive focus due trigger", () => {
     expect(await executive.scan()).toEqual([]);
   });
 
-  it("re-admits an executive-owned presentation after cooldown, and accepts new structural input", async () => {
+  it("keeps an executive presentation latched until associated input or progress changes", async () => {
     const h = await createHarness();
     const goal = h.goalsRepository.add({
       description: "目的",
@@ -339,17 +343,53 @@ describe("executive focus due trigger", () => {
       dueAt: h.clock.now() - 1,
       provenance: { kind: "manual" },
     });
-    expect(await trigger.scan()).toHaveLength(1);
+    expect(await trigger.scan()).toEqual([]);
+    expect(await trigger.nextDueAt!()).toBeNull();
     h.goalsRepository.presentation!.associateInbound(goal.id, createStreamEntryId());
     expect(await trigger.scan()).toHaveLength(1);
+    expect(await trigger.nextDueAt!()).toBe(h.clock.now());
     h.goalsRepository.presentation!.presented(
       [h.goalsRepository.presentation!.snapshot(h.goalsRepository.get(goal.id)!)],
       "turn_input",
       new Set([goal.id]),
     );
     expect(await trigger.scan()).toEqual([]);
+    h.clock.advance(100 * 86_400_000);
+    expect(await trigger.scan()).toEqual([]);
+    expect(await trigger.nextDueAt!()).toBeNull();
     h.goalsRepository.updateProgress(goal.id, "進捗", { kind: "manual" });
     expect(await trigger.scan()).toHaveLength(1);
+  });
+
+  it("baselines an upgrade's prior presentations and resumes only on associated input", async () => {
+    const h = await createHarness();
+    const goal = h.goalsRepository.add({
+      description: "Prior goal",
+      priority: 10,
+      provenance: { kind: "manual" },
+    });
+    h.executiveStepsRepository.add({
+      goalId: goal.id,
+      description: "Due",
+      kind: "think",
+      dueAt: h.clock.now(),
+      provenance: { kind: "manual" },
+    });
+    const store = h.goalsRepository.presentation!;
+    store.associateInbound(goal.id, createStreamEntryId());
+    store.presented([store.snapshot(h.goalsRepository.get(goal.id)!)], "pre-upgrade-other-source");
+    const baseline = streamWatermarkMigrations.find((migration) => migration.id === 3)!;
+    expect(typeof baseline.up).toBe("string");
+    h.db.exec(baseline.up as string);
+    expect(store.wasExecutivePresented(h.goalsRepository.get(goal.id)!)).toBe(true);
+    const trigger = createTrigger(h, { threshold: 0 });
+    expect(await trigger.scan()).toEqual([]);
+    expect(await trigger.nextDueAt!()).toBeNull();
+    store.associateInbound(goal.id, createStreamEntryId());
+    expect((await trigger.scan()).map((event) => event.payload.selected_goal_id)).toEqual([
+      goal.id,
+    ]);
+    expect(await trigger.nextDueAt!()).toBe(h.clock.now());
   });
 
   it.each([false, true])(
@@ -1037,7 +1077,7 @@ describe("executive focus due trigger", () => {
     expect(turnOrchestrator.run).not.toHaveBeenCalled();
   });
 
-  it("applies a per-goal cooldown after an executive wake and clears it on user progress", async () => {
+  it("keeps legacy cooldowns for generation zero without an executive acknowledgement", async () => {
     const harness = await createHarness(5_000_000);
     const goal = harness.goalsRepository.add({
       description: "Ship executive focus",
@@ -1061,6 +1101,8 @@ describe("executive focus due trigger", () => {
 
     expect((await scheduler.tick()).firedEvents).toBe(1);
 
+    expect(harness.goalsRepository.presentation!.snapshot(goal).inputGeneration).toBe(0);
+    expect(harness.goalsRepository.presentation!.wasExecutivePresented(goal)).toBe(false);
     harness.clock.advance(3_599_999);
     expect(await trigger.scan()).toEqual([]);
 

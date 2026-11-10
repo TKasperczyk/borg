@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { openDatabase } from "../storage/sqlite/index.js";
+import { openDatabase, runMigrations } from "../storage/sqlite/index.js";
 import { ManualClock } from "../util/clock.js";
 import { StorageError } from "../util/errors.js";
 import { createSessionId, DEFAULT_SESSION_ID } from "../util/ids.js";
@@ -8,6 +8,96 @@ import { createSessionId, DEFAULT_SESSION_ID } from "../util/ids.js";
 import { streamWatermarkMigrations, StreamWatermarkRepository } from "./watermark.js";
 
 describe("StreamWatermarkRepository", () => {
+  it("baselines prior presentations without replacing existing executive acknowledgements", () => {
+    const db = openDatabase(":memory:", {
+      migrations: streamWatermarkMigrations.filter((migration) => migration.id < 3),
+    });
+    const clock = new ManualClock(1_000);
+    const repo = new StreamWatermarkRepository({ db, clock });
+    const prefix = "autonomy:goal-presentation:";
+    const otherSession = createSessionId();
+    const presented = { progressAnchor: 123.5, inputGeneration: 7, turnId: "prior-turn" };
+    try {
+      for (const session of [DEFAULT_SESSION_ID, otherSession]) {
+        repo.set(`${prefix}goal_a`, session, {
+          lastTs: 9,
+          lastEntryId: "goal_a",
+          metadata: { version: 1, inputGeneration: 9, lastProgressVersion: null, presented },
+        });
+      }
+      repo.set(`${prefix}goal_null`, DEFAULT_SESSION_ID, {
+        lastTs: 0,
+        lastEntryId: "goal_null",
+        metadata: { presented: null },
+      });
+      repo.set(`${prefix}goal_without_metadata`, DEFAULT_SESSION_ID, {
+        lastTs: 0,
+        lastEntryId: "goal_without_metadata",
+      });
+      repo.set("unrelated", DEFAULT_SESSION_ID, {
+        lastTs: 0,
+        lastEntryId: "unrelated",
+        metadata: { presented },
+      });
+      repo.set(`${prefix}goal_existing`, DEFAULT_SESSION_ID, {
+        lastTs: 7,
+        lastEntryId: "goal_existing",
+        metadata: { presented },
+      });
+      const existing = repo.set(`${prefix}executive:goal_existing`, DEFAULT_SESSION_ID, {
+        lastTs: 3,
+        lastEntryId: "goal_existing",
+        metadata: { progressAnchor: 50, inputGeneration: 3, turnId: "own-turn" },
+      });
+      clock.advance(500);
+      runMigrations(db, streamWatermarkMigrations, clock.now());
+      for (const session of [DEFAULT_SESSION_ID, otherSession]) {
+        expect(repo.get(`${prefix}executive:goal_a`, session)).toEqual({
+          processName: `${prefix}executive:goal_a`,
+          sessionId: session,
+          lastTs: 7,
+          lastEntryId: "goal_a",
+          updatedAt: 1_000,
+          metadata: presented,
+        });
+      }
+      expect(repo.get(`${prefix}executive:goal_existing`, DEFAULT_SESSION_ID)).toEqual(existing);
+      expect(repo.get(`${prefix}executive:goal_null`, DEFAULT_SESSION_ID)).toBeNull();
+      expect(repo.get(`${prefix}executive:goal_without_metadata`, DEFAULT_SESSION_ID)).toBeNull();
+      expect(repo.get(`${prefix}executive:unrelated`, DEFAULT_SESSION_ID)).toBeNull();
+      const before = db
+        .prepare("SELECT * FROM stream_watermarks ORDER BY process_name, session_id")
+        .all();
+      const changes = db.prepare("SELECT total_changes() AS count").get();
+      runMigrations(db, streamWatermarkMigrations, clock.now());
+      // Replaying the SQL itself must also preserve the existing acknowledgements.
+      const baseline = streamWatermarkMigrations.find((migration) => migration.id === 3)!;
+      expect(baseline.name).toBe("executive_goal_presentation_baseline");
+      expect(typeof baseline.up).toBe("string");
+      db.exec(baseline.up as string);
+      expect(
+        db.prepare("SELECT * FROM stream_watermarks ORDER BY process_name, session_id").all(),
+      ).toEqual(before);
+      expect(db.prepare("SELECT total_changes() AS count").get()).toEqual(changes);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("leaves a fresh store empty when baselining executive presentations", () => {
+    const db = openDatabase(":memory:", { migrations: streamWatermarkMigrations });
+    try {
+      expect(db.prepare("SELECT * FROM stream_watermarks").all()).toEqual([]);
+      expect(db.listAppliedMigrations().map(({ id, name }) => ({ id, name }))).toEqual([
+        { id: 1, name: "stream_watermark_baseline" },
+        { id: 2, name: "stream_watermark_metadata_json" },
+        { id: 3, name: "executive_goal_presentation_baseline" },
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
   function openRepo(nowMs = 1_000): {
     repo: StreamWatermarkRepository;
     clock: ManualClock;

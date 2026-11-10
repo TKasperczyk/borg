@@ -1341,8 +1341,8 @@ describe("deliberator", () => {
         expect(store.wasPresented(rows[0]!)).toBe(!fails);
         expect(store.wasPresented(rows[1]!)).toBe(!fails);
         expect(store.wasPresented(rows[2]!)).toBe(false);
-        expect(store.executivePresentedAt(rows[0]!) !== null).toBe(!fails);
-        expect(store.executivePresentedAt(rows[1]!)).toBeNull();
+        expect(store.wasExecutivePresented(rows[0]!)).toBe(!fails);
+        expect(store.wasExecutivePresented(rows[1]!)).toBe(false);
         expect(metrics.shownGoalPresentations).toEqual(
           fails ? [] : context.selfSnapshot.goalPresentations!.slice(0, 2),
         );
@@ -1456,8 +1456,8 @@ describe("deliberator", () => {
         expect(store.wasPresented(rows[0]!)).toBe(true);
         expect(store.wasPresented(rows[1]!)).toBe(false);
         expect(store.wasPresented(rows[2]!)).toBe(false);
-        expect(store.executivePresentedAt(rows[0]!)).not.toBeNull();
-        expect(store.executivePresentedAt(rows[1]!)).toBeNull();
+        expect(store.wasExecutivePresented(rows[0]!)).toBe(true);
+        expect(store.wasExecutivePresented(rows[1]!)).toBe(false);
         expect(presented.mock.calls).toHaveLength(path === "system_1" ? 1 : 2);
         expect(metrics.shownGoalPresentations).toEqual(
           context.selfSnapshot.goalPresentations!.slice(0, 2),

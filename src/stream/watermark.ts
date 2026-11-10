@@ -31,6 +31,31 @@ export const streamWatermarkMigrations: Migration[] = [
       }
     },
   },
+  {
+    id: 3,
+    name: "executive_goal_presentation_baseline",
+    // Pre-upgrade presentations by any source are the executive baseline:
+    // resume on new input instead of re-presenting every goal once.
+    up: `
+      INSERT OR IGNORE INTO stream_watermarks
+        (process_name, session_id, last_ts, last_entry_id, updated_at, metadata_json)
+      SELECT
+        'autonomy:goal-presentation:executive:' || substr(process_name, length('autonomy:goal-presentation:') + 1),
+        session_id,
+        json_extract(metadata_json, '$.presented.inputGeneration'),
+        substr(process_name, length('autonomy:goal-presentation:') + 1),
+        updated_at,
+        json_object(
+          'progressAnchor', json_extract(metadata_json, '$.presented.progressAnchor'),
+          'inputGeneration', json_extract(metadata_json, '$.presented.inputGeneration'),
+          'turnId', json_extract(metadata_json, '$.presented.turnId')
+        )
+      FROM stream_watermarks
+      WHERE process_name LIKE 'autonomy:goal-presentation:%'
+        AND process_name NOT LIKE 'autonomy:goal-presentation:executive:%'
+        AND json_type(metadata_json, '$.presented') = 'object';
+    `,
+  },
 ];
 
 export type StreamWatermark = {

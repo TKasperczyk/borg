@@ -33,22 +33,22 @@ export class GoalPresentationStore {
     return `autonomy:goal-presentation:executive:${goalId}`;
   }
 
-  executivePresentedAt(goal: GoalRecord): number | null {
+  wasExecutivePresented(goal: GoalRecord): boolean {
     const row = this.watermarks.get(this.executiveKey(goal.id), DEFAULT_SESSION_ID);
-    if (row === null) return null;
+    if (row === null) return false;
     const prior = stateSchema.shape.presented.unwrap().parse(row.metadata);
     const current = this.snapshot(goal);
-    return prior.inputGeneration === current.inputGeneration &&
+    return (
+      prior.inputGeneration === current.inputGeneration &&
       prior.progressAnchor === current.progressAnchor
-      ? row.updatedAt
-      : null;
+    );
   }
 
   hasNewExecutiveInput(goal: GoalRecord): boolean {
     const row = this.watermarks.get(this.executiveKey(goal.id), DEFAULT_SESSION_ID);
     return row === null
       ? this.snapshot(goal).inputGeneration > 0
-      : this.executivePresentedAt(goal) === null;
+      : !this.wasExecutivePresented(goal);
   }
 
   private read(goalId: GoalId): z.infer<typeof stateSchema> {
