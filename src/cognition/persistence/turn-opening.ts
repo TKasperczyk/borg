@@ -113,6 +113,7 @@ export class TurnOpeningPersistence {
             content: {
               mode: input.perception.mode,
               isOperational: input.perception.isOperational === true,
+              modeDegraded: input.perception.modeDegraded === true,
               entities: input.perception.entities,
               userIdentityNames: input.perception.userIdentityNames ?? [],
               temporalCue: input.perception.temporalCue,

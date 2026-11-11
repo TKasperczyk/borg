@@ -201,11 +201,26 @@ export class Perceiver {
       }),
       runPerceptionClassifierSafely({
         classifier: "mode_detector",
-        run: () => this.modeDetector.detectMode(text, recentHistory),
-        fallback: () => ({
-          mode: "idle",
-          isOperational: false,
+        run: async () => ({
+          ...(await this.modeDetector.detectMode(text, recentHistory)),
+          degraded: false,
         }),
+        fallback: () => {
+          if (this.tracer.enabled && this.turnId !== undefined) {
+            this.tracer.emit("perception.classifier.degraded", {
+              turnId: this.turnId,
+              ...(sessionId !== undefined ? { session_id: sessionId } : {}),
+              classifier: "mode_detector",
+              reason: "classifier_error",
+            });
+          }
+
+          return {
+            mode: "idle" as const,
+            isOperational: false,
+            degraded: true,
+          };
+        },
         onFailure: this.onClassifierFailure,
       }),
       this.detectAffectiveSignalSafely(text, recentHistory, sessionId),
@@ -245,6 +260,7 @@ export class Perceiver {
       userIdentityNames: entityExtraction.userIdentityNames,
       mode: modeDetection.mode,
       isOperational: modeDetection.isOperational,
+      modeDegraded: modeDetection.degraded,
       affectiveSignal: affective.signal,
       affectiveSignalDegraded: affective.degraded,
       temporalCue,

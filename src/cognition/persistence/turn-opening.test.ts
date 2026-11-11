@@ -148,6 +148,7 @@ describe("TurnOpeningPersistence", () => {
         content: {
           mode: "problem_solving",
           isOperational: true,
+          modeDegraded: false,
           entities: ["Atlas"],
           userIdentityNames: [],
           temporalCue: null,
@@ -213,6 +214,7 @@ describe("TurnOpeningPersistence", () => {
         content: {
           mode: "problem_solving",
           isOperational: true,
+          modeDegraded: false,
           entities: ["Atlas"],
           userIdentityNames: [],
           temporalCue: null,

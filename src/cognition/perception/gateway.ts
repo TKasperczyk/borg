@@ -126,11 +126,20 @@ export class PerceptionGateway {
     const recentHistoryStrings = recencyWindow.messages.map(
       (message) => `${message.role}: ${message.content}`,
     );
-    const perception = await perceiver.perceive(
+    const perceived = await perceiver.perceive(
       input.cognitionInput,
       recentHistoryStrings,
       input.sessionId,
     );
+    // A failed mode classifier produced no reading of this input. Its "idle"
+    // placeholder is not neutral downstream (one-episode retrieval limit, the
+    // idle S1 path, the idle compile skip), so carry the session's last
+    // perceived mode instead, as the mood branch below does. isOperational
+    // stays false: working memory keeps no earlier value for it.
+    const perception =
+      perceived.modeDegraded === true && input.workingMemory.mode !== null
+        ? { ...perceived, mode: input.workingMemory.mode }
+        : perceived;
     // `mood` on the working-memory line is not a measurement of the being. The
     // affective classifier is handed this turn's input text plus the last ten
     // recency strings, and its system prompt (memory/affective/extractor.ts)

@@ -435,6 +435,7 @@ describe("perception", () => {
 
     expect(perceived.mode).toBe("idle");
     expect(perceived.isOperational).toBe(false);
+    expect(perceived.modeDegraded).toBe(true);
     expect(perceived.entities).toEqual(["Atlas"]);
     expect(onClassifierFailure).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -469,6 +470,7 @@ describe("perception", () => {
     expect(perceived.entities).toEqual([]);
     expect(perceived.mode).toBe("problem_solving");
     expect(perceived.isOperational).toBe(false);
+    expect(perceived.modeDegraded).toBe(false);
     expect(onClassifierFailure).toHaveBeenCalledWith(
       expect.objectContaining({
         classifier: "entity_extractor",
@@ -535,6 +537,7 @@ describe("perception", () => {
       entityMentions: successful.entityMentions,
       mode: successful.mode,
       isOperational: successful.isOperational,
+      modeDegraded: successful.modeDegraded,
     }).toEqual(successful);
   });
 

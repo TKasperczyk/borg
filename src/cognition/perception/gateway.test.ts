@@ -1,9 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { Config } from "../../config/index.js";
+import type { LLMCompleteOptions } from "../../llm/index.js";
+import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { createWorkingMemory } from "../../memory/working/index.js";
 import type { StreamReader } from "../../stream/index.js";
-import { ConfigError } from "../../util/errors.js";
+import { ConfigError, LLMError } from "../../util/errors.js";
+import { computeRetrievalLimit } from "../attention/weights.js";
+import type { CognitiveMode } from "../types.js";
 import { DEFAULT_SESSION_ID, type SessionId, type StreamEntryId } from "../../util/ids.js";
 import { ManualClock } from "../../util/clock.js";
 import type { RecencyWindow } from "../recency/index.js";
@@ -267,5 +271,101 @@ describe("PerceptionGateway", () => {
       });
 
     expect(result.perception.mode).toBe("idle");
+  });
+
+  describe("when the mode classifier fails", () => {
+    function refusingModeLlm(): FakeLLMClient {
+      const respond = (options: LLMCompleteOptions) => {
+        const toolName = options.tools?.[0]?.name ?? "";
+
+        if (toolName === "EmitModeDetection") {
+          throw new LLMError("Anthropic refused the request");
+        }
+
+        return {
+          text: "",
+          input_tokens: 1,
+          output_tokens: 1,
+          stop_reason: "tool_use" as const,
+          tool_calls: [
+            {
+              id: "toolu_other",
+              name: toolName,
+              input:
+                toolName === "EmitEntityExtraction"
+                  ? { entities: [], user_identity_names: [] }
+                  : { has_cue: false },
+            },
+          ],
+        };
+      };
+
+      return new FakeLLMClient({ responses: [respond, respond, respond] });
+    }
+
+    async function perceiveWithPreviousMode(previousMode: CognitiveMode | null) {
+      const tracer = makeTracer();
+      const onHookFailure = vi.fn(async () => undefined);
+      const llm = refusingModeLlm();
+      const gateway = new PerceptionGateway({
+        config: makeConfig(true),
+        llmFactory: () => llm,
+        clock: new ManualClock(4_000),
+        tracer,
+        getAffectiveSignalDetector: () =>
+          vi.fn(async () => ({
+            valence: 0,
+            arousal: 0,
+            dominant_emotion: null,
+          })),
+        turnContextCompiler: {
+          compile: vi.fn(() => makeRecencyWindow()),
+        },
+        createStreamReader: vi.fn(() => ({}) as StreamReader),
+      });
+
+      const result = await gateway
+        .beginTurn({ turnId: "turn-4", onHookFailure })
+        .perceive({
+          sessionId: DEFAULT_SESSION_ID,
+          isSelfAudience: false,
+          origin: "user",
+          cognitionInput: "a substantive technical message",
+          workingMemory: {
+            ...createWorkingMemory(DEFAULT_SESSION_ID, 3_000),
+            mode: previousMode,
+          },
+        });
+
+      return { result, tracer, onHookFailure };
+    }
+
+    it("carries the session's last perceived mode instead of the idle placeholder", async () => {
+      const { result, tracer, onHookFailure } = await perceiveWithPreviousMode("problem_solving");
+
+      expect(result.perception.modeDegraded).toBe(true);
+      expect(result.perception.mode).toBe("problem_solving");
+      expect(result.perception.isOperational).toBe(false);
+      expect(result.workingMemory.mode).toBe("problem_solving");
+      // The boundary the placeholder crossed: idle caps episodic retrieval at one.
+      expect(computeRetrievalLimit(result.perception.mode)).toBe(6);
+      expect(tracer.emit).toHaveBeenCalledWith("perception.classifier.degraded", {
+        turnId: "turn-4",
+        session_id: DEFAULT_SESSION_ID,
+        classifier: "mode_detector",
+        reason: "classifier_error",
+      });
+      expect(onHookFailure).toHaveBeenCalledWith("perception_classifier", expect.any(LLMError), {
+        classifier: "mode_detector",
+      });
+    });
+
+    it("keeps the idle placeholder, still marked degraded, when no earlier mode exists", async () => {
+      const { result } = await perceiveWithPreviousMode(null);
+
+      expect(result.perception.modeDegraded).toBe(true);
+      expect(result.perception.mode).toBe("idle");
+      expect(result.workingMemory.mode).toBe("idle");
+    });
   });
 });
