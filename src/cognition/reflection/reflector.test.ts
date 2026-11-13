@@ -3790,6 +3790,59 @@ describe("reflector", () => {
     expect(llm.requests[0]?.max_tokens).toBe(16_000);
   });
 
+  it("passes the turn's tool calls to the reflection without their outputs", async () => {
+    const llm = new FakeLLMClient({
+      responses: [createReflectionResponse()],
+    });
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+    });
+    cleanup.push(harness.cleanup);
+    const reflector = createHarnessReflector(harness, {
+      clock: harness.clock,
+      llmClient: harness.llmClient,
+      model: "claude-opus-5-5",
+    });
+    const context = createOpenQuestionReflectionContext();
+
+    await reflector.reflect(
+      {
+        ...context,
+        actionResult: {
+          ...context.actionResult,
+          tool_calls: [
+            {
+              callId: "toolu_read",
+              name: "tool.stream.get",
+              input: { stream_entry_id: "strm_aaaaaaaaaaaaaaaa" },
+              output: { entry: { text: "recorded output body ".repeat(5_000) } },
+              ok: true,
+              durationMs: 13,
+            },
+            {
+              callId: "toolu_search",
+              name: "tool.episodic.search",
+              input: { query: "zakupy na głodniaka", limit: 5 },
+              ok: false,
+              durationMs: 40,
+            },
+          ],
+        },
+      },
+      harness.streamWriter,
+    );
+    const content = llm.requests[0]?.messages[0]?.content ?? "{}";
+    const payload = JSON.parse(typeof content === "string" ? content : "{}") as {
+      current_turn_tool_calls?: unknown;
+    };
+
+    expect(payload.current_turn_tool_calls).toEqual([
+      { name: "tool.stream.get", input: { stream_entry_id: "strm_aaaaaaaaaaaaaaaa" }, ok: true },
+      { name: "tool.episodic.search", input: { query: "zakupy na głodniaka", limit: 5 }, ok: false },
+    ]);
+    expect(String(content)).not.toContain("recorded output body");
+  });
+
   it("passes current trait vocabulary with established traits and capped strongest candidates", async () => {
     const llm = new FakeLLMClient({
       responses: [createReflectionResponse()],

@@ -223,10 +223,11 @@ describe("proactive outbound", () => {
         targetWriter.close();
       }
 
+      const directingMessage = "Send the Launch Room a note about the checklist.";
       const result = await borg.turn({
         sessionId: operatorSessionId,
         audience: "Tom",
-        userMessage: "Send the Launch Room a note about the checklist.",
+        userMessage: directingMessage,
       });
 
       expect(result.response).toBe("I sent the Launch Room a message in its session.");
@@ -307,9 +308,18 @@ describe("proactive outbound", () => {
         tool: 1,
       });
 
-      const targetScopedRequests = llm.requests
-        .map(requestText)
-        .filter((text) => text.includes(targetInstruction));
+      const instructionRequests = llm.requests.filter((request) =>
+        requestText(request).includes(targetInstruction),
+      );
+      // The directing turn's own reflection sees its tool.outbound.post call, instruction included.
+      const directingReflections = instructionRequests.filter(
+        (request) =>
+          request.budget === "reflection" && requestText(request).includes(directingMessage),
+      );
+      expect(directingReflections).toHaveLength(1);
+      const targetScopedRequests = instructionRequests
+        .filter((request) => !directingReflections.includes(request))
+        .map(requestText);
       expect(targetScopedRequests.length).toBeGreaterThan(0);
       for (const text of targetScopedRequests) {
         expect(text).not.toContain(directingOnlySecret);

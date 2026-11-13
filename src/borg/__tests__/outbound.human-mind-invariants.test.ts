@@ -184,15 +184,25 @@ describe("proactive outbound human-mind invariants", () => {
         targetWriter.close();
       }
 
+      const directingMessage = "Send the Launch Room a note about the checklist.";
       await borg.turn({
         sessionId: operatorSessionId,
         audience: "Tom",
-        userMessage: "Send the Launch Room a note about the checklist.",
+        userMessage: directingMessage,
       });
 
-      const targetRequests = llm.requests
-        .map(requestText)
-        .filter((text) => text.includes(targetInstruction));
+      const instructionRequests = llm.requests.filter((request) =>
+        requestText(request).includes(targetInstruction),
+      );
+      // The directing turn's own reflection sees its tool.outbound.post call, instruction included.
+      const directingReflections = instructionRequests.filter(
+        (request) =>
+          request.budget === "reflection" && requestText(request).includes(directingMessage),
+      );
+      expect(directingReflections).toHaveLength(1);
+      const targetRequests = instructionRequests
+        .filter((request) => !directingReflections.includes(request))
+        .map(requestText);
       expect(targetRequests.length).toBeGreaterThan(0);
       for (const text of targetRequests) {
         expect(text).toContain(durableCrossAudienceMemory);
