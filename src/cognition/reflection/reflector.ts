@@ -2289,11 +2289,6 @@ export class Reflector {
                   current_turn_inbound_stream_entry_ids:
                     context.currentTurnInboundStreamEntryIds ?? [],
                   current_turn_artifact_references: currentTurnArtifactReferences(context),
-                  current_turn_tool_calls: context.actionResult.tool_calls.map((call) => ({
-                    name: call.name,
-                    input: call.input,
-                    ok: call.ok,
-                  })),
                   available_evidence_episodes: context.retrievedEpisodes.map((result) => ({
                     id: result.episode.id,
                     title: result.episode.title,
