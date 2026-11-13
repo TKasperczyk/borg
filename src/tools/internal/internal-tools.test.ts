@@ -472,6 +472,87 @@ describe("internal tools", () => {
     }
   });
 
+  it("returns a message's recorded tool calls without their outputs through the dispatcher", async () => {
+    const harness = await createOfflineTestHarness();
+    try {
+      const sessionId = createSessionId();
+      const entryIndex = new StreamEntryIndexRepository({
+        db: harness.db,
+        dataDir: harness.tempDir,
+      });
+      const writer = new StreamWriter({
+        dataDir: harness.tempDir,
+        sessionId,
+        entryIndex,
+        clock: harness.clock,
+      });
+      const source = await writer.append({
+        kind: "user_msg",
+        content: "wróciłam z trzema rodzajami chipsów",
+      });
+      const bulkyOutput = "recorded output body ".repeat(20_000);
+      const withCalls = await writer.append({
+        kind: "agent_msg",
+        content: "Otworzyłem surowy wpis.",
+        tool_calls: [
+          {
+            callId: "toolu_read",
+            name: "tool.stream.get",
+            input: { stream_entry_id: source.id },
+            output: { entry: { id: source.id, text: bulkyOutput } },
+            ok: true,
+            durationMs: 13,
+          },
+          {
+            callId: "toolu_search",
+            name: "tool.episodic.search",
+            input: { query: "zakupy na głodniaka", limit: 5 },
+            ok: false,
+            durationMs: 40,
+          },
+          "not a call record",
+        ],
+      });
+      const withoutCalls = await writer.append({
+        kind: "agent_msg",
+        content: "Answered from the page alone.",
+        tool_calls: [],
+      });
+      const dispatcher = createHarnessToolDispatcher(harness);
+      const read = (streamEntryId: typeof source.id) =>
+        dispatcher.dispatch({
+          toolName: "tool.stream.get",
+          input: { stream_entry_id: streamEntryId },
+          origin: "autonomous",
+          sessionId: DEFAULT_SESSION_ID,
+        });
+
+      const readWithCalls = await read(withCalls.id);
+      expect(readWithCalls).toMatchObject({ ok: true });
+      expect(
+        (readWithCalls as { output: { entry: { tool_calls: unknown } } }).output.entry.tool_calls,
+      ).toEqual([
+        { name: "tool.stream.get", input: { stream_entry_id: source.id }, ok: true },
+        { name: "tool.episodic.search", input: { query: "zakupy na głodniaka", limit: 5 }, ok: false },
+        { name: null, input: null, ok: null },
+      ]);
+      expect(JSON.stringify(readWithCalls)).not.toContain("recorded output body");
+
+      expect(await read(withoutCalls.id)).toMatchObject({
+        ok: true,
+        output: { entry: { id: withoutCalls.id, tool_calls: [] } },
+      });
+
+      const readSource = await read(source.id);
+      expect(readSource).toMatchObject({ ok: true, output: { entry: { id: source.id } } });
+      expect(
+        (readSource as { output: { entry: Record<string, unknown> } }).output.entry,
+      ).not.toHaveProperty("tool_calls");
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
   it("recalls episodic search globally with disclosure labels", async () => {
     const harness = await createOfflineTestHarness({
       embeddingClient: new TestEmbeddingClient(new Map([["planning roadmap", [0, 1, 0, 0]]])),
