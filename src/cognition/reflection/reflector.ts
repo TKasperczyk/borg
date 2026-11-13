@@ -398,6 +398,26 @@ function emptyReflectionEffects(): ReflectionEffects {
   };
 }
 
+// A failed call keeps the dispatcher's error text, which says why it failed; a successful call's
+// output is left out. Error text past the cap is cut, and its full length is kept beside it.
+const REFLECTION_TOOL_ERROR_MAX_CHARS = 1_000;
+
+function reflectionToolCall(call: ActionResult["tool_calls"][number]) {
+  return {
+    name: call.name,
+    input: call.input,
+    ok: call.ok,
+    ...(call.ok || call.error === undefined
+      ? {}
+      : call.error.length <= REFLECTION_TOOL_ERROR_MAX_CHARS
+        ? { error: call.error }
+        : {
+            error: call.error.slice(0, REFLECTION_TOOL_ERROR_MAX_CHARS),
+            error_chars: call.error.length,
+          }),
+  };
+}
+
 function currentTurnArtifactReferences(
   context: Pick<
     ReflectionContext,
@@ -2289,11 +2309,7 @@ export class Reflector {
                   current_turn_inbound_stream_entry_ids:
                     context.currentTurnInboundStreamEntryIds ?? [],
                   current_turn_artifact_references: currentTurnArtifactReferences(context),
-                  current_turn_tool_calls: context.actionResult.tool_calls.map((call) => ({
-                    name: call.name,
-                    input: call.input,
-                    ok: call.ok,
-                  })),
+                  current_turn_tool_calls: context.actionResult.tool_calls.map(reflectionToolCall),
                   available_evidence_episodes: context.retrievedEpisodes.map((result) => ({
                     id: result.episode.id,
                     title: result.episode.title,

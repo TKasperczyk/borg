@@ -732,10 +732,12 @@ describe("executeToolLoop", () => {
           callId: "toolu_1",
           name: "tool.test.unknown",
           input: {},
+          error: "Unknown tool",
           ok: false,
         },
       ],
     });
+    expect(result.toolCallsMade[0]).not.toHaveProperty("output");
     expect(llm.converseRequests[1]?.messages.at(-1)).toEqual({
       role: "user",
       content: [

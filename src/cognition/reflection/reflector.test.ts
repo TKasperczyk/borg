@@ -3843,6 +3843,79 @@ describe("reflector", () => {
     expect(String(content)).not.toContain("recorded output body");
   });
 
+  it("passes a failed call's error text to the reflection and cuts it past 1,000 chars", async () => {
+    const llm = new FakeLLMClient({
+      responses: [createReflectionResponse()],
+    });
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+    });
+    cleanup.push(harness.cleanup);
+    const reflector = createHarnessReflector(harness, {
+      clock: harness.clock,
+      llmClient: harness.llmClient,
+      model: "claude-opus-5-5",
+    });
+    const context = createOpenQuestionReflectionContext();
+    const longError = `ToolError: ${"ż".repeat(1_500)}`;
+
+    await reflector.reflect(
+      {
+        ...context,
+        actionResult: {
+          ...context.actionResult,
+          tool_calls: [
+            {
+              callId: "toolu_resolve",
+              name: "tool.openQuestions.resolve",
+              input: { open_question_id: "oq_aaaaaaaaaaaaaaaa" },
+              error: "StorageError: Cannot resolve open question in status resolved",
+              ok: false,
+              durationMs: 18,
+            },
+            {
+              callId: "toolu_long",
+              name: "tool.episodic.search",
+              input: { query: "x" },
+              error: longError,
+              ok: false,
+              durationMs: 5,
+            },
+            {
+              callId: "toolu_no_error",
+              name: "tool.stream.get",
+              input: { stream_entry_id: "strm_aaaaaaaaaaaaaaaa" },
+              ok: false,
+              durationMs: 1,
+            },
+          ],
+        },
+      },
+      harness.streamWriter,
+    );
+    const content = llm.requests[0]?.messages[0]?.content ?? "{}";
+    const payload = JSON.parse(typeof content === "string" ? content : "{}") as {
+      current_turn_tool_calls?: unknown;
+    };
+
+    expect(payload.current_turn_tool_calls).toEqual([
+      {
+        name: "tool.openQuestions.resolve",
+        input: { open_question_id: "oq_aaaaaaaaaaaaaaaa" },
+        ok: false,
+        error: "StorageError: Cannot resolve open question in status resolved",
+      },
+      {
+        name: "tool.episodic.search",
+        input: { query: "x" },
+        ok: false,
+        error: longError.slice(0, 1_000),
+        error_chars: longError.length,
+      },
+      { name: "tool.stream.get", input: { stream_entry_id: "strm_aaaaaaaaaaaaaaaa" }, ok: false },
+    ]);
+  });
+
   it("passes current trait vocabulary with established traits and capped strongest candidates", async () => {
     const llm = new FakeLLMClient({
       responses: [createReflectionResponse()],
