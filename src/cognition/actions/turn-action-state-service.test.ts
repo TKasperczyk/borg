@@ -30,41 +30,54 @@ function createActionStateResponse(input: unknown) {
 }
 
 describe("TurnActionStateService", () => {
-  it("skips action extraction when the current turn has a frame anomaly", async () => {
-    const extractSpy = vi.spyOn(ActionStateExtractor.prototype, "extract");
-    const llm = new FakeLLMClient();
-    const service = new TurnActionStateService({
-      model: "test-recall",
-      actionRepository: { add: vi.fn() } as never,
-      embeddingClient: new TestEmbeddingClient(),
-      clock: new FixedClock(1_000),
-      tracer: NOOP_TRACER,
-    });
-
-    try {
-      const ids = await service.extract({
-        llmClient: llm,
-        turnId: "turn_anomaly",
-        isUserTurn: true,
-        userMessage: "You were playing Tom.",
-        persistedUserEntryId: createStreamEntryId(),
-        recentHistory: [],
-        audienceEntityId: null,
-        frameAnomaly: {
-          status: "ok",
-          kind: "frame_assignment_claim",
-          confidence: 0.96,
-          rationale: "The user-role message assigns the prior exchange to a roleplay frame.",
-        },
+  it.each([
+    { disposition: "annotate", hasAnomaly: true, extractionCalls: 1 },
+    { disposition: "quarantine", hasAnomaly: true, extractionCalls: 0 },
+    { disposition: undefined, hasAnomaly: true, extractionCalls: 0 },
+    { disposition: "none", hasAnomaly: false, extractionCalls: 1 },
+  ] as const)(
+    "action extraction with $disposition and anomaly=$hasAnomaly",
+    async ({ disposition, hasAnomaly, extractionCalls }) => {
+      const extractSpy = vi.spyOn(ActionStateExtractor.prototype, "extract");
+      const llm = new FakeLLMClient({
+        responses: [createActionStateResponse({ action_states: [] })],
+      });
+      const service = new TurnActionStateService({
+        model: "test-recall",
+        actionRepository: { add: vi.fn(), list: vi.fn(() => []) } as never,
+        embeddingClient: new TestEmbeddingClient(),
+        clock: new FixedClock(1_000),
+        tracer: NOOP_TRACER,
       });
 
-      expect(ids).toEqual([]);
-      expect(extractSpy).not.toHaveBeenCalled();
-      expect(llm.requests).toHaveLength(0);
-    } finally {
-      extractSpy.mockRestore();
-    }
-  });
+      try {
+        const ids = await service.extract({
+          llmClient: llm,
+          turnId: "turn_anomaly",
+          isUserTurn: true,
+          userMessage: "You were playing Tom.",
+          persistedUserEntryId: createStreamEntryId(),
+          recentHistory: [],
+          audienceEntityId: null,
+          frameAnomalyDisposition: disposition,
+          frameAnomaly: hasAnomaly
+            ? {
+                status: "ok",
+                kind: "frame_assignment_claim",
+                confidence: 0.96,
+                rationale: "The user-role message assigns the prior exchange to a roleplay frame.",
+              }
+            : null,
+        });
+
+        expect(ids).toEqual([]);
+        expect(extractSpy).toHaveBeenCalledTimes(extractionCalls);
+        expect(llm.requests).toHaveLength(extractionCalls);
+      } finally {
+        extractSpy.mockRestore();
+      }
+    },
+  );
 
   it("emits degraded extraction traces with session scope", async () => {
     const streamEntryId = createStreamEntryId();

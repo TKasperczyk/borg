@@ -1,9 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { createWorkingMemory, type WorkingMemory } from "../../../memory/working/index.js";
+import { TestEmbeddingClient } from "../../../offline/test-support.js";
 import type { StreamEntry } from "../../../stream/index.js";
-import { createEntityId, createSessionId, createStreamEntryId } from "../../../util/ids.js";
+import { NOOP_TRACER } from "../../../tracing/tracer.js";
+import { FixedClock } from "../../../util/clock.js";
+import {
+  createEntityId,
+  createGoalId,
+  createSessionId,
+  createStreamEntryId,
+} from "../../../util/ids.js";
 import type { SessionId } from "../../../util/ids.js";
+import { ActionStateExtractor } from "../../actions/action-state-extractor.js";
+import { TurnActionStateService } from "../../actions/turn-action-state-service.js";
 
 import { runExtractionPhase } from "./extraction-phase.js";
 
@@ -70,6 +80,76 @@ function baseExtractionPhaseInput(input: {
 }
 
 describe("runExtractionPhase", () => {
+  it.each(["annotate", "quarantine", "none"] as const)(
+    "preserves action goal linking and extraction gates for the %s disposition",
+    async (frameAnomalyDisposition) => {
+      const sessionId = createSessionId();
+      const goalId = createGoalId();
+      const selfContext = { executiveFocus: { selected_goal: { id: goalId } } };
+      const actionService = new TurnActionStateService({
+        model: "test-recall",
+        actionRepository: { list: vi.fn(() => []) } as never,
+        embeddingClient: new TestEmbeddingClient(),
+        clock: new FixedClock(1_000),
+        tracer: NOOP_TRACER,
+      });
+      const extractActionState = vi.fn(actionService.extract.bind(actionService));
+      const input = baseExtractionPhaseInput({
+        sessionId,
+        workingMemory: createWorkingMemory(sessionId, 1_000),
+        extractActionState,
+      });
+      vi.mocked(input.options.selfContextBuilder.build).mockResolvedValue(selfContext as never);
+      const currentTurnFrameAnomaly =
+        frameAnomalyDisposition === "none"
+          ? null
+          : ({
+              status: "ok",
+              kind: "frame_assignment_claim",
+              confidence: 0.96,
+              rationale: "The message assigns the prior exchange to another frame.",
+            } as const);
+      const extractSpy = vi.spyOn(ActionStateExtractor.prototype, "extract").mockResolvedValue([]);
+
+      try {
+        const result = await runExtractionPhase({
+          ...input,
+          persistedUserEntryId: createStreamEntryId(),
+          currentTurnFrameAnomaly,
+          frameAnomalyDisposition,
+        });
+
+        const runsActionPass = frameAnomalyDisposition !== "quarantine";
+        expect(extractActionState).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({
+            frameAnomaly: currentTurnFrameAnomaly,
+            frameAnomalyDisposition,
+            goalId: runsActionPass ? goalId : null,
+          }),
+        );
+        expect(input.options.selfContextBuilder.build).toHaveBeenCalledTimes(
+          runsActionPass ? 1 : 0,
+        );
+        expect(result.actionLinkSelfContext).toBe(runsActionPass ? selfContext : null);
+        if (runsActionPass) {
+          expect(extractSpy).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ goalId }));
+        } else {
+          expect(extractSpy).not.toHaveBeenCalled();
+        }
+        const otherExtractionCalls = currentTurnFrameAnomaly === null ? 1 : 0;
+        expect(input.options.correctivePreferenceTurnService.extractAndApply).toHaveBeenCalledTimes(
+          otherExtractionCalls,
+        );
+        expect(input.options.turnGoalPromotionService.extractAndPersist).toHaveBeenCalledTimes(
+          otherExtractionCalls,
+        );
+        expect(input.options.creatorDirectiveTurnService.extractAndPersist).toHaveBeenCalledOnce();
+      } finally {
+        extractSpy.mockRestore();
+      }
+    },
+  );
+
   it("skips user-world extraction and mutation for directed outbound instructions", async () => {
     const sessionId = createSessionId();
     const workingMemory = createWorkingMemory(sessionId, 1_000);

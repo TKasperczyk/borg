@@ -15,6 +15,7 @@ import { isCreatorInOperatorContext } from "../../authority.js";
 import type { CurrentTurnUserInputSenderAttribution } from "../../turn-input.js";
 import type { TurnPhaseCoordinatorOptions, TurnPhaseInput } from "./types.js";
 import type { AppendHookFailureEvent } from "./utils.js";
+import type { FrameAnomalyDisposition } from "./perception-phase.js";
 
 // Most recently active other audiences offered to the corrective-preference
 // extractor as cross-audience targets (only on creator-in-operator turns).
@@ -115,6 +116,7 @@ export async function runExtractionPhase(input: {
   senderAttribution?: readonly CurrentTurnUserInputSenderAttribution[];
   distinctSenderCount?: number;
   currentTurnFrameAnomaly: ActualFrameAnomalyClassification | null;
+  frameAnomalyDisposition?: FrameAnomalyDisposition;
   streamWriter: StreamWriter;
   trackAppliedSlotNegation: Parameters<
     CorrectivePreferenceTurnService["extractAndApply"]
@@ -137,7 +139,8 @@ export async function runExtractionPhase(input: {
   }
 
   const actionLinkSelfContext =
-    input.isUserTurn && input.currentTurnFrameAnomaly === null
+    input.isUserTurn &&
+    (input.currentTurnFrameAnomaly === null || input.frameAnomalyDisposition === "annotate")
       ? await input.options.selfContextBuilder.build({
           turnId: input.turnId,
           sessionId: input.sessionId,
@@ -251,6 +254,7 @@ export async function runExtractionPhase(input: {
         goalId: actionLinkGoalId,
         turnCounter: input.turnInput.globalTurnCounter ?? input.workingMemory.turn_counter,
         frameAnomaly: input.currentTurnFrameAnomaly,
+        frameAnomalyDisposition: input.frameAnomalyDisposition,
       }),
       input.currentTurnFrameAnomaly === null
         ? input.options.turnGoalPromotionService.extractAndPersist({

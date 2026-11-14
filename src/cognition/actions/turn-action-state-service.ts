@@ -15,6 +15,7 @@ import type {
 import type { ExtractCorrectivePreferenceInput } from "../commitments/corrective-preference-extractor.js";
 import { listActionCandidatesForCognition } from "../evidence-ledger/action-threads.js";
 import type { ActualFrameAnomalyClassification } from "../frame-anomaly/index.js";
+import type { FrameAnomalyDisposition } from "../lifecycle/turn-phase/perception-phase.js";
 import type { TurnTracer } from "../../tracing/tracer.js";
 import type { CurrentTurnUserInputSenderAttribution } from "../turn-input.js";
 import { ActionStateExtractor } from "./action-state-extractor.js";
@@ -46,6 +47,7 @@ export type ExtractTurnActionStatesInput = {
   openQuestionId?: OpenQuestionId | null;
   turnCounter?: number | null;
   frameAnomaly?: ActualFrameAnomalyClassification | null;
+  frameAnomalyDisposition?: FrameAnomalyDisposition;
 };
 
 export type CloseBorgSelfPerformedActionsInput = {
@@ -83,7 +85,11 @@ export class TurnActionStateService {
       return [];
     }
 
-    if (input.frameAnomaly !== null && input.frameAnomaly !== undefined) {
+    if (
+      input.frameAnomaly !== null &&
+      input.frameAnomaly !== undefined &&
+      input.frameAnomalyDisposition !== "annotate"
+    ) {
       return [];
     }
 

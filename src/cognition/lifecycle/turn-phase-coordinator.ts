@@ -1141,6 +1141,7 @@ export class TurnPhaseCoordinator {
           senderAttribution: currentTurnUserInput.senderAttribution,
           distinctSenderCount: effectiveDistinctSenderCount,
           currentTurnFrameAnomaly,
+          frameAnomalyDisposition: frameAnomalyPhase.disposition,
           streamWriter,
           trackAppliedSlotNegation: (slot) => lifecycleTracker.trackAppliedSlotNegation(slot),
         }),
