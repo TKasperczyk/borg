@@ -1,6 +1,8 @@
 import type { SharedStateArtifact, SharedStateOperation } from "../../memory/shared-state/index.js";
 import type { EntityId, StreamEntryId } from "../../util/ids.js";
-import { toTraceJsonValue, type TurnTracer } from "../../tracing/tracer.js";
+import { buildUsageTraceBlock, toTraceJsonValue, type TurnTracer } from "../../tracing/tracer.js";
+import { getLlmErrorStopReason } from "../../llm/stop-reason.js";
+import { getLlmErrorUsage } from "../../llm/usage.js";
 import { summarizeSharedStateArtifactRender, type SharedStateRenderOptions } from "./render.js";
 import { similarStateKeyClusterCount } from "./state-key.js";
 import type {
@@ -440,6 +442,17 @@ export function traceEmptyUpdateDropped(options: {
   });
 }
 
+function llmFailureTraceData(error: unknown) {
+  const stopReason = getLlmErrorStopReason(error);
+  const usage = getLlmErrorUsage(error);
+  return {
+    ...(stopReason.raw === null
+      ? {}
+      : { stopReason: stopReason.raw, stopReasonClassification: stopReason }),
+    ...(usage === undefined ? {} : { usage: buildUsageTraceBlock(usage) }),
+  };
+}
+
 export function traceCompileDegraded(options: {
   tracer?: TurnTracer;
   turnId?: string;
@@ -454,6 +467,7 @@ export function traceCompileDegraded(options: {
   }
 
   options.tracer.emit("shared_state.compile.degraded", {
+    ...llmFailureTraceData(options.error),
     turnId: options.turnId,
     audienceEntityId: options.audienceEntityId,
     reason: options.reason,
@@ -489,6 +503,7 @@ function traceRepairEvent(
   }
 
   options.tracer.emit(event, {
+    ...llmFailureTraceData(options.error),
     turnId: options.turnId,
     audienceEntityId: options.audienceEntityId,
     ...(options.error === undefined

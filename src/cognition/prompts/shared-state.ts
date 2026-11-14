@@ -4,7 +4,10 @@ import {
   RELATIONSHIP_LABEL_WRITE_GROUNDING_PROMPT,
   RELATIONSHIP_LABELS_PROMPT,
 } from "./relationship-labels.js";
-import { DEFAULT_MAX_LOCKED_ENTRY_TEXT_CHARS } from "../shared-state/constants.js";
+import {
+  DEFAULT_MAX_LOCKED_ENTRY_TEXT_CHARS,
+  MAX_PATCH_OUTPUT_TOKENS,
+} from "../shared-state/constants.js";
 
 export type SharedStateCompilePass = "pre_answer" | "post_response";
 
@@ -27,10 +30,12 @@ function compilePassGuidance(compilePass: SharedStateCompilePass): string[] {
 export function buildSharedStateSystemPrompt(
   compilePass: SharedStateCompilePass = "pre_answer",
   maxLockedEntryTextChars = DEFAULT_MAX_LOCKED_ENTRY_TEXT_CHARS,
+  maxOutputTokens = MAX_PATCH_OUTPUT_TOKENS,
 ): string {
   return [
     "Compile canonical shared audience state from the previous shared-state artifact, the current user turn, and the prompt-visible ledger.",
     "Return only the required tool call.",
+    `The patch must fit in ${maxOutputTokens} output tokens. An output cut at that limit is discarded whole, and an operation you leave out is not queued for a later compile. When more needs recording than fits, write the operations that matter most and keep each text as short as accuracy allows.`,
     "",
     "Scope:",
     "- This is a structure compiler. It does not decide whether Borg's answer is correct.",

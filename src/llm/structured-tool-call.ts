@@ -116,6 +116,8 @@ export type CallStructuredToolOptions<T> = {
   maxAttempts?: 1 | 2;
   /** Opt in to output-limit repair; also bounds the shared schema repair. */
   repairMaxTokens?: number;
+  /** Opt in to output-limit repair with caller guidance, sharing the existing retry. */
+  outputLimitRepairInstruction?: string;
   attemptTimeoutMs?: number;
   parse: (
     input: unknown,
@@ -414,7 +416,11 @@ export async function callStructuredTool<T>(
 
     usage = addLlmUsage(usage, response);
     traceResponse(options, response, attemptCount, schemaRepair);
-    if (options.repairMaxTokens !== undefined && response.stop_reason === "max_tokens") {
+    if (
+      (options.repairMaxTokens !== undefined ||
+        options.outputLimitRepairInstruction !== undefined) &&
+      response.stop_reason === "max_tokens"
+    ) {
       throw new StructuredToolCallError("Structured tool response reached its output limit", {
         kind: "llm_failed",
         toolName: options.toolName,
@@ -461,8 +467,8 @@ export async function callStructuredTool<T>(
   } catch (error) {
     // Syntactically broken tool arguments surface inside complete(), so the
     // validation-repair path below never sees them. Re-issue the identical
-    // request once. An output-limit stop requires an explicitly larger repair
-    // cap; both branches share the same two-attempt accounting and deadline.
+    // request once. An output-limit stop requires a larger repair cap or caller
+    // guidance; both branches share the same two-attempt accounting and deadline.
     const unparseable = findInErrorCauseChain(
       error,
       (candidate): candidate is LLMToolArgumentsError => candidate instanceof LLMToolArgumentsError,
@@ -472,6 +478,7 @@ export async function callStructuredTool<T>(
       error instanceof BudgetExceededError ||
       unparseable === undefined ||
       (unparseable.stopReason === "max_tokens" &&
+        options.outputLimitRepairInstruction === undefined &&
         (options.repairMaxTokens === undefined ||
           options.repairMaxTokens <= (request.max_tokens ?? 0))) ||
       attemptCount >= maxAttempts
@@ -481,10 +488,18 @@ export async function callStructuredTool<T>(
 
     notifySchemaRepair(options, { status: "attempted", attempt: 2, error });
 
+    const repairInstruction =
+      unparseable.stopReason === "max_tokens" ? options.outputLimitRepairInstruction : undefined;
+
     try {
       response = await complete(
         {
           ...request,
+          ...(repairInstruction === undefined
+            ? {}
+            : {
+                messages: [...request.messages, { role: "user", content: repairInstruction }],
+              }),
           ...(options.repairMaxTokens === undefined ? {} : { max_tokens: options.repairMaxTokens }),
         },
         true,

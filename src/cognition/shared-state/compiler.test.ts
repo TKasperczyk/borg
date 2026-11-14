@@ -24,6 +24,7 @@ import {
   type SqliteDatabase,
 } from "../../storage/sqlite/index.js";
 import { FixedClock } from "../../util/clock.js";
+import { LLMToolArgumentsError } from "../../util/errors.js";
 import type { JsonValue } from "../../util/json-value.js";
 import { estimatePromptTokens } from "../../util/token-estimate.js";
 import { unknownMemoryDisclosureLabel } from "../../memory/common/disclosure-label.js";
@@ -63,6 +64,7 @@ import {
 } from "./compiler.js";
 import { buildSharedStateArtifactMessages } from "./compiler-prompt.js";
 import {
+  MAX_PATCH_OUTPUT_TOKENS,
   SHARED_STATE_PROMPT_WARNING_TOKEN_THRESHOLD,
   SHARED_STATE_TOOL_ENTRY_KINDS,
 } from "./constants.js";
@@ -70,6 +72,12 @@ import type { SemanticRevisionVerdictCache } from "./reconciliation.js";
 import { sharedStatePatchSchema } from "./types.js";
 import type { SharedStatePromptSummary } from "./summary.js";
 import * as sharedStateSummary from "./summary.js";
+
+const UNKNOWN_MODEL_OUTPUT_TOKEN_CAP = 8_192;
+const COMPILER_MODEL_CAP_CASES = [
+  { model: "unknown-compiler-model", maxOutputTokens: UNKNOWN_MODEL_OUTPUT_TOKEN_CAP },
+  { model: "claude-opus-5-5", maxOutputTokens: MAX_PATCH_OUTPUT_TOKENS },
+] as const;
 
 // Production always requests full active locked exposure. Supply deliberately incomplete
 // payloads here to keep exercising the independent ba3ccfa3 refusal guard.
@@ -759,14 +767,18 @@ describe("compileSharedStateArtifact", () => {
     expect(preAnswerLlm.requests[0]?.system).toEqual([
       {
         type: "text",
-        text: buildSharedStateSystemPrompt("pre_answer"),
+        text: buildSharedStateSystemPrompt("pre_answer", undefined, UNKNOWN_MODEL_OUTPUT_TOKEN_CAP),
         cache_control: { type: "ephemeral", ttl: "5m" },
       },
     ]);
     expect(postResponseLlm.requests[0]?.system).toEqual([
       {
         type: "text",
-        text: buildSharedStateSystemPrompt("post_response"),
+        text: buildSharedStateSystemPrompt(
+          "post_response",
+          undefined,
+          UNKNOWN_MODEL_OUTPUT_TOKEN_CAP,
+        ),
         cache_control: { type: "ephemeral", ttl: "5m" },
       },
     ]);
@@ -1044,7 +1056,7 @@ describe("compileSharedStateArtifact", () => {
     });
     expect(llmClient.requests[0]).toMatchObject({
       model: "claude-haiku-test",
-      max_tokens: 8_000,
+      max_tokens: UNKNOWN_MODEL_OUTPUT_TOKEN_CAP,
       budget: "shared-state-compiler",
       tool_choice: { type: "tool", name: SHARED_STATE_TOOL_NAME },
     });
@@ -4487,6 +4499,177 @@ describe("compileSharedStateArtifact", () => {
       trace.events.find((event) => event.event === "shared_state.compile.degraded")?.data.reason,
     ).toBe("invalid_payload");
   });
+
+  it.each(
+    COMPILER_MODEL_CAP_CASES.flatMap((modelCase) =>
+      (["pre_answer", "post_response"] as const).map((compilePass) => ({
+        ...modelCase,
+        compilePass,
+      })),
+    ),
+  )(
+    "states the effective output cap for $model in the $compilePass instructions",
+    async ({ model, maxOutputTokens, compilePass }) => {
+      const llmClient = new FakeLLMClient({
+        responses: [emitSharedStateArtifactPatchResponse({ operations: [] })],
+      });
+
+      await compileSharedStateArtifact({ ...baseInput(llmClient), model, compilePass });
+
+      expect(MAX_PATCH_OUTPUT_TOKENS).toBe(16_000);
+      expect(llmClient.requests).toHaveLength(1);
+      expect(llmClient.requests[0]).toMatchObject({
+        max_tokens: maxOutputTokens,
+        system: [
+          {
+            text: expect.stringContaining(
+              `The patch must fit in ${maxOutputTokens} output tokens. An output cut at that limit is discarded whole, and an operation you leave out is not queued for a later compile. When more needs recording than fits, write the operations that matter most and keep each text as short as accuracy allows.`,
+            ),
+          },
+        ],
+      });
+    },
+  );
+
+  it.each(
+    COMPILER_MODEL_CAP_CASES.flatMap((modelCase) =>
+      (["response", "malformed_arguments"] as const).map((shape) => ({ ...modelCase, shape })),
+    ),
+  )(
+    "uses the $model cap rather than aggregated usage in the existing $shape repair attempt",
+    async ({ model, maxOutputTokens, shape }) => {
+      const trace = createTraceRecorder();
+      const consumedOutputTokens = maxOutputTokens + 1_000;
+      const cutResponse = {
+        ...emitRawSharedStateArtifactPatchResponse({}),
+        stop_reason: "max_tokens",
+        output_tokens: consumedOutputTokens,
+      };
+      const llmClient = new FakeLLMClient({
+        responses: [
+          shape === "response"
+            ? cutResponse
+            : () => {
+                throw new LLMToolArgumentsError("Incomplete tool input", {
+                  toolName: SHARED_STATE_TOOL_NAME,
+                  stopReason: cutResponse.stop_reason,
+                  usage: cutResponse,
+                });
+              },
+          emitSharedStateArtifactPatchResponse({
+            operations: [
+              {
+                type: "add",
+                kind: "locked",
+                text: "Keep the most important decision.",
+                source_stream_entry_ids: [priorAllowedStreamEntryId],
+              },
+            ],
+          }),
+        ],
+      });
+
+      const patch = await compileSharedStateArtifact({
+        ...baseInput(llmClient),
+        model,
+        tracer: trace,
+      });
+
+      expect(llmClient.requests).toHaveLength(2);
+      expect(llmClient.requests.map((request) => request.max_tokens)).toEqual([
+        maxOutputTokens,
+        maxOutputTokens,
+      ]);
+      expect(llmClient.requests[1]?.messages.at(-1)?.content).toBe(
+        `Your previous output reached the limit of ${maxOutputTokens} output tokens, and nothing from it was stored. Emit a complete patch that fits: the operations that matter most, each text as short as accuracy allows. An operation you leave out is not queued for a later compile.`,
+      );
+      expect(patch.operations).toHaveLength(1);
+      expect(activeEntries()).toEqual([
+        expect.objectContaining({ text: "Keep the most important decision." }),
+      ]);
+      expect(trace.events).toContainEqual({
+        event: "shared_state.compile.repair_attempted",
+        data: expect.objectContaining({
+          stopReason: "max_tokens",
+          stopReasonClassification: { kind: "max_tokens", raw: "max_tokens" },
+          usage: expect.objectContaining({ outputTokens: consumedOutputTokens }),
+        }),
+      });
+      expectSingleSuccessfulRepair(trace);
+    },
+  );
+
+  it.each(["cap", "schema", "patch"] as const)(
+    "traces a terminal cap stop without applying partial output or adding a third call after %s repair",
+    async (firstFailure) => {
+      repository.upsert(audience, [
+        {
+          type: "add",
+          state_key: "decision.existing",
+          kind: "locked",
+          text: "Preserve the existing decision.",
+          provenance_stream_entry_ids: [priorAllowedStreamEntryId],
+        },
+      ]);
+      const previousArtifact = repository.get(audience);
+      const trace = { ...createTraceRecorder(), includePayloads: false };
+      const cutResponse = {
+        ...emitSharedStateArtifactPatchResponse({
+          operations: [
+            {
+              type: "add",
+              kind: "locked",
+              text: "This partial output must never be applied.",
+              source_stream_entry_ids: [priorAllowedStreamEntryId],
+            },
+          ],
+        }),
+        stop_reason: "max_tokens",
+        output_tokens: MAX_PATCH_OUTPUT_TOKENS,
+      };
+      const llmClient = new FakeLLMClient({
+        responses: [
+          firstFailure === "cap"
+            ? cutResponse
+            : emitRawSharedStateArtifactPatchResponse(
+                firstFailure === "schema"
+                  ? {}
+                  : {
+                      operations: [
+                        {
+                          type: "add",
+                          state_key: "decision.new",
+                          kind: "locked",
+                          text: "A patch missing its new-key reason.",
+                          source_stream_entry_ids: [priorAllowedStreamEntryId],
+                        },
+                      ],
+                    },
+              ),
+          cutResponse,
+        ],
+      });
+
+      const patch = await compileSharedStateArtifact({ ...baseInput(llmClient), tracer: trace });
+
+      expect(llmClient.requests).toHaveLength(2);
+      expect(patch.operations).toEqual([]);
+      expect(repository.get(audience)).toEqual(previousArtifact);
+      for (const event of ["shared_state.compile.repair_failed", "shared_state.compile.degraded"]) {
+        expect(trace.events).toContainEqual({
+          event,
+          data: expect.objectContaining({
+            stopReason: "max_tokens",
+            stopReasonClassification: { kind: "max_tokens", raw: "max_tokens" },
+            usage: expect.objectContaining({ outputTokens: MAX_PATCH_OUTPUT_TOKENS }),
+          }),
+        });
+      }
+      expect(
+        trace.events.find((event) => event.event === "shared_state.compile.degraded")?.data.reason,
+      ).toBe(firstFailure === "schema" ? "invalid_payload" : "llm_failed");
+    },
+  );
 
   it("repairs max-token-truncated compiler payloads once before degrading", async () => {
     const trace = createTraceRecorder();

@@ -22,6 +22,10 @@ import type {
   SharedStateRelationalSlotContext,
 } from "./types.js";
 
+export function buildSharedStateOutputLimitRepairInstruction(maxOutputTokens: number): string {
+  return `Your previous output reached the limit of ${maxOutputTokens} output tokens, and nothing from it was stored. Emit a complete patch that fits: the operations that matter most, each text as short as accuracy allows. An operation you leave out is not queued for a later compile.`;
+}
+
 export function buildCanonicalizationCandidatePromptPayload(
   candidates: SharedStateCanonicalizationCandidates,
 ): {

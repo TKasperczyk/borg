@@ -4,6 +4,8 @@ import {
   type LLMCompleteResult,
   type LLMMessage,
 } from "../../llm/index.js";
+import { getLlmErrorStopReason } from "../../llm/stop-reason.js";
+import { clampMaxOutputTokens } from "../../llm/max-tokens.js";
 import type {
   SharedStateArtifact,
   SharedStateEntry,
@@ -28,6 +30,7 @@ import {
 } from "./reconciliation.js";
 import {
   buildSharedStateArtifactMessages,
+  buildSharedStateOutputLimitRepairInstruction,
   estimateSharedStateArtifactPromptBudget,
 } from "./compiler-prompt.js";
 import {
@@ -713,7 +716,12 @@ export async function compileSharedStateArtifact(
     input.maxLockedEntryTextChars,
     DEFAULT_MAX_LOCKED_ENTRY_TEXT_CHARS,
   );
-  const systemPrompt = buildSharedStateSystemPrompt(compilePass, maxLockedEntryTextChars);
+  const maxOutputTokens = clampMaxOutputTokens(model, MAX_PATCH_OUTPUT_TOKENS);
+  const systemPrompt = buildSharedStateSystemPrompt(
+    compilePass,
+    maxLockedEntryTextChars,
+    maxOutputTokens,
+  );
   const systemBlocks = [
     {
       type: "text" as const,
@@ -847,6 +855,13 @@ export async function compileSharedStateArtifact(
       return missingToolError();
     }
 
+    if (
+      isStructuredToolCallError(error) &&
+      getLlmErrorStopReason(error.repairFailure).kind === "max_tokens"
+    ) {
+      return error.repairFailure;
+    }
+
     return isStructuredToolCallError(error) ? (error.cause ?? error) : error;
   };
   const structuredToolDegradedReason = (
@@ -872,12 +887,13 @@ export async function compileSharedStateArtifact(
         messages: toolMessages,
         tools,
         tool_choice: { type: "tool", name: SHARED_STATE_TOOL_NAME },
-        max_tokens: MAX_PATCH_OUTPUT_TOKENS,
+        max_tokens: maxOutputTokens,
         budget: "shared-state-compiler",
       },
       toolName: SHARED_STATE_TOOL_NAME,
       acceptedToolNames: SHARED_STATE_ACCEPTED_TOOL_NAMES,
       maxAttempts: repairAttempted ? 1 : 2,
+      outputLimitRepairInstruction: buildSharedStateOutputLimitRepairInstruction(maxOutputTokens),
       parse: parseResponse,
       onSchemaRepair: (event) => {
         if (event.status === "attempted") {

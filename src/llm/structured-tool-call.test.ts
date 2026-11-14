@@ -86,6 +86,52 @@ function queuedClient(responses: Array<LLMCompleteResult | Error>) {
 
 describe("callStructuredTool", () => {
   it.each(["response", "malformed_arguments"] as const)(
+    "repairs output limits with caller guidance at the same cap: %s",
+    async (shape) => {
+      const truncated =
+        shape === "response"
+          ? completeResult(
+              [{ id: "partial", name: TOOL_NAME, input: { value: "partial" } }],
+              "max_tokens",
+            )
+          : new LLMToolArgumentsError("truncated", {
+              toolName: TOOL_NAME,
+              stopReason: "max_tokens",
+              usage: { input_tokens: 3, output_tokens: 4 },
+            });
+      const llm = queuedClient([
+        truncated,
+        completeResult([{ id: "repaired", name: TOOL_NAME, input: { value: "ok" } }]),
+      ]);
+      const parse = vi.fn((value) => schema.parse(value));
+      const instruction = "Emit a smaller tool call.";
+      const result = await callStructuredTool({
+        llmClient: llm,
+        toolName: TOOL_NAME,
+        parse,
+        outputLimitRepairInstruction: instruction,
+        request: {
+          model: "model",
+          max_tokens: 3072,
+          messages: [{ role: "user", content: "input" }],
+          tools: [TOOL],
+          budget: "test",
+        },
+      });
+
+      expect(result.parsed).toEqual({ value: "ok" });
+      expect(result.attemptCount).toBe(2);
+      expect(result.usage).toEqual({ input_tokens: 6, output_tokens: 8 });
+      expect(parse).toHaveBeenCalledTimes(1);
+      expect(llm.complete.mock.calls.map(([request]) => request.max_tokens)).toEqual([3072, 3072]);
+      expect(llm.complete.mock.calls[1]?.[0].messages).toEqual([
+        { role: "user", content: "input" },
+        { role: "user", content: instruction },
+      ]);
+    },
+  );
+
+  it.each(["response", "malformed_arguments"] as const)(
     "opt-in truncation repair raises the cap and accounts for both attempts: %s",
     async (shape) => {
       const truncated =
