@@ -329,7 +329,7 @@ function buildMergePrompt(
   const selfEntityGuidance =
     selfEntity === null
       ? GENERIC_SELF_ENTITY_VOICE_ANCHOR
-      : `I am the self entity ${selfEntity.id}; content grounded in my own agent-authored source messages is self-owned. I use first person only for my own actions, statements, and decisions; I keep every other participant named and world facts in third person.`;
+      : `I am ${selfEntity.canonical_name} (${selfEntity.id}); content grounded in my own agent-authored source messages is self-owned. I use first person only for my own actions, statements, and decisions; I keep every other participant named and world facts in third person.`;
   const previousContext =
     candidate.previousCurrentVersion === null
       ? []

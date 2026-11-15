@@ -808,7 +808,7 @@ describe("consolidator process", () => {
     const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
     expect(prompt).toContain("disclosure_class=relationship_private");
     expect(prompt).toContain("I can use this internally");
-    expect(prompt).toContain(`I am the self entity ${selfEntityId};`);
+    expect(prompt).toContain(`I am self (${selfEntityId});`);
     expect(prompt).toContain(SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE);
     expect(prompt).toContain("I keep the title topic-neutral and scannable");
     // The self-referential language rule does not reach a topic-neutral title, so
@@ -816,6 +816,57 @@ describe("consolidator process", () => {
     expect(prompt).toContain(MEMORY_SOURCE_LANGUAGE_GUIDANCE);
     expect(prompt).toContain(alice);
     expect(prompt).toContain(bob);
+  });
+
+  it("names the self entity in the voice anchor, so a named participant is not read as the self", async () => {
+    // Raws narrated wholly about another participant carry no first-person anchor;
+    // an id-only self anchor left the merger unable to tell that participant from itself.
+    const llm = new FakeLLMClient({
+      responses: [createConsolidationResponse("Merged audit", "Alice audited the pages.")],
+    });
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+    });
+    cleanup.push(harness.cleanup);
+    const selfEntityId = harness.entityRepository.resolve("Nova", {
+      kind: "self",
+      provenance: "assistant_seeded",
+    });
+    const raws = [
+      ["ep_dddddddddddddddd", [1, 0, 0, 0]],
+      ["ep_eeeeeeeeeeeeeeee", [0.99, 0, 0, 0]],
+      ["ep_ffffffffffffffff", [0.98, 0, 0, 0]],
+    ] as const;
+
+    for (const [id, vector] of raws) {
+      await harness.episodicRepository.createEpisode(
+        createEpisodeFixture(
+          {
+            id: parseEpisodeId(id),
+            title: "Page audit",
+            narrative: `Alice answered the message and audited page ${id}.`,
+            participants: ["Alice"],
+            tags: ["audit"],
+            audience_entity_id: null,
+            shared: true,
+            created_at: 10_000,
+            updated_at: 10_000,
+          },
+          [...vector],
+        ),
+      );
+    }
+
+    const result = await createProcess(harness).run(harness.createContext(), {
+      dryRun: false,
+    });
+    const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+
+    expect(result.changes).toHaveLength(1);
+    expect(harness.entityRepository.getSelf()?.canonical_name).toBe("Nova");
+    expect(prompt).toContain(`I am Nova (${selfEntityId});`);
+    expect(prompt).not.toContain("I am the self entity");
+    expect(prompt).toContain('"participants":["Alice"]');
   });
 
   it("halts further llm work after budget exhaustion", async () => {
