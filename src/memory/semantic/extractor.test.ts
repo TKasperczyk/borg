@@ -9,7 +9,7 @@ import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { LanceDbStore } from "../../storage/lancedb/index.js";
 import { openDatabase } from "../../storage/sqlite/index.js";
 import { FixedClock } from "../../util/clock.js";
-import { LLMError, SemanticError } from "../../util/errors.js";
+import { LLMError, SemanticError, StorageError } from "../../util/errors.js";
 import {
   createEntityId,
   createRelationalSlotId,
@@ -1633,6 +1633,7 @@ describe("semantic extractor", () => {
       return {
         ...repositories,
         episode,
+        candidate,
         tracer,
         reviewEnqueue,
         semanticReviewService,
@@ -1670,6 +1671,274 @@ describe("semantic extractor", () => {
           }).extractFromEpisodes([episode]),
       };
     }
+
+    it.each(["self", "person", "group", "abstract"] as const)(
+      "preserves the description of an anchored %s while updating evidence and embedding",
+      async (kind) => {
+        const identity = identityEntity(createEntityId(), "Atlas", kind);
+        const h = await setup({
+          kind,
+          identity_entity_id: identity.id,
+          description_perspective: kind === "self" ? "first_person" : "third_person",
+          description: "A description of the latest conversation.",
+          aliases: ["Conversation participant"],
+          confidence: 0.95,
+        });
+        const existing = await h.seed({
+          kind,
+          description: "A durable identity description with established responsibilities.",
+          aliases: ["Archive keeper"],
+          archived: true,
+          embedding: Float32Array.from([0, 1, 0, 0]),
+        });
+        const embeddingClient = new SemanticEmbeddingClient();
+        const storedEmbedding = Float32Array.from([0, 0, 1, 0]);
+        const embed = vi
+          .spyOn(embeddingClient, "embed")
+          .mockResolvedValueOnce(Float32Array.from([1, 0, 0, 0]))
+          .mockResolvedValueOnce(storedEmbedding);
+
+        expect(
+          await h.extract([], {
+            embeddingClient,
+            entityRepository: identityRepository([identity]),
+            participantRoster: identityRoster([identity]),
+            selfEntityId: kind === "self" ? identity.id : null,
+          }),
+        ).toMatchObject({ insertedNodes: 0, updatedNodes: 1 });
+        const updated = await h.nodeRepository.get(existing.id);
+        expect(updated).toMatchObject({
+          description: existing.description,
+          aliases: ["Archive keeper", "Atlas", "Conversation participant"],
+          source_episode_ids: [...existing.source_episode_ids, h.episode.id],
+          last_verified_at: h.clock.now(),
+          updated_at: h.clock.now(),
+          confidence: 0.7,
+          archived: false,
+          status: "active",
+          embedding: storedEmbedding,
+        });
+        expect(embed.mock.calls.map(([text]) => text)).toEqual([
+          "Atlas\nA description of the latest conversation.\nConversation participant",
+          "Atlas\nA durable identity description with established responsibilities.\nArchive keeper Atlas Conversation participant",
+        ]);
+        expect(
+          h.tracer.emit.mock.calls.filter(
+            ([event]) => event === "semantic_extractor.identity_description_preserved",
+          ),
+        ).toEqual([
+          [
+            "semantic_extractor.identity_description_preserved",
+            {
+              turnId: "turn_active_target",
+              node_id: existing.id,
+              entity_id: identity.id,
+            },
+          ],
+        ]);
+      },
+    );
+
+    it.each([
+      { candidateConfidence: 0.9, expectedConfidence: 0.7, replaces: true },
+      { candidateConfidence: 0.6, expectedConfidence: 0.6, replaces: true },
+      { candidateConfidence: 0.4, expectedConfidence: 0.594, replaces: false },
+    ])(
+      "preserves anchored text while keeping the unanchored confidence rule at $candidateConfidence",
+      async ({ candidateConfidence, expectedConfidence, replaces }) => {
+        const identity = identityEntity(createEntityId(), "Atlas", "person");
+        const h = await setup({
+          kind: "person",
+          identity_entity_id: identity.id,
+          description_perspective: "third_person",
+          confidence: 0.9,
+        });
+        const anchored = await h.seed({ kind: "person" });
+        const unanchored = await h.seed({ kind: "person", label: "Atlas colleague" });
+
+        expect(
+          await h.extract([], {
+            entityRepository: identityRepository([identity]),
+            participantRoster: identityRoster([identity]),
+            llmClient: new FakeLLMClient({
+              responses: [
+                createSemanticToolResponse({
+                  nodes: [
+                    h.candidate,
+                    {
+                      ...h.candidate,
+                      label: unanchored.label,
+                      identity_entity_id: null,
+                      description: "A new unanchored description.",
+                      confidence: candidateConfidence,
+                    },
+                  ],
+                  edges: [],
+                }),
+              ],
+            }),
+          }),
+        ).toMatchObject({ insertedNodes: 0, updatedNodes: 2 });
+        const updatedUnanchored = await h.nodeRepository.get(unanchored.id);
+        expect(updatedUnanchored?.description).toBe(
+          replaces ? "A new unanchored description." : unanchored.description,
+        );
+        expect(updatedUnanchored?.confidence).toBeCloseTo(expectedConfidence);
+        expect((await h.nodeRepository.get(anchored.id))?.description).toBe(anchored.description);
+        expect(
+          h.tracer.emit.mock.calls.filter(
+            ([event]) => event === "semantic_extractor.identity_description_preserved",
+          ),
+        ).toEqual([
+          [
+            "semantic_extractor.identity_description_preserved",
+            { turnId: "turn_active_target", node_id: anchored.id, entity_id: identity.id },
+          ],
+        ]);
+      },
+    );
+
+    it("traces preserved identity descriptions only when the candidate text differs", async () => {
+      const identity = identityEntity(createEntityId(), "Atlas", "self");
+      const h = await setup({
+        kind: "self",
+        identity_entity_id: identity.id,
+        description_perspective: "first_person",
+        description: "I maintain the archive.",
+        confidence: 0.2,
+      });
+      const existing = await h.seed({ kind: "self", description: h.candidate.description });
+      const options = {
+        entityRepository: identityRepository([identity]),
+        participantRoster: identityRoster([identity]),
+        selfEntityId: identity.id,
+      };
+      expect(await h.extract([], options)).toMatchObject({ updatedNodes: 1 });
+      expect(h.tracer.emit).not.toHaveBeenCalledWith(
+        "semantic_extractor.identity_description_preserved",
+        expect.anything(),
+      );
+      const differingResponse = createSemanticToolResponse({
+        nodes: [{ ...h.candidate, description: "I discussed this morning's agenda." }],
+        edges: [],
+      });
+      expect(
+        await h.extract([], {
+          ...options,
+          llmClient: new FakeLLMClient({ responses: [differingResponse] }),
+        }),
+      ).toMatchObject({ updatedNodes: 1 });
+      expect((await h.nodeRepository.get(existing.id))?.confidence).toBeCloseTo(0.6 * 0.99 ** 2);
+      expect(
+        h.tracer.emit.mock.calls.filter(
+          ([event]) => event === "semantic_extractor.identity_description_preserved",
+        ),
+      ).toEqual([
+        [
+          "semantic_extractor.identity_description_preserved",
+          { turnId: "turn_active_target", node_id: existing.id, entity_id: identity.id },
+        ],
+      ]);
+
+      h.tracer.enabled = false;
+      expect(
+        await h.extract([], {
+          ...options,
+          llmClient: new FakeLLMClient({ responses: [differingResponse] }),
+        }),
+      ).toMatchObject({ updatedNodes: 1 });
+      expect((await h.nodeRepository.get(existing.id))?.description).toBe(existing.description);
+      expect(
+        h.tracer.emit.mock.calls.filter(
+          ([event]) => event === "semantic_extractor.identity_description_preserved",
+        ),
+      ).toHaveLength(1);
+    });
+
+    it.each([
+      { outcome: "returns null", error: null },
+      { outcome: "throws StorageError", error: new StorageError("Update failed") },
+      { outcome: "throws SemanticError", error: new SemanticError("Update failed") },
+    ])(
+      "skips an anchored update without a preservation event when the repository update $outcome",
+      async ({ error }) => {
+        const identity = identityEntity(createEntityId(), "Atlas", "self");
+        const h = await setup({
+          kind: "self",
+          identity_entity_id: identity.id,
+          description_perspective: "first_person",
+        });
+        const existing = await h.seed({ kind: "self" });
+        const before = JSON.stringify(await h.nodeRepository.get(existing.id));
+        const update = vi.spyOn(h.nodeRepository, "update");
+        if (error === null) {
+          update.mockResolvedValueOnce(null);
+        } else {
+          update.mockRejectedValueOnce(error);
+        }
+
+        expect(
+          await h.extract([], {
+            entityRepository: identityRepository([identity]),
+            participantRoster: identityRoster([identity]),
+            selfEntityId: identity.id,
+          }),
+        ).toMatchObject({ insertedNodes: 0, updatedNodes: 0, skippedNodes: 1 });
+        expect(update.mock.calls.map(([id]) => id)).toEqual([existing.id]);
+        expect(JSON.stringify(await h.nodeRepository.get(existing.id))).toBe(before);
+        expect(h.tracer.emit).not.toHaveBeenCalledWith(
+          "semantic_extractor.identity_description_preserved",
+          expect.anything(),
+        );
+        expect(h.tracer.emit).toHaveBeenCalledWith(
+          "semantic_insert.skipped",
+          expect.objectContaining({ kind: "node", reason: "other" }),
+        );
+      },
+    );
+
+    it.each(["self", "person"] as const)(
+      "stores the first anchored %s description and preserves it on the next extraction",
+      async (kind) => {
+        const identity = identityEntity(createEntityId(), "Atlas", kind);
+        const h = await setup({
+          kind,
+          identity_entity_id: identity.id,
+          description_perspective: kind === "self" ? "first_person" : "third_person",
+          description: "The initial full description.",
+        });
+        const options = {
+          entityRepository: identityRepository([identity]),
+          participantRoster: identityRoster([identity]),
+          selfEntityId: kind === "self" ? identity.id : null,
+        };
+
+        expect(await h.extract([], options)).toMatchObject({ insertedNodes: 1, updatedNodes: 0 });
+        const [inserted] = await h.nodeRepository.list();
+        expect(inserted).toMatchObject({ kind, description: h.candidate.description });
+        expect(h.tracer.emit).not.toHaveBeenCalledWith(
+          "semantic_extractor.identity_description_preserved",
+          expect.anything(),
+        );
+        expect(
+          await h.extract([], {
+            ...options,
+            llmClient: new FakeLLMClient({
+              responses: [
+                createSemanticToolResponse({
+                  nodes: [{ ...h.candidate, description: "The next conversation's activity." }],
+                  edges: [],
+                }),
+              ],
+            }),
+          }),
+        ).toMatchObject({ insertedNodes: 0, updatedNodes: 1 });
+        expect(await h.nodeRepository.list()).toHaveLength(1);
+        expect((await h.nodeRepository.get(inserted!.id))?.description).toBe(
+          h.candidate.description,
+        );
+      },
+    );
 
     it.each([
       { link: "corrected_by", archived: false },
@@ -1832,14 +2101,21 @@ describe("semantic extractor", () => {
           kind,
           identity_entity_id: identity.id,
           description_perspective: kind === "self" ? "first_person" : "third_person",
+          description: "A description of the latest conversation.",
         });
         const terminal = await h.seed({
           kind,
           label: "Current identity",
+          description: "The successor's established identity description.",
           aliases: ["Atlas"],
           embedding: Float32Array.from([0, 1, 0, 0]),
         });
-        const first = await h.seed({ kind, status: "superseded", corrected_by: terminal.id });
+        const first = await h.seed({
+          kind,
+          description: "The predecessor's superseded identity description.",
+          status: "superseded",
+          corrected_by: terminal.id,
+        });
         const before = JSON.stringify(await h.nodeRepository.get(first.id));
         // Model a lookup window that contains only the predecessor; the successor
         // must be reached by id and checked with the identity compatibility rule.
@@ -1854,7 +2130,7 @@ describe("semantic extractor", () => {
         ).toMatchObject({ insertedNodes: 0, updatedNodes: 1 });
         expect(await h.nodeRepository.get(terminal.id)).toMatchObject({
           kind,
-          description: "Atlas updated description",
+          description: terminal.description,
           status: "active",
         });
         expect(JSON.stringify(await h.nodeRepository.get(first.id))).toBe(before);
@@ -1863,6 +2139,16 @@ describe("semantic extractor", () => {
           from_node_id: first.id,
           to_node_id: terminal.id,
         });
+        expect(
+          h.tracer.emit.mock.calls.filter(
+            ([event]) => event === "semantic_extractor.identity_description_preserved",
+          ),
+        ).toEqual([
+          [
+            "semantic_extractor.identity_description_preserved",
+            { turnId: "turn_active_target", node_id: terminal.id, entity_id: identity.id },
+          ],
+        ]);
       },
     );
 

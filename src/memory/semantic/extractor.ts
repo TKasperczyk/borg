@@ -1010,8 +1010,11 @@ export class SemanticExtractor {
         };
       }
 
+      // The extraction prompt does not include the existing identity description.
       const nextDescription =
-        candidate.confidence >= existing.confidence ? candidateDescription : existing.description;
+        identityAnchor === null && candidate.confidence >= existing.confidence
+          ? candidateDescription
+          : existing.description;
       const nextAliases = withoutEntityIdNames(
         mergeAliases(existing.aliases, [candidateLabel, ...candidate.aliases]),
       );
@@ -1041,6 +1044,19 @@ export class SemanticExtractor {
         },
         { mutationRecorder: this.options.mutationRecorder },
       );
+
+      if (
+        updated !== null &&
+        identityAnchor !== null &&
+        candidateDescription !== existing.description &&
+        this.options.tracer?.enabled === true
+      ) {
+        this.options.tracer.emit("semantic_extractor.identity_description_preserved", {
+          turnId: this.options.traceTurnId ?? "semantic_extractor",
+          node_id: existing.id,
+          entity_id: identityAnchor.id,
+        });
+      }
 
       return updated === null
         ? {

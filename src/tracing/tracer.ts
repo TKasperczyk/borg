@@ -174,6 +174,7 @@ export type TurnTraceEventName =
   | "semantic_extractor.started"
   | "semantic_extractor.degraded"
   | "semantic_extractor.target_redirected"
+  | "semantic_extractor.identity_description_preserved"
   | "semantic_insert.skipped"
   | "episodic_extractor.skipped"
   | "semantic_node.status.transitioned"
