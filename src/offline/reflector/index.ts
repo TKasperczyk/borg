@@ -425,7 +425,9 @@ function semanticNodeMatchesReflectorCandidate(
   threshold: number,
 ): boolean {
   return (
-    node.kind === "proposition" && cosineSimilarity(node.embedding, candidateEmbedding) >= threshold
+    node.status === "active" &&
+    node.kind === "proposition" &&
+    cosineSimilarity(node.embedding, candidateEmbedding) >= threshold
   );
 }
 

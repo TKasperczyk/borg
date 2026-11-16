@@ -174,6 +174,7 @@ export const TRACE_EVENT_TAXONOMY = {
     "episodic_extractor.skipped",
     "semantic_extractor.started",
     "semantic_extractor.degraded",
+    "semantic_extractor.target_redirected",
     "semantic_insert.skipped",
     "semantic_node.status.transitioned",
   ],

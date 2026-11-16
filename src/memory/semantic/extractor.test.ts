@@ -13,6 +13,7 @@ import { LLMError, SemanticError } from "../../util/errors.js";
 import {
   createEntityId,
   createRelationalSlotId,
+  createSemanticEdgeId,
   createSemanticNodeId,
   createStreamEntryId,
   type EpisodeId,
@@ -23,8 +24,10 @@ import type { EntityRecord } from "../commitments/index.js";
 import type { RelationshipClaim } from "../common/relationship-claims.js";
 import type { TurnTracer } from "../../tracing/tracer.js";
 import type { Episode } from "../episodic/types.js";
-import { SemanticExtractor } from "./extractor.js";
+import { SemanticExtractor, type SemanticExtractorOptions } from "./extractor.js";
 import { semanticMigrations } from "./migrations.js";
+import { SemanticReviewService } from "./review-service.js";
+import type { SemanticNode } from "./types.js";
 import {
   SemanticEdgeRepository,
   SemanticNodeRepository,
@@ -1608,6 +1611,577 @@ describe("semantic extractor", () => {
         }),
       }),
     );
+  });
+
+  describe("active update targets", () => {
+    async function setup(candidateOverrides: Record<string, unknown> = {}) {
+      const repositories = await createSemanticRepositories(cleanup);
+      const episode = buildEpisode("ep_aaaaaaaaaaaaaaaa" as EpisodeId, "Atlas update");
+      const tracer = { enabled: true, includePayloads: false, emit: vi.fn() };
+      const reviewEnqueue = vi.fn();
+      const semanticReviewService = { queueDuplicateReview: vi.fn() };
+      const candidate = {
+        kind: "entity",
+        label: "Atlas",
+        description: "Atlas updated description",
+        aliases: [],
+        confidence: 0.7,
+        source_episode_ids: [episode.id],
+        ...candidateOverrides,
+      };
+
+      return {
+        ...repositories,
+        episode,
+        tracer,
+        reviewEnqueue,
+        semanticReviewService,
+        seed: async (overrides: Partial<SemanticNode> = {}) =>
+          repositories.nodeRepository.insert({
+            id: createSemanticNodeId(),
+            kind: "entity",
+            label: "Atlas",
+            description: "Atlas original description",
+            aliases: [],
+            confidence: 0.6,
+            source_episode_ids: ["ep_bbbbbbbbbbbbbbbb" as EpisodeId],
+            created_at: 1,
+            updated_at: 1,
+            last_verified_at: 1,
+            embedding: Float32Array.from([1, 0, 0, 0]),
+            archived: false,
+            superseded_by: null,
+            ...overrides,
+          }),
+        extract: async (edges: unknown[] = [], options: Partial<SemanticExtractorOptions> = {}) =>
+          new SemanticExtractor({
+            ...repositories,
+            embeddingClient: new SemanticEmbeddingClient(),
+            episodicRepository: createEpisodeLookup([episode]),
+            llmClient: new FakeLLMClient({
+              responses: [createSemanticToolResponse({ nodes: [candidate], edges })],
+            }),
+            model: "haiku",
+            tracer,
+            traceTurnId: "turn_active_target",
+            reviewEnqueue,
+            semanticReviewService,
+            ...options,
+          }).extractFromEpisodes([episode]),
+      };
+    }
+
+    it.each([
+      { link: "corrected_by", archived: false },
+      { link: "superseded_by", archived: false },
+      { link: "corrected_by", archived: true },
+    ] as const)(
+      "redirects the newest superseded label match via $link (successor archived: $archived)",
+      async ({ link, archived }) => {
+        const h = await setup();
+        const successor = await h.seed({ label: "Atlas current", archived });
+        await h.seed({ kind: "concept", updated_at: 10 });
+        const superseded = await h.seed({
+          status: "superseded",
+          [link]: successor.id,
+          updated_at: 20,
+        });
+        const before = JSON.stringify(await h.nodeRepository.get(superseded.id));
+        const update = vi.spyOn(h.nodeRepository, "update");
+        expect((await h.nodeRepository.findByExactLabelOrAlias("Atlas"))[0]?.id).toBe(
+          superseded.id,
+        );
+
+        expect(await h.extract()).toMatchObject({ insertedNodes: 0, updatedNodes: 1 });
+        expect(await h.nodeRepository.get(successor.id)).toMatchObject({
+          status: "active",
+          description: "Atlas updated description",
+          source_episode_ids: [...successor.source_episode_ids, h.episode.id],
+          archived: false,
+        });
+        expect(JSON.stringify(await h.nodeRepository.get(superseded.id))).toBe(before);
+        expect(update.mock.calls.map(([id]) => id)).toEqual([successor.id]);
+        expect(
+          h.tracer.emit.mock.calls.filter(
+            ([event]) => event === "semantic_extractor.target_redirected",
+          ),
+        ).toEqual([
+          [
+            "semantic_extractor.target_redirected",
+            {
+              turnId: "turn_active_target",
+              from_node_id: superseded.id,
+              to_node_id: successor.id,
+            },
+          ],
+        ]);
+      },
+    );
+
+    it("follows two supersessions with mixed successor fields", async () => {
+      const h = await setup();
+      const terminal = await h.seed({ label: "Atlas current" });
+      const middle = await h.seed({
+        label: "Atlas intermediate",
+        status: "superseded",
+        corrected_by: createStreamEntryId(),
+        superseded_by: terminal.id,
+      });
+      const first = await h.seed({ status: "superseded", corrected_by: middle.id });
+      const before = JSON.stringify(await h.nodeRepository.getMany([first.id, middle.id]));
+
+      expect(await h.extract()).toMatchObject({ insertedNodes: 0, updatedNodes: 1 });
+      expect(await h.nodeRepository.get(terminal.id)).toMatchObject({
+        description: "Atlas updated description",
+      });
+      expect(JSON.stringify(await h.nodeRepository.getMany([first.id, middle.id]))).toBe(before);
+      expect(
+        h.tracer.emit.mock.calls.filter(
+          ([event]) => event === "semantic_extractor.target_redirected",
+        ),
+      ).toHaveLength(1);
+    });
+
+    it("prefers a node-valued corrected_by over a different superseded_by", async () => {
+      const h = await setup();
+      const corrected = await h.seed({ label: "Atlas corrected" });
+      const legacy = await h.seed({ label: "Atlas legacy" });
+      const first = await h.seed({
+        status: "superseded",
+        corrected_by: corrected.id,
+        superseded_by: legacy.id,
+      });
+      const untouchedIds = [first.id, legacy.id];
+      const before = JSON.stringify(await h.nodeRepository.getMany(untouchedIds));
+      const update = vi.spyOn(h.nodeRepository, "update");
+
+      expect(await h.extract()).toMatchObject({ insertedNodes: 0, updatedNodes: 1 });
+      expect(update.mock.calls.map(([id]) => id)).toEqual([corrected.id]);
+      expect(await h.nodeRepository.get(corrected.id)).toMatchObject({
+        description: "Atlas updated description",
+      });
+      expect(JSON.stringify(await h.nodeRepository.getMany(untouchedIds))).toBe(before);
+    });
+
+    it.each([
+      { kind: "edge", correction: createSemanticEdgeId() },
+      { kind: "stream entry", correction: createStreamEntryId() },
+    ])(
+      "falls back to superseded_by when corrected_by references a $kind",
+      async ({ correction }) => {
+        const h = await setup();
+        const terminal = await h.seed({ label: "Atlas terminal" });
+        const first = await h.seed({
+          status: "superseded",
+          corrected_by: correction,
+          superseded_by: terminal.id,
+        });
+        const before = JSON.stringify(await h.nodeRepository.get(first.id));
+
+        expect(await h.extract()).toMatchObject({ insertedNodes: 0, updatedNodes: 1 });
+        expect(await h.nodeRepository.get(terminal.id)).toMatchObject({
+          description: "Atlas updated description",
+        });
+        expect(JSON.stringify(await h.nodeRepository.get(first.id))).toBe(before);
+      },
+    );
+
+    it("inserts when the corrected_by node is missing even if superseded_by resolves", async () => {
+      const h = await setup();
+      const legacy = await h.seed({ label: "Atlas legacy" });
+      const first = await h.seed({
+        status: "superseded",
+        corrected_by: createSemanticNodeId(),
+        superseded_by: legacy.id,
+      });
+      const ids = [first.id, legacy.id];
+      const before = JSON.stringify(await h.nodeRepository.getMany(ids));
+
+      expect(await h.extract()).toMatchObject({ insertedNodes: 1, updatedNodes: 0 });
+      expect(JSON.stringify(await h.nodeRepository.getMany(ids))).toBe(before);
+      expect(h.semanticReviewService.queueDuplicateReview).toHaveBeenCalledOnce();
+    });
+
+    it("traverses an archived superseded intermediate without changing it", async () => {
+      const h = await setup();
+      const terminal = await h.seed({ label: "Atlas terminal" });
+      const middle = await h.seed({
+        label: "Atlas intermediate",
+        archived: true,
+        status: "superseded",
+        corrected_by: terminal.id,
+      });
+      const first = await h.seed({ status: "superseded", corrected_by: middle.id });
+      const ids = [first.id, middle.id];
+      const before = JSON.stringify(await h.nodeRepository.getMany(ids, { includeArchived: true }));
+
+      expect(await h.extract()).toMatchObject({ insertedNodes: 0, updatedNodes: 1 });
+      expect(await h.nodeRepository.get(terminal.id)).toMatchObject({
+        description: "Atlas updated description",
+      });
+      expect(JSON.stringify(await h.nodeRepository.getMany(ids, { includeArchived: true }))).toBe(
+        before,
+      );
+    });
+
+    it.each(["self", "person"] as const)(
+      "redirects an identity-anchored %s candidate to its compatible successor",
+      async (kind) => {
+        const identity = identityEntity(createEntityId(), "Atlas", kind);
+        const h = await setup({
+          kind,
+          identity_entity_id: identity.id,
+          description_perspective: kind === "self" ? "first_person" : "third_person",
+        });
+        const terminal = await h.seed({
+          kind,
+          label: "Current identity",
+          aliases: ["Atlas"],
+          embedding: Float32Array.from([0, 1, 0, 0]),
+        });
+        const first = await h.seed({ kind, status: "superseded", corrected_by: terminal.id });
+        const before = JSON.stringify(await h.nodeRepository.get(first.id));
+        // Model a lookup window that contains only the predecessor; the successor
+        // must be reached by id and checked with the identity compatibility rule.
+        vi.spyOn(h.nodeRepository, "findByExactLabelOrAlias").mockResolvedValue([first]);
+
+        expect(
+          await h.extract([], {
+            entityRepository: identityRepository([identity]),
+            participantRoster: identityRoster([identity]),
+            selfEntityId: kind === "self" ? identity.id : null,
+          }),
+        ).toMatchObject({ insertedNodes: 0, updatedNodes: 1 });
+        expect(await h.nodeRepository.get(terminal.id)).toMatchObject({
+          kind,
+          description: "Atlas updated description",
+          status: "active",
+        });
+        expect(JSON.stringify(await h.nodeRepository.get(first.id))).toBe(before);
+        expect(h.tracer.emit).toHaveBeenCalledWith("semantic_extractor.target_redirected", {
+          turnId: "turn_active_target",
+          from_node_id: first.id,
+          to_node_id: terminal.id,
+        });
+      },
+    );
+
+    it("updates the new active node on repeated extraction after real contradiction review", async () => {
+      const h = await setup({ kind: "proposition" });
+      const contradicted = await h.seed({ kind: "proposition", status: "contradicted" });
+      const before = JSON.stringify(await h.nodeRepository.get(contradicted.id));
+      const judge = new FakeLLMClient({
+        responses: [
+          {
+            text: "",
+            input_tokens: 1,
+            output_tokens: 1,
+            stop_reason: "tool_use",
+            tool_calls: [
+              {
+                id: "review",
+                name: "EmitContradictionJudgment",
+                input: { contradicts: true, confidence: 0.9 },
+              },
+            ],
+          },
+        ],
+      });
+      const enqueueReview = vi.fn();
+      const semanticReviewService = new SemanticReviewService({
+        nodeRepository: h.nodeRepository,
+        llmClient: judge,
+        contradictionJudgeModel: "test",
+        enqueueReview,
+      });
+
+      expect(await h.extract([], { semanticReviewService })).toMatchObject({
+        insertedNodes: 1,
+        updatedNodes: 0,
+      });
+      await semanticReviewService.flushDuplicateReviews();
+      const active = (await h.nodeRepository.list()).find((node) => node.status === "active");
+      expect(active).toBeDefined();
+      expect(judge.requests).toHaveLength(1);
+      expect(enqueueReview).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ refs: { node_ids: [active!.id, contradicted.id] } }),
+      );
+
+      const update = vi.spyOn(h.nodeRepository, "update");
+      expect(await h.extract([], { semanticReviewService })).toMatchObject({
+        insertedNodes: 0,
+        updatedNodes: 1,
+      });
+      await semanticReviewService.flushDuplicateReviews();
+      expect(update.mock.calls.map(([id]) => id)).toEqual([active!.id]);
+      expect(await h.nodeRepository.list()).toHaveLength(2);
+      expect(JSON.stringify(await h.nodeRepository.get(contradicted.id))).toBe(before);
+      expect(judge.requests).toHaveLength(1);
+    });
+
+    it.each(["superseded", "incompatible"] as const)(
+      "finds the first compatible active label match behind 43 %s rows",
+      async (crowding) => {
+        const h = await setup();
+        const active = [];
+        for (let index = 0; index < 5; index += 1) {
+          active.push(await h.seed({ updated_at: index + 1 }));
+        }
+        for (let index = 0; index < 43; index += 1) {
+          await h.seed({
+            kind: crowding === "incompatible" ? "concept" : "entity",
+            status: crowding === "superseded" ? "superseded" : "active",
+            updated_at: index + 100,
+          });
+        }
+        const chosen = active.at(-1)!;
+        const update = vi.spyOn(h.nodeRepository, "update");
+
+        expect(await h.extract()).toMatchObject({ insertedNodes: 0, updatedNodes: 1 });
+        expect(update.mock.calls.map(([id]) => id)).toEqual([chosen.id]);
+        expect(await h.nodeRepository.get(chosen.id)).toMatchObject({
+          description: "Atlas updated description",
+        });
+        expect(await h.nodeRepository.list()).toHaveLength(48);
+      },
+    );
+
+    it("queues vector-only review for the tenth result after filtering inactive and incompatible rows", async () => {
+      const h = await setup();
+      for (let index = 0; index < 9; index += 1) {
+        const similarity = 1 - index * 0.001;
+        await h.seed({
+          label: `Nearby node ${index}`,
+          kind: index % 2 === 0 ? "entity" : "concept",
+          status: index % 2 === 0 ? "superseded" : "active",
+          embedding: Float32Array.from([similarity, Math.sqrt(1 - similarity ** 2), 0, 0]),
+        });
+      }
+      const active = await h.seed({
+        label: "Atlas platform",
+        embedding: Float32Array.from([0.99, Math.sqrt(1 - 0.99 ** 2), 0, 0]),
+      });
+
+      expect(await h.extract()).toMatchObject({ insertedNodes: 1, updatedNodes: 0 });
+      expect(h.reviewEnqueue).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          refs: expect.objectContaining({ node_ids: [expect.any(String), active.id] }),
+        }),
+      );
+    });
+
+    it.each([
+      { name: "superseded without a successor", patch: { status: "superseded" } },
+      { name: "contradicted with an active winner", patch: { status: "contradicted" } },
+      { name: "quarantined", patch: { status: "quarantined" } },
+      { name: "incompatible kind", patch: { kind: "concept" } },
+      { name: "incompatible embedding", patch: { embedding: Float32Array.from([0, 1, 0, 0]) } },
+      {
+        name: "incompatible observation",
+        patch: {
+          observation_metadata: {
+            witness: null,
+            timeframe: "2026-01",
+            count_or_intensity: null,
+            source_kind: null,
+            confidence: null,
+            status: null,
+          },
+        },
+      },
+    ] satisfies Array<{ name: string; patch: Partial<SemanticNode> }>)(
+      "inserts when the supersession chain ends at $name",
+      async ({ patch }) => {
+        const h = await setup();
+        const winner = await h.seed({ label: "Atlas winner" });
+        const terminal = await h.seed({
+          label: "Atlas terminal",
+          ...patch,
+          corrected_by: patch.status === "contradicted" ? winner.id : null,
+        });
+        const first = await h.seed({ status: "superseded", corrected_by: terminal.id });
+        const ids = [first.id, terminal.id, winner.id];
+        const before = JSON.stringify(await h.nodeRepository.getMany(ids));
+
+        expect(await h.extract()).toMatchObject({ insertedNodes: 1, updatedNodes: 0 });
+        expect(JSON.stringify(await h.nodeRepository.getMany(ids))).toBe(before);
+        expect(h.semanticReviewService.queueDuplicateReview).toHaveBeenCalledOnce();
+        expect(h.tracer.emit).not.toHaveBeenCalledWith(
+          "semantic_extractor.target_redirected",
+          expect.anything(),
+        );
+      },
+    );
+
+    it.each([
+      { name: "missing node", correction: createSemanticNodeId() },
+      { name: "stream entry", correction: createStreamEntryId() },
+      { name: "edge", correction: createSemanticEdgeId() },
+    ])("inserts when the correction references a $name", async ({ correction }) => {
+      const h = await setup();
+      const first = await h.seed({ status: "superseded", corrected_by: correction });
+      const before = JSON.stringify(await h.nodeRepository.get(first.id));
+
+      expect(await h.extract()).toMatchObject({ insertedNodes: 1, updatedNodes: 0 });
+      expect(JSON.stringify(await h.nodeRepository.get(first.id))).toBe(before);
+    });
+
+    it.each(["contradicted", "quarantined"] as const)(
+      "inserts for a %s match without touching its active correction",
+      async (status) => {
+        const h = await setup();
+        const winner = await h.seed({ label: "Atlas winner" });
+        const rejected = await h.seed({ status, corrected_by: winner.id });
+        const before = JSON.stringify(await h.nodeRepository.getMany([rejected.id, winner.id]));
+
+        expect(await h.extract()).toMatchObject({ insertedNodes: 1, updatedNodes: 0 });
+        expect(JSON.stringify(await h.nodeRepository.getMany([rejected.id, winner.id]))).toBe(
+          before,
+        );
+        expect(h.semanticReviewService.queueDuplicateReview).toHaveBeenCalledOnce();
+      },
+    );
+
+    it.each(["label", "alias"] as const)(
+      "prefers active %s matches in their existing order over a newer superseded match",
+      async (matchBy) => {
+        const h = await setup();
+        const olderActive = await h.seed();
+        const chosen = await h.seed({
+          label: matchBy === "alias" ? "Atlas alias owner" : "Atlas",
+          aliases: matchBy === "alias" ? ["Atlas"] : [],
+          updated_at: 10,
+        });
+        const successor = await h.seed({ label: "Atlas successor" });
+        const superseded = await h.seed({
+          status: "superseded",
+          corrected_by: successor.id,
+          updated_at: 20,
+        });
+        const untouchedIds = [olderActive.id, successor.id, superseded.id];
+        const before = JSON.stringify(await h.nodeRepository.getMany(untouchedIds));
+
+        expect(await h.extract()).toMatchObject({ insertedNodes: 0, updatedNodes: 1 });
+        expect(await h.nodeRepository.get(chosen.id)).toMatchObject({
+          description: "Atlas updated description",
+        });
+        expect(JSON.stringify(await h.nodeRepository.getMany(untouchedIds))).toBe(before);
+        expect(h.tracer.emit).not.toHaveBeenCalledWith(
+          "semantic_extractor.target_redirected",
+          expect.anything(),
+        );
+      },
+    );
+
+    it("accepts an edge using the redirected batch label", async () => {
+      const h = await setup();
+      const successor = await h.seed({ label: "Atlas current" });
+      await h.seed({ status: "superseded", corrected_by: successor.id });
+      const endpoint = await h.seed({ label: "Rollback", kind: "concept" });
+
+      expect(
+        await h.extract([
+          {
+            from_label: "Atlas",
+            to_label: "Rollback",
+            relation: "supports",
+            confidence: 0.6,
+            evidence_episode_ids: [h.episode.id],
+          },
+        ]),
+      ).toMatchObject({ insertedEdges: 1, skippedEdges: 0 });
+      expect(h.edgeRepository.listEdges()).toEqual([
+        expect.objectContaining({ from_node_id: successor.id, to_node_id: endpoint.id }),
+      ]);
+      expect(h.tracer.emit).not.toHaveBeenCalledWith(
+        "semantic_insert.skipped",
+        expect.objectContaining({ kind: "edge", reason: "invalid_endpoint" }),
+      );
+    });
+
+    it("terminates a cyclic supersession chain and inserts", async () => {
+      const h = await setup();
+      const firstId = createSemanticNodeId();
+      const second = await h.seed({
+        label: "Atlas intermediate",
+        status: "superseded",
+        corrected_by: firstId,
+      });
+      const first = await h.seed({ id: firstId, status: "superseded", corrected_by: second.id });
+      const before = JSON.stringify(await h.nodeRepository.getMany([first.id, second.id]));
+      const get = vi.spyOn(h.nodeRepository, "get");
+
+      expect(await h.extract()).toMatchObject({ insertedNodes: 1, updatedNodes: 0 });
+      expect(get.mock.calls.length).toBeLessThan(5);
+      expect(JSON.stringify(await h.nodeRepository.getMany([first.id, second.id]))).toBe(before);
+    });
+
+    it("reaches an active terminal exactly 32 supersession links away", async () => {
+      const h = await setup();
+      const terminal = await h.seed({ label: "Atlas terminal" });
+      let next = terminal;
+      for (let index = 0; index < 32; index += 1) {
+        next = await h.seed({
+          label: index === 31 ? "Atlas" : `Revision ${index}`,
+          status: "superseded",
+          corrected_by: next.id,
+        });
+      }
+      const update = vi.spyOn(h.nodeRepository, "update");
+
+      expect(await h.extract()).toMatchObject({ insertedNodes: 0, updatedNodes: 1 });
+      expect(update.mock.calls.map(([id]) => id)).toEqual([terminal.id]);
+      expect(await h.nodeRepository.get(terminal.id)).toMatchObject({
+        description: "Atlas updated description",
+      });
+    });
+
+    it("inserts when the active terminal is 33 supersession links away", async () => {
+      const h = await setup();
+      let next = await h.seed({ label: "Atlas terminal" });
+      for (let index = 0; index < 33; index += 1) {
+        next = await h.seed({
+          label: index === 32 ? "Atlas" : `Revision ${index}`,
+          status: "superseded",
+          corrected_by: next.id,
+        });
+      }
+      const get = vi.spyOn(h.nodeRepository, "get");
+
+      expect(await h.extract()).toMatchObject({ insertedNodes: 1, updatedNodes: 0 });
+      expect(get.mock.calls.length).toBeLessThanOrEqual(32);
+    });
+
+    it.each(["superseded", "contradicted", "quarantined"] as const)(
+      "does not queue vector-only duplicate review against a %s match",
+      async (status) => {
+        const h = await setup();
+        const match = await h.seed({ label: "Atlas platform", status });
+        const before = JSON.stringify(await h.nodeRepository.get(match.id));
+
+        expect(await h.extract()).toMatchObject({ insertedNodes: 1, updatedNodes: 0 });
+        expect(h.reviewEnqueue).not.toHaveBeenCalled();
+        expect(JSON.stringify(await h.nodeRepository.get(match.id))).toBe(before);
+        expect(h.semanticReviewService.queueDuplicateReview).toHaveBeenCalledOnce();
+      },
+    );
+
+    it("queues vector-only review against the first active compatible match", async () => {
+      const h = await setup();
+      const inactive = await h.seed({ label: "Atlas old platform", status: "superseded" });
+      const active = await h.seed({ label: "Atlas current platform" });
+      vi.spyOn(h.nodeRepository, "searchByVector").mockResolvedValue([
+        { node: inactive, similarity: 1 },
+        { node: active, similarity: 0.99 },
+      ]);
+
+      expect(await h.extract()).toMatchObject({ insertedNodes: 1, updatedNodes: 0 });
+      expect(h.reviewEnqueue).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          refs: expect.objectContaining({ node_ids: [expect.any(String), active.id] }),
+        }),
+      );
+    });
   });
 
   it("skips malformed and dangling edges while preserving valid candidates", async () => {

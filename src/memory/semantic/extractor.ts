@@ -32,6 +32,7 @@ import { LLMError, SemanticError, StorageError } from "../../util/errors.js";
 import {
   createSemanticNodeId,
   entityIdHelpers,
+  semanticNodeIdHelpers,
   type EntityId,
   type StreamEntryId,
 } from "../../util/ids.js";
@@ -61,6 +62,9 @@ import {
 
 const MAX_EXTRACTOR_NODES = 40;
 const MAX_EXTRACTOR_EDGES = 60;
+const EXTRACTOR_LABEL_MATCH_LIMIT = 50;
+const EXTRACTOR_VECTOR_MATCH_LIMIT = 10;
+const MAX_SUPERSESSION_HOPS = 32;
 
 const extractorNodeBaseSchema = z.object({
   kind: semanticNodeKindSchema,
@@ -898,7 +902,7 @@ export class SemanticExtractor {
       };
       const byLabelMatches = await this.options.nodeRepository.findByExactLabelOrAlias(
         candidateLabel,
-        5,
+        EXTRACTOR_LABEL_MATCH_LIMIT,
         {
           includeArchived: true,
         },
@@ -912,18 +916,55 @@ export class SemanticExtractor {
       }
 
       const byVectorMatches = await this.options.nodeRepository.searchByVector(embedding, {
-        limit: 3,
+        limit: EXTRACTOR_VECTOR_MATCH_LIMIT,
         minSimilarity: this.dedupThreshold,
       });
       const byVector: Array<{ node: SemanticNode; similarity: number }> = [];
 
       for (const match of byVectorMatches) {
-        if (isCompatibleNode(match.node)) {
+        if (match.node.status === "active" && isCompatibleNode(match.node)) {
           byVector.push(match);
         }
       }
 
-      const existing = byLabel[0];
+      let existing = byLabel.find((node) => node.status === "active");
+
+      if (existing === undefined) {
+        for (const match of byLabel) {
+          let successor: SemanticNode | null = match;
+          const visited = new Set<SemanticNode["id"]>();
+
+          while (
+            successor?.status === "superseded" &&
+            !visited.has(successor.id) &&
+            visited.size < MAX_SUPERSESSION_HOPS
+          ) {
+            visited.add(successor.id);
+            // Corrections may cite an edge or stream entry instead of a node.
+            const successorId: SemanticNode["id"] | null =
+              successor.corrected_by !== null && semanticNodeIdHelpers.is(successor.corrected_by)
+                ? successor.corrected_by
+                : successor.superseded_by;
+            successor =
+              successorId === null ? null : await this.options.nodeRepository.get(successorId);
+          }
+
+          if (successor?.status !== "active" || !isCompatibleNode(successor)) {
+            continue;
+          }
+
+          existing = successor;
+          if (this.options.tracer?.enabled === true) {
+            this.options.tracer.emit("semantic_extractor.target_redirected", {
+              turnId: this.options.traceTurnId ?? "semantic_extractor",
+              from_node_id: match.id,
+              to_node_id: successor.id,
+            });
+          }
+          break;
+        }
+      }
+
       const vectorOnlyMatch = existing === undefined ? byVector[0] : undefined;
       const nowMs = this.clock.now();
 

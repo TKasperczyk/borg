@@ -173,6 +173,7 @@ export type TurnTraceEventName =
   | "review_queue.completed"
   | "semantic_extractor.started"
   | "semantic_extractor.degraded"
+  | "semantic_extractor.target_redirected"
   | "semantic_insert.skipped"
   | "episodic_extractor.skipped"
   | "semantic_node.status.transitioned"

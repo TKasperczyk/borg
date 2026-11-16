@@ -8,6 +8,7 @@ describe("trace taxonomy", () => {
     expect(phaseForTraceEventName("extraction.actions.completed")).toBe("extraction");
     expect(phaseForTraceEventName("extraction.commitments.transitioned")).toBe("extraction");
     expect(phaseForTraceEventName("episodic_extractor.skipped")).toBe("ingestion");
+    expect(phaseForTraceEventName("semantic_extractor.target_redirected")).toBe("ingestion");
     expect(phaseForTraceEventName("review_resolver.completed")).toBe("review");
     expect(phaseForTraceEventName("turn.rejected")).toBe("session");
     expect(phaseForTraceEventName("turn.terminal")).toBe("session");

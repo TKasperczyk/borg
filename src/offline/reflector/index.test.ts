@@ -1356,6 +1356,86 @@ describe("reflector process", () => {
     );
   });
 
+  it.each([
+    { status: "superseded", matchBy: "label" },
+    { status: "contradicted", matchBy: "label" },
+    { status: "quarantined", matchBy: "label" },
+    { status: "superseded", matchBy: "vector" },
+    { status: "contradicted", matchBy: "vector" },
+    { status: "quarantined", matchBy: "vector" },
+  ] as const)(
+    "inserts an insight instead of updating a $status $matchBy match after acceptance",
+    async ({ status, matchBy }) => {
+      const label = "Release planning insight";
+      const description = "Planning helps coordinate releases.";
+      const episodes = [1, 2, 3].map((index) =>
+        createEpisodeFixture(
+          {
+            title: `Planning episode ${index}`,
+            tags: ["planning"],
+            created_at: index * 10_000,
+            updated_at: index * 10_000,
+          },
+          [1, 0, 0, 0],
+        ),
+      );
+      const harness = await createOfflineTestHarness({
+        llmClient: new FakeLLMClient({
+          responses: [
+            createReflectorResponse({
+              label,
+              description,
+              confidence: 0.6,
+              source_episode_ids: episodes.map((episode) => episode.id),
+            }),
+          ],
+        }),
+        embeddingClient: new TestEmbeddingClient(
+          new Map([
+            ["planning", [1, 0, 0, 0]],
+            [`${label}\n${description}`, [1, 0, 0, 0]],
+          ]),
+        ),
+      });
+      cleanup.push(harness.cleanup);
+      for (const episode of episodes) {
+        await harness.episodicRepository.createEpisode(episode);
+      }
+      const existing = await harness.semanticNodeRepository.insert(
+        createSemanticNodeFixture(
+          {
+            label: matchBy === "label" ? label : "Earlier planning insight",
+            status,
+            source_episode_ids: [episodes[0]!.id],
+          },
+          [1, 0, 0, 0],
+        ),
+      );
+      const before = JSON.stringify(await harness.semanticNodeRepository.get(existing.id));
+      const process = new ReflectorProcess({
+        semanticNodeRepository: harness.semanticNodeRepository,
+        semanticEdgeRepository: harness.semanticEdgeRepository,
+        reviewQueueRepository: harness.reviewQueueRepository,
+        registry: harness.registry,
+        clock: harness.clock,
+      });
+
+      const ctx = harness.createContext();
+      const plan = await process.plan(ctx);
+      expect(plan.errors).toEqual([]);
+      expect(plan.items[0]?.target.mode).toBe("insert");
+      await process.apply(ctx, plan);
+      await harness.reviewQueueRepository.resolve(
+        harness.reviewQueueRepository.getOpen()[0]!.id,
+        "accept",
+      );
+      expect(JSON.stringify(await harness.semanticNodeRepository.get(existing.id))).toBe(before);
+      expect(await harness.semanticNodeRepository.list()).toEqual(
+        expect.arrayContaining([expect.objectContaining({ label, description, status: "active" })]),
+      );
+    },
+  );
+
   it("does not update an exact-label proposition when multiple compatible nodes are plausible", async () => {
     const label = "Ambiguous exact label";
     const description = "A proposition whose label already has multiple compatible nodes.";
