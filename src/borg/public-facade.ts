@@ -1,3 +1,4 @@
+import type { OpenQuestionPresentation } from "../memory/self/resolution-corrections.js";
 // Public Borg facade declarations. Keep these structural and free of internal
 // repository/service/scheduler classes so generated declarations stay light.
 
@@ -68,7 +69,6 @@ import type {
   GoalRecord,
   GoalStatus,
   GoalTreeNode,
-  OpenQuestion,
   OpenQuestionListOptions,
   OpenQuestionPatch,
   OpenQuestionSource,
@@ -560,26 +560,26 @@ export type BorgSelfFacade = {
     list(options?: BorgJournalListOptions): TrainOfThoughtJournalEntry[];
   };
   openQuestions: {
-    list(options?: OpenQuestionListOptions): OpenQuestion[];
-    add(input: BorgOpenQuestionAddInput): OpenQuestion;
+    list(options?: OpenQuestionListOptions): OpenQuestionPresentation[];
+    add(input: BorgOpenQuestionAddInput): OpenQuestionPresentation;
     resolve(
       openQuestionId: OpenQuestionId,
       resolution: BorgOpenQuestionResolutionInput,
       provenance: Provenance,
       options?: BorgIdentityUpdateOptions,
-    ): BorgIdentityUpdateResult<OpenQuestion>;
+    ): BorgIdentityUpdateResult<OpenQuestionPresentation>;
     abandon(
       openQuestionId: OpenQuestionId,
       reason: string,
       provenance: Provenance,
       options?: BorgIdentityUpdateOptions,
-    ): BorgIdentityUpdateResult<OpenQuestion>;
+    ): BorgIdentityUpdateResult<OpenQuestionPresentation>;
     bumpUrgency(
       openQuestionId: OpenQuestionId,
       delta: number,
       provenance: Provenance,
       options?: BorgIdentityUpdateOptions,
-    ): BorgIdentityUpdateResult<OpenQuestion>;
+    ): BorgIdentityUpdateResult<OpenQuestionPresentation>;
   };
 };
 
@@ -1030,7 +1030,7 @@ export type BorgIdentityFacade = {
     patch: OpenQuestionPatch | unknown,
     provenance: Provenance,
     options?: BorgIdentityUpdateOptions,
-  ): BorgIdentityUpdateResult<OpenQuestion>;
+  ): BorgIdentityUpdateResult<OpenQuestionPresentation>;
   listEvents(options?: BorgIdentityEventListOptions): IdentityEvent[];
 };
 

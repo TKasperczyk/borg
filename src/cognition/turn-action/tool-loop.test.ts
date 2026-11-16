@@ -1114,6 +1114,7 @@ describe("executeToolLoop", () => {
       name: "tool.test.strict",
       input: { value: "" },
       ok: false,
+      errorCode: "TOOL_INPUT_INVALID",
     });
     expect(llm.converseRequests[1]?.messages.at(-1)).toEqual({
       role: "user",

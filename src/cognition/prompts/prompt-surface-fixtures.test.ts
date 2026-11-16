@@ -999,6 +999,10 @@ function makeAutonomousRelationalContext(): DeliberationContext {
         menuSummary: "Resolve an open question with evidence, or surface identity review.",
       },
       {
+        name: "tool.openQuestions.correctResolution",
+        menuSummary: "Append an evidenced correction to a resolved question's closing note.",
+      },
+      {
         name: "tool.goals.retire",
         menuSummary:
           "Retire one of my own goals as done, superseded, or abandoned, with my reason; close outstanding steps without claiming completion.",

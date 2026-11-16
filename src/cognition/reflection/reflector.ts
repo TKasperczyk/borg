@@ -1,3 +1,4 @@
+import { isPlainRecord } from "../../util/guards.js";
 import {
   artifactReferenceSchema,
   deliveredOutboundPostArtifactOutputSchema,
@@ -45,6 +46,20 @@ import {
 } from "../../memory/self/index.js";
 import type { IdentityService } from "../../memory/identity/index.js";
 import { resolveOpenQuestionThroughIdentityService } from "../../memory/lifecycle-ops/index.js";
+import { correctOpenQuestionResolutionThroughIdentityService } from "../../memory/lifecycle-ops/correct-resolution.js";
+import { openQuestionResolutionCorrectionInputSchema } from "../../memory/self/types.js";
+import {
+  formatResolutionCorrections,
+  openQuestionResolutionIdentity,
+  type OpenQuestionResolutionIdentity,
+  RESOLUTION_CHANGED_CODE,
+  RESOLUTION_CORRECTION_PAGE_MAX_CHARS,
+  RESOLUTION_CORRECTION_ACTION,
+  RESOLUTION_CORRECTION_TOOL_NAME,
+  resolutionCorrectionEvidenceSchema,
+} from "../../memory/self/resolution-corrections.js";
+import { headTailTextExcerpt } from "../../util/text-excerpt.js";
+import type { StreamEntryIndexRepository } from "../../stream/index.js";
 import type { ReviewQueueRepository } from "../../memory/review-queue/index.js";
 import { ProceduralEvidenceRepository, SkillRepository } from "../../memory/procedural/index.js";
 import {
@@ -82,14 +97,17 @@ import {
   type StreamEntryId,
   scheduledWakeIdHelpers,
 } from "../../util/ids.js";
-import { IdentityCasMismatchError, LLMError } from "../../util/errors.js";
+import { IdentityCasMismatchError, LLMError, StorageError } from "../../util/errors.js";
 import { z } from "zod";
 
 import type { ActionResult } from "../turn-action/index.js";
 import type { DeliberationResult, SelfSnapshot } from "../deliberation/deliberator.js";
 import { SuppressionSet } from "../attention/index.js";
 import type { ActualFrameAnomalyClassification } from "../frame-anomaly/index.js";
-import { TURN_REFLECTION_SYSTEM_PROMPT } from "../prompts/reflector.js";
+import {
+  TURN_REFLECTION_SYSTEM_PROMPT,
+  RESOLUTION_CORRECTION_REFLECTION_GUIDANCE,
+} from "../prompts/reflector.js";
 import {
   intentRecordSchema,
   isAutonomousLikeTurnOrigin,
@@ -123,6 +141,7 @@ export type ReflectionContext = {
   audienceIsGroup?: boolean;
   senderEntityId?: EntityId | null;
   activeOpenQuestions?: readonly OpenQuestion[];
+  resolvedOpenQuestions?: readonly OpenQuestion[];
   suppressionSet: SuppressionSet;
   frameAnomaly?: ActualFrameAnomalyClassification | null;
   // Sprint 56: stream entries persisted by the just-completed turn
@@ -164,6 +183,7 @@ const OPEN_QUESTION_RESOLVE_TOOL_NAME = "tool.openQuestions.resolve";
 const SCHEDULED_WAKE_CREATE_TOOL_NAME = "tool.scheduledWakes.create";
 // Thinking counts against max_tokens, so this must fit the reasoning as well as the payload.
 const DEFAULT_REFLECTION_MAX_TOKENS = 16_000;
+const MAX_REFLECTION_RESOLUTION_CORRECTIONS = 3;
 const REFLECTION_GOAL_PROGRESS_NOTES_CHAR_BUDGET = 1_200;
 // Candidate labels can grow quickly; established traits are the stable vocabulary,
 // while the strongest 40 candidates give the reflector reuse handles without unbounded prompt growth.
@@ -352,6 +372,13 @@ const strictReflectionOutputSchema = z.object({
       `Previously active open questions clearly answered by my completed turn. I use only question ids and evidence ids supplied in the reflection input, and include episode or stream evidence. I apply this voice guidance to resolution_note unless resolving a verbatim user-sourced question whose exact wording must be preserved: ${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE}`,
     )
     .default([]),
+  resolution_corrections: z
+    .array(openQuestionResolutionCorrectionInputSchema)
+    .max(MAX_REFLECTION_RESOLUTION_CORRECTIONS)
+    .describe(
+      "Append corrections to resolved questions without changing their original notes. Cite stored episode or stream ids with own_read or reported basis and reported_by for reported evidence. Optional corrects_span quotes the target verbatim; targets_correction_seq targets an earlier correction. The harness checks structure, not correctness.",
+    )
+    .default([]),
   retired_goals: z
     .array(retiredGoalSchema)
     .max(5)
@@ -362,6 +389,16 @@ const strictReflectionOutputSchema = z.object({
 });
 
 type ReflectionOutput = z.infer<typeof strictReflectionOutputSchema>;
+// Validate each correction separately so one malformed item has a traced rejection
+// without discarding unrelated reflection writes. The advertised schema stays strict.
+const reflectionEnvelopeSchema = strictReflectionOutputSchema
+  .omit({ resolution_corrections: true })
+  .extend({
+    resolution_corrections: z
+      .array(z.unknown())
+      .max(MAX_REFLECTION_RESOLUTION_CORRECTIONS)
+      .default([]),
+  });
 
 const REFLECTION_TOOL: LLMToolDefinition = {
   name: REFLECTION_TOOL_NAME,
@@ -381,6 +418,7 @@ function emptyReflectionOutput(): ReflectionOutput {
     proposed_steps: [],
     open_questions: [],
     resolved_open_questions: [],
+    resolution_corrections: [],
     retired_goals: [],
   };
 }
@@ -398,23 +436,144 @@ function emptyReflectionEffects(): ReflectionEffects {
   };
 }
 
-// A failed call keeps the dispatcher's error text, which says why it failed; a successful call's
-// output is left out. Error text past the cap is cut, and its full length is kept beside it.
-const REFLECTION_TOOL_ERROR_MAX_CHARS = 1_000;
+// Ordinary calls keep bounded error text and omit successful output. Correction calls
+// instead carry separately bounded author text, a label and a structural outcome.
+const REFLECTION_TOOL_TEXT_MAX_CHARS = 1_000;
 
-function reflectionToolCall(call: ActionResult["tool_calls"][number]) {
+async function reflectionToolCall(
+  call: ActionResult["tool_calls"][number],
+  episodicRepository: Pick<EpisodicRepository, "getMany">,
+) {
+  if (call.name === RESOLUTION_CORRECTION_TOOL_NAME) {
+    const input = isPlainRecord(call.input) ? call.input : {};
+    const evidence = z.array(resolutionCorrectionEvidenceSchema).min(1).safeParse(input.evidence);
+    let label = unknownMemoryDisclosureLabel();
+    let evidenceLabelsUnavailable = false;
+    if (evidence.success) {
+      const ids = evidence.data.map((entry) => entry.id);
+      const episodeIds = ids.flatMap((id) => {
+        const parsed = episodeIdSchema.safeParse(id);
+        return parsed.success ? [parsed.data] : [];
+      });
+      try {
+        const episodes = await episodicRepository.getMany(episodeIds);
+        const labels = new Map(
+          episodes.map((episode) => [episode.id, memoryDisclosureLabelFromEpisodeAccess(episode)]),
+        );
+        label = combineMemoryDisclosureLabels(
+          ids.map((id) => labels.get(id as EpisodeId) ?? unknownMemoryDisclosureLabel()),
+        );
+      } catch {
+        evidenceLabelsUnavailable = true;
+      }
+    }
+    // Only these bounded fields are forwarded; in particular, never forward a span-miss note.
+    const text = typeof input.correction_note === "string" ? input.correction_note : "";
+    const span = typeof input.corrects_span === "string" ? input.corrects_span : undefined;
+    return {
+      name: call.name,
+      open_question_id: typeof input.open_question_id === "string" ? input.open_question_id : null,
+      outcome: call.ok ? "succeeded" : "failed",
+      ...(call.ok ? {} : { reason_code: call.errorCode ?? "TOOL_CALL_FAILED" }),
+      correction_note: text.slice(0, REFLECTION_TOOL_TEXT_MAX_CHARS),
+      ...(text.length > REFLECTION_TOOL_TEXT_MAX_CHARS
+        ? { correction_note_chars: text.length }
+        : {}),
+      ...(span === undefined
+        ? {}
+        : {
+            corrects_span: span.slice(0, REFLECTION_TOOL_TEXT_MAX_CHARS),
+            ...(span.length > REFLECTION_TOOL_TEXT_MAX_CHARS
+              ? { corrects_span_chars: span.length }
+              : {}),
+          }),
+      ...memoryDisclosurePayloadFields(label),
+      ...(evidenceLabelsUnavailable ? { disclosure_label_status: "evidence_unavailable" } : {}),
+    };
+  }
   return {
     name: call.name,
     input: call.input,
     ok: call.ok,
     ...(call.ok || call.error === undefined
       ? {}
-      : call.error.length <= REFLECTION_TOOL_ERROR_MAX_CHARS
+      : call.error.length <= REFLECTION_TOOL_TEXT_MAX_CHARS
         ? { error: call.error }
         : {
-            error: call.error.slice(0, REFLECTION_TOOL_ERROR_MAX_CHARS),
+            error: call.error.slice(0, REFLECTION_TOOL_TEXT_MAX_CHARS),
             error_chars: call.error.length,
           }),
+  };
+}
+
+export const RESOLVED_QUESTIONS_REFLECTION_LIMIT = 10;
+export const RESOLVED_QUESTIONS_REFLECTION_MAX_CHARS = 12_000;
+
+function resolvedQuestionsForReflection(questions: readonly OpenQuestion[]) {
+  const eligible = [
+    ...new Map(
+      questions
+        .filter((question) => question.status === "resolved")
+        .map((question) => [question.id, question]),
+    ).values(),
+  ].sort(
+    (a, b) =>
+      b.last_touched - a.last_touched || b.created_at - a.created_at || a.id.localeCompare(b.id),
+  );
+  const rows = eligible.slice(0, RESOLVED_QUESTIONS_REFLECTION_LIMIT).map((question) => {
+    const excerpt = headTailTextExcerpt(
+      question.resolution_note ?? "",
+      RESOLUTION_CORRECTION_PAGE_MAX_CHARS,
+    );
+    return {
+      id: question.id,
+      question: question.question,
+      ...(excerpt.exact
+        ? { resolution_note: question.resolution_note }
+        : {
+            resolution_note_excerpt: {
+              head: excerpt.head,
+              tail: excerpt.tail,
+              source_chars: excerpt.totalChars,
+            },
+          }),
+      ...formatResolutionCorrections(
+        { resolution_corrections: question.resolution_corrections },
+        { maxChars: RESOLUTION_CORRECTION_PAGE_MAX_CHARS },
+      ),
+      ...memoryDisclosurePayloadFields(openQuestionMemoryDisclosureLabel(question)),
+    };
+  });
+  const fields = () =>
+    eligible.length === 0
+      ? {}
+      : {
+          resolved_open_questions: rows,
+          ...(rows.length === eligible.length
+            ? {}
+            : {
+                resolved_open_questions_omitted: {
+                  count: eligible.length - rows.length,
+                  total: eligible.length,
+                  reason: "budget_or_limit",
+                },
+              }),
+        };
+  // Budget the serialized block, including labels, escaping, keys and the omission marker.
+  // Newest entries lead; removing the tail drops whole entries oldest-first.
+  while (
+    JSON.stringify(fields()).length > RESOLVED_QUESTIONS_REFLECTION_MAX_CHARS &&
+    rows.length > 0
+  )
+    rows.pop();
+  const shownIds = new Set(rows.map((row) => row.id));
+  return {
+    fields: fields(),
+    shownResolutions: new Map(
+      eligible
+        .filter((question) => shownIds.has(question.id))
+        .map((question) => [question.id, openQuestionResolutionIdentity(question)]),
+    ),
   };
 }
 
@@ -751,8 +910,10 @@ export type ReflectorOptions = {
   identityService?: Pick<
     IdentityService,
     "updateGoal" | "updateGoalProgressFromReflection" | "addOpenQuestion" | "resolveOpenQuestion"
-  >;
+  > &
+    Partial<Pick<IdentityService, "correctOpenQuestionResolution">>;
   openQuestionsRepository?: Pick<OpenQuestionsRepository, "get" | "getByDedupeKey">;
+  entryIndex?: Pick<StreamEntryIndexRepository, "lookupEntriesById">;
   reviewQueueRepository?: Pick<ReviewQueueRepository, "enqueue">;
   skillRepository?: SkillRepository;
   proceduralEvidenceRepository?: ProceduralEvidenceRepository;
@@ -812,6 +973,9 @@ export class Reflector {
             ),
           });
     context = { ...context, pendingActionProjection: projection };
+    const resolvedQuestionBlock = resolvedQuestionsForReflection(
+      context.resolvedOpenQuestions ?? [],
+    );
     const reflectionProvenance = buildReflectionProvenance(context.retrievedEpisodes);
     const effects = emptyReflectionEffects();
     let reflectionOutput = emptyReflectionOutput();
@@ -829,7 +993,7 @@ export class Reflector {
     }
 
     try {
-      reflectionOutput = await this.runReflectionJudgment(context);
+      reflectionOutput = await this.runReflectionJudgment(context, resolvedQuestionBlock);
     } catch (error) {
       await appendInternalFailureEvent(streamWriter, "reflection_judgment", error);
     }
@@ -882,6 +1046,11 @@ export class Reflector {
       context,
       reflectionOutput.resolved_open_questions,
       effects,
+    );
+    await this.applyResolutionCorrections(
+      context,
+      reflectionOutput.resolution_corrections,
+      resolvedQuestionBlock.shownResolutions,
     );
 
     const availableArtifactReferences = currentTurnArtifactReferences(context, effects);
@@ -2000,6 +2169,66 @@ export class Reflector {
     }
   }
 
+  private async applyResolutionCorrections(
+    context: ReflectionContext,
+    corrections: ReflectionOutput["resolution_corrections"],
+    shownResolutions: ReadonlyMap<OpenQuestion["id"], OpenQuestionResolutionIdentity>,
+  ): Promise<void> {
+    const identityService = this.options.identityService;
+    const entryIndex = this.options.entryIndex;
+    const openQuestionsRepository = this.options.openQuestionsRepository;
+    for (const correction of corrections) {
+      const expectedResolution = shownResolutions.get(correction.open_question_id);
+      if (expectedResolution === undefined) {
+        this.emitOpenQuestionResolutionDegraded(context, {
+          operation: RESOLUTION_CORRECTION_ACTION,
+          reason: "question_not_presented",
+          question_id: correction.open_question_id,
+        });
+        continue;
+      }
+      if (
+        identityService?.correctOpenQuestionResolution === undefined ||
+        openQuestionsRepository === undefined ||
+        entryIndex === undefined
+      ) {
+        this.emitOpenQuestionResolutionDegraded(context, {
+          operation: RESOLUTION_CORRECTION_ACTION,
+          reason: "repository_unavailable",
+          question_id: correction.open_question_id,
+        });
+        continue;
+      }
+      try {
+        await correctOpenQuestionResolutionThroughIdentityService({
+          input: correction,
+          openQuestionsRepository,
+          expectedResolution,
+          identityService: {
+            correctOpenQuestionResolution:
+              identityService.correctOpenQuestionResolution.bind(identityService),
+          },
+          episodicRepository: this.options.episodicRepository,
+          entryIndex,
+          turnId: context.turnId,
+          turnOrigin: context.origin ?? "user",
+          path: "reflector",
+        });
+      } catch (error) {
+        if (error instanceof IdentityCasMismatchError) throw error;
+        this.emitOpenQuestionResolutionDegraded(context, {
+          operation: RESOLUTION_CORRECTION_ACTION,
+          reason:
+            error instanceof StorageError && error.code === RESOLUTION_CHANGED_CODE
+              ? RESOLUTION_CHANGED_CODE
+              : "correction_rejected",
+          question_id: correction.open_question_id,
+          error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+        });
+      }
+    }
+  }
+
   private async applyResolvedOpenQuestions(
     context: ReflectionContext,
     resolutions: readonly ReflectionOutput["resolved_open_questions"][number][],
@@ -2231,7 +2460,10 @@ export class Reflector {
     }
   }
 
-  private async runReflectionJudgment(context: ReflectionContext): Promise<ReflectionOutput> {
+  private async runReflectionJudgment(
+    context: ReflectionContext,
+    resolvedQuestionBlock: ReturnType<typeof resolvedQuestionsForReflection>,
+  ): Promise<ReflectionOutput> {
     const pendingProceduralAttempts = context.workingMemory.pending_procedural_attempts ?? [];
     const pendingActions = context.pendingActionProjection?.actions ?? [];
     const isAutonomousTurn = isAutonomousLikeTurnOrigin(context.origin);
@@ -2266,7 +2498,10 @@ export class Reflector {
           llmClient: this.llmClient,
           request: {
             model: this.model,
-            system: TURN_REFLECTION_SYSTEM_PROMPT,
+            system:
+              resolvedQuestionBlock.shownResolutions.size === 0
+                ? TURN_REFLECTION_SYSTEM_PROMPT
+                : `${TURN_REFLECTION_SYSTEM_PROMPT}\n${RESOLUTION_CORRECTION_REFLECTION_GUIDANCE}`,
             messages: [
               {
                 role: "user",
@@ -2306,11 +2541,16 @@ export class Reflector {
                     audience_entity_id: question.audience_entity_id,
                     ...memoryDisclosurePayloadFields(openQuestionMemoryDisclosureLabel(question)),
                   })),
+                  ...resolvedQuestionBlock.fields,
                   current_turn_stream_entry_ids: context.currentTurnStreamEntryIds ?? [],
                   current_turn_inbound_stream_entry_ids:
                     context.currentTurnInboundStreamEntryIds ?? [],
                   current_turn_artifact_references: currentTurnArtifactReferences(context),
-                  current_turn_tool_calls: context.actionResult.tool_calls.map(reflectionToolCall),
+                  current_turn_tool_calls: await Promise.all(
+                    context.actionResult.tool_calls.map((call) =>
+                      reflectionToolCall(call, this.options.episodicRepository),
+                    ),
+                  ),
                   available_evidence_episodes: context.retrievedEpisodes.map((result) => ({
                     id: result.episode.id,
                     title: result.episode.title,
@@ -2336,16 +2576,33 @@ export class Reflector {
           },
           toolName: REFLECTION_TOOL_NAME,
           parse: (input) => {
-            const parsed = strictReflectionOutputSchema.safeParse(input);
+            const parsed = reflectionEnvelopeSchema.safeParse(input);
 
             if (!parsed.success) {
+              if (parsed.error.issues.some((issue) => issue.path[0] === "resolution_corrections")) {
+                this.emitOpenQuestionResolutionDegraded(context, {
+                  operation: RESOLUTION_CORRECTION_ACTION,
+                  reason: "invalid_structure",
+                  error: parsed.error.message,
+                });
+              }
               throw new LLMError("Reflector returned invalid reflection payload", {
                 cause: parsed.error,
                 code: "REFLECTOR_OUTPUT_INVALID",
               });
             }
 
-            return parsed.data;
+            const corrections = parsed.data.resolution_corrections.flatMap((item) => {
+              const correction = openQuestionResolutionCorrectionInputSchema.safeParse(item);
+              if (correction.success) return [correction.data];
+              this.emitOpenQuestionResolutionDegraded(context, {
+                operation: RESOLUTION_CORRECTION_ACTION,
+                reason: "invalid_structure",
+                error: correction.error.message,
+              });
+              return [];
+            });
+            return { ...parsed.data, resolution_corrections: corrections };
           },
         })
       ).parsed;

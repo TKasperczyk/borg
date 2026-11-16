@@ -722,3 +722,8 @@ export {
   type OperatorAttentionIndex,
   type OperatorAttentionIndexRow,
 } from "./memory/operator-attention/types.js";
+
+export type {
+  OpenQuestionPresentation,
+  ResolutionCorrectionPresentation,
+} from "./memory/self/resolution-corrections.js";

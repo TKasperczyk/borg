@@ -22,6 +22,7 @@ export {
   createJournalAppendTool,
   createOpenQuestionsCreateTool,
   createOpenQuestionsResolveTool,
+  createOpenQuestionsCorrectResolutionTool,
   createOpenQuestionsRuminationsTool,
   createOwnRecordsListTool,
   createOutboundPostTool,

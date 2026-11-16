@@ -1,4 +1,8 @@
 import { ConfigError, StorageError } from "../util/errors.js";
+import {
+  formatResolutionCorrections,
+  formatOpenQuestionIdentityEvent,
+} from "../memory/self/resolution-corrections.js";
 import { isPlainRecord } from "../util/guards.js";
 import type { JsonValue } from "../util/json-value.js";
 import { correctionTargetIdKindDescriptors, type EntityId, type EpisodeId } from "../util/ids.js";
@@ -805,11 +809,20 @@ export class CorrectionService {
 
         return {
           target_type: "open_question",
-          record,
-          identity_events: this.options.identityService.listEvents({
-            recordType: "open_question",
-            recordId: target.id,
+          record: formatResolutionCorrections({
+            ...record,
+            ...((record.resolution_corrections?.length ?? 0) === 0
+              ? {}
+              : {
+                  disclosure_label: openQuestionMemoryDisclosureLabel(record),
+                }),
           }),
+          identity_events: this.options.identityService
+            .listEvents({
+              recordType: "open_question",
+              recordId: target.id,
+            })
+            .map(formatOpenQuestionIdentityEvent),
         };
       }
     }
@@ -1028,7 +1041,7 @@ export class CorrectionService {
   listIdentityEvents(
     options?: Parameters<IdentityEventRepository["list"]>[0],
   ): ReturnType<IdentityEventRepository["list"]> {
-    return this.options.identityEventRepository.list(options);
+    return this.options.identityEventRepository.list(options).map(formatOpenQuestionIdentityEvent);
   }
 
   async applyCorrectionReview(item: ReviewQueueItem): Promise<void> {

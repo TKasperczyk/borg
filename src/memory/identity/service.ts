@@ -1,5 +1,14 @@
 import { StorageError } from "../../util/errors.js";
 import {
+  RESOLUTION_CORRECTION_ACTION,
+  RESOLUTION_CHANGED_CODE,
+  isSameOpenQuestionResolution,
+  type OpenQuestionResolutionIdentity,
+  type ResolutionCorrectionFields,
+  type ResolutionCorrectionWriter,
+} from "../self/resolution-corrections.js";
+import type { MemoryDisclosureLabel } from "../common/disclosure-label.js";
+import {
   type AutobiographicalPeriodId,
   type CommitmentId,
   type EntityId,
@@ -851,6 +860,53 @@ export class IdentityService {
       status: "applied",
       record,
     };
+  }
+
+  correctOpenQuestionResolution(
+    openQuestionId: OpenQuestionId,
+    correction: ResolutionCorrectionFields,
+    writer: ResolutionCorrectionWriter,
+    disclosureLabel: MemoryDisclosureLabel,
+    options: IdentityCasOptions & { expectedResolution: OpenQuestionResolutionIdentity },
+  ): OpenQuestion {
+    return this.options.identityEventRepository.runInTransaction(() => {
+      const current = this.options.openQuestionsRepository.get(openQuestionId);
+      if (current === null) {
+        throw new StorageError(
+          `Unknown open question id: ${openQuestionId}. Use an existing resolved question.`,
+          {
+            code: "OPEN_QUESTION_NOT_FOUND",
+          },
+        );
+      }
+      if (!isSameOpenQuestionResolution(current, options.expectedResolution)) {
+        throw new StorageError(
+          "The resolution changed. Read the current resolution before retrying.",
+          {
+            code: RESOLUTION_CHANGED_CODE,
+          },
+        );
+      }
+      const corrected = this.options.openQuestionsRepository.correctResolution(
+        openQuestionId,
+        correction,
+        writer,
+        disclosureLabel,
+        { expectedVersion: expectedRecordVersion(current, options) },
+      );
+      if (corrected.record_version !== current.record_version) {
+        this.options.identityEventRepository.record({
+          record_type: "open_question",
+          record_id: openQuestionId,
+          action: RESOLUTION_CORRECTION_ACTION,
+          old_value: current,
+          new_value: corrected,
+          provenance: writer.provenance,
+          ts: corrected.last_touched,
+        });
+      }
+      return corrected;
+    });
   }
 
   resolveOpenQuestion(

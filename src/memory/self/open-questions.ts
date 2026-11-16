@@ -1,4 +1,16 @@
 import { FailureReportTracker } from "../../util/failure-reports.js";
+import {
+  MAX_RESOLUTION_CORRECTIONS,
+  formatResolutionCorrections,
+  openQuestionResolutionIdentity,
+  isSameOpenQuestionResolution,
+  resolutionCorrectionFieldsSchema,
+  resolutionCorrectionSchema,
+  type ResolutionCorrectionFields,
+  type ResolutionCorrectionWriter,
+} from "./resolution-corrections.js";
+import type { IdentityEventRepository } from "../identity/repository.js";
+import { recordIdentityEvent } from "./shared/identity-events.js";
 import { createHash } from "node:crypto";
 
 import { z } from "zod";
@@ -44,7 +56,9 @@ import {
   type IdentityCasOptions,
 } from "../common/cas.js";
 import {
+  combineMemoryDisclosureLabels,
   parseMemoryDisclosureLabel,
+  renderMemoryDisclosureLabelForModel,
   unknownMemoryDisclosureLabel,
   type MemoryDisclosureLabel,
 } from "../common/disclosure-label.js";
@@ -215,7 +229,12 @@ const maintenanceRunIdSchema = z
   })
   .transform((value) => value as MaintenanceRunId);
 
+export type OpenQuestionReversalOptions = IdentityCasOptions & {
+  auditContext?: { reason: string; provenance: Provenance };
+};
+
 export type OpenQuestionsRepositoryOptions = {
+  identityEventRepository?: IdentityEventRepository;
   db: SqliteDatabase;
   table?: LanceDbTable;
   embeddingClient?: EmbeddingClient;
@@ -391,12 +410,18 @@ export function mapOpenQuestionRow(row: Record<string, unknown>): OpenQuestion {
       "open question resolution_evidence_stream_entry_ids",
     ),
     resolution_disclosure_label: parseMemoryDisclosureLabel(row.resolution_disclosure_label),
+    resolution_corrections: parseIdArray(
+      String(row.resolution_corrections ?? "[]"),
+      resolutionCorrectionSchema,
+      "open question resolution corrections",
+    ),
     resolution_note:
       row.resolution_note === null || row.resolution_note === undefined
         ? null
         : String(row.resolution_note),
     resolved_at:
       row.resolved_at === null || row.resolved_at === undefined ? null : Number(row.resolved_at),
+    resolution_version: row.resolution_version == null ? null : Number(row.resolution_version),
     abandoned_reason:
       row.abandoned_reason === null || row.abandoned_reason === undefined
         ? null
@@ -1012,6 +1037,8 @@ export class OpenQuestionsRepository {
       resolution_evidence_stream_entry_ids: [],
       resolution_disclosure_label: unknownMemoryDisclosureLabel(),
       resolution_note: null,
+      resolution_version: null,
+      resolution_corrections: [],
       resolved_at: null,
       abandoned_reason: null,
       abandoned_at: null,
@@ -1877,102 +1904,190 @@ export class OpenQuestionsRepository {
     patch: OpenQuestionPatch,
     options: IdentityCasOptions = {},
   ): OpenQuestion {
-    const existing = this.get(id);
+    return this.db.raw.transaction(() => {
+      const existing = this.get(id);
 
-    if (existing === null) {
-      throw new StorageError(`Unknown open question id: ${id}`, {
-        code: "OPEN_QUESTION_NOT_FOUND",
+      if (existing === null) {
+        throw new StorageError(`Unknown open question id: ${id}`, {
+          code: "OPEN_QUESTION_NOT_FOUND",
+        });
+      }
+
+      const parsedPatch = openQuestionPatchSchema.parse(patch);
+      const expectedVersion = expectedRecordVersion(existing, options);
+      const next = openQuestionRecordSchema.parse({
+        ...existing,
+        ...parsedPatch,
+        record_version: nextRecordVersion(expectedVersion),
+        last_touched: this.clock.now(),
       });
-    }
+      const changesResolution =
+        next.status === "resolved"
+          ? !isSameOpenQuestionResolution(existing, openQuestionResolutionIdentity(next))
+          : existing.status === "resolved";
+      if (changesResolution) {
+        if (
+          (existing.resolution_corrections?.length ?? 0) > 0 &&
+          this.options.identityEventRepository === undefined
+        ) {
+          throw new StorageError(
+            "Changing a corrected resolution requires an identity audit repository",
+            {
+              code: "OPEN_QUESTION_CORRECTION_AUDIT_REQUIRED",
+            },
+          );
+        }
+        next.resolution_corrections = [];
+        next.resolution_version =
+          next.status === "resolved" ? nextRecordVersion(expectedVersion) : null;
+        if (next.status !== "resolved") {
+          next.resolution_note = null;
+          next.resolved_at = null;
+          next.resolution_evidence_episode_ids = [];
+          next.resolution_evidence_stream_entry_ids = [];
+          next.resolution_disclosure_label = unknownMemoryDisclosureLabel();
+          next.resolved_by_artifact_entry_id = null;
+        }
+      }
+      const dedupeKey = buildOpenQuestionDedupeKey({
+        question: next.question,
+        relatedEpisodeIds: next.related_episode_ids,
+        relatedSemanticNodeIds: next.related_semantic_node_ids,
+        audienceEntityId: next.audience_entity_id,
+      });
+      const storedProvenance =
+        next.provenance === null ? null : toStoredProvenance(next.provenance);
 
-    const parsedPatch = openQuestionPatchSchema.parse(patch);
-    const expectedVersion = expectedRecordVersion(existing, options);
-    const next = openQuestionRecordSchema.parse({
-      ...existing,
-      ...parsedPatch,
-      record_version: nextRecordVersion(expectedVersion),
-      last_touched: this.clock.now(),
-    });
-    const dedupeKey = buildOpenQuestionDedupeKey({
-      question: next.question,
-      relatedEpisodeIds: next.related_episode_ids,
-      relatedSemanticNodeIds: next.related_semantic_node_ids,
-      audienceEntityId: next.audience_entity_id,
-    });
-    const storedProvenance = next.provenance === null ? null : toStoredProvenance(next.provenance);
-
-    const result = this.db
-      .prepare(
-        `
-          UPDATE open_questions
-          SET question = ?, urgency = ?, status = ?, goal_id = ?, audience_entity_id = ?,
-              related_episode_ids = ?, related_semantic_node_ids = ?, provenance_kind = ?,
-              provenance_episode_ids = ?, provenance_process = ?, source = ?, last_touched = ?,
-              disclosure_label = ?, resolution_evidence_episode_ids = ?, resolution_evidence_stream_entry_ids = ?,
-              resolution_disclosure_label = ?, resolution_note = ?, resolved_at = ?, abandoned_reason = ?, abandoned_at = ?,
-              resolved_by_artifact_entry_id = ?, dedupe_key = ?,
-              unresolved_rumination_ticks = ?, last_ruminated_at = ?,
-              record_version = record_version + 1
-          WHERE id = ? AND record_version = ?
-        `,
-      )
-      .run(
-        next.question,
-        next.urgency,
-        next.status,
-        next.goal_id,
-        next.audience_entity_id,
-        serializeJsonValue(next.related_episode_ids),
-        serializeJsonValue(next.related_semantic_node_ids),
-        storedProvenance?.provenance_kind ?? null,
-        storedProvenance?.provenance_episode_ids ?? null,
-        storedProvenance?.provenance_process ?? null,
-        next.source,
-        next.last_touched,
-        next.disclosure_label === undefined ? null : serializeJsonValue(next.disclosure_label),
-        serializeJsonValue(next.resolution_evidence_episode_ids),
-        serializeJsonValue(next.resolution_evidence_stream_entry_ids),
-        serializeJsonValue(next.resolution_disclosure_label),
-        next.resolution_note,
-        next.resolved_at,
-        next.abandoned_reason,
-        next.abandoned_at,
-        next.resolved_by_artifact_entry_id ?? null,
-        dedupeKey,
-        next.unresolved_rumination_ticks,
-        next.last_ruminated_at,
-        id,
+      const result = this.db
+        .prepare(
+          `
+            UPDATE open_questions
+            SET question = ?, urgency = ?, status = ?, goal_id = ?, audience_entity_id = ?,
+                related_episode_ids = ?, related_semantic_node_ids = ?, provenance_kind = ?,
+                provenance_episode_ids = ?, provenance_process = ?, source = ?, last_touched = ?,
+                disclosure_label = ?, resolution_evidence_episode_ids = ?, resolution_evidence_stream_entry_ids = ?,
+                resolution_disclosure_label = ?, resolution_note = ?, resolved_at = ?,
+                resolution_version = ?, resolution_corrections = ?, abandoned_reason = ?, abandoned_at = ?,
+                resolved_by_artifact_entry_id = ?, dedupe_key = ?,
+                unresolved_rumination_ticks = ?, last_ruminated_at = ?,
+                record_version = record_version + 1
+            WHERE id = ? AND record_version = ?
+          `,
+        )
+        .run(
+          next.question,
+          next.urgency,
+          next.status,
+          next.goal_id,
+          next.audience_entity_id,
+          serializeJsonValue(next.related_episode_ids),
+          serializeJsonValue(next.related_semantic_node_ids),
+          storedProvenance?.provenance_kind ?? null,
+          storedProvenance?.provenance_episode_ids ?? null,
+          storedProvenance?.provenance_process ?? null,
+          next.source,
+          next.last_touched,
+          next.disclosure_label === undefined ? null : serializeJsonValue(next.disclosure_label),
+          serializeJsonValue(next.resolution_evidence_episode_ids),
+          serializeJsonValue(next.resolution_evidence_stream_entry_ids),
+          serializeJsonValue(next.resolution_disclosure_label),
+          next.resolution_note,
+          next.resolved_at,
+          next.resolution_version ?? null,
+          serializeJsonValue(next.resolution_corrections ?? []),
+          next.abandoned_reason,
+          next.abandoned_at,
+          next.resolved_by_artifact_entry_id ?? null,
+          dedupeKey,
+          next.unresolved_rumination_ticks,
+          next.last_ruminated_at,
+          id,
+          expectedVersion,
+        );
+      assertIdentityCasUpdated({
+        result,
+        recordType: "open_question",
+        recordId: id,
         expectedVersion,
-      );
-    assertIdentityCasUpdated({
-      result,
-      recordType: "open_question",
-      recordId: id,
-      expectedVersion,
-    });
+      });
 
-    this.scheduleQuestionVectorUpsert(next, next.status === "open" ? "update" : "metadata_sync", {
-      forceEmbed: parsedPatch.question !== undefined,
-      skipIfMissing: next.status !== "open",
-    });
+      if (changesResolution) {
+        recordIdentityEvent(this.options.identityEventRepository, {
+          record_type: "open_question",
+          record_id: id,
+          action: "update_resolution",
+          old_value: existing,
+          new_value: next,
+          reason: "open_question_patch",
+          provenance: next.provenance ?? { kind: "system" },
+        });
+      }
 
-    return next;
+      this.scheduleQuestionVectorUpsert(next, next.status === "open" ? "update" : "metadata_sync", {
+        forceEmbed: parsedPatch.question !== undefined,
+        skipIfMissing: next.status !== "open",
+      });
+
+      return next;
+    })();
   }
 
-  restore(question: OpenQuestion): OpenQuestion {
-    const parsed = openQuestionRecordSchema.parse(question);
-    const dedupeKey = buildOpenQuestionDedupeKey({
-      question: parsed.question,
-      relatedEpisodeIds: parsed.related_episode_ids,
-      relatedSemanticNodeIds: parsed.related_semantic_node_ids,
-      audienceEntityId: parsed.audience_entity_id,
-    });
-    const storedProvenance =
-      parsed.provenance === null ? null : toStoredProvenance(parsed.provenance);
+  restore(question: OpenQuestion, options: OpenQuestionReversalOptions = {}): OpenQuestion {
+    return this.db.raw.transaction(() => {
+      const snapshot = openQuestionRecordSchema.parse(question);
+      const current = this.get(snapshot.id);
+      if (current === null)
+        throw new StorageError(`Unknown open question id: ${snapshot.id}`, {
+          code: "OPEN_QUESTION_NOT_FOUND",
+        });
+      const expectedVersion = expectedRecordVersion(current, options);
+      const sameResolution =
+        snapshot.status === "resolved" &&
+        isSameOpenQuestionResolution(current, openQuestionResolutionIdentity(snapshot));
+      const parsed = {
+        ...snapshot,
+        resolution_version: snapshot.resolution_version ?? null,
+        // A stale snapshot cannot splice its evidence/label into a still-current
+        // resolution. Keep the entire resolution together with its corrections.
+        ...(sameResolution
+          ? {
+              ...openQuestionResolutionIdentity(current),
+              resolution_evidence_episode_ids: current.resolution_evidence_episode_ids,
+              resolution_evidence_stream_entry_ids: current.resolution_evidence_stream_entry_ids,
+              resolution_disclosure_label: current.resolution_disclosure_label,
+              resolved_by_artifact_entry_id: current.resolved_by_artifact_entry_id,
+            }
+          : {}),
+        resolution_corrections: sameResolution
+          ? (current.resolution_corrections ?? [])
+          : snapshot.status === "resolved"
+            ? (snapshot.resolution_corrections ?? [])
+            : [],
+        record_version: nextRecordVersion(expectedVersion),
+        last_touched: this.clock.now(),
+      };
+      if (
+        this.options.identityEventRepository === undefined &&
+        ((!sameResolution && (current.resolution_corrections?.length ?? 0) > 0) ||
+          JSON.stringify(current.resolution_corrections ?? []) !==
+            JSON.stringify(parsed.resolution_corrections))
+      ) {
+        throw new StorageError("Restoring corrections requires an identity audit repository", {
+          code: "OPEN_QUESTION_CORRECTION_AUDIT_REQUIRED",
+        });
+      }
+      const dedupeKey = buildOpenQuestionDedupeKey({
+        question: parsed.question,
+        relatedEpisodeIds: parsed.related_episode_ids,
+        relatedSemanticNodeIds: parsed.related_semantic_node_ids,
+        audienceEntityId: parsed.audience_entity_id,
+      });
+      const storedProvenance =
+        parsed.provenance === null ? null : toStoredProvenance(parsed.provenance);
 
-    this.db
-      .prepare(
-        `
+      const result = this.db
+        .prepare(
+          `
           UPDATE open_questions
           SET question = ?, dedupe_key = ?, urgency = ?, status = ?, goal_id = ?,
               audience_entity_id = ?,
@@ -1980,56 +2095,78 @@ export class OpenQuestionsRepository {
               provenance_episode_ids = ?, provenance_process = ?, source = ?, created_at = ?,
               disclosure_label = ?, last_touched = ?, resolution_evidence_episode_ids = ?,
               resolution_evidence_stream_entry_ids = ?, resolution_disclosure_label = ?,
-              resolution_note = ?, resolved_at = ?,
+              resolution_note = ?, resolution_corrections = ?, resolved_at = ?, resolution_version = ?,
               abandoned_reason = ?, abandoned_at = ?, resolved_by_artifact_entry_id = ?,
               unresolved_rumination_ticks = ?, last_ruminated_at = ?,
               consecutive_refusals = ?, last_rumination_attempt_outcome = ?,
-              last_rumination_attempt_at = ?, refusal_backoff_until = ?
-          WHERE id = ?
+              last_rumination_attempt_at = ?, refusal_backoff_until = ?,
+              record_version = record_version + 1
+          WHERE id = ? AND record_version = ?
         `,
-      )
-      .run(
-        parsed.question,
-        dedupeKey,
-        parsed.urgency,
-        parsed.status,
-        parsed.goal_id,
-        parsed.audience_entity_id,
-        serializeJsonValue(parsed.related_episode_ids),
-        serializeJsonValue(parsed.related_semantic_node_ids),
-        storedProvenance?.provenance_kind ?? null,
-        storedProvenance?.provenance_episode_ids ?? null,
-        storedProvenance?.provenance_process ?? null,
-        parsed.source,
-        parsed.created_at,
-        parsed.disclosure_label === undefined ? null : serializeJsonValue(parsed.disclosure_label),
-        parsed.last_touched,
-        serializeJsonValue(parsed.resolution_evidence_episode_ids),
-        serializeJsonValue(parsed.resolution_evidence_stream_entry_ids),
-        serializeJsonValue(parsed.resolution_disclosure_label),
-        parsed.resolution_note,
-        parsed.resolved_at,
-        parsed.abandoned_reason,
-        parsed.abandoned_at,
-        parsed.resolved_by_artifact_entry_id ?? null,
-        parsed.unresolved_rumination_ticks,
-        parsed.last_ruminated_at,
-        parsed.consecutive_refusals,
-        parsed.last_rumination_attempt_outcome,
-        parsed.last_rumination_attempt_at,
-        parsed.refusal_backoff_until,
-        parsed.id,
+        )
+        .run(
+          parsed.question,
+          dedupeKey,
+          parsed.urgency,
+          parsed.status,
+          parsed.goal_id,
+          parsed.audience_entity_id,
+          serializeJsonValue(parsed.related_episode_ids),
+          serializeJsonValue(parsed.related_semantic_node_ids),
+          storedProvenance?.provenance_kind ?? null,
+          storedProvenance?.provenance_episode_ids ?? null,
+          storedProvenance?.provenance_process ?? null,
+          parsed.source,
+          parsed.created_at,
+          parsed.disclosure_label === undefined
+            ? null
+            : serializeJsonValue(parsed.disclosure_label),
+          parsed.last_touched,
+          serializeJsonValue(parsed.resolution_evidence_episode_ids),
+          serializeJsonValue(parsed.resolution_evidence_stream_entry_ids),
+          serializeJsonValue(parsed.resolution_disclosure_label),
+          parsed.resolution_note,
+          serializeJsonValue(parsed.resolution_corrections ?? []),
+          parsed.resolved_at,
+          parsed.resolution_version,
+          parsed.abandoned_reason,
+          parsed.abandoned_at,
+          parsed.resolved_by_artifact_entry_id ?? null,
+          parsed.unresolved_rumination_ticks,
+          parsed.last_ruminated_at,
+          parsed.consecutive_refusals,
+          parsed.last_rumination_attempt_outcome,
+          parsed.last_rumination_attempt_at,
+          parsed.refusal_backoff_until,
+          parsed.id,
+          expectedVersion,
+        );
+      assertIdentityCasUpdated({
+        result,
+        recordType: "open_question",
+        recordId: parsed.id,
+        expectedVersion,
+      });
+      recordIdentityEvent(this.options.identityEventRepository, {
+        record_type: "open_question",
+        record_id: parsed.id,
+        action: "restore",
+        old_value: current,
+        new_value: parsed,
+        reason: options.auditContext?.reason ?? "open_question_restore",
+        provenance: options.auditContext?.provenance ?? { kind: "system" },
+      });
+
+      this.scheduleQuestionVectorUpsert(
+        parsed,
+        parsed.status === "open" ? "update" : "metadata_sync",
+        {
+          skipIfMissing: parsed.status !== "open",
+        },
       );
 
-    this.scheduleQuestionVectorUpsert(
-      parsed,
-      parsed.status === "open" ? "update" : "metadata_sync",
-      {
-        skipIfMissing: parsed.status !== "open",
-      },
-    );
-
-    return parsed;
+      return parsed;
+    })();
   }
 
   async delete(id: OpenQuestionId, options: IdentityCasOptions = {}): Promise<boolean> {
@@ -2108,6 +2245,116 @@ export class OpenQuestionsRepository {
     return touched;
   }
 
+  correctResolution(
+    id: OpenQuestionId,
+    input: ResolutionCorrectionFields,
+    writer: ResolutionCorrectionWriter,
+    disclosureLabel: MemoryDisclosureLabel,
+    options: IdentityCasOptions = {},
+  ): OpenQuestion {
+    const existing = this.get(id);
+    if (existing === null) {
+      throw new StorageError(
+        `Unknown open question id: ${id}. Use an existing resolved question.`,
+        {
+          code: "OPEN_QUESTION_NOT_FOUND",
+        },
+      );
+    }
+    if (existing.status !== "resolved") {
+      throw new StorageError(
+        `Question is ${existing.status}. Only resolved questions accept corrections.`,
+        {
+          code: "OPEN_QUESTION_CORRECTION_NOT_RESOLVED",
+        },
+      );
+    }
+    const parsed = resolutionCorrectionFieldsSchema.parse(input);
+    const corrections = existing.resolution_corrections ?? [];
+    const targetSeq = parsed.targets_correction_seq ?? null;
+    const target = targetSeq === null ? null : corrections.find((item) => item.seq === targetSeq);
+    if (targetSeq !== null && target === undefined) {
+      throw new StorageError(
+        `Correction ${targetSeq} does not exist. Target the original note with null or an existing correction sequence.`,
+        {
+          code: "OPEN_QUESTION_CORRECTION_TARGET_NOT_FOUND",
+        },
+      );
+    }
+    const targetedText = targetSeq === null ? (existing.resolution_note ?? "") : target!.text;
+    // Literal quotation integrity requested by the author; this does not interpret either text.
+    if (parsed.corrects_span !== undefined && !targetedText.includes(parsed.corrects_span)) {
+      const targetLabel =
+        target === null
+          ? combineMemoryDisclosureLabels([
+              existing.disclosure_label ?? unknownMemoryDisclosureLabel(),
+              existing.resolution_disclosure_label ?? unknownMemoryDisclosureLabel(),
+            ])
+          : target!.disclosure_label;
+      throw new StorageError(
+        `The quoted span does not occur verbatim. Quote from the full targeted text or omit corrects_span. Target: ${JSON.stringify(formatResolutionCorrections({ text: targetedText, disclosure_label: targetLabel, disclosure: renderMemoryDisclosureLabelForModel(targetLabel), resolution_corrections: existing.resolution_corrections }))}`,
+        {
+          code: "OPEN_QUESTION_CORRECTION_SPAN_NOT_FOUND",
+        },
+      );
+    }
+    const evidenceKey = (evidence: ResolutionCorrectionFields["evidence"]) =>
+      JSON.stringify([...new Set(evidence.map((item) => JSON.stringify(item)))].sort());
+    if (
+      corrections.some(
+        (item) =>
+          item.text === parsed.correction_note &&
+          item.corrects_span === parsed.corrects_span &&
+          item.targets_correction_seq === targetSeq &&
+          evidenceKey(item.evidence) === evidenceKey(parsed.evidence),
+      )
+    )
+      return existing;
+    if (corrections.length >= MAX_RESOLUTION_CORRECTIONS) {
+      throw new StorageError(
+        `This question already has ${MAX_RESOLUTION_CORRECTIONS} corrections. No further corrections can be appended.`,
+        {
+          code: "OPEN_QUESTION_CORRECTION_LIMIT",
+        },
+      );
+    }
+    const now = this.clock.now();
+    const correction = resolutionCorrectionSchema.parse({
+      seq: corrections.length + 1,
+      created_at: now,
+      text: parsed.correction_note,
+      ...(parsed.corrects_span === undefined ? {} : { corrects_span: parsed.corrects_span }),
+      targets_correction_seq: targetSeq,
+      evidence: [...new Map(parsed.evidence.map((item) => [JSON.stringify(item), item])).values()],
+      writer,
+      disclosure_label: disclosureLabel,
+    });
+    const expectedVersion = expectedRecordVersion(existing, options);
+    const next = [...corrections, correction];
+    const result = this.db
+      .prepare(
+        `
+      UPDATE open_questions SET resolution_corrections = ?, last_touched = ?,
+        record_version = record_version + 1 WHERE id = ? AND record_version = ?
+    `,
+      )
+      .run(serializeJsonValue(next), now, id, expectedVersion);
+    assertIdentityCasUpdated({
+      result,
+      recordType: "open_question",
+      recordId: id,
+      expectedVersion,
+    });
+    const corrected = {
+      ...existing,
+      resolution_corrections: next,
+      last_touched: now,
+      record_version: nextRecordVersion(expectedVersion),
+    };
+    this.scheduleQuestionVectorUpsert(corrected, "metadata_sync", { skipIfMissing: true });
+    return corrected;
+  }
+
   resolve(
     id: OpenQuestionId,
     input: {
@@ -2161,7 +2408,8 @@ export class OpenQuestionsRepository {
           UPDATE open_questions
           SET status = 'resolved', resolution_evidence_episode_ids = ?,
               resolution_evidence_stream_entry_ids = ?, resolution_disclosure_label = ?,
-              resolution_note = ?, resolved_at = ?,
+              resolution_note = ?, resolution_corrections = '[]', resolved_at = ?,
+              resolution_version = record_version + 1,
               abandoned_reason = NULL, abandoned_at = NULL, last_touched = ?,
               resolved_by_artifact_entry_id = ?,
               unresolved_rumination_ticks = 0, last_ruminated_at = NULL,
@@ -2198,6 +2446,8 @@ export class OpenQuestionsRepository {
       resolution_disclosure_label:
         input.resolution_disclosure_label ?? unknownMemoryDisclosureLabel(),
       resolution_note: input.resolution_note,
+      resolution_version: nextRecordVersion(expectedVersion),
+      resolution_corrections: [],
       resolved_at: resolvedAt,
       abandoned_reason: null,
       abandoned_at: null,
@@ -2616,29 +2866,41 @@ export class OpenQuestionsRepository {
   reopenForReversal(
     id: OpenQuestionId,
     urgency?: number,
-    options: IdentityCasOptions = {},
+    options: OpenQuestionReversalOptions = {},
   ): OpenQuestion {
-    const existing = this.get(id);
+    return this.db.raw.transaction(() => {
+      const existing = this.get(id);
 
-    if (existing === null) {
-      throw new StorageError(`Unknown open question id: ${id}`, {
-        code: "OPEN_QUESTION_NOT_FOUND",
-      });
-    }
+      if (existing === null) {
+        throw new StorageError(`Unknown open question id: ${id}`, {
+          code: "OPEN_QUESTION_NOT_FOUND",
+        });
+      }
 
-    const nowMs = this.clock.now();
-    const nextUrgency = clamp(urgency ?? existing.urgency, 0, 1);
-    const expectedVersion = expectedRecordVersion(existing, options);
-    // A reversal/reopen starts a new active open lifecycle, so stale
-    // unresolved-attempt metadata should not carry into the revived question.
-    const result = this.db
-      .prepare(
-        `
+      if (
+        (existing.resolution_corrections?.length ?? 0) > 0 &&
+        this.options.identityEventRepository === undefined
+      ) {
+        throw new StorageError(
+          "Reopening a corrected resolution requires an identity audit repository",
+          {
+            code: "OPEN_QUESTION_CORRECTION_AUDIT_REQUIRED",
+          },
+        );
+      }
+      const nowMs = this.clock.now();
+      const nextUrgency = clamp(urgency ?? existing.urgency, 0, 1);
+      const expectedVersion = expectedRecordVersion(existing, options);
+      // A reversal/reopen starts a new active open lifecycle, so stale
+      // unresolved-attempt metadata should not carry into the revived question.
+      const result = this.db
+        .prepare(
+          `
           UPDATE open_questions
           SET status = 'open', urgency = ?, last_touched = ?,
               resolution_evidence_episode_ids = '[]',
               resolution_evidence_stream_entry_ids = '[]', resolution_disclosure_label = ?,
-              resolution_note = NULL,
+              resolution_note = NULL, resolution_corrections = '[]', resolution_version = NULL,
               resolved_at = NULL, abandoned_reason = NULL, abandoned_at = NULL,
               resolved_by_artifact_entry_id = NULL,
               unresolved_rumination_ticks = 0, last_ruminated_at = NULL,
@@ -2647,45 +2909,57 @@ export class OpenQuestionsRepository {
               record_version = record_version + 1
           WHERE id = ? AND record_version = ?
         `,
-      )
-      .run(
-        nextUrgency,
-        nowMs,
-        serializeJsonValue(unknownMemoryDisclosureLabel()),
-        id,
+        )
+        .run(
+          nextUrgency,
+          nowMs,
+          serializeJsonValue(unknownMemoryDisclosureLabel()),
+          id,
+          expectedVersion,
+        );
+      assertIdentityCasUpdated({
+        result,
+        recordType: "open_question",
+        recordId: id,
         expectedVersion,
-      );
-    assertIdentityCasUpdated({
-      result,
-      recordType: "open_question",
-      recordId: id,
-      expectedVersion,
-    });
+      });
 
-    const reopened: OpenQuestion = {
-      ...existing,
-      record_version: nextRecordVersion(expectedVersion),
-      status: "open",
-      urgency: nextUrgency,
-      last_touched: nowMs,
-      resolution_evidence_episode_ids: [],
-      resolution_evidence_stream_entry_ids: [],
-      resolution_disclosure_label: unknownMemoryDisclosureLabel(),
-      resolution_note: null,
-      resolved_at: null,
-      abandoned_reason: null,
-      abandoned_at: null,
-      resolved_by_artifact_entry_id: null,
-      unresolved_rumination_ticks: 0,
-      last_ruminated_at: null,
-      consecutive_refusals: 0,
-      last_rumination_attempt_outcome: null,
-      last_rumination_attempt_at: null,
-      refusal_backoff_until: null,
-    };
+      const reopened: OpenQuestion = {
+        ...existing,
+        record_version: nextRecordVersion(expectedVersion),
+        status: "open",
+        urgency: nextUrgency,
+        last_touched: nowMs,
+        resolution_evidence_episode_ids: [],
+        resolution_evidence_stream_entry_ids: [],
+        resolution_disclosure_label: unknownMemoryDisclosureLabel(),
+        resolution_note: null,
+        resolution_version: null,
+        resolution_corrections: [],
+        resolved_at: null,
+        abandoned_reason: null,
+        abandoned_at: null,
+        resolved_by_artifact_entry_id: null,
+        unresolved_rumination_ticks: 0,
+        last_ruminated_at: null,
+        consecutive_refusals: 0,
+        last_rumination_attempt_outcome: null,
+        last_rumination_attempt_at: null,
+        refusal_backoff_until: null,
+      };
 
-    this.scheduleQuestionVectorUpsert(reopened, "update");
+      recordIdentityEvent(this.options.identityEventRepository, {
+        record_type: "open_question",
+        record_id: id,
+        action: "reopen",
+        old_value: existing,
+        new_value: reopened,
+        reason: options.auditContext?.reason ?? "open_question_reversal",
+        provenance: options.auditContext?.provenance ?? { kind: "system" },
+      });
+      this.scheduleQuestionVectorUpsert(reopened, "update");
 
-    return reopened;
+      return reopened;
+    })();
   }
 }

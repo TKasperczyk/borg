@@ -291,7 +291,10 @@ export class TurnLifecycleTracker {
       "restore_open_question",
       [...this.resolvedOpenQuestions].reverse(),
       (question) => question.id,
-      (question) => this.options.openQuestionsRepository.restore(question),
+      (question) =>
+        this.options.openQuestionsRepository.restore(question, {
+          auditContext: { reason: "turn_rollback", provenance: { kind: "system" } },
+        }),
     );
 
     await this.bestEffort(

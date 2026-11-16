@@ -5,7 +5,7 @@ import type { BorgRole } from "../memory/commitments/index.js";
 import type { SessionAudienceRole } from "../sessions/index.js";
 import { StreamWriter } from "../stream/index.js";
 import { SystemClock, type Clock } from "../util/clock.js";
-import { ToolError } from "../util/errors.js";
+import { BorgError, ToolError } from "../util/errors.js";
 import type { RetrievalDegradation } from "../retrieval/degradation.js";
 import type { TurnTracer } from "../tracing/tracer.js";
 import {
@@ -102,6 +102,7 @@ export type ToolDispatchResult<Output = unknown> =
       toolName: string;
       ok: false;
       error: string;
+      errorCode?: string;
       durationMs: number;
     };
 
@@ -275,6 +276,7 @@ export class ToolDispatcher {
           parsedInput.error.message,
           startedAt,
           call.turnId,
+          "TOOL_INPUT_INVALID",
         );
       }
 
@@ -340,6 +342,7 @@ export class ToolDispatcher {
             : formatToolError(invocation.error),
           startedAt,
           call.turnId,
+          invocation.error instanceof BorgError ? invocation.error.code : "TOOL_INVOCATION_FAILED",
         );
       }
 
@@ -387,6 +390,7 @@ export class ToolDispatcher {
     error: string,
     startedAt: number,
     turnId?: string,
+    errorCode?: string,
   ): Promise<ToolDispatchResult> {
     const durationMs = Math.max(0, this.clock.now() - startedAt);
 
@@ -406,6 +410,7 @@ export class ToolDispatcher {
       toolName,
       ok: false,
       error,
+      ...(errorCode === undefined ? {} : { errorCode }),
       durationMs,
     };
   }

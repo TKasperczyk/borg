@@ -962,7 +962,12 @@ export class AssociatorProcess implements OfflineProcess<AssociatorPlan> {
         return;
       }
 
-      this.options.openQuestionsRepository.restore(parsed.previous);
+      this.options.openQuestionsRepository.restore(parsed.previous, {
+        auditContext: {
+          reason: "associator_audit_reversal",
+          provenance: { kind: "offline", process: this.name },
+        },
+      });
     });
   }
 

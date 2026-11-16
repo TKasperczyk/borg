@@ -63,6 +63,7 @@ import {
   createJournalAppendTool,
   createOpenQuestionsCreateTool,
   createOpenQuestionsResolveTool,
+  createOpenQuestionsCorrectResolutionTool,
   createOpenQuestionsRuminationsTool,
   createOwnRecordsListTool,
   createPromptSurfaceChangesTool,
@@ -337,6 +338,14 @@ export function buildToolDispatcher(options: BuildToolDispatcherOptions): ToolDi
             // entry it names. Failing closed is the point; it is not a derived label.
             ...streamEntryIds.map(() => unknownMemoryDisclosureLabel()),
           ]),
+      }),
+    )
+    .register(
+      createOpenQuestionsCorrectResolutionTool({
+        identityService: options.identityService,
+        openQuestionsRepository: options.openQuestionsRepository,
+        episodicRepository: options.episodicRepository,
+        entryIndex: options.entryIndex,
       }),
     )
     .register(

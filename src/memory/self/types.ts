@@ -1,5 +1,10 @@
 import { z } from "zod";
 import { narrativeCoverageSchema } from "./narrative-coverage.js";
+import {
+  resolutionCorrectionFieldsSchema,
+  resolutionCorrectionSchema,
+  MAX_RESOLUTION_CORRECTIONS,
+} from "./resolution-corrections.js";
 
 import { memoryDisclosureLabelSchema } from "../common/disclosure-label.js";
 import {
@@ -317,6 +322,12 @@ export const openQuestionSchema = z.object({
   resolution_evidence_stream_entry_ids: z.array(openQuestionResolutionStreamEntryIdSchema),
   resolution_disclosure_label: memoryDisclosureLabelSchema.optional(),
   resolution_note: z.string().nullable(),
+  // Missing on pre-migration snapshots; NULL is the legacy resolution generation.
+  resolution_version: z.number().int().positive().nullable().optional(),
+  resolution_corrections: z
+    .array(resolutionCorrectionSchema)
+    .max(MAX_RESOLUTION_CORRECTIONS)
+    .optional(),
   resolved_at: z.number().finite().nullable(),
   abandoned_reason: z.string().nullable(),
   abandoned_at: z.number().finite().nullable(),
@@ -328,6 +339,12 @@ export const openQuestionSchema = z.object({
   last_rumination_attempt_at: z.number().finite().nullable().default(null),
   refusal_backoff_until: z.number().finite().nullable().default(null),
 });
+
+export const openQuestionResolutionCorrectionInputSchema = resolutionCorrectionFieldsSchema
+  .extend({
+    open_question_id: openQuestionIdSchema,
+  })
+  .strict();
 
 export const openQuestionRecordSchema = openQuestionSchema
   .refine(

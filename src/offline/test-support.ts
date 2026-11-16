@@ -669,7 +669,12 @@ export async function createOfflineTestHarness(
     db,
     clock,
   });
+  const identityEventRepository = new IdentityEventRepository({
+    db,
+    clock,
+  });
   const openQuestionsRepository = new OpenQuestionsRepository({
+    identityEventRepository,
     db,
     table: openQuestionsTable,
     embeddingClient,
@@ -712,10 +717,7 @@ export async function createOfflineTestHarness(
     db,
     clock,
   });
-  const identityEventRepository = new IdentityEventRepository({
-    db,
-    clock,
-  });
+
   const valuesRepository = new ValuesRepository({
     db,
     clock,

@@ -10,6 +10,10 @@ import { episodeIdSchema } from "../../memory/episodic/index.js";
 import { semanticNodeIdSchema } from "../../memory/semantic/types.js";
 import type { EntityId } from "../../util/ids.js";
 import type { ToolDefinition } from "../dispatcher.js";
+import {
+  formatResolutionCorrections,
+  resolutionCorrectionPresentationSchema,
+} from "../../memory/self/resolution-corrections.js";
 
 const openQuestionsCreateInputSchema = z.object({
   question: z.string().min(1),
@@ -20,6 +24,7 @@ const openQuestionsCreateInputSchema = z.object({
 
 const openQuestionsCreateOutputSchema = z.object({
   openQuestion: openQuestionSchema.extend({
+    ...resolutionCorrectionPresentationSchema.shape,
     disclosure: z.string().min(1),
     disclosure_label: memoryDisclosureLabelMetadataSchema,
   }),
@@ -66,7 +71,7 @@ export function createOpenQuestionsCreateTool(
 
       return {
         openQuestion: {
-          ...openQuestion,
+          ...formatResolutionCorrections(openQuestion),
           ...memoryDisclosurePayloadFields(openQuestionMemoryDisclosureLabel(openQuestion)),
         },
       };

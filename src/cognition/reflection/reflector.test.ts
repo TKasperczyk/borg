@@ -1,3 +1,6 @@
+import { ToolDispatcher } from "../../tools/dispatcher.js";
+import { createOpenQuestionsCorrectResolutionTool } from "../../tools/internal/open-questions-correct-resolution.js";
+import { TURN_REFLECTION_SYSTEM_PROMPT } from "../prompts/reflector.js";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -5,7 +8,12 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { SuppressionSet } from "../attention/index.js";
-import { Reflector, type ReflectorOptions } from "./reflector.js";
+import {
+  Reflector,
+  RESOLVED_QUESTIONS_REFLECTION_MAX_CHARS,
+  type ReflectorOptions,
+} from "./reflector.js";
+import { correctOpenQuestionResolutionThroughIdentityService } from "../../memory/lifecycle-ops/correct-resolution.js";
 import { WorkingMemoryStore } from "../../memory/working/index.js";
 import { SessionLock } from "../session-lock.js";
 import { TurnSelfContextBuilder } from "../self/turn-self-context.js";
@@ -4702,6 +4710,501 @@ describe("reflector", () => {
     ]);
   });
 
+  it("corrects resolved notes on conversation turns with shared validation, writer stamps and labeled excerpts", async () => {
+    const llm = new FakeLLMClient();
+    const tracer = new CaptureTracer();
+    const h = await createOfflineTestHarness({ llmClient: llm });
+    cleanup.push(h.cleanup);
+    const entry = await h.streamWriter.append({
+      kind: "thought",
+      content: "Stored evidence outside the current turn.",
+    });
+    const open = h.openQuestionsRepository.add({
+      question: "What was established?",
+      urgency: 0.5,
+      source: "reflection",
+      provenance: { kind: "manual" },
+      audience_entity_id: createEntityId(),
+    });
+    const note = `HEAD ${"原文 ".repeat(4_000)} TAIL`;
+    h.openQuestionsRepository.resolve(open.id, {
+      resolution_note: note,
+      resolution_evidence_stream_entry_ids: [entry.id],
+    });
+    const evidence = [{ id: entry.id, basis: "reported" as const, reported_by: "Another reader" }];
+    const base = { open_question_id: open.id, evidence };
+    for (const correction_note of ["First correction", "Second correction"]) {
+      await correctOpenQuestionResolutionThroughIdentityService({
+        input: { ...base, correction_note },
+        identityService: h.identityService,
+        openQuestionsRepository: h.openQuestionsRepository,
+        episodicRepository: h.episodicRepository,
+        entryIndex: h.createContext().entryIndex!,
+        turnId: "earlier-wake",
+        turnOrigin: "autonomous",
+        path: "tool",
+      });
+    }
+    const before = h.openQuestionsRepository.get(open.id)!;
+    const response = createRawReflectionResponse({
+      ...createReflectionResponse().tool_calls[0]!.input,
+      resolution_corrections: [
+        { ...base, correction_note: "Wrong quote", corrects_span: "absent" },
+        {
+          ...base,
+          correction_note: "Invalid basis",
+          evidence: [{ id: entry.id, basis: "reported" }],
+        },
+        {
+          ...base,
+          correction_note: "Correction of the earlier correction",
+          targets_correction_seq: 1,
+          corrects_span: "First correction",
+        },
+      ],
+    });
+    llm.pushResponse(response);
+    const reflector = createHarnessReflector(h, {
+      clock: h.clock,
+      llmClient: llm,
+      model: "test-model",
+      identityService: h.identityService,
+      openQuestionsRepository: h.openQuestionsRepository,
+      entryIndex: h.createContext().entryIndex!,
+      tracer,
+    });
+    const context = {
+      ...createOpenQuestionReflectionContext(),
+      turnId: "conversation-turn",
+      origin: "user" as const,
+      audienceEntityId: createEntityId(),
+      resolvedOpenQuestions: [before],
+      currentTurnStreamEntryIds: [],
+    };
+    await reflector.reflect(context, h.streamWriter);
+    const stored = h.openQuestionsRepository.get(open.id)!;
+    expect(stored.resolution_note).toBe(note);
+    expect(stored.resolution_corrections).toHaveLength(3);
+    expect(stored.resolution_corrections?.[2]).toMatchObject({
+      seq: 3,
+      targets_correction_seq: 1,
+      writer: {
+        author: "borg",
+        turn_id: "conversation-turn",
+        turn_kind: "user",
+        path: "reflector",
+        provenance: {
+          kind: "online_reflector",
+          process: "reflector",
+          evidence_stream_entry_ids: [entry.id],
+        },
+      },
+      disclosure_label: { disclosureClass: "unknown" },
+    });
+    expect(tracer.events).toEqual(
+      expect.arrayContaining([
+        {
+          event: "open_question_resolution.degraded",
+          data: expect.objectContaining({
+            operation: "correct_resolution",
+            reason: "invalid_structure",
+          }),
+        },
+        {
+          event: "open_question_resolution.degraded",
+          data: expect.objectContaining({
+            operation: "correct_resolution",
+            reason: "correction_rejected",
+            error: expect.stringContaining(JSON.stringify(note)),
+          }),
+        },
+      ]),
+    );
+    const prompt = JSON.parse(String(llm.requests[0]?.messages[0]?.content));
+    const rendered = prompt.resolved_open_questions[0];
+    expect(rendered).not.toHaveProperty("resolution_note");
+    expect(rendered.resolution_note_excerpt.head).toContain("HEAD");
+    expect(rendered.resolution_note_excerpt.tail).toContain("TAIL");
+    expect(rendered.resolution_note_excerpt).not.toHaveProperty("resolution_corrections");
+    expect(rendered.resolution_correction_count).toBe(2);
+    expect(rendered.resolution_corrections.map((c: { seq: number }) => c.seq)).toEqual([2, 1]);
+    expect(
+      rendered.resolution_corrections.every(
+        (c: { created_at_iso: string; disclosure: string }) =>
+          c.created_at_iso.endsWith("Z") && c.disclosure.includes("unknown"),
+      ),
+    ).toBe(true);
+    llm.pushResponse(response);
+    await reflector.reflect(context, h.streamWriter);
+    expect(h.openQuestionsRepository.get(open.id)).toEqual(stored);
+
+    for (const correction_note of ["a".repeat(2_000), "b".repeat(2_000)]) {
+      await correctOpenQuestionResolutionThroughIdentityService({
+        input: { ...base, correction_note },
+        identityService: h.identityService,
+        openQuestionsRepository: h.openQuestionsRepository,
+        episodicRepository: h.episodicRepository,
+        entryIndex: h.createContext().entryIndex!,
+        turnId: "later-wake",
+        turnOrigin: "autonomous",
+        path: "tool",
+      });
+    }
+    llm.pushResponse(createReflectionResponse());
+    await reflector.reflect(
+      { ...context, resolvedOpenQuestions: [h.openQuestionsRepository.get(open.id)!] },
+      h.streamWriter,
+    );
+    expect(
+      JSON.parse(String(llm.requests.at(-1)?.messages[0]?.content)).resolved_open_questions[0],
+    ).toMatchObject({
+      resolution_correction_count: 5,
+      resolution_corrections_omitted: { count: 4, total: 5, reason: "budget" },
+    });
+  });
+
+  it.each(["B", "A"])(
+    "rejects a changed resolution during the actual reflection model call (%s)",
+    async (note) => {
+      const llm = new FakeLLMClient();
+      const tracer = new CaptureTracer();
+      const h = await createOfflineTestHarness({ llmClient: llm });
+      cleanup.push(h.cleanup);
+      const entry = await h.streamWriter.append({ kind: "thought", content: "Evidence" });
+      const open = h.openQuestionsRepository.add({
+        question: "Reading?",
+        urgency: 0.5,
+        source: "reflection",
+        provenance: { kind: "manual" },
+      });
+      const a = h.openQuestionsRepository.resolve(open.id, {
+        resolution_note: "A",
+        resolution_evidence_stream_entry_ids: [entry.id],
+      });
+      let b = a;
+      let eventsAfterReplacement = h.identityEventRepository.list({ recordId: a.id });
+      llm.pushResponse(() => {
+        h.openQuestionsRepository.reopenForReversal(a.id);
+        b = h.openQuestionsRepository.resolve(a.id, {
+          resolution_note: note,
+          resolution_evidence_stream_entry_ids: [entry.id],
+        });
+        eventsAfterReplacement = h.identityEventRepository.list({ recordId: a.id });
+        return createRawReflectionResponse({
+          ...createReflectionResponse().tool_calls[0]!.input,
+          resolution_corrections: [
+            {
+              open_question_id: a.id,
+              correction_note: "Correction aimed at A",
+              evidence: [{ id: entry.id, basis: "own_read" }],
+            },
+          ],
+        });
+      });
+      const reflector = createHarnessReflector(h, {
+        llmClient: llm,
+        model: "test-model",
+        tracer,
+        identityService: h.identityService,
+        openQuestionsRepository: h.openQuestionsRepository,
+        entryIndex: h.createContext().entryIndex!,
+      });
+      await reflector.reflect(
+        { ...createOpenQuestionReflectionContext(), turnId: "race", resolvedOpenQuestions: [a] },
+        h.streamWriter,
+      );
+      const prompt = JSON.parse(String(llm.requests[0]?.messages[0]?.content));
+      expect(prompt.resolved_open_questions[0]).toMatchObject({ id: a.id, resolution_note: "A" });
+      expect(prompt.resolved_open_questions[0]).not.toHaveProperty("resolution_version");
+      expect(b.resolved_at).toBe(a.resolved_at); // The harness fixture uses a fixed clock.
+      expect(b.resolution_version).not.toBe(a.resolution_version);
+      expect(h.openQuestionsRepository.get(a.id)).toEqual(b);
+      expect(h.identityEventRepository.list({ recordId: a.id })).toEqual(eventsAfterReplacement);
+      expect(tracer.events).toContainEqual({
+        event: "open_question_resolution.degraded",
+        data: expect.objectContaining({
+          operation: "correct_resolution",
+          reason: "resolution_changed",
+          question_id: a.id,
+        }),
+      });
+    },
+  );
+
+  it("forwards labeled, separately bounded correction-call fields and structural codes without error note text", async () => {
+    const llm = new FakeLLMClient();
+    const h = await createOfflineTestHarness({ llmClient: llm });
+    cleanup.push(h.cleanup);
+    const privateTo = createEntityId();
+    const episode = createEpisodeFixture({
+      shared: false,
+      audience_entity_id: privateTo,
+      origin_audience_entity_ids: [privateTo],
+    });
+    await h.episodicRepository.createEpisode(episode);
+    const open = h.openQuestionsRepository.add({
+      question: "Reading?",
+      urgency: 0.5,
+      source: "reflection",
+      provenance: { kind: "manual" },
+    });
+    const span = "quoted ".repeat(250);
+    const note = `NOTE_ONLY_HEAD ${span} ${"middle ".repeat(2_000)} NOTE_ONLY_TAIL`;
+    h.openQuestionsRepository.resolve(open.id, {
+      resolution_note: note,
+      resolution_evidence_episode_ids: [episode.id],
+    });
+    const tool = createOpenQuestionsCorrectResolutionTool({
+      identityService: h.identityService,
+      openQuestionsRepository: h.openQuestionsRepository,
+      episodicRepository: h.episodicRepository,
+      entryIndex: h.createContext().entryIndex!,
+    });
+    const dispatcher = new ToolDispatcher({
+      createStreamWriter: (sessionId) =>
+        new StreamWriter({
+          dataDir: h.tempDir,
+          sessionId,
+          entryIndex: h.createContext().entryIndex!,
+        }),
+    }).register(tool);
+    const calls = [];
+    for (const corrects_span of ["absent ".repeat(200), span]) {
+      const input = {
+        open_question_id: open.id,
+        correction_note: "修正".repeat(750),
+        corrects_span,
+        evidence: [{ id: episode.id, basis: "own_read" }],
+      };
+      const result = await dispatcher.dispatch({
+        toolName: tool.name,
+        input,
+        origin: "autonomous",
+        turnOrigin: "autonomous",
+        turnId: "direct-turn",
+      });
+      calls.push({ ...result, name: tool.name, input });
+      if (!result.ok) {
+        expect(result.error).toContain(JSON.stringify(note));
+        expect(result.errorCode).toBe("OPEN_QUESTION_CORRECTION_SPAN_NOT_FOUND");
+      }
+    }
+    const context = createOpenQuestionReflectionContext();
+    const reflector = createHarnessReflector(h, { llmClient: llm, model: "test-model" });
+    llm.pushResponse(createReflectionResponse());
+    await reflector.reflect(
+      { ...context, actionResult: { ...context.actionResult, tool_calls: calls } },
+      h.streamWriter,
+    );
+    const forwarded = JSON.parse(
+      String(llm.requests.at(-1)?.messages[0]?.content),
+    ).current_turn_tool_calls;
+    expect(forwarded.map((call: { outcome: string }) => call.outcome)).toEqual([
+      "failed",
+      "succeeded",
+    ]);
+    expect(forwarded[0].reason_code).toBe("OPEN_QUESTION_CORRECTION_SPAN_NOT_FOUND");
+    for (const call of forwarded) {
+      expect(call).toMatchObject({
+        open_question_id: open.id,
+        disclosure_label: {
+          disclosure_class: "relationship_private",
+          private_to_entity_ids: [privateTo],
+        },
+      });
+      expect(call.correction_note).toHaveLength(1_000);
+      expect(call.corrects_span).toHaveLength(1_000);
+      expect(call.correction_note_chars).toBe(1_500);
+      expect(JSON.stringify(call)).not.toContain("NOTE_ONLY");
+      expect(call).not.toHaveProperty("input");
+      expect(call).not.toHaveProperty("error");
+      expect(call).not.toHaveProperty("output");
+    }
+    vi.spyOn(h.episodicRepository, "getMany").mockRejectedValueOnce(
+      new Error("lookup unavailable"),
+    );
+    llm.pushResponse(createReflectionResponse());
+    await reflector.reflect(
+      { ...context, actionResult: { ...context.actionResult, tool_calls: [calls[0]!] } },
+      h.streamWriter,
+    );
+    expect(
+      JSON.parse(String(llm.requests.at(-1)?.messages[0]?.content)).current_turn_tool_calls[0],
+    ).toMatchObject({
+      disclosure_label: { disclosure_class: "unknown" },
+      disclosure_label_status: "evidence_unavailable",
+    });
+  });
+
+  it("omits an empty resolved block, budgets whole entries together, and rejects corrections outside shown membership", async () => {
+    const llm = new FakeLLMClient();
+    const tracer = new CaptureTracer();
+    const h = await createOfflineTestHarness({ llmClient: llm });
+    cleanup.push(h.cleanup);
+    const entry = await h.streamWriter.append({ kind: "thought", content: "Evidence" });
+    const open = h.openQuestionsRepository.add({
+      question: "Reading?",
+      urgency: 0.5,
+      source: "reflection",
+      provenance: { kind: "manual" },
+    });
+    const resolved = h.openQuestionsRepository.resolve(open.id, {
+      resolution_note: `HEAD ${"middle ".repeat(2_000)} TAIL`,
+      resolution_evidence_stream_entry_ids: [entry.id],
+    });
+    const base = {
+      open_question_id: open.id,
+      evidence: [{ id: entry.id, basis: "own_read" as const }],
+    };
+    for (const correction_note of ["First correction", "Second correction"])
+      await correctOpenQuestionResolutionThroughIdentityService({
+        input: { ...base, correction_note },
+        identityService: h.identityService,
+        openQuestionsRepository: h.openQuestionsRepository,
+        episodicRepository: h.episodicRepository,
+        entryIndex: h.createContext().entryIndex!,
+        turnOrigin: "autonomous",
+        path: "tool",
+      });
+    const corrected = h.openQuestionsRepository.get(open.id)!;
+    const reflector = createHarnessReflector(h, {
+      llmClient: llm,
+      model: "test-model",
+      identityService: h.identityService,
+      entryIndex: h.createContext().entryIndex!,
+      tracer,
+    });
+    const context = {
+      ...createOpenQuestionReflectionContext(),
+      turnId: "bounded-correction-reflection",
+    };
+    const run = async (questions: (typeof resolved)[] = [], outsideId?: typeof open.id) => {
+      llm.pushResponse(
+        createRawReflectionResponse({
+          ...createReflectionResponse().tool_calls[0]!.input,
+          resolution_corrections:
+            outsideId === undefined
+              ? []
+              : [{ ...base, open_question_id: outsideId, correction_note: "Not shown" }],
+        }),
+      );
+      await reflector.reflect({ ...context, resolvedOpenQuestions: questions }, h.streamWriter);
+      return JSON.parse(String(llm.requests.at(-1)?.messages[0]?.content));
+    };
+    const absent = await run([], open.id);
+    const absentSize = String(llm.requests.at(-1)?.messages[0]?.content).length;
+    expect(absent).not.toHaveProperty("resolved_open_questions");
+    expect(absent).not.toHaveProperty("resolved_open_questions_omitted");
+    expect(llm.requests.at(-1)?.system).toBe(TURN_REFLECTION_SYSTEM_PROMPT);
+    await run([corrected]);
+    const oneSize = String(llm.requests.at(-1)?.messages[0]?.content).length;
+    const questions = Array.from({ length: 20 }, (_, i) => ({
+      ...corrected,
+      id: i === 0 ? open.id : createOpenQuestionId(),
+      last_touched: i + 1,
+    }));
+    const many = await run(questions, open.id);
+    const manySize = String(llm.requests.at(-1)?.messages[0]?.content).length;
+    const block = {
+      resolved_open_questions: many.resolved_open_questions,
+      resolved_open_questions_omitted: many.resolved_open_questions_omitted,
+    };
+    expect(JSON.stringify(block).length).toBeLessThanOrEqual(
+      RESOLVED_QUESTIONS_REFLECTION_MAX_CHARS,
+    );
+    expect(manySize - absentSize).toBeLessThanOrEqual(RESOLVED_QUESTIONS_REFLECTION_MAX_CHARS);
+    expect(block.resolved_open_questions.length).toBeGreaterThan(0);
+    expect(block.resolved_open_questions.length).toBeLessThanOrEqual(10);
+    expect(block.resolved_open_questions.map((q: { id: string }) => q.id)).toEqual(
+      [...questions]
+        .reverse()
+        .slice(0, block.resolved_open_questions.length)
+        .map((q) => q.id),
+    );
+    expect(block.resolved_open_questions_omitted).toMatchObject({
+      count: 20 - block.resolved_open_questions.length,
+      total: 20,
+    });
+    expect(h.openQuestionsRepository.get(open.id)).toEqual(corrected);
+    expect(
+      tracer.events.filter((event) => event.data.reason === "question_not_presented"),
+    ).toHaveLength(2);
+    const short = await run(
+      questions.map((q) => ({ ...q, resolution_note: "Short", resolution_corrections: [] })),
+    );
+    expect(short.resolved_open_questions).toHaveLength(10);
+    expect(short.resolved_open_questions_omitted).toMatchObject({ count: 10, total: 20 });
+    // With no corrections, optional new fields do not alter the final serialized row.
+    const zero = await run([resolved]);
+    const legacy = { ...resolved };
+    delete legacy.resolution_corrections;
+    const legacyPrompt = await run([legacy]);
+    expect(JSON.stringify(zero)).toBe(JSON.stringify(legacyPrompt));
+    console.info(
+      `Resolved-question prompt chars: absent=${absentSize}; one=${oneSize}; twenty=${manySize}; added=${oneSize - absentSize}/${manySize - absentSize}; block=${JSON.stringify(block).length}`,
+    );
+  });
+
+  it("traces non-resolved and oversized correction batches without writing them", async () => {
+    const llm = new FakeLLMClient();
+    const tracer = new CaptureTracer();
+    const h = await createOfflineTestHarness({ llmClient: llm });
+    cleanup.push(h.cleanup);
+    const entry = await h.streamWriter.append({ kind: "thought", content: "Evidence" });
+    const question = h.openQuestionsRepository.add({
+      question: "Still open?",
+      urgency: 0.5,
+      source: "reflection",
+      provenance: { kind: "manual" },
+    });
+    const correction = {
+      open_question_id: question.id,
+      correction_note: "A correction",
+      evidence: [{ id: entry.id, basis: "own_read" }],
+    };
+    const reflector = createHarnessReflector(h, {
+      llmClient: llm,
+      model: "test-model",
+      identityService: h.identityService,
+      entryIndex: h.createContext().entryIndex!,
+      tracer,
+    });
+    for (const resolution_corrections of [
+      [correction],
+      Array.from({ length: 4 }, () => correction),
+    ]) {
+      llm.pushResponse(
+        createRawReflectionResponse({
+          ...createReflectionResponse().tool_calls[0]!.input,
+          resolution_corrections,
+        }),
+      );
+      await reflector.reflect(
+        { ...createOpenQuestionReflectionContext(), turnId: "invalid-correction-turn" },
+        h.streamWriter,
+      );
+    }
+    expect(h.openQuestionsRepository.get(question.id)?.resolution_corrections).toEqual([]);
+    expect(tracer.events).toEqual(
+      expect.arrayContaining([
+        {
+          event: "open_question_resolution.degraded",
+          data: expect.objectContaining({
+            operation: "correct_resolution",
+            reason: "question_not_presented",
+          }),
+        },
+        {
+          event: "open_question_resolution.degraded",
+          data: expect.objectContaining({
+            operation: "correct_resolution",
+            reason: "invalid_structure",
+          }),
+        },
+      ]),
+    );
+  });
+
   it("resolves active open questions with retrieved episode evidence", async () => {
     const alice = createEntityId();
     const episode = createEpisodeFixture({
@@ -4779,6 +5282,8 @@ describe("reflector", () => {
       }),
       resolution_note: "Atlas recovered after rollback rehearsal.",
     });
+    const resolved = harness.openQuestionsRepository.get(q1.id)!;
+    expect(resolved.resolution_version).toBe(resolved.record_version);
     expect(harness.openQuestionsRepository.get(q2.id)?.status).toBe("open");
     expect(
       harness.identityEventRepository.list({

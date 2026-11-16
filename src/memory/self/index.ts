@@ -105,6 +105,7 @@ export {
   openQuestionRecordSchema,
   openQuestionResolutionStreamEntryIdSchema,
   openQuestionSchema,
+  openQuestionResolutionCorrectionInputSchema,
   openQuestionSourceSchema,
   openQuestionStatusSchema,
   traitIdSchema,
@@ -131,3 +132,8 @@ export {
   type ValuePatch,
   type ValueRecord,
 } from "./types.js";
+
+export type {
+  OpenQuestionPresentation,
+  ResolutionCorrectionPresentation,
+} from "./resolution-corrections.js";

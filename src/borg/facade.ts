@@ -70,13 +70,23 @@ import {
   commitmentMemoryDisclosureLabel,
   goalMemoryDisclosureLabel,
   memoryDisclosurePayloadFields,
+  openQuestionMemoryDisclosureLabel,
 } from "../memory/common/disclosure-serializers.js";
 import type { CommitmentRecord } from "../memory/commitments/index.js";
-import type { GoalRecord, GoalTreeNode } from "../memory/self/index.js";
+import type {
+  GoalRecord,
+  GoalTreeNode,
+  OpenQuestion,
+  OpenQuestionPresentation,
+} from "../memory/self/index.js";
 import type { IdentityUpdateResult } from "../memory/identity/index.js";
 import { reconcileInboxReplyActivity } from "../cognition/ingestion/index.js";
 import { rankActivityByRelevance } from "../memory/activity/projection.js";
 import { TenantFactRememberer } from "../memory/episodic/remember.js";
+import {
+  formatResolutionCorrections,
+  formatOpenQuestionIdentityEvent,
+} from "../memory/self/resolution-corrections.js";
 
 function errorCode(error: unknown): unknown {
   return error !== null && typeof error === "object" && "code" in error
@@ -153,6 +163,16 @@ function identityResultWithDisclosure<TSource, TResult>(
   return result.status === "applied"
     ? { status: "applied", record: decorate(result.record) }
     : { status: "requires_review", current: decorate(result.current) };
+}
+
+function openQuestionWithCorrections(question: OpenQuestion): OpenQuestionPresentation {
+  const record = formatResolutionCorrections(question);
+  return (question.resolution_corrections?.length ?? 0) === 0
+    ? record
+    : {
+        ...record,
+        disclosure_label: openQuestionMemoryDisclosureLabel(question),
+      };
 }
 
 function participationPolicyRollbackFailedError(
@@ -913,11 +933,25 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
         list: (...args) => deps.trainOfThoughtRepository.list(...args),
       },
       openQuestions: {
-        list: (...args) => deps.openQuestionsRepository.list(...args),
-        add: (...args) => deps.identityService.addOpenQuestion(...args),
-        resolve: (...args) => deps.identityService.resolveOpenQuestion(...args),
-        abandon: (...args) => deps.identityService.abandonOpenQuestion(...args),
-        bumpUrgency: (...args) => deps.identityService.bumpOpenQuestionUrgency(...args),
+        list: (...args) =>
+          deps.openQuestionsRepository.list(...args).map(openQuestionWithCorrections),
+        add: (...args) =>
+          openQuestionWithCorrections(deps.identityService.addOpenQuestion(...args)),
+        resolve: (...args) =>
+          identityResultWithDisclosure(
+            deps.identityService.resolveOpenQuestion(...args),
+            openQuestionWithCorrections,
+          ),
+        abandon: (...args) =>
+          identityResultWithDisclosure(
+            deps.identityService.abandonOpenQuestion(...args),
+            openQuestionWithCorrections,
+          ),
+        bumpUrgency: (...args) =>
+          identityResultWithDisclosure(
+            deps.identityService.bumpOpenQuestionUrgency(...args),
+            openQuestionWithCorrections,
+          ),
       },
     },
     skills: {
@@ -1240,8 +1274,13 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
         ),
       updatePeriod: (...args) => deps.identityService.updatePeriod(...args),
       updateGrowthMarker: (...args) => deps.identityService.updateGrowthMarker(...args),
-      updateOpenQuestion: (...args) => deps.identityService.updateOpenQuestion(...args),
-      listEvents: (...args) => deps.identityService.listEvents(...args),
+      updateOpenQuestion: (...args) =>
+        identityResultWithDisclosure(
+          deps.identityService.updateOpenQuestion(...args),
+          openQuestionWithCorrections,
+        ),
+      listEvents: (...args) =>
+        deps.identityService.listEvents(...args).map(formatOpenQuestionIdentityEvent),
     },
     correction: {
       forget: (...args) => deps.correctionService.forget(...args),

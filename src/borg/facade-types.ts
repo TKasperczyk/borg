@@ -31,6 +31,7 @@ import type {
   GoalsRepository,
   GrowthMarkersRepository,
   OpenQuestionsRepository,
+  OpenQuestionPresentation,
   TraitsRepository,
   ValuesRepository,
 } from "../memory/self/index.js";
@@ -289,21 +290,17 @@ export type BorgSelfFacade = {
     ) => ReturnType<TrainOfThoughtRepository["list"]>;
   };
   openQuestions: {
-    list: (
-      ...args: Parameters<OpenQuestionsRepository["list"]>
-    ) => ReturnType<OpenQuestionsRepository["list"]>;
-    add: (
-      ...args: Parameters<IdentityService["addOpenQuestion"]>
-    ) => ReturnType<IdentityService["addOpenQuestion"]>;
+    list: (...args: Parameters<OpenQuestionsRepository["list"]>) => OpenQuestionPresentation[];
+    add: (...args: Parameters<IdentityService["addOpenQuestion"]>) => OpenQuestionPresentation;
     resolve: (
       ...args: Parameters<IdentityService["resolveOpenQuestion"]>
-    ) => ReturnType<IdentityService["resolveOpenQuestion"]>;
+    ) => IdentityUpdateResult<OpenQuestionPresentation>;
     abandon: (
       ...args: Parameters<IdentityService["abandonOpenQuestion"]>
-    ) => ReturnType<IdentityService["abandonOpenQuestion"]>;
+    ) => IdentityUpdateResult<OpenQuestionPresentation>;
     bumpUrgency: (
       ...args: Parameters<IdentityService["bumpOpenQuestionUrgency"]>
-    ) => ReturnType<IdentityService["bumpOpenQuestionUrgency"]>;
+    ) => IdentityUpdateResult<OpenQuestionPresentation>;
   };
 };
 
@@ -602,7 +599,7 @@ export type BorgIdentityFacade = {
   ) => ReturnType<IdentityService["updateGrowthMarker"]>;
   updateOpenQuestion: (
     ...args: Parameters<IdentityService["updateOpenQuestion"]>
-  ) => ReturnType<IdentityService["updateOpenQuestion"]>;
+  ) => IdentityUpdateResult<OpenQuestionPresentation>;
   listEvents: (
     ...args: Parameters<IdentityService["listEvents"]>
   ) => ReturnType<IdentityService["listEvents"]>;

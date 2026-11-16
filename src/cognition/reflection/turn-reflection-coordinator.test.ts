@@ -40,11 +40,25 @@ describe("TurnReflectionCoordinator", () => {
       resolvedOpenQuestions: [],
       updatedEpisodeStats: [],
     };
+    const namedInTool = { id: createOpenQuestionId(), status: "resolved" } as OpenQuestion;
+    const namedOnlyInResult = { id: createOpenQuestionId(), status: "resolved" } as OpenQuestion;
+    const namedInResponse = { id: createOpenQuestionId(), status: "resolved" } as OpenQuestion;
+    const unrelated = { id: createOpenQuestionId(), status: "resolved" } as OpenQuestion;
+    const list = vi.fn(({ status }: { status?: OpenQuestion["status"] }) =>
+      status === "resolved" ? [unrelated] : [],
+    );
     const reflect = vi.fn(async () => ({ workingMemory, effects }));
     const coordinator = new TurnReflectionCoordinator({
       moodRepository: { update: vi.fn() },
       socialRepository: { recordInteractionWithId: vi.fn() },
-      openQuestionsRepository: { list: vi.fn(() => []), get: vi.fn(() => null) },
+      openQuestionsRepository: {
+        list,
+        get: vi.fn(
+          (id) =>
+            [namedInTool, namedOnlyInResult, namedInResponse, unrelated].find((q) => q.id === id) ??
+            null,
+        ),
+      },
       workingMemoryStore: { save: vi.fn() },
       pendingProceduralAttemptTracker: { update: vi.fn(() => []) },
       createReflector: vi.fn(() => ({ reflect }) as unknown as Reflector),
@@ -72,8 +86,25 @@ describe("TurnReflectionCoordinator", () => {
       selfSnapshot: {} as never,
       deliberation: { retrievedEpisodes: [] } as never,
       actionResult: {
-        response: "",
-        tool_calls: [],
+        response: namedInResponse.id,
+        tool_calls: [
+          {
+            callId: "correction-call",
+            name: "tool.openQuestions.correctResolution",
+            input: { open_question_id: namedInTool.id },
+            ok: false,
+            error: "structural failure",
+            durationMs: 0,
+          },
+          {
+            callId: "retrieved-question",
+            name: "tool.openQuestions.ruminations",
+            input: {},
+            output: { openQuestion: namedOnlyInResult },
+            ok: true,
+            durationMs: 0,
+          },
+        ],
         intents: [],
         workingMemory,
       },
@@ -104,9 +135,11 @@ describe("TurnReflectionCoordinator", () => {
         currentTurnStreamEntryIds: [inboundEntryId, persistedAgentEntry.id],
         currentTurnProducedStreamEntryIds: [persistedAgentEntry.id],
         currentTurnJournalEntryIds: [23],
+        resolvedOpenQuestions: [namedInResponse, namedInTool, namedOnlyInResult],
       }),
       expect.anything(),
     );
+    expect(list).not.toHaveBeenCalledWith(expect.objectContaining({ status: "resolved" }));
   });
 
   it("hands the reflector this turn's recalled open questions ahead of the urgency draw", async () => {
@@ -184,7 +217,7 @@ describe("TurnReflectionCoordinator", () => {
 
     expect(reflect).toHaveBeenNthCalledWith(
       1,
-      expect.objectContaining({ activeOpenQuestions: byUrgency }),
+      expect.objectContaining({ activeOpenQuestions: byUrgency, resolvedOpenQuestions: [] }),
       expect.anything(),
     );
     // Before: a recalled question ranked below the urgency cut was never in the list, so the
@@ -193,6 +226,7 @@ describe("TurnReflectionCoordinator", () => {
     expect(reflect).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({
+        resolvedOpenQuestions: [question("oq_recalled_resolved", "resolved")],
         activeOpenQuestions: [
           recalled,
           byUrgency[5],
@@ -315,15 +349,13 @@ describe("TurnReflectionCoordinator", () => {
           recalled,
           ...byUrgency.slice(0, 17),
         ],
+        resolvedOpenQuestions: [stored.get(namedResolved)],
       }),
       expect.anything(),
     );
-    expect(get.mock.calls.map(([id]) => id)).toEqual([
-      named,
-      namedBesideKanji,
-      namedResolved,
-      namedUnknown,
-    ]);
+    expect(new Set(get.mock.calls.map(([id]) => id))).toEqual(
+      new Set([named, namedBesideKanji, namedResolved, namedUnknown, recalled.id]),
+    );
 
     await run({ isUserTurn: true, userMessage: body, entries: [] });
     expect(reflect).toHaveBeenNthCalledWith(
@@ -341,10 +373,13 @@ describe("TurnReflectionCoordinator", () => {
 
     get.mockClear();
     await run({ isUserTurn: false, userMessage: body, entries: [] });
-    expect(get).not.toHaveBeenCalled();
+    expect(get).toHaveBeenCalledWith(namedResolved);
     expect(reflect).toHaveBeenNthCalledWith(
       3,
-      expect.objectContaining({ activeOpenQuestions: [recalled, ...byUrgency.slice(0, 19)] }),
+      expect.objectContaining({
+        activeOpenQuestions: [recalled, ...byUrgency.slice(0, 19)],
+        resolvedOpenQuestions: [stored.get(namedResolved)],
+      }),
       expect.anything(),
     );
   });

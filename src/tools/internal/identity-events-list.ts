@@ -15,6 +15,13 @@ import {
 import type { MemoryDisclosureLabel } from "../../memory/common/disclosure-label.js";
 import { mapWithDisclosureConcurrency } from "../../retrieval/index.js";
 import { headTailTextExcerpt } from "../../util/text-excerpt.js";
+import {
+  formatResolutionCorrections,
+  formatOpenQuestionIdentityEvent,
+  resolutionCorrectionSchema,
+  resolutionCorrectionPresentationSchema,
+  RESOLUTION_CORRECTION_PAGE_MAX_CHARS,
+} from "../../memory/self/resolution-corrections.js";
 import type { ToolDefinition, ToolInvocationContext } from "../dispatcher.js";
 
 const identityEventsListInputSchema = z.object({
@@ -54,6 +61,12 @@ const identityEventForCognitionSchema = identityEventSchema
   .omit({ old_value: true, new_value: true })
   .extend({
     change: identityEventChangeExcerptSchema,
+    resolution_correction_snapshots: z
+      .object({
+        old: resolutionCorrectionPresentationSchema,
+        new: resolutionCorrectionPresentationSchema,
+      })
+      .optional(),
     disclosure: z.string().min(1),
     disclosure_label: memoryDisclosureLabelMetadataSchema,
   });
@@ -288,6 +301,22 @@ export function createIdentityEventsListForCognitionTool(
             disclosureLabels?.get(event.id) ??
             (await (options.disclosureLabelForEvent?.(event, context) ??
               identityEventMemoryDisclosureLabel(event)));
+          const correctionSnapshot = (value: unknown) =>
+            formatResolutionCorrections(
+              {
+                resolution_corrections: isRecord(value)
+                  ? z.array(resolutionCorrectionSchema).parse(value.resolution_corrections ?? [])
+                  : [],
+              },
+              { maxChars: RESOLUTION_CORRECTION_PAGE_MAX_CHARS },
+            );
+          const snapshots =
+            event.record_type === "open_question"
+              ? {
+                  old: correctionSnapshot(event.old_value),
+                  new: correctionSnapshot(event.new_value),
+                }
+              : null;
 
           return {
             id: event.id,
@@ -299,7 +328,11 @@ export function createIdentityEventsListForCognitionTool(
             review_item_id: event.review_item_id,
             overwrite_without_review: event.overwrite_without_review,
             ts: event.ts,
-            change: identityEventChangeExcerpt(event),
+            change: identityEventChangeExcerpt(formatOpenQuestionIdentityEvent(event)),
+            ...(snapshots?.old.resolution_correction_count ||
+            snapshots?.new.resolution_correction_count
+              ? { resolution_correction_snapshots: snapshots }
+              : {}),
             ...memoryDisclosurePayloadFields(disclosureLabel),
           };
         }),

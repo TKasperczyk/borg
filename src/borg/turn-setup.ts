@@ -164,6 +164,7 @@ export function buildTurnOrchestrator(options: BuildTurnOrchestratorOptions): Tu
         actionRepository: options.actionRepository,
         identityService: options.identityService,
         openQuestionsRepository: options.openQuestionsRepository,
+        entryIndex: options.entryIndex,
         reviewQueueRepository: options.reviewQueueRepository,
         skillRepository: options.skillRepository,
         proceduralEvidenceRepository: options.proceduralEvidenceRepository,

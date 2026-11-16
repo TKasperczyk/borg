@@ -3,6 +3,10 @@ import { IDENTITY_EVENT_COGNITION_CHANGE_EXCERPT_MAX_CHARS } from "../memory/ide
 import { headTailTextExcerpt } from "../util/text-excerpt.js";
 import { epochMsToIso } from "../util/iso-instant.js";
 import { goalIdHelpers, type GoalId } from "../util/ids.js";
+import {
+  formatResolutionCorrections,
+  resolutionCorrectionPresentationSchema,
+} from "../memory/self/resolution-corrections.js";
 
 /** Exact handles on the primary and retained secondary wake rows; no text matching. */
 export function autonomyTriggerGoalIds(payload: Record<string, unknown>): GoalId[] {
@@ -292,7 +296,21 @@ function excerptIdentityEvent(event: unknown, maxChars: number): unknown {
   if (event === null || typeof event !== "object" || Array.isArray(event)) {
     return event;
   }
-  const row = event as Record<string, unknown>;
+  let row = event as Record<string, unknown>;
+  const snapshots = row.resolution_correction_snapshots;
+  if (snapshots !== null && typeof snapshots === "object" && !Array.isArray(snapshots)) {
+    row = {
+      ...row,
+      resolution_correction_snapshots: Object.fromEntries(
+        Object.entries(snapshots).map(([key, value]) => [
+          key,
+          formatResolutionCorrections(resolutionCorrectionPresentationSchema.parse(value), {
+            maxChars,
+          }),
+        ]),
+      ),
+    };
+  }
   const change = row.change;
   if (change === null || typeof change !== "object" || Array.isArray(change)) {
     return event;
@@ -305,7 +323,7 @@ function excerptIdentityEvent(event: unknown, maxChars: number): unknown {
     source.excerpt_head + (typeof source.excerpt_tail === "string" ? source.excerpt_tail : "");
   const excerpt = headTailTextExcerpt(text, maxChars);
   if (excerpt.exact) {
-    return event;
+    return row;
   }
   return {
     ...row,

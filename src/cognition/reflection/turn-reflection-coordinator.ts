@@ -258,6 +258,27 @@ export class TurnReflectionCoordinator {
         audienceIsGroup: input.audienceIsGroup ?? false,
         senderEntityId: input.senderEntityId ?? null,
         activeOpenQuestions,
+        resolvedOpenQuestions: [
+          ...new Map(
+            [
+              ...openQuestionIdsNamedIn(
+                [
+                  inboundText,
+                  input.actionResult.response,
+                  JSON.stringify(input.actionResult.tool_calls),
+                ].join("\n"),
+              ).flatMap((id) => {
+                const question = this.options.openQuestionsRepository.get(id);
+                return question === null ? [] : [question];
+              }),
+              ...(input.recalledOpenQuestions ?? []).map(
+                (question) => this.options.openQuestionsRepository.get(question.id) ?? question,
+              ),
+            ]
+              .filter((question) => question.status === "resolved")
+              .map((question) => [question.id, question]),
+          ).values(),
+        ],
         suppressionSet: input.suppressionSet,
         frameAnomaly: input.frameAnomaly ?? null,
         currentTurnStreamEntryIds: [

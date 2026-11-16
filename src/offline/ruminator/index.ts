@@ -1,3 +1,4 @@
+import { formatResolutionCorrections } from "../../memory/self/resolution-corrections.js";
 import { similarityThresholds } from "../../config/similarity.js";
 import { z } from "zod";
 
@@ -667,7 +668,10 @@ function isOfflineChange(change: OfflineChange | null): change is OfflineChange 
   return change !== null;
 }
 
-function buildChange(item: RuminatorPlan["items"][number]): OfflineChange | null {
+function buildChange(
+  item: RuminatorPlan["items"][number],
+  resultingQuestion?: OpenQuestion,
+): OfflineChange | null {
   if (item.action === "resolve") {
     return {
       process: "ruminator",
@@ -676,10 +680,27 @@ function buildChange(item: RuminatorPlan["items"][number]): OfflineChange | null
         question_id: item.question_id,
         resolution_evidence_episode_ids: item.resolution_evidence_episode_ids,
       },
-      preview: {
-        note: item.resolution_note,
-        growth_marker: item.growth_marker?.what_changed ?? null,
-      },
+      preview:
+        resultingQuestion === undefined
+          ? {
+              state: "historical_plan",
+              note: item.resolution_note,
+              ...memoryDisclosurePayloadFields(item.resolution_disclosure_label),
+              growth_marker: item.growth_marker?.what_changed ?? null,
+            }
+          : {
+              state: "current_record",
+              ...memoryDisclosurePayloadFields(
+                openQuestionMemoryDisclosureLabel(resultingQuestion),
+              ),
+              question: {
+                ...formatResolutionCorrections(resultingQuestion),
+                ...memoryDisclosurePayloadFields(
+                  openQuestionMemoryDisclosureLabel(resultingQuestion),
+                ),
+              },
+              growth_marker: item.growth_marker?.what_changed ?? null,
+            },
     };
   }
 
@@ -1534,6 +1555,10 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
   readonly name = "ruminator" as const;
 
   constructor(private readonly options: RuminatorProcessOptions) {
+    const auditContext = {
+      reason: "ruminator_audit_reversal",
+      provenance: { kind: "offline" as const, process: this.name },
+    };
     this.options.registry.register(this.name, "resolve", async ({ reversal }) => {
       const parsed = reversal as Partial<RuminatorReversal>;
 
@@ -1541,6 +1566,7 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
         this.options.openQuestionsRepository.reopenForReversal(
           parsed.previous.id,
           parsed.previous.urgency,
+          { auditContext },
         );
       }
     });
@@ -1561,6 +1587,7 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
         this.options.openQuestionsRepository.reopenForReversal(
           parsed.previous.id,
           parsed.previous.urgency,
+          { auditContext },
         );
       }
     });
@@ -1568,11 +1595,15 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
       const parsed = reversal as Partial<RuminatorReversal>;
 
       if (parsed.previous_primary !== undefined) {
-        this.options.openQuestionsRepository.restore(parsed.previous_primary);
+        this.options.openQuestionsRepository.restore(parsed.previous_primary, {
+          auditContext,
+        });
       }
 
       if (parsed.previous_duplicate !== undefined) {
-        this.options.openQuestionsRepository.restore(parsed.previous_duplicate);
+        this.options.openQuestionsRepository.restore(parsed.previous_duplicate, {
+          auditContext,
+        });
       }
     });
     this.options.registry.register(this.name, "add_growth_marker", async ({ reversal }) => {
@@ -2061,7 +2092,7 @@ export class RuminatorProcess implements OfflineProcess<RuminatorPlan> {
           });
         }
 
-        const change = buildChange(item);
+        const change = buildChange(item, ctx.openQuestionsRepository.get(item.question_id)!);
 
         if (change !== null) {
           changes.push(change);

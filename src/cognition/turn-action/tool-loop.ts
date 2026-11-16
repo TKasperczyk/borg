@@ -58,6 +58,7 @@ export type ToolLoopCallRecord = {
   output?: unknown;
   // The dispatcher's error text when ok is false.
   error?: string;
+  errorCode?: string;
   ok: boolean;
   durationMs: number;
 };
@@ -232,7 +233,12 @@ function toCallRecord(block: LLMToolUseBlock, result: ToolDispatchResult): ToolL
     callId: result.callId,
     name: result.toolName,
     input: block.input,
-    ...(result.ok ? { output: result.output } : { error: result.error }),
+    ...(result.ok
+      ? { output: result.output }
+      : {
+          error: result.error,
+          ...(result.errorCode === undefined ? {} : { errorCode: result.errorCode }),
+        }),
     ok: result.ok,
     durationMs: result.durationMs,
   };

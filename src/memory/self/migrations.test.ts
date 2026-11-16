@@ -4,16 +4,55 @@ import { join } from "node:path";
 import { identityMigrations, IdentityEventRepository } from "../identity/index.js";
 import { GoalsRepository } from "./goals-repository.js";
 import { goalSchedulingTimes, currentGoalBlock } from "./goal-blocks.js";
-import { createGoalId } from "../../util/ids.js";
+import { createGoalId, createStreamEntryId } from "../../util/ids.js";
 import { ManualClock } from "../../util/clock.js";
 import { composeMigrations } from "../../storage/sqlite/index.js";
 import { describe, expect, it } from "vitest";
 
 import { openDatabase } from "../../storage/sqlite/index.js";
 import { selfMigrations } from "./migrations.js";
+import { OpenQuestionsRepository } from "./open-questions.js";
 import { executiveMigrations, ExecutiveStepsRepository } from "../../executive/index.js";
 
 describe("self migrations", () => {
+  it("adds correction and nullable generation columns without rewriting legacy resolutions", () => {
+    const dir = mkdtempSync(join(tmpdir(), "borg-correction-migration-"));
+    const path = join(dir, "legacy.db");
+    try {
+      const old = openDatabase(path, { migrations: selfMigrations.filter((m) => m.id < 16) });
+      const repository = new OpenQuestionsRepository({ db: old, clock: new ManualClock(1_000) });
+      const question = repository.add({
+        question: "何が分かった？",
+        urgency: 0.5,
+        source: "reflection",
+        provenance: { kind: "manual" },
+      });
+      old
+        .prepare(
+          `UPDATE open_questions SET status = 'resolved', resolution_note = ?,
+        resolution_evidence_stream_entry_ids = ?, resolved_at = 1000 WHERE id = ?`,
+        )
+        .run("  Original\nverbatim.  ", JSON.stringify([createStreamEntryId()]), question.id);
+      const before = old.prepare("SELECT * FROM open_questions WHERE id = ?").get(question.id);
+      old.close();
+      const db = openDatabase(path, { migrations: selfMigrations });
+      try {
+        expect(db.prepare("SELECT * FROM open_questions WHERE id = ?").get(question.id)).toEqual({
+          ...before,
+          resolution_corrections: "[]",
+          resolution_version: null,
+        });
+        expect(new OpenQuestionsRepository({ db }).get(question.id)).toMatchObject({
+          resolution_corrections: [],
+          resolution_version: null,
+        });
+      } finally {
+        db.close();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
   it("adds nullable narrative coverage without rewriting historical narratives", () => {
     const dir = mkdtempSync(join(tmpdir(), "borg-period-coverage-"));
     const path = join(dir, "legacy.db");
@@ -145,7 +184,7 @@ describe("self migrations", () => {
     try {
       const migrationNames = selfMigrations.map((migration) => migration.name);
       expect(new Set(migrationNames).size).toBe(migrationNames.length);
-      expect(migrationNames.slice(-7)).toEqual([
+      expect(migrationNames.slice(-8)).toEqual([
         "goal_counterparty_entity_id",
         "goal_named_block_history",
         "goal_deadline_assignment_basis",
@@ -153,6 +192,7 @@ describe("self migrations", () => {
         "goal_superseded_status",
         "autobiographical_narrative_coverage",
         "goal_last_interaction_at",
+        "open_question_resolution_corrections",
       ]);
       expect(db.listAppliedMigrations().map((migration) => migration.name)).toEqual(migrationNames);
       expect(

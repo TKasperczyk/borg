@@ -253,7 +253,12 @@ export async function buildBorgRepositories(
   const createDefaultStreamWriter = () => createStreamWriter(DEFAULT_SESSION_ID);
   let reviewQueueRepository: ReviewQueueRepository | undefined;
   let applyCorrectionReview: ((item: ReviewQueueItem) => Promise<void>) | undefined;
+  const identityEventRepository = new IdentityEventRepository({
+    db: sqlite,
+    clock,
+  });
   const openQuestionsRepository = new OpenQuestionsRepository({
+    identityEventRepository,
     db: sqlite,
     table: options.openQuestionsTable,
     embeddingClient,
@@ -323,10 +328,7 @@ export async function buildBorgRepositories(
     nodeRepository: semanticNodeRepository,
     edgeRepository: semanticEdgeRepository,
   });
-  const identityEventRepository = new IdentityEventRepository({
-    db: sqlite,
-    clock,
-  });
+
   const valuesRepository = new ValuesRepository({
     db: sqlite,
     clock,

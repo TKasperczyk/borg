@@ -96,18 +96,23 @@ export function goalMemoryDisclosureLabel(
 export function openQuestionMemoryDisclosureLabel(
   question: Pick<OpenQuestion, "audience_entity_id"> & {
     disclosure_label?: MemoryDisclosureLabel | MemoryDisclosureLabelMetadata | null;
+    resolution_disclosure_label?: MemoryDisclosureLabel | null;
+    resolution_corrections?: OpenQuestion["resolution_corrections"];
   },
 ): MemoryDisclosureLabel {
   const attachedLabel = disclosureLabelFromCarrier(question);
-  if (attachedLabel !== null) {
-    return attachedLabel;
-  }
-
   const entityIds = uniqueDisclosureEntityIds([question.audience_entity_id]);
-
-  return entityIds.length === 0
-    ? selfPrivateMemoryDisclosureLabel()
-    : relationshipPrivateMemoryDisclosureLabel(entityIds);
+  const questionLabel =
+    attachedLabel ??
+    (entityIds.length === 0
+      ? selfPrivateMemoryDisclosureLabel()
+      : relationshipPrivateMemoryDisclosureLabel(entityIds));
+  if ((question.resolution_corrections?.length ?? 0) === 0) return questionLabel;
+  return combineMemoryDisclosureLabels([
+    questionLabel,
+    question.resolution_disclosure_label ?? unknownMemoryDisclosureLabel(),
+    ...question.resolution_corrections!.map((correction) => correction.disclosure_label),
+  ]);
 }
 
 export function actionMemoryDisclosureLabel(

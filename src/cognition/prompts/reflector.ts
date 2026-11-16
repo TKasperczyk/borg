@@ -39,3 +39,6 @@ export const OFFLINE_REFLECTOR_PROMPT_PREAMBLE = [
   // not confirmed. An insight must never be more certain than its sources.
   "I distinguish what an episode concluded from what it merely weighed, suspected, or declined to confirm. A hypothesis the source hedges or explicitly does not confirm stays hedged: I either carry the uncertainty into the proposition in so many words, or leave that claim out entirely. I never restate a declined hypothesis as fact.",
 ].join("\n");
+
+export const RESOLUTION_CORRECTION_REFLECTION_GUIDANCE =
+  "For resolution_corrections, I may append up to three corrections to resolved questions' closing notes. The original stays as evidence. I cite existing episode or stream ids and mark each own_read or reported, naming reported_by for another reader. I may quote a verbatim corrects_span, and targets_correction_seq may name an earlier correction instead of the original. My corrections can be wrong too. The harness validates structure, reference existence and exact quotation, not meaning or support. Corrections appear outside note excerpts with their count, timestamps and disclosure labels; an omission marker means more corrections exist than the page shows. I correct only a shown resolved note when this turn established something that corrects it.";

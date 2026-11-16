@@ -4,6 +4,11 @@ import {
 } from "../../../stream/frame-anomaly.js";
 // Summarizes episodic and semantic retrieval results for deliberation prompts.
 import type { SemanticNode } from "../../../memory/semantic/index.js";
+import {
+  formatResolutionCorrections,
+  RESOLUTION_CORRECTION_PAGE_MAX_CHARS,
+  type ResolutionCorrection,
+} from "../../../memory/self/resolution-corrections.js";
 import { openQuestionMemoryDisclosureLabel } from "../../../memory/common/disclosure-serializers.js";
 import {
   EPISODE_EVIDENCE_STRENGTH_BOUND,
@@ -332,6 +337,7 @@ type VerificationRetrievalCandidate = {
   disclosureLabel: MemoryDisclosureLabel;
   structuralFields: Record<string, string | number | boolean | null>;
   payload: unknown;
+  resolutionCorrections?: ResolutionCorrection[];
 };
 
 type IndexedVerificationRetrievalCandidate = {
@@ -531,6 +537,7 @@ function verificationFallbackCandidates(
     return {
       handle: question.id,
       sourceClass: "open_question",
+      resolutionCorrections: question.resolution_corrections,
       disclosureLabel,
       structuralFields: {
         status: question.status,
@@ -578,11 +585,18 @@ function renderVerificationRetrievalCandidate(
   const structural = Object.entries(candidate.structuralFields)
     .map(([key, value]) => `${key}="${verificationXmlAttribute(String(value ?? "none"))}"`)
     .join(" ");
+  const corrections = Object.entries(
+    formatResolutionCorrections(
+      { resolution_corrections: candidate.resolutionCorrections },
+      { maxChars: includePayload ? RESOLUTION_CORRECTION_PAGE_MAX_CHARS : 0 },
+    ),
+  ).map(([key, value]) => `${key}="${verificationXmlAttribute(JSON.stringify(value))}"`);
   return [
     `<verification_source handle="${verificationXmlAttribute(candidate.handle)}"`,
     `source_class="${candidate.sourceClass}"`,
     `disclosure="${verificationXmlAttribute(verificationDisclosure(candidate.disclosureLabel))}"`,
     structural,
+    ...corrections,
     `payload_status="${includePayload ? "exact" : "check_not_completed_budget"}"`,
     `payload_included_chars="${includePayload ? payloadJson.length : 0}"`,
     `payload_total_chars="${payloadJson.length}"`,
@@ -786,7 +800,17 @@ export function renderPlanRequestedVerificationRetrieval(
   const included = new Set<number>();
   let payloadTokens = 0;
   for (const { candidate, originalIndex } of enumeratedCandidates) {
-    const cost = estimatePromptTokens(verificationPayloadJson(candidate));
+    const correctionChars = candidate.resolutionCorrections?.length
+      ? JSON.stringify(
+          formatResolutionCorrections(
+            { resolution_corrections: candidate.resolutionCorrections },
+            { maxChars: RESOLUTION_CORRECTION_PAGE_MAX_CHARS },
+          ),
+        ).length
+      : 0;
+    const cost =
+      estimatePromptTokens(verificationPayloadJson(candidate)) +
+      estimateVerificationMembershipTokens(correctionChars);
     if (payloadTokens + cost > maxTokens) {
       continue;
     }

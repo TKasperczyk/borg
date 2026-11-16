@@ -1,3 +1,7 @@
+import { createOfflineTestHarness } from "../../../offline/test-support.js";
+import { createIdentityEventsListForCognitionTool } from "../../../tools/internal/identity-events-list.js";
+import { openQuestionResolutionIdentity } from "../../../memory/self/resolution-corrections.js";
+import { publicMemoryDisclosureLabel } from "../../../memory/common/disclosure-label.js";
 import { describe, expect, it } from "vitest";
 import { makeAutobiographicalPeriod } from "../../../test-support/factories/memory.js";
 
@@ -2719,6 +2723,112 @@ describe("compact planner context", () => {
       COMPACT_PLANNER_TARGET_TOKENS,
     );
     expect(planner.traceSummary.overallOverflow).toBe(true);
+  });
+
+  it("keeps correction counts outside note excerpts when several identity events compete for wake and planner budgets", async () => {
+    const h = await createOfflineTestHarness();
+    try {
+      for (let i = 0; i < 6; i++) {
+        const q = h.openQuestionsRepository.add({
+          question: `Question ${i}`,
+          urgency: 0.5,
+          source: "reflection",
+          provenance: { kind: "manual" },
+        });
+        const evidenceId = createStreamEntryId();
+        const resolved = h.openQuestionsRepository.resolve(q.id, {
+          resolution_note: `HEAD ${"note ".repeat(2_000)} TAIL`,
+          resolution_evidence_stream_entry_ids: [evidenceId],
+        });
+        for (let j = 0; j < 2; j++) {
+          h.identityService.correctOpenQuestionResolution(
+            q.id,
+            {
+              correction_note: `Correction ${i}/${j} ${"text ".repeat(390)}`,
+              evidence: [{ id: evidenceId, basis: "own_read" }],
+            },
+            {
+              author: "borg",
+              turn_id: "wake",
+              turn_kind: "autonomous",
+              path: "tool",
+              provenance: { kind: "manual" },
+            },
+            publicMemoryDisclosureLabel(),
+            { expectedResolution: openQuestionResolutionIdentity(resolved) },
+          );
+        }
+      }
+      const tool = createIdentityEventsListForCognitionTool({
+        listEvents: () => h.identityEventRepository.list({ limit: 100 }),
+      });
+      const { events } = tool.outputSchema.parse(
+        await tool.invoke({ limit: 100 }, { sessionId: DEFAULT_SESSION_ID, origin: "autonomous" }),
+      );
+      expect(events).toHaveLength(12);
+      const trigger = {
+        source_name: "scheduled_reflection",
+        source_type: "trigger" as const,
+        event_id: "multi-correction",
+        sort_ts: NOW_MS,
+        payload: { recent_identity_events: events },
+      };
+      const wake = formatAutonomyTriggerContext(trigger);
+      const planner = taggedBlock(
+        allSystemText(build(context({ turnOrigin: "autonomous", autonomyTrigger: trigger }))),
+        "autonomy_trigger",
+      );
+      const plannerText = planner
+        .replace(/^<autonomy_trigger[^>]*>/, "")
+        .replace(/<\/autonomy_trigger>$/, "")
+        .replaceAll("&lt;", "<")
+        .replaceAll("&gt;", ">")
+        .replaceAll("&quot;", '"')
+        .replaceAll("&amp;", "&");
+      expect(plannerText).toBe(formatAutonomyTriggerContext(trigger, 4_000));
+      for (const [text, budget] of [
+        [wake, 32_000],
+        [plannerText, 4_000],
+      ] as const) {
+        expect(text.length).toBeLessThanOrEqual(budget);
+        const payload = JSON.parse(
+          text.slice(
+            text.indexOf("payload:\n") + "payload:\n".length,
+            text.indexOf("\nnote on recent_identity_events:"),
+          ),
+        );
+        const selected: typeof events = payload.recent_identity_events;
+        expect(selected.length).toBeGreaterThan(0);
+        expect(text).toContain(
+          `recent_identity_events_omitted: ${events.length - selected.length}.`,
+        );
+        if (budget === 4_000) expect(selected.length).toBeLessThan(events.length);
+        for (const row of selected) {
+          const original = events.find((event) => event.id === row.id)!;
+          for (const key of ["old", "new"] as const) {
+            const snapshot = row.resolution_correction_snapshots![key];
+            const count =
+              original.resolution_correction_snapshots![key].resolution_correction_count;
+            expect(snapshot.resolution_correction_count).toBe(count);
+            expect(
+              (snapshot.resolution_corrections?.length ?? 0) +
+                (snapshot.resolution_corrections_omitted?.count ?? 0),
+            ).toBe(count ?? 0);
+            for (const correction of snapshot.resolution_corrections ?? []) {
+              expect(correction.disclosure_label).toBeDefined();
+              expect(correction.text).toBe(
+                original.resolution_correction_snapshots![key].resolution_corrections?.find(
+                  (c) => c.seq === correction.seq,
+                )?.text,
+              );
+            }
+          }
+          expect(row.change.excerpt_exact).toBe(false);
+        }
+      }
+    } finally {
+      await h.cleanup();
+    }
   });
 
   it.each([6_000, 100_000])(

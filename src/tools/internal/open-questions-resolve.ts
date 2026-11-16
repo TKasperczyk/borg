@@ -23,6 +23,10 @@ import { streamEntryIdSchema } from "../../util/id-schemas.js";
 import { ToolError } from "../../util/errors.js";
 import type { StreamEntryIndexRepository } from "../../stream/index.js";
 import type { ToolDefinition } from "../dispatcher.js";
+import {
+  formatResolutionCorrections,
+  resolutionCorrectionPresentationSchema,
+} from "../../memory/self/resolution-corrections.js";
 
 const openQuestionsResolveInputSchema = z
   .object({
@@ -49,6 +53,7 @@ const openQuestionsResolveInputSchema = z
   });
 
 const openQuestionWithDisclosureSchema = openQuestionSchema.extend({
+  ...resolutionCorrectionPresentationSchema.shape,
   disclosure: z.string().min(1),
   disclosure_label: memoryDisclosureLabelMetadataSchema,
 });
@@ -90,9 +95,11 @@ function disclosureLabelForQuestion(question: OpenQuestion): MemoryDisclosureLab
   ]);
 }
 
-function openQuestionOutput(question: OpenQuestion): z.infer<typeof openQuestionWithDisclosureSchema> {
+function openQuestionOutput(
+  question: OpenQuestion,
+): z.infer<typeof openQuestionWithDisclosureSchema> {
   return {
-    ...question,
+    ...formatResolutionCorrections(question),
     ...memoryDisclosurePayloadFields(disclosureLabelForQuestion(question)),
   };
 }
