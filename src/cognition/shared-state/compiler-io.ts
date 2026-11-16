@@ -486,6 +486,8 @@ export function traceCompileDegraded(options: {
   });
 }
 
+type CompileRepairKind = "schema_or_output_limit" | "patch_rejection";
+
 function traceRepairEvent(
   event:
     | "shared_state.compile.repair_attempted"
@@ -495,6 +497,7 @@ function traceRepairEvent(
     tracer?: TurnTracer;
     turnId?: string;
     audienceEntityId: EntityId;
+    repairKind: CompileRepairKind;
     error?: unknown;
   },
 ): void {
@@ -506,6 +509,7 @@ function traceRepairEvent(
     ...llmFailureTraceData(options.error),
     turnId: options.turnId,
     audienceEntityId: options.audienceEntityId,
+    repair_kind: options.repairKind,
     ...(options.error === undefined
       ? {}
       : { error: options.error instanceof Error ? options.error.message : String(options.error) }),
@@ -516,6 +520,7 @@ export function traceCompileRepairAttempted(options: {
   tracer?: TurnTracer;
   turnId?: string;
   audienceEntityId: EntityId;
+  repairKind: CompileRepairKind;
   error: unknown;
 }): void {
   traceRepairEvent("shared_state.compile.repair_attempted", options);
@@ -525,6 +530,7 @@ export function traceCompileRepairSucceeded(options: {
   tracer?: TurnTracer;
   turnId?: string;
   audienceEntityId: EntityId;
+  repairKind: CompileRepairKind;
 }): void {
   traceRepairEvent("shared_state.compile.repair_succeeded", options);
 }
@@ -533,6 +539,7 @@ export function traceCompileRepairFailed(options: {
   tracer?: TurnTracer;
   turnId?: string;
   audienceEntityId: EntityId;
+  repairKind: CompileRepairKind;
   error: unknown;
 }): void {
   traceRepairEvent("shared_state.compile.repair_failed", options);

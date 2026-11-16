@@ -929,7 +929,7 @@ export function normalizePatch<
         }
 
         const canonicalizes = normalizeCanonicalizes({
-          value: operation.canonicalizes,
+          value: operation.replacement.canonicalizes ?? operation.canonicalizes,
           kind: operation.replacement.kind,
           allowedIds: input.allowedCanonicalizationIds,
           operation,

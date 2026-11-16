@@ -875,7 +875,8 @@ export async function compileSharedStateArtifact(
       : isStructuredToolCallError(error, "invalid_payload")
         ? "invalid_payload"
         : "llm_failed";
-  let repairAttempted = false;
+  // The single patch-rejection repair below has its own budget.
+  let schemaOrOutputLimitRetryUsed = false;
   const callCompilerTool = async (
     toolMessages: readonly LLMMessage[],
   ): Promise<{ response: LLMCompleteResult; parsed: EmitSharedStatePatch }> => {
@@ -892,16 +893,17 @@ export async function compileSharedStateArtifact(
       },
       toolName: SHARED_STATE_TOOL_NAME,
       acceptedToolNames: SHARED_STATE_ACCEPTED_TOOL_NAMES,
-      maxAttempts: repairAttempted ? 1 : 2,
+      maxAttempts: schemaOrOutputLimitRetryUsed ? 1 : 2,
       outputLimitRepairInstruction: buildSharedStateOutputLimitRepairInstruction(maxOutputTokens),
       parse: parseResponse,
       onSchemaRepair: (event) => {
         if (event.status === "attempted") {
-          repairAttempted = true;
+          schemaOrOutputLimitRetryUsed = true;
           traceCompileRepairAttempted({
             tracer: input.tracer,
             turnId: input.turnId,
             audienceEntityId: input.audienceEntityId,
+            repairKind: "schema_or_output_limit",
             error: event.error,
           });
         } else if (event.status === "succeeded") {
@@ -909,12 +911,14 @@ export async function compileSharedStateArtifact(
             tracer: input.tracer,
             turnId: input.turnId,
             audienceEntityId: input.audienceEntityId,
+            repairKind: "schema_or_output_limit",
           });
         } else {
           traceCompileRepairFailed({
             tracer: input.tracer,
             turnId: input.turnId,
             audienceEntityId: input.audienceEntityId,
+            repairKind: "schema_or_output_limit",
             error: event.error,
           });
         }
@@ -1140,34 +1144,13 @@ export async function compileSharedStateArtifact(
   if (repairableRejections.length > 0) {
     const repairError = new Error(patchRejectionRepairMessage(repairableRejections));
 
-    if (repairAttempted) {
-      traceCompileRepairFailed({
-        tracer: input.tracer,
-        turnId: input.turnId,
-        audienceEntityId: input.audienceEntityId,
-        error: repairError,
-      });
-      traceCompileCompleted({
-        ...compileCompletedTraceBase,
-        operationCount: 0,
-        rejected: normalized.rejected,
-        applied: false,
-        artifact: previousArtifact,
-        prunedEntryCountThisTurn: 0,
-        supersededEntryCountThisTurn: 0,
-        nonLockedCanonicalizesDrops: normalized.nonLockedCanonicalizesDrops,
-      });
-
-      return degraded(input, "invalid_patch", repairError);
-    }
-
     traceCompileRepairAttempted({
       tracer: input.tracer,
       turnId: input.turnId,
       audienceEntityId: input.audienceEntityId,
+      repairKind: "patch_rejection",
       error: repairError,
     });
-    repairAttempted = true;
 
     const repairMessages = buildSharedStateArtifactMessages({
       ...messageInput,
@@ -1197,6 +1180,7 @@ export async function compileSharedStateArtifact(
         tracer: input.tracer,
         turnId: input.turnId,
         audienceEntityId: input.audienceEntityId,
+        repairKind: "patch_rejection",
         error: cause,
       });
       traceCompileCompleted({
@@ -1229,6 +1213,7 @@ export async function compileSharedStateArtifact(
         tracer: input.tracer,
         turnId: input.turnId,
         audienceEntityId: input.audienceEntityId,
+        repairKind: "patch_rejection",
         error,
       });
       traceCompileCompleted({
@@ -1249,6 +1234,7 @@ export async function compileSharedStateArtifact(
       tracer: input.tracer,
       turnId: input.turnId,
       audienceEntityId: input.audienceEntityId,
+      repairKind: "patch_rejection",
     });
   }
 

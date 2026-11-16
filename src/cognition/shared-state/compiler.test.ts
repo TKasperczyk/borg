@@ -69,6 +69,7 @@ import {
   SHARED_STATE_TOOL_ENTRY_KINDS,
 } from "./constants.js";
 import type { SemanticRevisionVerdictCache } from "./reconciliation.js";
+import { SHARED_STATE_TOOLS } from "./schema.js";
 import { sharedStatePatchSchema } from "./types.js";
 import type { SharedStatePromptSummary } from "./summary.js";
 import * as sharedStateSummary from "./summary.js";
@@ -228,16 +229,19 @@ function createTraceRecorder(): TurnTracer & {
 
 function expectSingleSuccessfulRepair(
   trace: Pick<ReturnType<typeof createTraceRecorder>, "events">,
+  repairKind: "schema_or_output_limit" | "patch_rejection" = "patch_rejection",
 ): void {
   expect(
-    trace.events.filter((event) => event.event === "shared_state.compile.repair_attempted"),
+    trace.events.filter((event) => event.event === "shared_state.compile.completed"),
   ).toHaveLength(1);
   expect(
-    trace.events.filter((event) => event.event === "shared_state.compile.repair_succeeded"),
-  ).toHaveLength(1);
-  expect(
-    trace.events.filter((event) => event.event === "shared_state.compile.repair_failed"),
-  ).toHaveLength(0);
+    trace.events
+      .filter(({ event }) => event.startsWith("shared_state.compile.repair_"))
+      .map(({ event, data }) => ({ event, repair_kind: data.repair_kind })),
+  ).toEqual([
+    { event: "shared_state.compile.repair_attempted", repair_kind: repairKind },
+    { event: "shared_state.compile.repair_succeeded", repair_kind: repairKind },
+  ]);
 }
 
 function ledgerEntry(input: {
@@ -301,6 +305,33 @@ describe("compileSharedStateArtifact", () => {
         ],
       }).success,
     ).toBe(false);
+  });
+
+  it("exposes the operation limit and replacement canonicalizes in both tool schemas", () => {
+    for (const tool of SHARED_STATE_TOOLS) {
+      expect(tool.inputSchema).toMatchObject({
+        properties: {
+          operations: {
+            maxItems: 40,
+            items: {
+              oneOf: expect.arrayContaining([
+                expect.objectContaining({
+                  properties: expect.objectContaining({
+                    type: { type: "string", const: "supersede" },
+                    replacement: expect.objectContaining({
+                      additionalProperties: false,
+                      properties: expect.objectContaining({
+                        canonicalizes: expect.objectContaining({ type: "object" }),
+                      }),
+                    }),
+                  }),
+                }),
+              ]),
+            },
+          },
+        },
+      });
+    }
   });
 
   let db: SqliteDatabase;
@@ -2067,6 +2098,236 @@ describe("compileSharedStateArtifact", () => {
     );
   });
 
+  it.each([
+    ...SHARED_STATE_TOOL_ENTRY_KINDS.map((kind) => ({ kind, location: "replacement" })),
+    { kind: "locked", location: "operation" },
+    { kind: "locked", location: "both" },
+    { kind: "locked", location: "empty_replacement" },
+  ] as const)(
+    "honors $location canonicalizes on a $kind supersede using the existing locked-only rule",
+    async ({ kind, location }) => {
+      const goalsRepository = new GoalsRepository({ db, clock });
+      const goals = ["Settle the route", "Settle the schedule"].map((description) =>
+        goalsRepository.add({
+          description,
+          priority: 1,
+          provenance: { kind: "online", process: "test" },
+          audienceEntityId: audience,
+          sourceStreamEntryIds: [priorAllowedStreamEntryId],
+        }),
+      );
+      const goal = goals[0]!;
+      const fallbackGoal = goals[1]!;
+      const unlistedGoalId = createGoalId();
+      const original = repository.upsert(audience, [
+        {
+          type: "add",
+          state_key: "decision.route",
+          kind: "live",
+          text: "The route is under discussion.",
+          provenance_stream_entry_ids: [priorAllowedStreamEntryId],
+        },
+      ])!.entries[0]!;
+      const canonicalizes = { goal_ids: [goal.id, goal.id, unlistedGoalId] };
+      const operation = {
+        type: "supersede",
+        id: original.id,
+        replacement: {
+          state_key: original.state_key,
+          kind,
+          text: "The revised route.",
+          source_stream_entry_ids: [priorAllowedStreamEntryId],
+          ...(location === "operation"
+            ? {}
+            : { canonicalizes: location === "empty_replacement" ? {} : canonicalizes }),
+        },
+        ...(location === "operation"
+          ? { canonicalizes }
+          : location === "both" || location === "empty_replacement"
+            ? { canonicalizes: { goal_ids: [fallbackGoal.id] } }
+            : {}),
+      };
+      const trace = createTraceRecorder();
+      const llmClient = new FakeLLMClient({
+        responses: [emitRawSharedStateArtifactPatchResponse({ operations: [operation] })],
+      });
+
+      const patch = await compileSharedStateArtifact({
+        ...baseInput(llmClient),
+        tracer: trace,
+        canonicalizationCandidates: {
+          goals: goals.map((candidate) =>
+            canonicalizationCandidate({ id: candidate.id, text: candidate.description }),
+          ),
+        },
+        reconciliation: { goalsRepository },
+      });
+
+      expect(llmClient.requests).toHaveLength(1);
+      expect(patch.operations).toHaveLength(1);
+      expect(
+        trace.events.filter(({ event }) => event === "shared_state.compile.completed"),
+      ).toHaveLength(1);
+      expect(
+        trace.events
+          .filter(({ event }) => event.startsWith("shared_state.compile.repair_"))
+          .map(({ data }) => data.repair_kind),
+      ).toEqual([]);
+      const replacement = activeEntries()[0]!;
+      const canonicalizesGoal = kind === "locked" && location !== "empty_replacement";
+      expect(replacement).toMatchObject({
+        kind,
+        canonicalizes: {
+          goal_ids: canonicalizesGoal ? [goal.id] : [],
+          commitment_ids: [],
+          action_ids: [],
+          open_question_ids: [],
+        },
+      });
+      expect(goalsRepository.get(goal.id)).toMatchObject({
+        status: canonicalizesGoal ? "done" : "active",
+        canonicalized_by_artifact_entry_id: canonicalizesGoal ? replacement.id : null,
+      });
+      expect(goalsRepository.get(fallbackGoal.id)?.status).toBe("active");
+      if (location === "empty_replacement") {
+        expect(trace.events).toContainEqual({
+          event: "shared_state.reconcile.completed",
+          data: expect.objectContaining({
+            goals_canonicalized_attempted: 0,
+            goals_retired: 0,
+            current_operation_canonicalization_count: 0,
+            unknown_ids: [],
+          }),
+        });
+      }
+      if (kind !== "locked") {
+        expect(trace.events).toContainEqual({
+          event: "shared_state.compile.completed",
+          data: expect.objectContaining({
+            canonicalizes_rejected_non_locked: [
+              expect.objectContaining({ operation_index: 0, kind }),
+            ],
+          }),
+        });
+      }
+      expect(
+        sharedStatePatchSchema.safeParse({
+          operations: [
+            { ...operation, replacement: { ...operation.replacement, unknown_field: true } },
+          ],
+        }).success,
+      ).toBe(false);
+    },
+  );
+
+  it.each(["replacement", "operation"] as const)(
+    "filters %s supersede canonicalizes through the allow-list for every id channel",
+    async (location) => {
+      const original = repository.upsert(audience, [
+        {
+          type: "add",
+          state_key: "decision.route",
+          kind: "live",
+          text: "The route is under discussion.",
+          provenance_stream_entry_ids: [priorAllowedStreamEntryId],
+        },
+      ])!.entries[0]!;
+      const goalId = createGoalId();
+      const commitmentId = createCommitmentId();
+      const actionId = createActionId();
+      const openQuestionId = createOpenQuestionId();
+      const unlistedGoalId = createGoalId();
+      const unlistedCommitmentId = createCommitmentId();
+      const unlistedActionId = createActionId();
+      const unlistedOpenQuestionId = createOpenQuestionId();
+      const canonicalizes = {
+        goal_ids: [goalId, unlistedGoalId, goalId],
+        commitment_ids: [commitmentId, unlistedCommitmentId, commitmentId],
+        action_ids: [actionId, unlistedActionId, actionId],
+        open_question_ids: [openQuestionId, unlistedOpenQuestionId, openQuestionId],
+      };
+      const expectedCanonicalizes = {
+        goal_ids: [goalId],
+        commitment_ids: [commitmentId],
+        action_ids: [actionId],
+        open_question_ids: [openQuestionId],
+      };
+      const trace = createTraceRecorder();
+      const llmClient = new FakeLLMClient({
+        responses: [
+          emitRawSharedStateArtifactPatchResponse({
+            operations: [
+              {
+                type: "supersede",
+                id: original.id,
+                replacement: {
+                  state_key: original.state_key,
+                  kind: "locked",
+                  text: "The revised route.",
+                  source_stream_entry_ids: [priorAllowedStreamEntryId],
+                  ...(location === "replacement" ? { canonicalizes } : {}),
+                },
+                ...(location === "operation" ? { canonicalizes } : {}),
+              },
+            ],
+          }),
+        ],
+      });
+
+      const patch = await compileSharedStateArtifact({
+        ...baseInput(llmClient),
+        tracer: trace,
+        canonicalizationCandidates: {
+          goals: [canonicalizationCandidate({ id: goalId, text: "Settle the route." })],
+          commitments: [
+            canonicalizationCandidate({
+              id: commitmentId,
+              text: "Keep the route locked.",
+              kind: "assistant_commitment",
+              type: "promise",
+              directive_family: "route",
+              enforcement_class: "advisory",
+            }),
+          ],
+          actions: [canonicalizationCandidate({ id: actionId, text: "Track the route." })],
+          openQuestions: [
+            canonicalizationCandidate({ id: openQuestionId, text: "Is the route final?" }),
+          ],
+        },
+      });
+
+      expect(llmClient.requests).toHaveLength(1);
+      expect(patch.operations).toMatchObject([
+        { type: "supersede", id: original.id, canonicalizes: expectedCanonicalizes },
+      ]);
+      expect(activeEntries()[0]?.canonicalizes).toEqual(expectedCanonicalizes);
+      expect(trace.events).toContainEqual({
+        event: "shared_state.reconcile.completed",
+        data: expect.objectContaining({
+          unknown_ids: [
+            { channel: "goal", id: unlistedGoalId },
+            { channel: "commitment", id: unlistedCommitmentId },
+            { channel: "action", id: unlistedActionId },
+            { channel: "open_question", id: unlistedOpenQuestionId },
+          ].map((unknownId) => ({
+            ...unknownId,
+            reason: "unknown_id",
+            operationType: "supersede",
+            operationIndex: 0,
+          })),
+        }),
+      });
+      expect(
+        trace.events.filter(({ event }) => event === "shared_state.compile.completed"),
+      ).toHaveLength(1);
+      expect(
+        trace.events
+          .filter(({ event }) => event.startsWith("shared_state.compile.repair_"))
+          .map(({ data }) => data.repair_kind),
+      ).toEqual([]);
+    },
+  );
+
   it("supersedes an existing entry with a replacement entry", async () => {
     const firstSource = createStreamEntryId();
     const initial = repository.upsert(
@@ -2805,7 +3066,12 @@ describe("compileSharedStateArtifact", () => {
         ]),
       );
       expect(llmClient.requests).toHaveLength(path === "direct" ? 1 : 2);
-      if (path !== "direct") expectSingleSuccessfulRepair(trace);
+      if (path !== "direct") {
+        expectSingleSuccessfulRepair(
+          trace,
+          path === "schema_repair" ? "schema_or_output_limit" : "patch_rejection",
+        );
+      }
 
       const calls = trace.events.filter(({ event }) => event === "llm_call.started");
       const prompt = JSON.parse(llmClient.requests.at(-1)!.messages[0]!.content) as {
@@ -4104,7 +4370,7 @@ describe("compileSharedStateArtifact", () => {
     expect(activeEntries().map((entry) => entry.text)).toContain(
       "Corrected live shared-state entry",
     );
-    expectSingleSuccessfulRepair(trace);
+    expectSingleSuccessfulRepair(trace, "schema_or_output_limit");
     expect(trace.events.map((event) => event.event)).toEqual(
       expect.arrayContaining([
         "llm_call.schema_repair.attempted",
@@ -4112,6 +4378,277 @@ describe("compileSharedStateArtifact", () => {
       ]),
     );
   });
+
+  it.each([
+    ...(["schema", "output_limit", "patch"] as const).flatMap((firstFailure) =>
+      (["success", "rejected", "schema_error"] as const).map((lastResult) => ({
+        firstFailure,
+        lastResult,
+      })),
+    ),
+    ...(["schema", "output_limit", "patch", "patch_output_limit"] as const).map((firstFailure) => ({
+      firstFailure,
+      lastResult: "transport_error" as const,
+    })),
+    ...(["success", "output_limit"] as const).map((lastResult) => ({
+      firstFailure: "patch_output_limit" as const,
+      lastResult,
+    })),
+  ])(
+    "uses independent repair budgets after $firstFailure, ending in $lastResult without a fourth call",
+    async ({ firstFailure, lastResult }) => {
+      const previous = repository.upsert(audience, [
+        {
+          type: "add",
+          state_key: "decision.project.release_order",
+          kind: "locked",
+          text: "Original release order.",
+          provenance_stream_entry_ids: [priorAllowedStreamEntryId],
+        },
+      ])!;
+      const original = previous.entries[0]!;
+      const independentAdd = {
+        type: "add",
+        state_key: "agenda.review",
+        kind: "live",
+        text: "Schedule the review.",
+        new_key_reason: "A separate review agenda.",
+        source_stream_entry_ids: [priorAllowedStreamEntryId],
+      };
+      const supersede = {
+        type: "supersede",
+        id: original.id,
+        replacement: {
+          state_key: original.state_key,
+          kind: "locked",
+          text: "Revised release order.",
+          source_stream_entry_ids: [priorAllowedStreamEntryId],
+        },
+      };
+      const rejectedResponse = emitRawSharedStateArtifactPatchResponse({
+        operations: [
+          {
+            type: "add",
+            state_key: "decision.project.release_order.reconfirmed",
+            kind: "live",
+            text: "Reconfirmed release order.",
+            source_stream_entry_ids: [priorAllowedStreamEntryId],
+          },
+          {
+            ...supersede,
+            replacement: { ...supersede.replacement, text: "x".repeat(4_304) },
+          },
+          independentAdd,
+        ],
+      });
+      const validResponse = emitRawSharedStateArtifactPatchResponse({
+        operations: [supersede, independentAdd],
+      });
+      const cutResponse = { ...validResponse, stop_reason: "max_tokens" };
+      const schemaErrorResponse = emitRawSharedStateArtifactPatchResponse({
+        operations: [{ type: "replace" }],
+      });
+      const unexpectedFourthCall = vi.fn(throwingResponse);
+      const patchFirst = firstFailure === "patch" || firstFailure === "patch_output_limit";
+      const finalResponses = {
+        success: validResponse,
+        rejected: rejectedResponse,
+        schema_error: schemaErrorResponse,
+        transport_error: throwingResponse,
+        output_limit: cutResponse,
+      };
+      const llmClient = new FakeLLMClient({
+        responses: [
+          patchFirst
+            ? rejectedResponse
+            : firstFailure === "schema"
+              ? schemaErrorResponse
+              : cutResponse,
+          patchFirst
+            ? firstFailure === "patch"
+              ? schemaErrorResponse
+              : cutResponse
+            : rejectedResponse,
+          finalResponses[lastResult],
+          unexpectedFourthCall,
+        ],
+      });
+      const trace = createTraceRecorder();
+      const onDegraded = vi.fn();
+
+      const patch = await compileSharedStateArtifact({
+        ...baseInput(llmClient),
+        tracer: trace,
+        onDegraded,
+      });
+
+      expect(llmClient.requests).toHaveLength(3);
+      expect(unexpectedFourthCall).not.toHaveBeenCalled();
+      const rejectionRepairIndex = patchFirst ? 1 : 2;
+      const repairPrompt = llmClient.requests[rejectionRepairIndex]!.messages[0]!.content;
+      expect(repairPrompt).toContain("appears to cover the same thread");
+      expect(repairPrompt).toContain("state_key=decision.project.release_order.reconfirmed");
+      expect(repairPrompt).toContain("locked_text_too_long");
+      expect(repairPrompt).toContain("4304 UTF-16 code units; maximum 4000");
+      if (firstFailure === "output_limit" || firstFailure === "patch_output_limit") {
+        const outputLimitRetryIndex = patchFirst ? 2 : 1;
+        expect(llmClient.requests[outputLimitRetryIndex]!.messages.at(-1)!.content).toBe(
+          `Your previous output reached the limit of ${UNKNOWN_MODEL_OUTPUT_TOKEN_CAP} output tokens, and nothing from it was stored. Emit a complete patch that fits: the operations that matter most, each text as short as accuracy allows. An operation you leave out is not queued for a later compile.`,
+        );
+      } else {
+        const schemaRetryIndex = firstFailure === "patch" ? 2 : 1;
+        expect(llmClient.requests[schemaRetryIndex]!.messages.at(-1)!.content).toContain(
+          "failed client-side schema validation",
+        );
+      }
+      if (lastResult === "success") {
+        expect(patch.operations).toHaveLength(2);
+        expect(activeEntries().map((entry) => entry.text)).toEqual([
+          supersede.replacement.text,
+          independentAdd.text,
+        ]);
+        expect(
+          repository.get(audience)?.entries.find((entry) => entry.id === original.id),
+        ).toMatchObject({ superseded_by_id: activeEntries()[0]!.id });
+        expect(onDegraded).not.toHaveBeenCalled();
+      } else {
+        expect(patch.operations).toEqual([]);
+        expect(repository.get(audience)).toEqual(previous);
+        expect(onDegraded).toHaveBeenCalledWith(
+          lastResult === "rejected"
+            ? "invalid_patch"
+            : lastResult === "schema_error" || firstFailure === "patch"
+              ? "invalid_payload"
+              : "llm_failed",
+          expect.any(Error),
+        );
+        expect(onDegraded).toHaveBeenCalledTimes(1);
+      }
+      const completed = trace.events.filter(
+        ({ event }) => event === "shared_state.compile.completed",
+      );
+      expect(completed).toHaveLength(1);
+      expect(completed[0]!.data).toMatchObject({
+        operationCount: lastResult === "success" ? 2 : 0,
+        applied: lastResult === "success",
+      });
+      const patchOutcome = lastResult === "success" ? "succeeded" : "failed";
+      const retryOutcome =
+        lastResult === "success" || lastResult === "rejected" ? "succeeded" : "failed";
+      expect(
+        trace.events
+          .filter(({ event }) => event.startsWith("shared_state.compile.repair_"))
+          .map(({ event, data }) => ({ event, repair_kind: data.repair_kind })),
+      ).toEqual(
+        (patchFirst
+          ? [
+              ["attempted", "patch_rejection"],
+              ["attempted", "schema_or_output_limit"],
+              [retryOutcome, "schema_or_output_limit"],
+              [patchOutcome, "patch_rejection"],
+            ]
+          : [
+              ["attempted", "schema_or_output_limit"],
+              ["succeeded", "schema_or_output_limit"],
+              ["attempted", "patch_rejection"],
+              [patchOutcome, "patch_rejection"],
+            ]
+        ).map(([status, repairKind]) => ({
+          event: `shared_state.compile.repair_${status}`,
+          repair_kind: repairKind,
+        })),
+      );
+    },
+  );
+
+  it.each([
+    { position: "first call", firstFailure: null, reason: "llm_failed" },
+    { position: "schema retry", firstFailure: "schema", reason: "invalid_payload" },
+    { position: "output-limit retry", firstFailure: "output_limit", reason: "llm_failed" },
+    { position: "rejection repair", firstFailure: "patch", reason: "llm_failed" },
+  ] as const)(
+    "keeps the previous artifact after transport failure on the $position",
+    async ({ firstFailure, reason }) => {
+      const previous = repository.upsert(audience, [
+        {
+          type: "add",
+          state_key: "decision.existing",
+          kind: "locked",
+          text: "Preserve the existing decision.",
+          provenance_stream_entry_ids: [priorAllowedStreamEntryId],
+        },
+      ])!;
+      const proposedResponse = emitRawSharedStateArtifactPatchResponse({
+        operations: [
+          {
+            type: "add",
+            state_key: "decision.new",
+            kind: "live",
+            text: "A new decision missing its new-key reason.",
+            source_stream_entry_ids: [priorAllowedStreamEntryId],
+          },
+          {
+            type: "add",
+            state_key: "agenda.review",
+            kind: "live",
+            text: "This otherwise valid operation must also be discarded.",
+            new_key_reason: "A separate review agenda.",
+            source_stream_entry_ids: [priorAllowedStreamEntryId],
+          },
+        ],
+      });
+      const transportFailure = vi.fn(throwingResponse);
+      const unexpectedNextCall = vi.fn(throwingResponse);
+      const llmClient = new FakeLLMClient({
+        responses: [
+          ...(firstFailure === null
+            ? []
+            : [
+                firstFailure === "schema"
+                  ? emitRawSharedStateArtifactPatchResponse({})
+                  : firstFailure === "output_limit"
+                    ? { ...proposedResponse, stop_reason: "max_tokens" }
+                    : proposedResponse,
+              ]),
+          transportFailure,
+          unexpectedNextCall,
+        ],
+      });
+      const trace = createTraceRecorder();
+      const onDegraded = vi.fn();
+
+      const patch = await compileSharedStateArtifact({
+        ...baseInput(llmClient),
+        tracer: trace,
+        onDegraded,
+      });
+
+      expect(llmClient.requests).toHaveLength(firstFailure === null ? 1 : 2);
+      expect(transportFailure).toHaveBeenCalledTimes(1);
+      expect(unexpectedNextCall).not.toHaveBeenCalled();
+      expect(patch.operations).toEqual([]);
+      expect(repository.get(audience)).toEqual(previous);
+      expect(onDegraded).toHaveBeenCalledTimes(1);
+      expect(onDegraded).toHaveBeenCalledWith(reason, expect.any(Error));
+      const completed = trace.events.filter(
+        ({ event }) => event === "shared_state.compile.completed",
+      );
+      expect(completed).toHaveLength(1);
+      expect(completed[0]!.data).toMatchObject({ operationCount: 0, applied: false });
+      expect(
+        trace.events
+          .filter(({ event }) => event.startsWith("shared_state.compile.repair_"))
+          .map(({ event, data }) => ({ event, repair_kind: data.repair_kind })),
+      ).toEqual(
+        firstFailure === null
+          ? []
+          : ["attempted", "failed"].map((status) => ({
+              event: `shared_state.compile.repair_${status}`,
+              repair_kind: firstFailure === "patch" ? "patch_rejection" : "schema_or_output_limit",
+            })),
+      );
+    },
+  );
 
   it("repairs live adds that exceed the per-key active-entry cap", async () => {
     const firstSource = createStreamEntryId();
@@ -4595,12 +5132,12 @@ describe("compileSharedStateArtifact", () => {
           usage: expect.objectContaining({ outputTokens: consumedOutputTokens }),
         }),
       });
-      expectSingleSuccessfulRepair(trace);
+      expectSingleSuccessfulRepair(trace, "schema_or_output_limit");
     },
   );
 
   it.each(["cap", "schema", "patch"] as const)(
-    "traces a terminal cap stop without applying partial output or adding a third call after %s repair",
+    "traces a terminal cap stop after %s repair without exceeding either repair budget",
     async (firstFailure) => {
       repository.upsert(audience, [
         {
@@ -4647,14 +5184,18 @@ describe("compileSharedStateArtifact", () => {
                     },
               ),
           cutResponse,
+          ...(firstFailure === "patch" ? [cutResponse] : []),
         ],
       });
 
       const patch = await compileSharedStateArtifact({ ...baseInput(llmClient), tracer: trace });
 
-      expect(llmClient.requests).toHaveLength(2);
+      expect(llmClient.requests).toHaveLength(firstFailure === "patch" ? 3 : 2);
       expect(patch.operations).toEqual([]);
       expect(repository.get(audience)).toEqual(previousArtifact);
+      expect(
+        trace.events.filter(({ event }) => event === "shared_state.compile.completed"),
+      ).toHaveLength(1);
       for (const event of ["shared_state.compile.repair_failed", "shared_state.compile.degraded"]) {
         expect(trace.events).toContainEqual({
           event,
@@ -4668,6 +5209,27 @@ describe("compileSharedStateArtifact", () => {
       expect(
         trace.events.find((event) => event.event === "shared_state.compile.degraded")?.data.reason,
       ).toBe(firstFailure === "schema" ? "invalid_payload" : "llm_failed");
+      expect(
+        trace.events
+          .filter(({ event }) => event.startsWith("shared_state.compile.repair_"))
+          .map(({ event, data }) => ({ event, repair_kind: data.repair_kind })),
+      ).toEqual(
+        (firstFailure === "patch"
+          ? [
+              ["attempted", "patch_rejection"],
+              ["attempted", "schema_or_output_limit"],
+              ["failed", "schema_or_output_limit"],
+              ["failed", "patch_rejection"],
+            ]
+          : [
+              ["attempted", "schema_or_output_limit"],
+              ["failed", "schema_or_output_limit"],
+            ]
+        ).map(([status, repairKind]) => ({
+          event: `shared_state.compile.repair_${status}`,
+          repair_kind: repairKind,
+        })),
+      );
     },
   );
 

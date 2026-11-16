@@ -107,6 +107,7 @@ const replacementEntrySchema = z
     owner_entity_id: ownerEntityIdSchema,
     source_stream_entry_ids: sourceStreamEntryIdsSchema,
     relationship_claims: relationshipClaimsSchema,
+    canonicalizes: canonicalizesSchema,
   })
   .strict();
 
@@ -116,7 +117,9 @@ const supersedeOperationSchema = z
     id: z.string().trim().min(1),
     replacement: replacementEntrySchema,
     source_stream_entry_ids: sourceStreamEntryIdsSchema.optional(),
-    canonicalizes: canonicalizesSchema,
+    canonicalizes: canonicalizesSchema.describe(
+      "Active shared state ids this locked replacement makes canonical. Used only when replacement.canonicalizes is omitted.",
+    ),
   })
   .strict();
 
