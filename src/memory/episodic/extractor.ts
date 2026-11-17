@@ -543,6 +543,7 @@ function buildExtractorPrompt(
     "- about 0.8: incident, outage, or major decision with lasting consequences;",
     "- about 0.95: critical incident or foundational commitment.",
     selfEntityGuidance,
+    "First-person references inside another participant's message refer to that participant. When retelling what they said about themselves, name that participant and preserve who did or experienced what.",
     `${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE} Apply this to the narrative body. Keep the title topic-neutral and scannable rather than first-person narration.`,
     MEMORY_SOURCE_LANGUAGE_GUIDANCE,
     "For each user_msg with sender_display_name, attribute that message to the exact display name (for example, ‘Name asked …’), never to a generic user.",

@@ -749,6 +749,9 @@ describe("episodic extractor", () => {
     expect(prompt).toContain(
       "Messages with kind agent_msg are your own; write your own actions, statements, and decisions in first person; refer to every other sender by name or stable handle.",
     );
+    expect(prompt).toContain(
+      "First-person references inside another participant's message refer to that participant. When retelling what they said about themselves, name that participant and preserve who did or experienced what.",
+    );
     expect(listed[0]?.source_stream_ids).toEqual([user.id, agent.id]);
     expect(listed[0]?.source_stream_ids).not.toContain(perception.id);
   });
@@ -807,6 +810,9 @@ describe("episodic extractor", () => {
     expect(prompt).not.toContain("authoritative transport venue context");
     expect(prompt).toContain(
       `You are entity ${selfEntityId} (self); messages with kind "agent_msg" are your own.`,
+    );
+    expect(prompt).toContain(
+      "First-person references inside another participant's message refer to that participant. When retelling what they said about themselves, name that participant and preserve who did or experienced what.",
     );
     expect(prompt).toContain(SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE);
     expect(prompt).toContain("Keep the title topic-neutral and scannable");

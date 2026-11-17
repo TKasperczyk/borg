@@ -354,6 +354,7 @@ function buildMergePrompt(
     "I preserve facts from all raw inputs. I keep the narrative to 2-5 sentences.",
     "Any complete raw narrative line containing an OUTCOME fp= or decision= token, or beginning with ticket=<X> action=<Y> or action=teams_card, is an opaque dedup record. I copy that complete line verbatim; I never paraphrase, extend, normalize, or omit it.",
     selfEntityGuidance,
+    "I treat first-person references inside another participant's message as referring to that participant. When I retell what they said about themselves, I name that participant and preserve who did or experienced what. I preserve the subject of every source statement when merging episodes.",
     `${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE} I apply this to the merged narrative. I keep the title topic-neutral and scannable rather than first-person narration.`,
     MEMORY_SOURCE_LANGUAGE_GUIDANCE,
     ...previousContext,

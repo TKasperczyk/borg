@@ -182,6 +182,9 @@ describe("consolidator process", () => {
     expect(String(llm.requests[0]?.messages[0]?.content ?? "")).toContain(
       "Messages with kind agent_msg are your own; write your own actions, statements, and decisions in first person; refer to every other sender by name or stable handle.",
     );
+    expect(String(llm.requests[0]?.messages[0]?.content ?? "")).toContain(
+      "I treat first-person references inside another participant's message as referring to that participant. When I retell what they said about themselves, I name that participant and preserve who did or experienced what. I preserve the subject of every source statement when merging episodes.",
+    );
     expect((await harness.episodicRepository.listAll()).map((episode) => episode.id)).toEqual([
       second.id,
       first.id,
@@ -865,6 +868,9 @@ describe("consolidator process", () => {
     expect(result.changes).toHaveLength(1);
     expect(harness.entityRepository.getSelf()?.canonical_name).toBe("Nova");
     expect(prompt).toContain(`I am Nova (${selfEntityId});`);
+    expect(prompt).toContain(
+      "I treat first-person references inside another participant's message as referring to that participant. When I retell what they said about themselves, I name that participant and preserve who did or experienced what. I preserve the subject of every source statement when merging episodes.",
+    );
     expect(prompt).not.toContain("I am the self entity");
     expect(prompt).toContain('"participants":["Alice"]');
   });
