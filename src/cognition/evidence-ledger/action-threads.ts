@@ -511,6 +511,14 @@ export function isPromptSalientActionSalienceClass(
 export function summarizeActionPromptSalience(
   threads: readonly ActionThreadWithSalience[],
 ): ActionPromptSalienceSummary {
+  const renderedIds = new Set(
+    allocateActionThreadRenderSlots({
+      threads,
+      limit: DEFAULT_ACTION_THREAD_RENDER_LIMIT,
+      salienceClassReservedSlots: DEFAULT_ACTION_THREAD_SALIENCE_CLASS_RESERVED_SLOTS,
+      audienceReservedSlots: DEFAULT_ACTION_THREAD_AUDIENCE_RESERVED_SLOTS,
+    }).map((thread) => thread.id),
+  );
   let promptSalientActionsTotal = 0;
   let borgOwnedSalientActiveActions = 0;
   let participantOwnedSalientActiveActions = 0;
@@ -540,7 +548,10 @@ export function summarizeActionPromptSalience(
     promptSalientActionsTotal,
     borgOwnedSalientActiveActions,
     participantOwnedSalientActiveActions,
-    staleActionsOmittedFromPrompt: 0,
+    staleActionsOmittedFromPrompt: threads.filter(
+      (thread) =>
+        thread.salienceClass === "participant_pending_stale" && !renderedIds.has(thread.id),
+    ).length,
   };
 }
 

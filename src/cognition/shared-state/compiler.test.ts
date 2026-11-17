@@ -4,7 +4,12 @@ import type { Message } from "@anthropic-ai/sdk/resources/messages/messages.js";
 import { DEFAULT_CONFIG } from "../../config/index.js";
 import { AnthropicLLMClient, type LLMClient } from "../../llm/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
-import type { ActionRecord } from "../../memory/actions/index.js";
+import {
+  ActionRepository,
+  actionMigrations,
+  type ActionRecord,
+} from "../../memory/actions/index.js";
+import { makeActionRecord } from "../../test-support/factories/memory.js";
 import { sharedStateMigrations } from "../../memory/shared-state/migrations.js";
 import { SharedStateRepository } from "../../memory/shared-state/repository.js";
 import type { SharedStateEntryKind } from "../../memory/shared-state/types.js";
@@ -347,7 +352,7 @@ describe("compileSharedStateArtifact", () => {
 
   beforeEach(() => {
     db = openDatabase(":memory:", {
-      migrations: composeMigrations(sharedStateMigrations, selfMigrations),
+      migrations: composeMigrations(sharedStateMigrations, selfMigrations, actionMigrations),
     });
     clock = new FixedClock(2_000);
     repository = new SharedStateRepository({
@@ -1130,6 +1135,15 @@ describe("compileSharedStateArtifact", () => {
     const commitmentId = createCommitmentId();
     const actionId = createActionId();
     const openQuestionId = createOpenQuestionId();
+    const actionRepository = new ActionRepository({ db });
+    actionRepository.add(
+      makeActionRecord({
+        id: actionId,
+        actor: audience,
+        description: "Track Granada decision",
+        state: "committed_to_do",
+      }),
+    );
     const llmClient = new FakeLLMClient({
       responses: [
         emitSharedStateArtifactPatchResponse({
@@ -1154,6 +1168,7 @@ describe("compileSharedStateArtifact", () => {
 
     const patch = await compileSharedStateArtifact({
       ...baseInput(llmClient),
+      reconciliation: { actionRepository },
       canonicalizationCandidates: {
         goals: [canonicalizationCandidate({ id: goalId, text: "Lock Granada for 3 nights" })],
         commitments: [
@@ -1186,7 +1201,30 @@ describe("compileSharedStateArtifact", () => {
       commitment_ids: [commitmentId],
       action_ids: [actionId],
       open_question_ids: [openQuestionId],
+      // R2/R5: normal compilation persists the exact offer proof for continuation.
+      action_selections: [
+        {
+          action_id: actionId,
+          candidate_ids: [actionId],
+          candidate_omitted_count: 0,
+          self_entity_id: self,
+        },
+      ],
     });
+    expect(actionRepository.get(actionId)).toMatchObject({
+      state: "completed",
+      description: "Track Granada decision",
+    });
+    expect(actionRepository.readUpdateHistory(actionId, 10).updates).toEqual([
+      expect.objectContaining({
+        text: "Granada is locked for 3 nights",
+        source_stream_entry_ids: [priorAllowedStreamEntryId],
+        selection_audit: expect.objectContaining({
+          candidate_ids: [actionId],
+          chosen_action_id: actionId,
+        }),
+      }),
+    ]);
   });
 
   it("drops invalid canonicalization ids and reports them in reconciliation trace", async () => {
@@ -1444,11 +1482,10 @@ describe("compileSharedStateArtifact", () => {
 
   it("touches canonicalized actions with the supplied global turn counter", async () => {
     const actionId = createActionId();
-    const update = vi.fn();
     const action = {
       id: actionId,
       description: "Follow up with the clinic",
-      actor: "user",
+      actor: audience,
       audience_entity_id: audience,
       goal_id: null,
       open_question_id: null,
@@ -1474,10 +1511,9 @@ describe("compileSharedStateArtifact", () => {
       last_referenced_turn_counter: 2,
       last_referenced_turn_global: null,
     } satisfies ActionRecord;
-    const actionRepository = {
-      get: vi.fn(() => action),
-      update,
-    };
+    // R2/R4: use the owner's handle and the transactional continuation interface.
+    const actionRepository = new ActionRepository({ db });
+    actionRepository.add(action);
     const llmClient = new FakeLLMClient({
       responses: [
         emitSharedStateArtifactPatchResponse({
@@ -1508,14 +1544,26 @@ describe("compileSharedStateArtifact", () => {
       },
     });
 
-    expect(update).toHaveBeenCalledWith(
-      actionId,
+    const entry = repository.get(audience)!.entries[0]!;
+    expect(actionRepository.get(actionId)).toMatchObject({
+      state: "completed",
+      actor: audience,
+      description: action.description,
+      last_referenced_turn_counter: 42,
+      last_referenced_turn_global: 42,
+      canonicalized_by_artifact_entry_id: entry.id,
+    });
+    expect(actionRepository.readUpdateHistory(actionId, 10).updates).toEqual([
       expect.objectContaining({
-        last_referenced_turn_counter: 42,
-        last_referenced_turn_global: 42,
+        text: entry.text,
+        source_stream_entry_ids: [priorAllowedStreamEntryId],
+        selection_audit: expect.objectContaining({
+          candidate_ids: [actionId],
+          chosen_action_id: actionId,
+          shared_state_entry_id: entry.id,
+        }),
       }),
-      { skipSideEffects: true },
-    );
+    ]);
   });
 
   it("runs semantic belief revision from an accepted locked artifact entry", async () => {
@@ -2238,6 +2286,15 @@ describe("compileSharedStateArtifact", () => {
       const commitmentId = createCommitmentId();
       const actionId = createActionId();
       const openQuestionId = createOpenQuestionId();
+      const actionRepository = new ActionRepository({ db });
+      actionRepository.add(
+        makeActionRecord({
+          id: actionId,
+          actor: audience,
+          description: "Track the route.",
+          state: "committed_to_do",
+        }),
+      );
       const unlistedGoalId = createGoalId();
       const unlistedCommitmentId = createCommitmentId();
       const unlistedActionId = createActionId();
@@ -2253,6 +2310,15 @@ describe("compileSharedStateArtifact", () => {
         commitment_ids: [commitmentId],
         action_ids: [actionId],
         open_question_ids: [openQuestionId],
+        // R2/R5: both supersede forms carry the compiler's fresh offer proof.
+        action_selections: [
+          {
+            action_id: actionId,
+            candidate_ids: [actionId],
+            candidate_omitted_count: 0,
+            self_entity_id: self,
+          },
+        ],
       };
       const trace = createTraceRecorder();
       const llmClient = new FakeLLMClient({
@@ -2266,6 +2332,7 @@ describe("compileSharedStateArtifact", () => {
                   state_key: original.state_key,
                   kind: "locked",
                   text: "The revised route.",
+                  owner_entity_id: audience,
                   source_stream_entry_ids: [priorAllowedStreamEntryId],
                   ...(location === "replacement" ? { canonicalizes } : {}),
                 },
@@ -2279,6 +2346,7 @@ describe("compileSharedStateArtifact", () => {
       const patch = await compileSharedStateArtifact({
         ...baseInput(llmClient),
         tracer: trace,
+        reconciliation: { actionRepository },
         canonicalizationCandidates: {
           goals: [canonicalizationCandidate({ id: goalId, text: "Settle the route." })],
           commitments: [
@@ -2303,6 +2371,21 @@ describe("compileSharedStateArtifact", () => {
         { type: "supersede", id: original.id, canonicalizes: expectedCanonicalizes },
       ]);
       expect(activeEntries()[0]?.canonicalizes).toEqual(expectedCanonicalizes);
+      expect(actionRepository.get(actionId)).toMatchObject({
+        state: "completed",
+        description: "Track the route.",
+      });
+      expect(actionRepository.readUpdateHistory(actionId, 10).updates).toEqual([
+        expect.objectContaining({
+          text: "The revised route.",
+          source_stream_entry_ids: [priorAllowedStreamEntryId],
+          selection_audit: expect.objectContaining({
+            candidate_ids: [actionId],
+            chosen_action_id: actionId,
+            shared_state_entry_id: activeEntries()[0]!.id,
+          }),
+        }),
+      ]);
       expect(trace.events).toContainEqual({
         event: "shared_state.reconcile.completed",
         data: expect.objectContaining({

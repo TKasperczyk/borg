@@ -31,7 +31,12 @@ import {
   streamEntryIndexMigrations,
 } from "../../stream/index.js";
 import { openDatabase } from "../../storage/sqlite/index.js";
-import type { ActionRecord } from "../../memory/actions/index.js";
+import {
+  ActionRepository,
+  actionMigrations,
+  type ActionRecord,
+} from "../../memory/actions/index.js";
+import { makeActionRecord } from "../../test-support/factories/memory.js";
 import type { CommitmentRecord } from "../../memory/commitments/index.js";
 import type { EvidenceLedger, EvidenceLedgerEntry } from "../evidence-ledger/index.js";
 import { renderEvidenceLedger } from "../evidence-ledger/index.js";
@@ -975,193 +980,232 @@ describe("TurnPhaseCoordinator shared state prefilter", () => {
     );
   });
 
-  it("runs retry-only reconciliation for unsettled trusted entries on frame-anomaly turns", async () => {
-    const audience = createEntityId();
-    const self = createEntityId();
-    const source = createStreamEntryId();
-    const current = createStreamEntryId();
-    const goalId = createGoalId();
-    const actionId = createActionId();
-    const openQuestionId = createOpenQuestionId();
-    let goalUpdateCount = 0;
-    let actionUpdateCount = 0;
-    let openQuestionResolveCount = 0;
-    let artifact: SharedStateArtifact | null = sharedStateArtifact({
-      entries: [
-        sharedStateEntry({
-          audience,
-          source,
-          kind: "locked",
-          canonicalizes: {
-            goal_ids: [goalId],
-            commitment_ids: [],
-            action_ids: [actionId],
-            open_question_ids: [openQuestionId],
-          },
-        }),
-      ],
-      lastCompiledStreamEntryId: source,
-    });
-    const events: Array<{ event: string; data: Record<string, unknown> }> = [];
-    const llmClient = new FakeLLMClient({
-      responses: [
-        {
-          text: "",
-          input_tokens: 1,
-          output_tokens: 1,
-          stop_reason: "tool_use",
-          tool_calls: [
+  it.each([true, false])(
+    "runs retry-only reconciliation for unsettled trusted entries on frame-anomaly turns (offer proof=%s)",
+    async (hasOfferProof) => {
+      const audience = createEntityId();
+      const self = createEntityId();
+      const source = createStreamEntryId();
+      const current = createStreamEntryId();
+      const goalId = createGoalId();
+      const actionId = createActionId();
+      const openQuestionId = createOpenQuestionId();
+      let goalUpdateCount = 0;
+      let openQuestionResolveCount = 0;
+      const db = openDatabase(":memory:", { migrations: actionMigrations });
+      try {
+        const actionRepository = new ActionRepository({ db });
+        actionRepository.add(
+          makeActionRecord({
+            id: actionId,
+            actor: audience,
+            state: "committed_to_do",
+            provenance_stream_entry_ids: [source],
+          }),
+        );
+        let artifact: SharedStateArtifact | null = sharedStateArtifact({
+          entries: [
+            sharedStateEntry({
+              audience,
+              source,
+              kind: "locked",
+              canonicalizes: {
+                goal_ids: [goalId],
+                commitment_ids: [],
+                action_ids: [actionId],
+                open_question_ids: [openQuestionId],
+                // R2/R5: retries require the original offer; legacy ids alone fail closed.
+                ...(hasOfferProof
+                  ? {
+                      action_selections: [
+                        {
+                          action_id: actionId,
+                          candidate_ids: [actionId],
+                          candidate_omitted_count: 5,
+                          self_entity_id: self,
+                        },
+                      ],
+                    }
+                  : {}),
+              },
+            }),
+          ],
+          lastCompiledStreamEntryId: source,
+        });
+        const events: Array<{ event: string; data: Record<string, unknown> }> = [];
+        const llmClient = new FakeLLMClient({
+          responses: [
             {
-              id: "toolu_decision_patch",
-              name: SHARED_STATE_TOOL_NAME,
-              input: { operations: [] },
+              text: "",
+              input_tokens: 1,
+              output_tokens: 1,
+              stop_reason: "tool_use",
+              tool_calls: [
+                {
+                  id: "toolu_decision_patch",
+                  name: SHARED_STATE_TOOL_NAME,
+                  input: { operations: [] },
+                },
+              ],
             },
           ],
-        },
-      ],
-    });
-    const coordinator = new TurnPhaseCoordinator({
-      config: DEFAULT_CONFIG,
-      sharedStateRepository: {
-        get: () => artifact,
-        upsert: (
-          _audienceEntityId: unknown,
-          _operations: unknown,
-          metadata:
-            | {
-                now?: number;
-                lastCompiledAt?: number;
-                lastCompiledStreamEntryId?: StreamEntryId;
-              }
-            | undefined,
-        ) => {
-          artifact =
-            artifact === null
-              ? null
-              : {
-                  ...artifact,
-                  record_version: artifact.record_version + 1,
-                  updated_at: metadata?.now ?? artifact.updated_at,
-                  last_compiled_at: metadata?.lastCompiledAt ?? artifact.last_compiled_at,
-                  last_compiled_stream_entry_id:
-                    metadata?.lastCompiledStreamEntryId ?? artifact.last_compiled_stream_entry_id,
-                };
+        });
+        const coordinator = new TurnPhaseCoordinator({
+          config: DEFAULT_CONFIG,
+          sharedStateRepository: {
+            get: () => artifact,
+            upsert: (
+              _audienceEntityId: unknown,
+              _operations: unknown,
+              metadata:
+                | {
+                    now?: number;
+                    lastCompiledAt?: number;
+                    lastCompiledStreamEntryId?: StreamEntryId;
+                  }
+                | undefined,
+            ) => {
+              artifact =
+                artifact === null
+                  ? null
+                  : {
+                      ...artifact,
+                      record_version: artifact.record_version + 1,
+                      updated_at: metadata?.now ?? artifact.updated_at,
+                      last_compiled_at: metadata?.lastCompiledAt ?? artifact.last_compiled_at,
+                      last_compiled_stream_entry_id:
+                        metadata?.lastCompiledStreamEntryId ??
+                        artifact.last_compiled_stream_entry_id,
+                    };
 
-          return artifact;
-        },
-      },
-      goalsRepository: {
-        get: (id: string) =>
-          id === goalId
-            ? ({
-                id,
-                status: "active",
-              } as never)
-            : null,
-        list: () => [],
-        updateStatus: () => {
-          goalUpdateCount += 1;
-          return {};
-        },
-      },
-      commitmentRepository: {
-        get: () => null,
-        list: () => [],
-      },
-      actionRepository: {
-        get: (id: string) =>
-          id === actionId
-            ? ({
-                id,
-                state: "committed_to_do",
-              } as never)
-            : null,
-        update: () => {
-          actionUpdateCount += 1;
-        },
-        list: () => [],
-      },
-      openQuestionsRepository: {
-        get: (id: string) =>
-          id === openQuestionId
-            ? ({
-                id,
-                status: "open",
-              } as never)
-            : null,
-        resolve: () => {
-          openQuestionResolveCount += 1;
-        },
-        list: () => [],
-      },
-      entityRepository: {
-        resolve: () => self,
-      },
-      llmFactory: () => llmClient,
-      clock: {
-        now: () => 2_000,
-      },
-      tracer: {
-        enabled: true,
-        includePayloads: true,
-        emit: (event: string, data: Record<string, unknown>) => {
-          events.push({ event, data });
-        },
-      },
-    } as never);
-    const ledger = evidenceLedger([
-      ledgerEntry({ streamEntryId: source, streamIndex: 0, text: "trusted locked state" }),
-      ledgerEntry({ streamEntryId: current, streamIndex: 1, text: "quarantined current turn" }),
-    ]);
+              return artifact;
+            },
+          },
+          goalsRepository: {
+            get: (id: string) =>
+              id === goalId
+                ? ({
+                    id,
+                    status: "active",
+                  } as never)
+                : null,
+            list: () => [],
+            updateStatus: () => {
+              goalUpdateCount += 1;
+              return {};
+            },
+          },
+          commitmentRepository: {
+            get: () => null,
+            list: () => [],
+          },
+          actionRepository,
+          openQuestionsRepository: {
+            get: (id: string) =>
+              id === openQuestionId
+                ? ({
+                    id,
+                    status: "open",
+                  } as never)
+                : null,
+            resolve: () => {
+              openQuestionResolveCount += 1;
+            },
+            list: () => [],
+          },
+          entityRepository: {
+            resolve: () => self,
+          },
+          llmFactory: () => llmClient,
+          clock: {
+            now: () => 2_000,
+          },
+          tracer: {
+            enabled: true,
+            includePayloads: true,
+            emit: (event: string, data: Record<string, unknown>) => {
+              events.push({ event, data });
+            },
+          },
+        } as never);
+        const ledger = evidenceLedger([
+          ledgerEntry({ streamEntryId: source, streamIndex: 0, text: "trusted locked state" }),
+          ledgerEntry({ streamEntryId: current, streamIndex: 1, text: "quarantined current turn" }),
+        ]);
 
-    await compileSharedStateArtifactForEvidenceLedgerForTest(coordinator, {
-      input: {
-        audienceEntityId: audience,
-        isUserTurn: true,
-        currentUserEntry: {
-          id: current,
-          sender_entity_id: null,
-        },
-        currentUserMessage: "quarantined current turn",
-        perception: {
-          mode: "problem_solving",
-        },
-        frameAnomaly: {
-          status: "ok",
-          kind: "frame_assignment_claim",
-          confidence: 0.98,
-          rationale: "test quarantine",
-        },
-        closureLoopAssessment: null,
-        activeParticipants: [],
-        turnId: "turn_retry_only_quarantine",
-      },
-      ledger,
-      promptVisibleLedger: renderEvidenceLedger(ledger) ?? "",
-    });
+        await compileSharedStateArtifactForEvidenceLedgerForTest(coordinator, {
+          input: {
+            audienceEntityId: audience,
+            isUserTurn: true,
+            currentUserEntry: {
+              id: current,
+              sender_entity_id: null,
+            },
+            currentUserMessage: "quarantined current turn",
+            perception: {
+              mode: "problem_solving",
+            },
+            frameAnomaly: {
+              status: "ok",
+              kind: "frame_assignment_claim",
+              confidence: 0.98,
+              rationale: "test quarantine",
+            },
+            closureLoopAssessment: null,
+            activeParticipants: [],
+            turnId: "turn_retry_only_quarantine",
+          },
+          ledger,
+          promptVisibleLedger: renderEvidenceLedger(ledger) ?? "",
+        });
 
-    expect(llmClient.requests).toHaveLength(0);
-    expect(goalUpdateCount).toBe(1);
-    expect(actionUpdateCount).toBe(1);
-    expect(openQuestionResolveCount).toBe(1);
-    expect(events).toContainEqual(
-      expect.objectContaining({
-        event: "shared_state.reconcile.completed",
-        data: expect.objectContaining({
-          turnId: "turn_retry_only_quarantine",
-          unsettled_entry_count: 1,
-          outcome_counts: expect.objectContaining({
-            goals_retired: 1,
-            actions_retired: 1,
-            open_questions_retired: 1,
+        expect(llmClient.requests).toHaveLength(0);
+        expect(goalUpdateCount).toBe(1);
+        expect(actionRepository.get(actionId)?.state).toBe(
+          hasOfferProof ? "completed" : "committed_to_do",
+        );
+        const history = actionRepository.readUpdateHistory(actionId, 10);
+        expect(history.total).toBe(hasOfferProof ? 1 : 0);
+        if (hasOfferProof) {
+          expect(history.updates[0]).toMatchObject({
+            text: artifact!.entries[0]!.text,
+            source_stream_entry_ids: [source],
+            selection_audit: {
+              candidate_ids: [actionId],
+              candidate_omitted_count: 5,
+              chosen_action_id: actionId,
+              shared_state_entry_id: artifact!.entries[0]!.id,
+            },
+          });
+        } else {
+          expect(events).toContainEqual({
+            event: "action_state.continuation_rejected",
+            data: expect.objectContaining({ action_id: actionId, reason: "not_offered" }),
+          });
+        }
+        expect(openQuestionResolveCount).toBe(1);
+        expect(events).toContainEqual(
+          expect.objectContaining({
+            event: "shared_state.reconcile.completed",
+            data: expect.objectContaining({
+              turnId: "turn_retry_only_quarantine",
+              unsettled_entry_count: 1,
+              outcome_counts: expect.objectContaining({
+                goals_retired: 1,
+                actions_retired: hasOfferProof ? 1 : 0,
+                open_questions_retired: 1,
+              }),
+            }),
           }),
-        }),
-      }),
-    );
-    expect(events.find((event) => event.event === "shared_state.compile.transitioned")).toBe(
-      undefined,
-    );
-  });
+        );
+        expect(events.find((event) => event.event === "shared_state.compile.transitioned")).toBe(
+          undefined,
+        );
+      } finally {
+        db.close();
+      }
+    },
+  );
 
   it("does not let a quarantined current turn create artifact state through older trusted evidence", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-quarantined-artifact-regression-"));
@@ -2009,6 +2053,8 @@ describe("TurnPhaseCoordinator shared state prefilter", () => {
           global: 1,
         },
         candidate_count_total: 2,
+        // R1/R5: offer coverage is explicit even when nothing was omitted.
+        candidate_omitted_count: 0,
       },
     });
   });

@@ -36,6 +36,44 @@ function createActionStateResponse(input: unknown) {
 }
 
 describe("TurnActionStateService", () => {
+  it("starts extraction without a recall barrier or search when the action store is empty", async () => {
+    const db = openDatabase(":memory:", { migrations: actionMigrations });
+    try {
+      const repository = new ActionRepository({ db });
+      const search = vi.spyOn(repository, "findByDescription");
+      const llm = new FakeLLMClient({
+        responses: [createActionStateResponse({ action_states: [] })],
+      });
+      const service = new TurnActionStateService({
+        actionRepository: repository,
+        embeddingClient: new TestEmbeddingClient(),
+        clock: new FixedClock(2_000),
+        model: "test-extraction",
+        tracer: NOOP_TRACER,
+      });
+      const pending = service.extract({
+        llmClient: llm,
+        turnId: "empty-recall",
+        isUserTurn: true,
+        userMessage: "Current message",
+        persistedUserEntryId: createStreamEntryId(),
+        recentHistory: [],
+        audienceEntityId: null,
+      });
+      // Parallel goal extraction must not overtake this call on an empty store.
+      expect(llm.requests).toHaveLength(1);
+      expect(llm.requests[0]).toMatchObject({
+        budget: "action-state-extractor",
+        model: "test-extraction",
+      });
+      expect(await pending).toEqual([]);
+      expect(search).not.toHaveBeenCalled();
+      expect(llm.requests).toHaveLength(1);
+    } finally {
+      db.close();
+    }
+  });
+
   it.each([
     { disposition: "annotate", hasAnomaly: true, extractionCalls: 1 },
     { disposition: "quarantine", hasAnomaly: true, extractionCalls: 0 },

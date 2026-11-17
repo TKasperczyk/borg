@@ -705,6 +705,8 @@ describe("TurnTracer", () => {
       "llm_call.schema_repair.attempted",
       "llm_call.started",
       "llm_call.completed",
+      // R5: every extraction emits its committed selection counts.
+      "extraction.actions.selection_summary",
       "extraction.actions.completed",
       "llm_call.schema_repair.failed",
       "extraction.goals.completed",

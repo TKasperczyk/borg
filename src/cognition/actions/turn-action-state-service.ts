@@ -122,18 +122,23 @@ export class TurnActionStateService {
         });
       },
     });
-    const candidates = await retrieveActionCandidates({
-      repository: this.options.actionRepository,
-      text: input.userMessage,
-      audienceEntityId: input.audienceEntityId,
-      speakerEntityId: input.speakerEntityId,
-      participantEntityIds: input.participantEntityIds,
-      onSearchFailure: (error) =>
-        this.options.tracer.emit("extraction.actions.candidate_search_failed", {
-          turnId: input.turnId,
-          error: error instanceof Error ? error.message : String(error),
-        }),
-    });
+    // An empty store needs neither an embedding nor an asynchronous recall barrier
+    // before this extractor starts alongside the other early extractors.
+    const candidates =
+      this.options.actionRepository.count() === 0
+        ? { records: [], total: 0 }
+        : await retrieveActionCandidates({
+            repository: this.options.actionRepository,
+            text: input.userMessage,
+            audienceEntityId: input.audienceEntityId,
+            speakerEntityId: input.speakerEntityId,
+            participantEntityIds: input.participantEntityIds,
+            onSearchFailure: (error) =>
+              this.options.tracer.emit("extraction.actions.candidate_search_failed", {
+                turnId: input.turnId,
+                error: error instanceof Error ? error.message : String(error),
+              }),
+          });
     const actionStateRecords = await actionStateExtractor.extract({
       userMessage: input.userMessage,
       currentUserStreamEntryId,

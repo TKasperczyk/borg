@@ -2325,97 +2325,104 @@ describe("MetricsCapture", () => {
     expect(row.stale_action_count).toBe(0);
   });
 
-  it("captures prompt-salient action counts and stale prompt omissions", async () => {
-    const dir = tempDir();
-    const metricsPath = join(dir, "metrics.jsonl");
-    const sessionId = createSessionId();
-    const audience = createEntityId();
-    const actions = [
-      makeAction({
-        actor: "borg",
-        audience_entity_id: audience,
-        state: "committed_to_do",
-        last_referenced_turn_counter: 2,
-        last_referenced_turn_global: 20,
-      }),
-      makeAction({
-        actor: "user",
-        audience_entity_id: audience,
-        state: "committed_to_do",
-        last_referenced_turn_counter: 1,
-        last_referenced_turn_global: 19,
-      }),
-      ...Array.from({ length: 7 }, (_, index) =>
+  it.each([
+    { staleCount: 7, omitted: 0 },
+    { staleCount: 13, omitted: 3 },
+  ])(
+    "captures prompt-salient action counts and stale prompt omissions ($staleCount stale rows)",
+    async ({ staleCount, omitted }) => {
+      const dir = tempDir();
+      const metricsPath = join(dir, "metrics.jsonl");
+      const sessionId = createSessionId();
+      const audience = createEntityId();
+      const actions = [
+        makeAction({
+          actor: "borg",
+          audience_entity_id: audience,
+          state: "committed_to_do",
+          last_referenced_turn_counter: 2,
+          last_referenced_turn_global: 20,
+        }),
         makeAction({
           actor: "user",
           audience_entity_id: audience,
-          description: `Stale participant task ${index}`,
           state: "committed_to_do",
-          created_at: 1_000 - index,
-          updated_at: 1_000 - index,
-          // A row can retain its legacy session stamp alongside the dedicated
-          // lifecycle-global stamp. Metrics must prefer the global field.
-          last_referenced_turn_counter: 20,
-          last_referenced_turn_global: 0,
+          last_referenced_turn_counter: 1,
+          last_referenced_turn_global: 19,
         }),
-      ),
-      makeAction({
-        actor: "borg",
-        audience_entity_id: audience,
-        state: "expired",
-        expired_at: 1_000,
-      }),
-    ];
-    const activeStates = new Set(["considering", "committed_to_do", "scheduled", "unknown"]);
-    const countByState = () => {
-      const counts = zeroCounts(ACTION_STATES);
-
-      for (const action of actions) {
-        counts[action.state] += 1;
-      }
-
-      return counts;
-    };
-    const borg = {
-      ...fakeBorg(),
-      actions: {
-        count: () => actions.length,
-        countByState,
-        countCanonicalized: () => 0,
-        countActive: () => actions.filter((action) => activeStates.has(action.state)).length,
-        getCreationCountsBySource: () => ({
-          extractor: 0,
-          reflector: 0,
-          api: 0,
-          tool: 0,
-          unknown: 0,
+        ...Array.from({ length: staleCount }, (_, index) =>
+          makeAction({
+            actor: "user",
+            audience_entity_id: audience,
+            description: `Stale participant task ${index}`,
+            state: "committed_to_do",
+            created_at: 1_000 - index,
+            updated_at: 1_000 - index,
+            // A row can retain its legacy session stamp alongside the dedicated
+            // lifecycle-global stamp. Metrics must prefer the global field.
+            last_referenced_turn_counter: 20,
+            last_referenced_turn_global: 0,
+          }),
+        ),
+        makeAction({
+          actor: "borg",
+          audience_entity_id: audience,
+          state: "expired",
+          expired_at: 1_000,
         }),
-        countCompletedSince: () => 0,
-        latestCompletedAt: () => null,
-        listCompletedIds: () => [],
-        list: (filter: { states?: readonly ActionRecord["state"][] } = {}) =>
-          actions.filter(
-            (action) => filter.states === undefined || filter.states.includes(action.state),
-          ),
-        findSimilarDescriptionPairs: async () => [],
-      },
-    } as unknown as Borg;
+      ];
+      const activeStates = new Set(["considering", "committed_to_do", "scheduled", "unknown"]);
+      const countByState = () => {
+        const counts = zeroCounts(ACTION_STATES);
 
-    const row = await new MetricsCapture(metricsPath).capture(borg, "turn-salience", 20, {
-      sessionId,
-      sessionIds: [sessionId],
-      transportChatAttempts: 1,
-    });
+        for (const action of actions) {
+          counts[action.state] += 1;
+        }
 
-    expect(row.prompt_salient_actions_total).toBe(2);
-    expect(row.borg_owned_salient_active_actions).toBe(1);
-    expect(row.participant_owned_salient_active_actions).toBe(1);
-    expect(row.stale_actions_omitted_from_prompt).toBe(2);
-    expect(row.dormant_actions_total).toBe(7);
-    expect(row.stale_action_count).toBe(8);
-    expect(row.salient_actions_per_turn).toBe(0.1);
-    expect(row.action_retirement_ratio).toBe(0.1);
-  });
+        return counts;
+      };
+      const borg = {
+        ...fakeBorg(),
+        actions: {
+          count: () => actions.length,
+          countByState,
+          countCanonicalized: () => 0,
+          countActive: () => actions.filter((action) => activeStates.has(action.state)).length,
+          getCreationCountsBySource: () => ({
+            extractor: 0,
+            reflector: 0,
+            api: 0,
+            tool: 0,
+            unknown: 0,
+          }),
+          countCompletedSince: () => 0,
+          latestCompletedAt: () => null,
+          listCompletedIds: () => [],
+          list: (filter: { states?: readonly ActionRecord["state"][] } = {}) =>
+            actions.filter(
+              (action) => filter.states === undefined || filter.states.includes(action.state),
+            ),
+          findSimilarDescriptionPairs: async () => [],
+        },
+      } as unknown as Borg;
+
+      const row = await new MetricsCapture(metricsPath).capture(borg, "turn-salience", 20, {
+        sessionId,
+        sessionIds: [sessionId],
+        transportChatAttempts: 1,
+      });
+
+      expect(row.prompt_salient_actions_total).toBe(2);
+      expect(row.borg_owned_salient_active_actions).toBe(1);
+      expect(row.participant_owned_salient_active_actions).toBe(1);
+      // R7: open rows use all 12 slots; there is no separate five-stale-row cap.
+      expect(row.stale_actions_omitted_from_prompt).toBe(omitted);
+      expect(row.dormant_actions_total).toBe(staleCount);
+      expect(row.stale_action_count).toBe(staleCount + 1);
+      expect(row.salient_actions_per_turn).toBe(0.1);
+      expect(row.action_retirement_ratio).toBe(1 / (staleCount + 3));
+    },
+  );
 
   it("captures dormant/archive eligibility and inactive turn distributions", async () => {
     const dir = tempDir();
