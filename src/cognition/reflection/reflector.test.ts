@@ -3033,7 +3033,7 @@ describe("reflector", () => {
     });
   });
 
-  it("traces the reflection call when its response carries no tool call", async () => {
+  it("traces one cut-aware retry when both reflection responses are cut without a tool call", async () => {
     const pendingIntents = [
       {
         pending_action_id: "pact_0000000000000000",
@@ -3041,17 +3041,14 @@ describe("reflector", () => {
         next_action: "review deploy status",
       },
     ];
-    const llm = new FakeLLMClient({
-      responses: [
-        {
-          text: "The rollout check is done, so the pending action",
-          input_tokens: 8,
-          output_tokens: 768,
-          stop_reason: "max_tokens",
-          tool_calls: [],
-        },
-      ],
-    });
+    const cutResponse = {
+      text: "The rollout check is done, so the pending action",
+      input_tokens: 8,
+      output_tokens: 8_192,
+      stop_reason: "max_tokens",
+      tool_calls: [],
+    };
+    const llm = new FakeLLMClient({ responses: [cutResponse, cutResponse] });
     const harness = await createOfflineTestHarness({
       llmClient: llm,
     });
@@ -3111,16 +3108,44 @@ describe("reflector", () => {
     );
 
     expect(reflected.pending_actions).toEqual(pendingIntents);
+    // The reflector requests its default cap; the cut-aware retry uses Haiku's effective ceiling.
+    expect(llm.requests.map((request) => request.max_tokens)).toEqual([16_000, 8_192]);
+    expect(llm.requests[1]?.messages).toEqual([
+      ...llm.requests[0]!.messages,
+      {
+        role: "user",
+        content:
+          "Your previous output was cut at the limit of 8192 output tokens and was discarded whole. Emit exactly one complete EmitTurnReflection tool call within the retry limit of 8192 output tokens, including thinking.",
+      },
+    ]);
     const reflectorCalls = tracer.events.filter(
       (event) => event.event.startsWith("llm_call.") && event.data.label === "reflector",
     );
     expect(reflectorCalls.map((event) => event.event)).toEqual([
       "llm_call.started",
       "llm_call.completed",
+      "llm_call.schema_repair.attempted",
+      "llm_call.started",
+      "llm_call.completed",
+      "llm_call.schema_repair.failed",
     ]);
     expect(reflectorCalls[1]?.data).toMatchObject({
       turnId: "turn-missing-reflection-call",
       stopReason: "max_tokens",
+    });
+    expect(reflectorCalls[3]?.data).toMatchObject({
+      attempt: 2,
+      schema_repair: true,
+      repair_of_attempt: 1,
+    });
+    expect(reflectorCalls[4]?.data).toMatchObject({
+      turnId: "turn-missing-reflection-call",
+      stopReason: "max_tokens",
+    });
+    expect(reflectorCalls[5]?.data).toMatchObject({
+      attempt: 2,
+      failure_kind: "llm_failed",
+      error: expect.stringContaining("8192"),
     });
   });
 

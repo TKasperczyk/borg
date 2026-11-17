@@ -852,7 +852,7 @@ describe("RuminatorProcess", () => {
       expect(after?.last_ruminated_at).toBeNull();
       expect(after?.unresolved_rumination_ticks).toBe(question.unresolved_rumination_ticks);
       expect(after?.consecutive_refusals).toBe(0);
-      expect(llm.requests.map((r) => r.max_tokens)).toEqual([16_000, 32_000]);
+      expect(llm.requests.map((r) => r.max_tokens)).toEqual([16_000, 16_000]);
     } finally {
       await harness.cleanup();
     }

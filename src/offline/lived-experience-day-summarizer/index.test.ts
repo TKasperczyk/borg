@@ -106,7 +106,7 @@ describe("LivedExperienceDaySummarizerProcess", () => {
         const process = createProcess(harness);
         const plan = await process.plan(harness.createContext());
         await process.apply(harness.createContext(), plan);
-        expect(llm.requests.map((r) => r.max_tokens)).toEqual([16_000, 32_000]);
+        expect(llm.requests.map((r) => r.max_tokens)).toEqual([16_000, 16_000]);
         const stored = harness.livedExperienceDaySummaryRepository.listForWindow({
           selfEntityId: self.id,
           fromMs: start,
@@ -116,7 +116,7 @@ describe("LivedExperienceDaySummarizerProcess", () => {
         expect(stored.map((row) => row.gist)).toEqual(secondCut ? [] : ["Complete"]);
         if (secondCut) {
           expect(plan.errors).toEqual([
-            expect.objectContaining({ message: expect.stringContaining("32000") }),
+            expect.objectContaining({ message: expect.stringContaining("16000") }),
           ]);
         } else {
           expect(plan.errors).toEqual([]);
