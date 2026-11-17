@@ -59,6 +59,21 @@ export function classifyLlmStopReason(
   return { kind, raw };
 }
 
+export function normalizeLlmStopReason(
+  raw: string | null,
+  classification?: LLMStopReasonClassification,
+  provider: "anthropic" | "openai" = "anthropic",
+): LLMStopReasonClassification {
+  // An explicit raw reason decides cut status; keep compatible provider details.
+  if (raw === "max_tokens" || raw === "length") {
+    return classification?.kind === "max_tokens" ? classification : { kind: "max_tokens", raw };
+  }
+  if (raw != null && classification?.kind === "max_tokens") {
+    return classifyLlmStopReason(raw, provider);
+  }
+  return classification ?? classifyLlmStopReason(raw ?? null, provider);
+}
+
 export function getLlmErrorStopReason(error: unknown): LLMStopReasonClassification {
   const carrier = findInErrorCauseChain(
     error,
@@ -70,10 +85,13 @@ export function getLlmErrorStopReason(error: unknown): LLMStopReasonClassificati
     } =>
       candidate instanceof LLMError &&
       (candidate.code === "LLM_REFUSAL_EXHAUSTED" ||
-        ("stopReason" in candidate && typeof candidate.stopReason === "string")),
+        ("stopReason" in candidate && typeof candidate.stopReason === "string") ||
+        ("stopReasonClassification" in candidate &&
+          candidate.stopReasonClassification !== undefined)),
   );
-  if (carrier?.stopReasonClassification !== undefined) return carrier.stopReasonClassification;
-  return classifyLlmStopReason(
-    carrier?.code === "LLM_REFUSAL_EXHAUSTED" ? "refusal" : (carrier?.stopReason ?? null),
+  return normalizeLlmStopReason(
+    carrier?.stopReason ?? null,
+    carrier?.stopReasonClassification ??
+      (carrier?.code === "LLM_REFUSAL_EXHAUSTED" ? classifyLlmStopReason("refusal") : undefined),
   );
 }

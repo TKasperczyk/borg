@@ -97,6 +97,7 @@ describe("CommitmentReconcilerProcess", () => {
     const llmClient = new FakeLLMClient({
       responses: [
         (options: LLMCompleteOptions) => {
+          expect(options.max_tokens).toBe(8_000);
           const payload = JSON.parse(String(options.messages[0]?.content ?? "{}")) as {
             commitments: Array<{ id: string }>;
           };
@@ -297,6 +298,7 @@ describe("CommitmentReconcilerProcess", () => {
       )
       .map(({ audience }) => audience);
     const sortedAudienceIds = [firstAudience, secondAudience].sort();
+    expect(llmClient.requests[0]?.max_tokens).toBe(8_000);
     const promptPayload = JSON.parse(
       String(llmClient.requests[0]?.messages[0]?.content ?? "{}"),
     ) as {

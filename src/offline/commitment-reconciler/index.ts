@@ -57,7 +57,7 @@ const SKIP_STALE_SUPERSEDE_ACTION = "skip_stale_commitment_reconciliation_supers
 const SKIP_EXISTING_REVIEW_ACTION = "skip_existing_commitment_reconciliation_review";
 const TOOL_NAME = "EmitCommitmentReconciliation";
 const LLM_BUDGET_LABEL = "offline-commitment-reconciler";
-const MAX_RECONCILIATION_OUTPUT_TOKENS = 4_000;
+const MAX_RECONCILIATION_OUTPUT_TOKENS = 8_000;
 
 const RECONCILER_SYSTEM_PROMPT = [
   "You are a language-agnostic commitment reconciliation judge.",

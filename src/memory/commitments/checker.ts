@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { normalizeLlmStopReason } from "../../llm/stop-reason.js";
 
 import {
   callStructuredTool,
@@ -55,6 +56,8 @@ export type CommitmentCheckerOptions = {
   turnId?: string;
   sessionId?: SessionId;
 };
+
+const REWRITE_MAX_OUTPUT_TOKENS = 16_000;
 
 // Schema for the violation-detection tool. The judge returns a list of
 // commitments that were actually violated -- compliant refusals, generic
@@ -364,9 +367,20 @@ export class CommitmentChecker {
             .join("\n"),
         },
       ],
-      max_tokens: 4_000,
+      max_tokens: REWRITE_MAX_OUTPUT_TOKENS,
       budget: "commitment-revision",
     });
+    const stopReason = normalizeLlmStopReason(
+      rewritten.stop_reason,
+      rewritten.stop_reason_classification,
+    );
+    if (stopReason.kind === "max_tokens") {
+      return {
+        violations,
+        revised: true,
+        emission: { kind: "suppressed", reason: "commitment_revision_failed" },
+      };
+    }
     const revisedResponse = rewritten.text.trim();
 
     if (revisedResponse.length === 0) {

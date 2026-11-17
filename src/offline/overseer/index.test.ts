@@ -108,6 +108,35 @@ describe("overseer process", () => {
     }
   });
 
+  it("retains its configured hard cap on cut repair", async () => {
+    const now = 10 * 24 * 60 * 60 * 1_000;
+    const llm = new FakeLLMClient({
+      responses: [
+        { ...createOverseerResponse([]), stop_reason: "max_tokens" },
+        createOverseerResponse([]),
+      ],
+    });
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      clock: new FixedClock(now),
+      configOverrides: { offline: { overseer: { maxChecksPerRun: 1, maxOutputTokens: 1_200 } } },
+    });
+    cleanup.push(harness.cleanup);
+    await harness.episodicRepository.createEpisode(
+      createEpisodeFixture({ created_at: now - 1_000, updated_at: now - 1_000 }, [0, 1, 0, 0]),
+    );
+    const process = new OverseerProcess({
+      reviewQueueRepository: harness.reviewQueueRepository,
+      registry: harness.registry,
+    });
+    const result = await process.run(harness.createContext(), {});
+    expect(result.errors).toEqual([]);
+    expect(llm.requests.map((r) => r.max_tokens)).toEqual([1_200, 1_200]);
+    expect(llm.requests[1]?.messages.at(-1)?.content).toContain(
+      "retry limit of 1200 output tokens",
+    );
+  });
+
   it("flags misattribution-like issues and can revert the audit item", async () => {
     const nowMs = 10 * 24 * 60 * 60 * 1_000;
     const llm = new FakeLLMClient();

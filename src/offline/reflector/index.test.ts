@@ -142,6 +142,7 @@ describe("reflector process", () => {
 
     expect(result.errors).toEqual([]);
     expect(result.changes).toHaveLength(1);
+    expect(llm.requests[0]?.max_tokens).toBe(16_000);
     expect(llm.requests[0]?.tool_choice).toEqual({
       type: "tool",
       name: REFLECTOR_TOOL_NAME,

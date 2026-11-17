@@ -173,6 +173,7 @@ export async function callJudgeStructuredTool<T>(
           toolName: error.toolName,
           acceptedToolNames: error.acceptedToolNames,
           stopReason: error.stopReason,
+          stopReasonClassification: error.stopReasonClassification,
           cause: error.cause,
           repairFailure: error.repairFailure,
           attemptCount,

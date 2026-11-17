@@ -64,6 +64,9 @@ import type {
   OfflineResult,
 } from "../types.js";
 
+// Thinking shares the output allowance with the structured result.
+const DAY_SUMMARY_MAX_OUTPUT_TOKENS = 16_000;
+
 const DAY_MS = 24 * 60 * 60 * 1_000;
 const PROCESS_NAME = "lived-experience-day-summarizer";
 const TOOL_NAME = "EmitLivedExperienceDaySummary";
@@ -663,7 +666,7 @@ export class LivedExperienceDaySummarizerProcess implements OfflineProcess<Lived
                   ],
                   tools: [LIVED_EXPERIENCE_DAY_SUMMARY_TOOL],
                   tool_choice: { type: "tool", name: TOOL_NAME },
-                  max_tokens: 4_000,
+                  max_tokens: DAY_SUMMARY_MAX_OUTPUT_TOKENS,
                   budget: "offline-lived-experience-day-summarizer",
                 },
                 toolName: TOOL_NAME,

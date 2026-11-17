@@ -15,6 +15,9 @@ import {
   type AffectiveSignal,
 } from "./types.js";
 
+// Thinking shares the output allowance with the structured result.
+const AFFECTIVE_MAX_OUTPUT_TOKENS = 2_000;
+
 const AFFECTIVE_FALLBACK_TOOL_NAME = "EmitAffectiveSignal";
 const affectiveFallbackSchema = z.object({
   valence: z
@@ -126,7 +129,7 @@ export class AffectiveExtractor {
           ],
           tools: [AFFECTIVE_FALLBACK_TOOL],
           tool_choice: { type: "tool", name: AFFECTIVE_FALLBACK_TOOL_NAME },
-          max_tokens: 256,
+          max_tokens: AFFECTIVE_MAX_OUTPUT_TOKENS,
           budget: "perception-affective",
         },
         toolName: AFFECTIVE_FALLBACK_TOOL_NAME,

@@ -63,6 +63,9 @@ import type {
   OfflineResult,
 } from "../types.js";
 
+// Thinking shares the output allowance with the structured result.
+const CONSOLIDATOR_MAX_OUTPUT_TOKENS = 8_000;
+
 const mergeResponseSchema = z.object({
   title: z.string().min(1),
   narrative: z.string().min(1),
@@ -721,7 +724,7 @@ async function buildMergedEpisode(
           ],
           tools: [MERGE_TOOL],
           tool_choice: { type: "tool", name: MERGE_TOOL_NAME },
-          max_tokens: 6_000,
+          max_tokens: CONSOLIDATOR_MAX_OUTPUT_TOKENS,
           budget: "offline-consolidator",
         },
         toolName: MERGE_TOOL_NAME,

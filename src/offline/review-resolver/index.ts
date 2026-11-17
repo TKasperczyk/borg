@@ -72,6 +72,9 @@ import { overseerFlagAuditPayloadSchema } from "../overseer/source-grounding.js"
 
 export const DEFAULT_REVIEW_RESOLVER_MAX_ITEMS_PER_PASS = 3;
 
+// Thinking shares the output allowance with the structured result.
+const REVIEW_RESOLVER_MAX_OUTPUT_TOKENS = 8_000;
+
 const REVIEW_RESOLVER_TOOL_NAME = "EmitReviewResolverDecision";
 const NEW_INSIGHT_REVIEW_RESOLVER_TOOL_NAME = "EmitNewInsightVerdict";
 const SEMANTIC_PAIR_REVIEW_RESOLVER_TOOL_NAME = "EmitSemanticPairVerdict";
@@ -926,7 +929,7 @@ async function evaluateReviewResolverDecision(input: {
             type: "tool",
             name: REVIEW_RESOLVER_TOOL_NAME,
           },
-          max_tokens: 1_000,
+          max_tokens: REVIEW_RESOLVER_MAX_OUTPUT_TOKENS,
           temperature: 0,
           budget: "review-resolver",
         },
@@ -964,7 +967,7 @@ async function evaluateVectorDuplicateDecision(input: {
             type: "tool",
             name: REVIEW_RESOLVER_TOOL_NAME,
           },
-          max_tokens: 1_000,
+          max_tokens: REVIEW_RESOLVER_MAX_OUTPUT_TOKENS,
           temperature: 0,
           budget: "review-resolver",
         },
@@ -1002,7 +1005,7 @@ async function evaluateNewInsightDecision(input: {
             type: "tool",
             name: NEW_INSIGHT_REVIEW_RESOLVER_TOOL_NAME,
           },
-          max_tokens: 1_000,
+          max_tokens: REVIEW_RESOLVER_MAX_OUTPUT_TOKENS,
           temperature: 0,
           budget: "review-resolver",
         },
@@ -1040,7 +1043,7 @@ async function evaluateSemanticPairDecision(input: {
             type: "tool",
             name: SEMANTIC_PAIR_REVIEW_RESOLVER_TOOL_NAME,
           },
-          max_tokens: 1_000,
+          max_tokens: REVIEW_RESOLVER_MAX_OUTPUT_TOKENS,
           temperature: 0,
           budget: "review-resolver",
         },
@@ -1988,7 +1991,7 @@ async function evaluateIdentityInconsistencyDecision(input: {
             type: "tool",
             name: IDENTITY_REVIEW_RESOLVER_TOOL_NAME,
           },
-          max_tokens: 1_000,
+          max_tokens: REVIEW_RESOLVER_MAX_OUTPUT_TOKENS,
           temperature: 0,
           budget: "review-resolver",
         },

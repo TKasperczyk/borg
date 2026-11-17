@@ -65,6 +65,9 @@ import type {
 } from "../types.js";
 import { episodeEvidencePromptRow } from "../evidence-labels.js";
 
+// Thinking shares the output allowance with the structured result.
+const RUMINATOR_MAX_OUTPUT_TOKENS = 16_000;
+
 const DAY_MS = 24 * 60 * 60 * 1_000;
 const GROWTH_MARKER_CONFIDENCE_CEILING = 0.6;
 const RECENT_RUMINATIONS_PER_QUESTION = 3;
@@ -989,7 +992,7 @@ async function judgeDuplicateCandidatePairs(
         ],
         tools: [RUMINATOR_DUPLICATE_TOOL],
         tool_choice: { type: "tool", name: RUMINATOR_DUPLICATE_TOOL_NAME },
-        max_tokens: 4_000,
+        max_tokens: RUMINATOR_MAX_OUTPUT_TOKENS,
         budget: "offline-ruminator-duplicate-judgment",
       },
       toolName: RUMINATOR_DUPLICATE_TOOL_NAME,
@@ -1245,7 +1248,7 @@ async function planResolution(
           ],
           tools: [RUMINATOR_TOOL],
           tool_choice: { type: "tool", name: RUMINATOR_TOOL_NAME },
-          max_tokens: 4_000,
+          max_tokens: RUMINATOR_MAX_OUTPUT_TOKENS,
           budget: "offline-ruminator",
         },
         toolName: RUMINATOR_TOOL_NAME,

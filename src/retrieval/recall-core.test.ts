@@ -322,7 +322,9 @@ describe("Recall Core", () => {
     ).trimEnd();
 
     expect(llmClient.requests).toHaveLength(1);
-    expect(JSON.stringify(llmClient.requests[0])).toBe(
+    // Request-local retry accounting is not part of the model-facing request.
+    const { outputLimitRepairBudget: _budget, ...modelRequest } = llmClient.requests[0]!;
+    expect(JSON.stringify(modelRequest)).toBe(
       JSON.stringify(JSON.parse(frozenRequest) as unknown),
     );
   });

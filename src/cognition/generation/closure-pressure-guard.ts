@@ -29,6 +29,9 @@ export const CLOSURE_RESPONSE_SHAPES = ["no_closure", "mixed", "closure_only"] a
 export const CLOSURE_PRESSURE_HISTORY_ACTIVE_TTL_MS = 600_000;
 export const CLOSURE_PRESSURE_HISTORY_ACTIVE_TURN_WINDOW = 5;
 
+// Thinking shares the output allowance with the structured result.
+const CLOSURE_AUDIT_MAX_OUTPUT_TOKENS = 2_000;
+
 const closureResponseSpanSchema = z
   .object({
     text: z.string().min(1),
@@ -296,7 +299,7 @@ export class ClosurePressureGuard {
             messages: buildAuditMessages(response),
             tools: [CLOSURE_RESPONSE_AUDIT_TOOL],
             tool_choice: { type: "tool", name: CLOSURE_RESPONSE_AUDIT_TOOL_NAME },
-            max_tokens: 512,
+            max_tokens: CLOSURE_AUDIT_MAX_OUTPUT_TOKENS,
             budget: "closure-response-auditor",
           },
           toolName: CLOSURE_RESPONSE_AUDIT_TOOL_NAME,

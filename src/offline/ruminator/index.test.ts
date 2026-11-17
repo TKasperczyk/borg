@@ -282,6 +282,7 @@ describe("RuminatorProcess", () => {
       const plan = await process.plan(harness.createContext(), {});
 
       expect(plan.items).toHaveLength(1);
+      expect(llm.requests[0]?.max_tokens).toBe(16_000);
       expect(llm.requests[0]?.tool_choice).toEqual({
         type: "tool",
         name: RUMINATOR_TOOL_NAME,
@@ -810,6 +811,48 @@ describe("RuminatorProcess", () => {
         unresolved_rumination_ticks: 5,
         status: "open",
       });
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("keeps the revisit clock and unresolved count unchanged after cuts", async () => {
+    const questionText = "An open research question";
+    const cut = {
+      ...createRuminatorResponse({ resolution_note: "Partial", growth_marker: null }),
+      stop_reason: "max_tokens",
+    };
+    const llm = new FakeLLMClient({ responses: [cut, cut] });
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      embeddingClient: new TestEmbeddingClient(new Map([[questionText, [1, 0, 0, 0]]])),
+    });
+    try {
+      await harness.episodicRepository.createEpisode(
+        createEpisodeFixture({ created_at: 2_000_000, significance: 0.95 }, [1, 0, 0, 0]),
+      );
+      const question = harness.openQuestionsRepository.add({
+        question: questionText,
+        urgency: 0.5,
+        source: "reflection",
+        created_at: 1_000_000,
+        last_touched: 1_000_000,
+        provenance: { kind: "manual" },
+      });
+      const process = new RuminatorProcess({
+        openQuestionsRepository: harness.openQuestionsRepository,
+        growthMarkersRepository: harness.growthMarkersRepository,
+        registry: harness.registry,
+      });
+      const context = harness.createContext();
+      const plan = await process.plan(context);
+      expect(plan.errors).toHaveLength(1);
+      await process.apply(context, plan);
+      const after = harness.openQuestionsRepository.get(question.id);
+      expect(after?.last_ruminated_at).toBeNull();
+      expect(after?.unresolved_rumination_ticks).toBe(question.unresolved_rumination_ticks);
+      expect(after?.consecutive_refusals).toBe(0);
+      expect(llm.requests.map((r) => r.max_tokens)).toEqual([16_000, 32_000]);
     } finally {
       await harness.cleanup();
     }
@@ -2924,6 +2967,7 @@ describe("RuminatorProcess", () => {
         }),
       ]);
       expect(llm.requests).toHaveLength(1);
+      expect(llm.requests[0]?.max_tokens).toBe(16_000);
       expect(llm.requests[0]?.tool_choice).toEqual({
         type: "tool",
         name: RUMINATOR_DUPLICATE_TOOL.name,

@@ -60,6 +60,9 @@ export const ASSOCIATOR_PROMPT = [
   "I do not force symmetry, analogy, or closure. I return an empty findings list when the supplied episodes do not responsibly support a finding.",
 ].join("\n");
 
+// Thinking shares the output allowance with the structured result.
+const ASSOCIATOR_MAX_OUTPUT_TOKENS = 16_000;
+
 const ASSOCIATOR_TOOL_NAME = "EmitAssociations";
 
 const associatorOpenQuestionFindingSchema = z.object({
@@ -757,7 +760,7 @@ async function buildSampleFindings(input: {
           ],
           tools: [ASSOCIATOR_TOOL],
           tool_choice: { type: "tool", name: ASSOCIATOR_TOOL_NAME },
-          max_tokens: 4_000,
+          max_tokens: ASSOCIATOR_MAX_OUTPUT_TOKENS,
           budget: "offline-associator",
         },
         toolName: ASSOCIATOR_TOOL_NAME,

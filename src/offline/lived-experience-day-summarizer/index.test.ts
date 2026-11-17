@@ -51,6 +51,82 @@ function createProcess(harness: OfflineTestHarness): LivedExperienceDaySummarize
 }
 
 describe("LivedExperienceDaySummarizerProcess", () => {
+  it.each([false, true])(
+    "discards a schema-valid cut and persists only a complete retry (second cut=%s)",
+    async (secondCut) => {
+      const start = Date.UTC(2026, 5, 15);
+      const clock = new ManualClock(start + 1_000);
+      const partial = {
+        ...createSummaryToolResponse({ utc_day: "2026-06-15", gist: "Partial" }),
+        stop_reason: "max_tokens",
+      };
+      const llm = new FakeLLMClient({
+        responses: [
+          partial,
+          secondCut
+            ? partial
+            : createSummaryToolResponse({ utc_day: "2026-06-15", gist: "Complete" }),
+        ],
+      });
+      const harness = await createOfflineTestHarness({
+        llmClient: llm,
+        clock,
+        configOverrides: {
+          offline: { livedExperienceDaySummarizer: { windowDays: 2, maxDaysPerRun: 1 } },
+        },
+      });
+      try {
+        const self = harness.entityRepository.add({ canonicalName: "Self", kind: "self" });
+        await harness.episodicRepository.createEpisode(
+          createEpisodeFixture(
+            {
+              created_at: start + 1_000,
+              updated_at: start + 1_000,
+              start_time: start + 1_000,
+              end_time: start + 2_000,
+            },
+            [0, 1, 0, 0],
+          ),
+        );
+        const goal = harness.goalsRepository.add({
+          description: "Pending evidence",
+          priority: 1,
+          provenance: { kind: "manual" },
+        });
+        harness.goalsRepository.block(
+          goal.id,
+          {
+            blocker: { kind: "until", until: start + 5_000 },
+            attempt_status: "attempted_unavailable",
+            reason: "Waiting for evidence",
+          },
+          { kind: "manual" },
+        );
+        clock.advance(36 * 60 * 60_000);
+        const process = createProcess(harness);
+        const plan = await process.plan(harness.createContext());
+        await process.apply(harness.createContext(), plan);
+        expect(llm.requests.map((r) => r.max_tokens)).toEqual([16_000, 32_000]);
+        const stored = harness.livedExperienceDaySummaryRepository.listForWindow({
+          selfEntityId: self.id,
+          fromMs: start,
+          toMs: start + 24 * 60 * 60_000 - 1,
+          limit: 10,
+        });
+        expect(stored.map((row) => row.gist)).toEqual(secondCut ? [] : ["Complete"]);
+        if (secondCut) {
+          expect(plan.errors).toEqual([
+            expect.objectContaining({ message: expect.stringContaining("32000") }),
+          ]);
+        } else {
+          expect(plan.errors).toEqual([]);
+        }
+      } finally {
+        await harness.cleanup();
+      }
+    },
+  );
+
   it("supplies a day containing only a goal block and its structural release, with interval disclosure", async () => {
     const start = Date.UTC(2026, 5, 15);
     const clock = new ManualClock(start + 1_000);
@@ -298,6 +374,7 @@ describe("LivedExperienceDaySummarizerProcess", () => {
         previous: null,
       });
       expect(llm.requests).toHaveLength(1);
+      expect(llm.requests[0]?.max_tokens).toBe(16_000);
       expect(llm.requests[0]?.tool_choice).toEqual({
         type: "tool",
         name: LIVED_EXPERIENCE_DAY_SUMMARY_TOOL.name,

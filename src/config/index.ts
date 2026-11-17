@@ -721,10 +721,10 @@ const configBaseSchema = z.object({
         .prefault({}),
       selfNarrator: z
         .object({
-          // Worst offender: aborted at 154k-163k against the old 80k cap
-          // (~204% of budget) on eight of nine runs. See the reflector budget
-          // comment for the sizing rationale.
-          budget: z.number().int().positive().default(500_000),
+          // The default 250_000-token prompt estimate is roughly 500_000 provider tokens.
+          // Two attempts: 2 * (250_000 * 2 + 16_000) = 1_032_000 provider tokens.
+          // The remaining 168_000 covers the repair instruction and headroom.
+          budget: z.number().int().positive().default(1_200_000),
           // Complete input estimate: system, tool schema, and observation user message.
           maxPromptTokens: z.number().int().positive().default(250_000),
           maxObservationsPerRun: z.number().int().positive().default(4),

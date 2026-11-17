@@ -410,7 +410,7 @@ describe("OpenAICompatibleLLMClient", () => {
     expect(calls).toBe(2);
   });
 
-  it("does not retry tool arguments that were cut off by the output limit", async () => {
+  it("retries cut tool arguments once and preserves the final response diagnostics", async () => {
     let calls = 0;
     const client = new OpenAICompatibleLLMClient({
       client: fakeClient(toolCallResponse('{"facts":[', "length"), () => {
@@ -433,8 +433,8 @@ describe("OpenAICompatibleLLMClient", () => {
     expect(cause.argumentsLength).toBe('{"facts":['.length);
     expect(cause.usage).toEqual({ input_tokens: 11, output_tokens: 7 });
     expect(cause.message).toContain("stop_reason: max_tokens, 10 chars");
-    expect((failure as { usage: unknown }).usage).toEqual({ input_tokens: 11, output_tokens: 7 });
-    expect(calls).toBe(1);
+    expect((failure as { usage: unknown }).usage).toEqual({ input_tokens: 22, output_tokens: 14 });
+    expect(calls).toBe(2);
   });
 
   it("drives callStructuredTool end-to-end on a well-formed forced tool call", async () => {

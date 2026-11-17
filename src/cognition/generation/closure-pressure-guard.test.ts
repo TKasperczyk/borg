@@ -152,6 +152,7 @@ describe("ClosurePressureGuard", () => {
     });
     expect(result.verdict).toBe("passed");
     expect(result.removed_spans).toEqual(["Go read."]);
+    expect(llm.requests[0]?.max_tokens).toBe(2_000);
     expect(llm.requests.map((request) => request.budget)).toEqual(["closure-response-auditor"]);
     const closureGuardCompletedEvent = tracer.emit.mock.calls.find(
       ([event]) => event === "closure_response_guard.completed",
@@ -502,6 +503,45 @@ describe("ClosurePressureGuard", () => {
       kind: "message",
       content: "The shelf test is the right move. Go read.",
     });
+  });
+
+  it("keeps the original reply when both auditor responses are cut in enforce mode", async () => {
+    const response = "Go read.";
+    const cut = {
+      ...closureAuditResponse({
+        spans: [
+          { text: response, kind: "imperative_closer", rationale: "A closure-only response." },
+        ],
+        response_shape: "closure_only",
+        reason: "The response closes the exchange.",
+      }),
+      stop_reason: "max_tokens",
+    };
+    const llm = new FakeLLMClient({ responses: [cut, cut] });
+    const tracer = { enabled: true, includePayloads: false, emit: vi.fn() };
+    const guard = new ClosurePressureGuard({
+      llmClient: llm,
+      auditModel: "claude-opus-5-5",
+      tracer,
+    });
+    const result = await guard.run({
+      turnId: "cut-audit",
+      response,
+      activeCommitments: [makeCommitment()],
+      closureLoop: namedClosureLoop(),
+    });
+    expect(result.emission).toEqual({ kind: "message", content: response });
+    expect(result.verdict).toBe("passed");
+    expect(tracer.emit).toHaveBeenCalledWith(
+      "closure_response_guard.completed",
+      expect.objectContaining({
+        mode: "enforce",
+        verdict: "passed",
+        reason: "closure_response_audit_failed_open",
+        audit_error: expect.stringContaining("output limit of 4000"),
+      }),
+    );
+    expect(llm.requests.map((request) => request.max_tokens)).toEqual([2_000, 4_000]);
   });
 
   it("fails open when the auditor throws under an active no-closure commitment in enforce mode", async () => {

@@ -175,6 +175,8 @@ describe("config", () => {
     expect(config.offline.curator.traitHalfLifeDays).toBe(30);
     expect(config.offline.curator.retrievalLogRetentionDays).toBe(90);
     expect(config.offline.selfNarrator.maxPromptTokens).toBe(250_000);
+    expect(config.offline.selfNarrator.budget).toBe(1_200_000);
+    expect(config.offline.selfNarrator.budget).toBeGreaterThan(2 * (250_000 * 2 + 16_000));
     expect(config.offline.semanticExtractor).toEqual({
       maxEpisodesPerRun: 8,
       maxInputTokensPerRun: 150_000,

@@ -1,6 +1,6 @@
 import type { LLMCompleteOptions, TokenUsageSink } from "./index.js";
 import { addLlmUsage, attachLlmErrorUsage, reportLlmErrorUsage, type LLMUsage } from "./usage.js";
-import { classifyLlmStopReason } from "./stop-reason.js";
+import { normalizeLlmStopReason } from "./stop-reason.js";
 
 function parseClaudeModel(model: string): { family: string; version: number[] } | null {
   const match = /^(claude-[a-z]+)-(\d+(?:[-.]\d+)*)(?:[-._].+)?$/i.exec(model.trim());
@@ -110,12 +110,19 @@ export function translateForcedToolUse<Response>(args: {
         options.outputLimitRepairBudget.remainingCalls -= 1;
       }
       usage = args.getUsage(first);
+      const cut =
+        options.outputLimitRepairBudget !== undefined &&
+        normalizeLlmStopReason(args.describe(first).stop_reason, undefined, args.provider).kind ===
+          "max_tokens";
+      if (cut && options.outputLimitRepairBudget !== undefined) {
+        options.outputLimitRepairBudget.enforceLimit = true;
+      }
       if (args.hasToolUse(first)) return first;
       if (
         options.outputLimitRepairBudget !== undefined &&
-        (options.outputLimitRepairBudget.remainingCalls === 0 ||
-          classifyLlmStopReason(args.describe(first).stop_reason, args.provider).kind ===
-            "max_tokens")
+        (cut ||
+          (options.outputLimitRepairBudget.enforceLimit !== false &&
+            options.outputLimitRepairBudget.remainingCalls <= 0))
       )
         return first;
       retryFired = true;

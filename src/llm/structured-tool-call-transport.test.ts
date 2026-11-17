@@ -23,7 +23,10 @@ const request = {
   budget: "structured-transport-test",
 };
 
-type Reply = { stop: "max_tokens" | "end_turn" | "tool_use" | "refusal"; input?: unknown };
+type Reply = {
+  stop: "max_tokens" | "length" | "end_turn" | "tool_use" | "refusal";
+  input?: unknown;
+};
 
 function anthropicReply(reply: Reply): Message {
   return {
@@ -70,7 +73,7 @@ function injectedClient(provider: "anthropic" | "openai", replies: Array<Reply |
                   }),
             },
             finish_reason:
-              reply.stop === "max_tokens"
+              reply.stop === "max_tokens" || reply.stop === "length"
                 ? "length"
                 : reply.stop === "tool_use"
                   ? "tool_calls"
@@ -171,7 +174,7 @@ describe.each(["anthropic", "openai"] as const)(
       },
     );
 
-    it("keeps the cut-response reminder for callers without cut guidance", async () => {
+    it("retries a cut without caller guidance without replaying it", async () => {
       vi.spyOn(console, "warn").mockImplementation(() => undefined);
       const { client, create } = injectedClient(provider, [
         { stop: "max_tokens" },
@@ -185,13 +188,75 @@ describe.each(["anthropic", "openai"] as const)(
       });
       expect(result.parsed).toEqual({ value: "complete" });
       expect(create).toHaveBeenCalledTimes(2);
+      expect(create.mock.calls[1]![0]).toMatchObject({ max_tokens: 16_000 });
       expect(create.mock.calls[1]![0]).toMatchObject({
         messages: [
           ...request.messages,
-          expect.objectContaining({ role: "assistant" }),
-          { role: "user", content: `Answer only by calling the ${TOOL_NAME} tool.` },
+          { role: "user", content: expect.stringContaining("discarded whole") },
         ],
       });
+    });
+
+    it("ends two unguided no-tool cuts without a reminder", async () => {
+      vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const { client, create } = injectedClient(provider, [
+        { stop: "max_tokens" },
+        { stop: "max_tokens" },
+      ]);
+      await expect(
+        callStructuredTool({
+          llmClient: client,
+          request,
+          toolName: TOOL_NAME,
+          parse: (input) => schema.parse(input),
+        }),
+      ).rejects.toMatchObject({
+        kind: "llm_failed",
+        stopReason: "max_tokens",
+        message: expect.stringContaining("16000"),
+      });
+      expect(create).toHaveBeenCalledTimes(2);
+    });
+
+    it.each([
+      [
+        { stop: "end_turn" },
+        { stop: "tool_use", input: {} },
+        { stop: "tool_use", input: { value: "complete" } },
+      ],
+      [
+        { stop: "tool_use", input: {} },
+        { stop: "end_turn" },
+        { stop: "tool_use", input: { value: "complete" } },
+      ],
+    ] satisfies Reply[][])("preserves a normal three-call path: %j", async (...replies) => {
+      vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const { client, create } = injectedClient(provider, replies);
+      const result = await callStructuredTool({
+        llmClient: client,
+        request,
+        toolName: TOOL_NAME,
+        parse: (input) => schema.parse(input),
+      });
+      expect(result.parsed).toEqual({ value: "complete" });
+      expect(create).toHaveBeenCalledTimes(3);
+    });
+
+    it("does not follow a cut on the reminder with another repair", async () => {
+      vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const { client, create } = injectedClient(provider, [
+        { stop: "end_turn" },
+        { stop: "max_tokens" },
+      ]);
+      await expect(
+        callStructuredTool({
+          llmClient: client,
+          request,
+          toolName: TOOL_NAME,
+          parse: (input) => schema.parse(input),
+        }),
+      ).rejects.toMatchObject({ kind: "llm_failed", stopReason: "max_tokens" });
+      expect(create).toHaveBeenCalledTimes(2);
     });
 
     it.each([
@@ -223,6 +288,29 @@ describe.each(["anthropic", "openai"] as const)(
     });
   },
 );
+
+it("skips the reminder even when an Anthropic-compatible transport returns raw length", async () => {
+  vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  const { client, create } = injectedClient("anthropic", [
+    { stop: "length" },
+    { stop: "tool_use", input: { value: "complete" } },
+  ]);
+  const result = await callStructuredTool({
+    llmClient: client,
+    request,
+    toolName: TOOL_NAME,
+    parse: (input) => schema.parse(input),
+  });
+  expect(result.parsed).toEqual({ value: "complete" });
+  expect(create).toHaveBeenCalledTimes(2);
+  expect(create.mock.calls[1]![0]).toMatchObject({
+    max_tokens: 16_000,
+    messages: [
+      ...request.messages,
+      { role: "user", content: expect.stringContaining("discarded whole") },
+    ],
+  });
+});
 
 it.each([
   { steps: ["connection", "valid"], dispatches: 2 },

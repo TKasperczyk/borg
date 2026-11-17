@@ -13,6 +13,9 @@ import type { EntityId } from "../../util/ids.js";
 import { episodeEvidencePromptRow } from "../evidence-labels.js";
 import { serializableRecordWithFallbackDisclosure } from "../record-serialization.js";
 
+// Thinking shares the output allowance with the structured result.
+const BELIEF_REVISION_MAX_OUTPUT_TOKENS = 8_000;
+
 const EMIT_BELIEF_REVISION_TOOL_NAME = "EmitBeliefRevision";
 const DEFAULT_LLM_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_ATTEMPTS = 2;
@@ -180,6 +183,7 @@ async function completeWithRetry(
   options: EvaluateBeliefRevisionOptions,
 ): Promise<EvaluateBeliefRevisionResult> {
   const maxAttempts = options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
+  // Defaults: four accounted complete() attempts per item (compatibility reminder calls are not counted), 20 per process.
   const maxPhysicalAttempts = options.maxPhysicalAttempts ?? maxAttempts * 2;
   const timeoutMs = options.timeoutMs ?? DEFAULT_LLM_TIMEOUT_MS;
   let lastError: unknown;
@@ -213,7 +217,7 @@ async function completeWithRetry(
               type: "tool",
               name: EMIT_BELIEF_REVISION_TOOL_NAME,
             },
-            max_tokens: 1_000,
+            max_tokens: BELIEF_REVISION_MAX_OUTPUT_TOKENS,
             temperature: 0,
             budget: "belief-reviser",
           },

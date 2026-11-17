@@ -508,6 +508,7 @@ describe("CreatorDirectiveReconcilerProcess", () => {
     );
 
     const result = await createProcess(harness).run(harness.createContext(), {});
+    expect(llm.requests[0]?.max_tokens).toBe(8_000);
     const prompt = JSON.parse(String(llm.requests[0]?.messages[0]?.content ?? "{}")) as {
       directives: Array<{
         id: string;

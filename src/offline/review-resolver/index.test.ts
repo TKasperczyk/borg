@@ -593,6 +593,7 @@ describe("review resolver process", () => {
       applied_resolution: "repair_via_supersede",
       reason: REVIEW_RESOLVER_REASON_SENTINEL,
     });
+    expect(llm.requests[0]?.max_tokens).toBe(8_000);
     expect(llm.requests[0]?.tools?.[0]?.inputSchema.properties?.reason).toMatchObject({
       description: expect.stringContaining("audit rationale"),
     });
@@ -677,6 +678,7 @@ describe("review resolver process", () => {
       status: "superseded",
       corrected_by: winner.id,
     });
+    expect(llm.requests[0]?.max_tokens).toBe(8_000);
     expect(llm.requests[0]?.tools?.[0]?.name).toBe(REVIEW_RESOLVER_TOOL_NAME);
     expect(prompt).toContain("vector_only_merge_candidate");
     expect(prompt).toContain("Do not populate stream citations");
@@ -1133,6 +1135,7 @@ describe("review resolver process", () => {
       status: "superseded",
       corrected_by: winner.id,
     });
+    expect(llm.requests[0]?.max_tokens).toBe(8_000);
     expect(llm.requests[0]?.tools?.[0]?.name).toBe(SEMANTIC_PAIR_REVIEW_RESOLVER_TOOL_NAME);
     expect(prompt).toContain("evidence_by_node");
     expect(prompt).toContain("Atlas launch plan replaced");
@@ -1407,6 +1410,7 @@ describe("review resolver process", () => {
       label: "Rollback planning preference",
       description: "I value rollback planning before risky release changes.",
     });
+    expect(llm.requests[0]?.max_tokens).toBe(8_000);
     expect(llm.requests[0]?.tools?.[0]?.name).toBe(NEW_INSIGHT_REVIEW_RESOLVER_TOOL_NAME);
     expect(llm.requests[0]?.tool_choice).toEqual({
       type: "tool",
@@ -2736,6 +2740,7 @@ describe("review resolver autonomous mode", () => {
     expect(resolved?.resolved_at).not.toBeNull();
     expect(resolved?.resolution).toBe("accept");
     expect(llm.requests).toHaveLength(1);
+    expect(llm.requests[0]?.max_tokens).toBe(8_000);
     expect(
       tracer.events.find((event) => event.event === "review_resolver.decision.completed"),
     ).toMatchObject({
@@ -2861,6 +2866,44 @@ describe("review resolver autonomous mode", () => {
       expect(harness.reviewQueueRepository.get(newer.id)?.resolved_at).toBeNull();
     }
   });
+
+  it.each(["cut", "schema"])(
+    "counts a final cut after %s toward autonomous dismissal, as any other failure",
+    async (first) => {
+      const llm = new FakeLLMClient();
+      const harness = await createOfflineTestHarness({
+        llmClient: llm,
+        reviewOpenQuestionExtractor: null,
+        configOverrides: AUTONOMOUS_OVERRIDES,
+      });
+      cleanup.push(harness.cleanup);
+      const { item } = await enqueueSemanticMisattribution(harness, {
+        descriptionPatch: "Updated attribution.",
+      });
+      llm.pushResponse(
+        resolverResponse({ verdict: "needs_manual", reason: "Uncertain", cited_stream_ids: [] }),
+      );
+      await runResolver(harness);
+      const before = harness.reviewQueueRepository.get(item.id);
+      expect(before?.refs.__borg_review_resolver_diagnostic).toMatchObject({ attempts: 1 });
+      const cut = {
+        ...resolverResponse({ verdict: "needs_manual", reason: "Partial", cited_stream_ids: [] }),
+        stop_reason: "max_tokens",
+      };
+      llm.pushResponse(first === "cut" ? cut : resolverResponse({}));
+      llm.pushResponse(cut);
+      const result = await runResolver(harness);
+      expect(result.errors).toHaveLength(1);
+      const after = harness.reviewQueueRepository.get(item.id);
+      expect(after?.resolved_at).not.toBeNull();
+      expect(after?.resolution).toBe("dismiss");
+      expect(after?.refs.__borg_review_resolver_repair).toMatchObject({
+        bypass_handler_reason: "autonomous_apply_failure_exhausted",
+      });
+      expect(llm.requests).toHaveLength(3);
+      expect(llm.requests[1]?.max_tokens).toBe(8_000);
+    },
+  );
 
   it("retries needs_manual items and terminally dismisses at the attempt cap", async () => {
     const llm = new FakeLLMClient();

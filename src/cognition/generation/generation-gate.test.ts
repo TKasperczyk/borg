@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { createWorkingMemory } from "../../memory/working/index.js";
@@ -62,6 +62,52 @@ class CountingEmbeddingClient extends TestEmbeddingClient {
 }
 
 describe("GenerationGate", () => {
+  it.each([false, true])(
+    "preserves the fallback after two cuts with active stop = %s",
+    async (activeStop) => {
+      const cut = {
+        ...gateResponse({ decision: activeStop ? "proceed" : "suppress", substantive: activeStop }),
+        stop_reason: "max_tokens",
+      };
+      const llm = new FakeLLMClient({ responses: [cut, cut] });
+      const onDegraded = vi.fn();
+      const gate = new GenerationGate({
+        llmClient: llm,
+        embeddingClient: new TestEmbeddingClient(),
+        model: "claude-opus-5-5",
+        hardCapTurns: 50,
+        onDegraded,
+      });
+      const workingMemory = createWorkingMemory(DEFAULT_SESSION_ID, 1_000);
+      const result = await gate.evaluate({
+        userMessage: "Continue",
+        workingMemory: activeStop
+          ? setStopUntilSubstantiveContent(workingMemory, {
+              provenance: "finalizer_emission_metadata",
+              sourceStreamEntryId: createStreamEntryId(),
+              reason: "An existing stop.",
+              sinceTurn: 1,
+            })
+          : workingMemory,
+        recencyMessages: [recencyUser("Continue"), recencyAssistant("Previous response.")],
+      });
+      expect(result).toMatchObject({
+        action: activeStop ? "suppress" : "proceed",
+        clearDiscourseStop: false,
+        classified: false,
+        signals: { activeDiscourseStop: activeStop },
+      });
+      if (activeStop) expect(result.reason).toBe("active_discourse_stop");
+      expect(onDegraded).toHaveBeenCalledExactlyOnceWith(
+        "llm_failed",
+        expect.objectContaining({
+          stopReasonClassification: { kind: "max_tokens", raw: "max_tokens" },
+        }),
+      );
+      expect(llm.requests.map((request) => request.max_tokens)).toEqual([2_000, 4_000]);
+    },
+  );
+
   it("treats only whitespace-only user input as minimal", () => {
     expect(isMinimalUserGenerationInput("   \n\t")).toBe(true);
     expect(isMinimalUserGenerationInput("No.")).toBe(false);
@@ -97,6 +143,7 @@ describe("GenerationGate", () => {
     expect(result.reason).toBe("generation_gate");
     expect(result.classified).toBe(true);
     expect(result.signals.repeatedMinimalExchange).toBe(true);
+    expect(llm.requests[0]?.max_tokens).toBe(2_000);
     expect(llm.requests).toHaveLength(1);
   });
 

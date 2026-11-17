@@ -664,6 +664,7 @@ export class OverseerProcess implements OfflineProcess<OverseerPlan> {
                   budget: "offline-overseer",
                 },
                 toolName: OVERSEER_TOOL_NAME,
+                outputLimitIsHard: true,
                 parse: (input) => parseFlags(target.type, input),
               })
             ).parsed.flags;

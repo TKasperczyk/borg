@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { LLMClient, LLMCompleteOptions, LLMCompleteResult } from "../../llm/index.js";
+import { getLlmErrorStopReason } from "../../llm/stop-reason.js";
+import { callJudgeStructuredTool } from "./blind-ab-judge.js";
 import type { FinalizerContextCaptureRecord } from "./finalizer-context-capture.js";
 import type { FinalizerAbReplayResult } from "./finalizer-ab-replay.js";
 import {
@@ -277,6 +279,28 @@ describe("finalizer A/B blind judge", () => {
       expect(result.judge.usage).toMatchObject({ input_tokens: 30, output_tokens: 6 });
       expect(result.error.kind).toBe("invalid_payload");
     }
+  });
+
+  it("preserves output-limit classification without spending a third schema retry", async () => {
+    const complete = vi
+      .fn<(request: LLMCompleteOptions) => Promise<LLMCompleteResult>>()
+      .mockResolvedValue({
+        text: "",
+        input_tokens: 10,
+        output_tokens: 20,
+        stop_reason: "length",
+        stop_reason_classification: { kind: "max_tokens", raw: "length" },
+        tool_calls: [],
+      });
+    const error = await callJudgeStructuredTool({
+      llmClient: { complete, converse: vi.fn() },
+      request: { model: "claude-opus-5-5", messages: [], budget: "test", max_tokens: 6_000 },
+      toolName: "EmitFinalizerAbJudgment",
+      parse: (input) => input,
+    }).catch((e: unknown) => e);
+    expect(error).toMatchObject({ kind: "llm_failed", message: expect.stringContaining("12000") });
+    expect(getLlmErrorStopReason(error)).toEqual({ kind: "max_tokens", raw: "length" });
+    expect(complete).toHaveBeenCalledTimes(2);
   });
 
   it("disables commitment-dependent vetoes when membership evidence is cut", () => {

@@ -102,6 +102,7 @@ describe("AffectiveExtractor", () => {
     });
 
     const signal = await extractor.analyze("Yeah great, exactly what I wanted");
+    expect(llm.requests[0]?.max_tokens).toBe(2_000);
 
     expect(signal).toMatchObject({
       dominant_emotion: "anger",
@@ -110,6 +111,41 @@ describe("AffectiveExtractor", () => {
     });
     expect(llm.requests).toHaveLength(1);
     expect(llm.requests[0]?.budget).toBe("perception-affective");
+  });
+
+  it("returns neutral affect with llm_failed when both schema-valid results are cut", async () => {
+    const onDegraded = vi.fn();
+    const cut = {
+      text: "",
+      input_tokens: 8,
+      output_tokens: 2_000,
+      stop_reason: "max_tokens",
+      tool_calls: [
+        {
+          id: "cut",
+          name: AFFECTIVE_TOOL_NAME,
+          input: { valence: 0.8, arousal: 0.7, dominant_emotion: "joy" },
+        },
+      ],
+    };
+    const llm = new FakeLLMClient({ responses: [cut, cut] });
+    const extractor = new AffectiveExtractor({
+      llmClient: llm,
+      model: "claude-opus-5-5",
+      onDegraded,
+    });
+    expect(await extractor.analyze("A new message.")).toEqual({
+      valence: 0,
+      arousal: 0,
+      dominant_emotion: null,
+    });
+    expect(onDegraded).toHaveBeenCalledExactlyOnceWith(
+      "llm_failed",
+      expect.objectContaining({
+        stopReasonClassification: { kind: "max_tokens", raw: "max_tokens" },
+      }),
+    );
+    expect(llm.requests.map((request) => request.max_tokens)).toEqual([2_000, 4_000]);
   });
 
   it("does not let coding-error lexicon words override the llm signal", async () => {

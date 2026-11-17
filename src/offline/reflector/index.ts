@@ -46,6 +46,9 @@ import { estimatePromptTokens } from "../../util/token-estimate.js";
 import { disclosureLabelForEpisodeIds, episodeEvidencePromptRow } from "../evidence-labels.js";
 import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
 
+// Thinking shares the output allowance with the structured result.
+const REFLECTOR_MAX_OUTPUT_TOKENS = 16_000;
+
 const insightResponseSchema = z.object({
   label: z.string().min(1),
   description: z.string().min(1),
@@ -473,7 +476,7 @@ async function buildInsightCandidate(
           ],
           tools: [REFLECTOR_TOOL],
           tool_choice: { type: "tool", name: REFLECTOR_TOOL_NAME },
-          max_tokens: 4_000,
+          max_tokens: REFLECTOR_MAX_OUTPUT_TOKENS,
           budget: "offline-reflector",
         },
         toolName: REFLECTOR_TOOL_NAME,

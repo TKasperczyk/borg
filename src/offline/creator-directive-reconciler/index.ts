@@ -68,7 +68,7 @@ const SKIP_STALE_REVOKE_ACTION = "skip_stale_creator_directive_revoke";
 const SKIP_EXISTING_REVIEW_ACTION = "skip_existing_creator_directive_reconciliation_review";
 const TOOL_NAME = "EmitDirectiveReconciliation";
 const LLM_BUDGET_LABEL = "offline-creator-directive-reconciler";
-const MAX_RECONCILIATION_OUTPUT_TOKENS = 4_000;
+const MAX_RECONCILIATION_OUTPUT_TOKENS = 8_000;
 
 export const NON_SLOTTED_RECONCILABLE_DIRECTIVE_KINDS = [
   "subject_fact",

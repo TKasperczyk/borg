@@ -51,6 +51,9 @@ import type {
 } from "../types.js";
 import { detectDivergentSkillSplits, type SkillSplitCandidate } from "./split-detector.js";
 
+// Thinking shares the output allowance with the structured result.
+const PROCEDURAL_SYNTHESIZER_MAX_OUTPUT_TOKENS = 8_000;
+
 const SYNTHESIZER_TOOL_NAME = "EmitProceduralSkillCandidate";
 const SKILL_SPLIT_TOOL_NAME = "EmitSkillSplit";
 
@@ -819,7 +822,7 @@ export class ProceduralSynthesizerProcess implements OfflineProcess<ProceduralSy
                   ],
                   tools: [PROCEDURAL_SYNTHESIZER_TOOL],
                   tool_choice: { type: "tool", name: SYNTHESIZER_TOOL_NAME },
-                  max_tokens: 1_500,
+                  max_tokens: PROCEDURAL_SYNTHESIZER_MAX_OUTPUT_TOKENS,
                   budget: "offline-procedural-synthesizer",
                 },
                 toolName: SYNTHESIZER_TOOL_NAME,
@@ -905,7 +908,7 @@ export class ProceduralSynthesizerProcess implements OfflineProcess<ProceduralSy
                   ],
                   tools: [PROCEDURAL_SKILL_SPLIT_TOOL],
                   tool_choice: { type: "tool", name: SKILL_SPLIT_TOOL_NAME },
-                  max_tokens: 1_500,
+                  max_tokens: PROCEDURAL_SYNTHESIZER_MAX_OUTPUT_TOKENS,
                   budget: "offline-procedural-synthesizer",
                 },
                 toolName: SKILL_SPLIT_TOOL_NAME,

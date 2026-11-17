@@ -305,9 +305,10 @@ type LLMCallOptions = {
   tool_choice?: { type: "tool"; name: string } | { type: "any" } | { type: "auto" };
   output_config?: LLMOutputConfig;
   max_tokens?: number;
-  // Shared by structured repair and compatibility reminders for callers that opt
-  // into cut-aware repair. Transport recovery does not consume this allowance.
-  outputLimitRepairBudget?: { remainingCalls: number };
+  // Shared by structured repair and compatibility reminders. Generic structured
+  // calls enforce it only after a cut, preserving their normal reminder/repair
+  // paths. Transport recovery does not consume this allowance.
+  outputLimitRepairBudget?: { remainingCalls: number; enforceLimit?: boolean };
   temperature?: number;
   thinking?: ThinkingConfigParam;
   // Request-level effort (output_config.effort), independent of an explicit

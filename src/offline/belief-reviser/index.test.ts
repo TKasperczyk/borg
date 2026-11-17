@@ -868,6 +868,7 @@ describe("belief reviser process", () => {
         resolution: "keep",
       });
       expect((await harness.semanticNodeRepository.get(target.id))?.confidence).toBeCloseTo(0.5);
+      expect(llmClient.requests[0]?.max_tokens).toBe(8_000);
       expect(llmClient.requests).toHaveLength(1);
     } finally {
       await harness.cleanup();
@@ -1644,6 +1645,46 @@ describe("belief reviser process", () => {
     }
   });
 
+  it("bounds all-cut retries to four accounted complete() attempts per item and 20 per process", async () => {
+    const cut = {
+      ...beliefRevisionResponse({ verdict: "keep", rationale: "Partial verdict." }),
+      stop_reason: "max_tokens",
+    };
+    const llmClient = new FakeLLMClient({ responses: Array.from({ length: 21 }, () => cut) });
+    const harness = await createOfflineTestHarness({ clock: new FixedClock(2_000), llmClient });
+    try {
+      expect(harness.config.offline.beliefReviser.maxLlmCalls).toBe(20);
+      const items: ReviewQueueItem[] = [];
+      for (let index = 0; index < 6; index += 1) {
+        const target = await insertNode(harness, `Cut target ${index}`, [0, 1, 0, 0]);
+        items.push(enqueueNodeBeliefRevision(harness, target));
+      }
+      const result = await runBeliefReviser(harness);
+      expect(llmClient.requests).toHaveLength(20);
+      expect(result.errors).toHaveLength(5);
+      expect(result.errors.every((error) => error.code === "belief_reviser_regrade_failed")).toBe(
+        true,
+      );
+      const callsByReview = new Map<number, number>();
+      for (const request of llmClient.requests) {
+        const { review_id: reviewId } = JSON.parse(String(request.messages[0]?.content)) as {
+          review_id: number;
+        };
+        callsByReview.set(reviewId, (callsByReview.get(reviewId) ?? 0) + 1);
+      }
+      expect([...callsByReview.values()]).toEqual([4, 4, 4, 4, 4]);
+      for (const item of items) {
+        const review = harness.reviewQueueRepository.get(item.id);
+        expect(review?.resolved_at).toBeNull();
+        expect(review?.refs.belief_revision_failure_count).toBeUndefined();
+        expect(review?.refs.belief_revision_escalated_at).toBeUndefined();
+        expect(review?.refs.belief_revision_claim).toBeUndefined();
+      }
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
   it("enforces max_llm_calls against physical schema-repair attempts", async () => {
     const llmClient = new FakeLLMClient({
       responses: [
@@ -1837,6 +1878,50 @@ describe("belief reviser process", () => {
       await harness.cleanup();
     }
   });
+
+  it.each(["cut", "schema"])(
+    "preserves %s failure accounting when the repair is cut",
+    async (first) => {
+      const cut = {
+        ...beliefRevisionResponse({
+          verdict: "retain",
+          rationale: "Partial",
+          confidence_delta: null,
+        }),
+        stop_reason: "max_tokens",
+      };
+      const llmClient = new FakeLLMClient({
+        responses: [first === "cut" ? cut : beliefRevisionResponse({}), cut],
+      });
+      const harness = await createOfflineTestHarness({ clock: new FixedClock(2_000), llmClient });
+      try {
+        const target = await insertNode(harness, "Output-limited target", [0, 1, 0, 0]);
+        const item = enqueueNodeBeliefRevision(harness, target);
+        await runBeliefReviser(harness, {
+          regradeBatchSize: 1,
+          maxParseFailures: 1,
+          maxLlmCalls: 2,
+        });
+        const review = harness.reviewQueueRepository.get(item.id);
+        expect(review?.resolved_at).toBeNull();
+        expect(review?.refs.belief_revision_failure_count).toBe(first === "schema" ? 1 : undefined);
+        expect(review?.refs.belief_revision_escalated_at).toBe(
+          first === "schema" ? 2_000 : undefined,
+        );
+        if (first === "schema") {
+          expect(review?.refs.belief_revision_llm).toMatchObject({
+            verdict: "manual_review",
+            original_verdict: "parse_failure",
+          });
+        }
+        expect(review?.refs.belief_revision_claim).toBeUndefined();
+        expect(llmClient.requests).toHaveLength(2);
+        expect(llmClient.requests[0]?.max_tokens).toBe(8_000);
+      } finally {
+        await harness.cleanup();
+      }
+    },
+  );
 
   it("escalates malformed LLM output after the configured parse-failure limit", async () => {
     const invalidResponses = [

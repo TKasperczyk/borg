@@ -118,6 +118,7 @@ describe("review open-question extractor", () => {
       }),
     );
 
+    expect(llm.requests[0]?.max_tokens).toBe(8_000);
     expect(proposal).toEqual({
       question: "¿Qué atribución debería conservar esta memoria?",
       urgency: 0.64,

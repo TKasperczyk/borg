@@ -437,7 +437,7 @@ describe("callStructuredTool", () => {
     expect(llmClient.complete).toHaveBeenCalledOnce();
   });
 
-  it("does not retry unparseable tool arguments that were cut off by the output limit", async () => {
+  it("does not retry cut arguments when maxAttempts is one", async () => {
     const cutOff = new LLMToolArgumentsError("cut off", {
       toolName: TOOL_NAME,
       stopReason: "max_tokens",
@@ -458,11 +458,12 @@ describe("callStructuredTool", () => {
         budget: "test",
       },
       toolName: TOOL_NAME,
+      maxAttempts: 1,
       parse: (input) => schema.parse(input),
     }).catch((error: unknown) => error);
 
     expect(isStructuredToolCallError(thrown, "llm_failed")).toBe(true);
-    expect((thrown as StructuredToolCallError).cause).toBe(cutOff);
+    expect((thrown as StructuredToolCallError).cause).toMatchObject({ cause: cutOff });
     expect((thrown as StructuredToolCallError).stopReason).toBe("max_tokens");
     expect((thrown as StructuredToolCallError).usage).toEqual({
       input_tokens: 3_000,
@@ -661,7 +662,7 @@ describe("callStructuredTool", () => {
   });
 
   it("throws a typed missing-tool error with stop reason", async () => {
-    const llmClient = client(completeResult([], "max_tokens"));
+    const llmClient = client(completeResult([], "end_turn"));
 
     await expect(() =>
       callStructuredTool({
@@ -680,7 +681,7 @@ describe("callStructuredTool", () => {
     ).rejects.toMatchObject({
       kind: "missing_tool_call",
       toolName: TOOL_NAME,
-      stopReason: "max_tokens",
+      stopReason: "end_turn",
     });
     expect(llmClient.complete).toHaveBeenCalledTimes(1);
   });
@@ -695,7 +696,7 @@ describe("callStructuredTool", () => {
             input: { value: 42 },
           },
         ],
-        "max_tokens",
+        "end_turn",
       ),
     );
 
@@ -718,7 +719,7 @@ describe("callStructuredTool", () => {
       expect(isStructuredToolCallError(error, "invalid_payload")).toBe(true);
       expect((error as StructuredToolCallError).cause).toBeInstanceOf(z.ZodError);
       expect((error as StructuredToolCallError).repairFailure).toBeInstanceOf(z.ZodError);
-      expect((error as StructuredToolCallError).stopReason).toBe("max_tokens");
+      expect((error as StructuredToolCallError).stopReason).toBe("end_turn");
       expect((error as StructuredToolCallError).attemptCount).toBe(2);
       expect((error as StructuredToolCallError).usage).toEqual({
         input_tokens: 6,

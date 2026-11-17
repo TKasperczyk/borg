@@ -1,5 +1,5 @@
 import {
-  classifyLlmStopReason,
+  normalizeLlmStopReason,
   getLlmErrorStopReason,
   type LLMStopReasonClassification,
 } from "./stop-reason.js";
@@ -31,10 +31,13 @@ import type { JsonValue } from "../util/json-value.js";
 import { parseErrorMessage } from "../util/zod-errors.js";
 import { addLlmUsage, getLlmErrorUsage } from "./usage.js";
 import { runWithDeadline } from "../util/deadline.js";
+import { clampMaxOutputTokens, getModelMaxOutputTokens } from "./max-tokens.js";
 
 const MAX_REPAIR_ARGUMENT_CHARS = 4_000;
 const MAX_REPAIR_ISSUE_CHARS = 1_500;
 const MAX_REPAIR_ISSUES = 5;
+const MIN_OUTPUT_LIMIT_REPAIR_TOKENS = 4_000;
+const MAX_GENERIC_OUTPUT_LIMIT_REPAIR_TOKENS = 16_000;
 
 export type StructuredToolCallErrorKind = "llm_failed" | "missing_tool_call" | "invalid_payload";
 
@@ -74,8 +77,10 @@ export class StructuredToolCallError extends LLMError {
     this.toolName = options.toolName;
     this.acceptedToolNames = options.acceptedToolNames;
     this.stopReason = options.stopReason;
-    this.stopReasonClassification =
-      options.stopReasonClassification ?? classifyLlmStopReason(options.stopReason);
+    this.stopReasonClassification = normalizeLlmStopReason(
+      options.stopReason,
+      options.stopReasonClassification,
+    );
     this.repairFailure = options.repairFailure;
     this.attemptCount = options.attemptCount ?? 0;
     this.usage = options.usage ?? { input_tokens: 0, output_tokens: 0 };
@@ -114,10 +119,12 @@ export type CallStructuredToolOptions<T> = {
   toolName: string;
   acceptedToolNames?: readonly string[];
   maxAttempts?: 1 | 2;
-  /** Opt in to output-limit repair; also bounds the shared schema repair. */
+  /** Requested cap for repair calls; generic cut repair may require more headroom. */
   repairMaxTokens?: number;
-  /** Opt in to output-limit repair with caller guidance, sharing the existing retry. */
+  /** Caller guidance and cap policy for output-limit repair, sharing the existing retry. */
   outputLimitRepairInstruction?: string;
+  /** Keep a deliberate output ceiling on every retry instead of increasing it after a cut. */
+  outputLimitIsHard?: boolean;
   attemptTimeoutMs?: number;
   parse: (
     input: unknown,
@@ -333,10 +340,17 @@ export async function callStructuredTool<T>(
   const maxAttempts = options.maxAttempts ?? 2;
   let attemptCount = 0;
   let usage = emptyUsage();
-  const outputLimitRepairBudget: LLMCompleteOptions["outputLimitRepairBudget"] =
-    options.outputLimitRepairInstruction === undefined
-      ? undefined
-      : { remainingCalls: maxAttempts };
+  const outputLimitRepairBudget = {
+    remainingCalls: maxAttempts,
+    enforceLimit: options.outputLimitRepairInstruction !== undefined,
+  };
+  const exhausted = () =>
+    outputLimitRepairBudget.enforceLimit && outputLimitRepairBudget.remainingCalls <= 0;
+  const effectiveLimit = (request: LLMCompleteOptions) =>
+    clampMaxOutputTokens(
+      request.model,
+      request.max_tokens ?? getModelMaxOutputTokens(request.model),
+    );
 
   const onTransportRetry =
     options.trace === undefined
@@ -354,7 +368,7 @@ export async function callStructuredTool<T>(
       : traceLlmToolChoiceTranslationHook({ ...options.trace, extra: options.trace.startedExtra });
   const request = {
     ...options.request,
-    ...(outputLimitRepairBudget === undefined ? {} : { outputLimitRepairBudget }),
+    outputLimitRepairBudget,
     ...(onTransportRetry === undefined ? {} : { onTransportRetry }),
     ...(translationTrace === undefined
       ? {}
@@ -367,20 +381,51 @@ export async function callStructuredTool<T>(
   } satisfies LLMCompleteOptions;
 
   const errorAccounting = () => ({ attemptCount, usage: { ...usage } });
+  const outputLimitError = (
+    nextRequest: LLMCompleteOptions,
+    stopReason: string | null,
+    stopReasonClassification: LLMStopReasonClassification,
+    cause: unknown,
+  ) => {
+    outputLimitRepairBudget.enforceLimit = true;
+    const message = `Structured tool response reached its output limit of ${effectiveLimit(nextRequest)} tokens and was discarded whole`;
+    return new StructuredToolCallError(message, {
+      kind: "llm_failed",
+      toolName: options.toolName,
+      acceptedToolNames: names,
+      stopReason,
+      stopReasonClassification,
+      // Some callers unwrap the cause. Preserve caller-guided compatibility,
+      // while generic cuts retain their limit through those existing adapters.
+      cause:
+        options.outputLimitRepairInstruction !== undefined
+          ? cause
+          : new LLMToolArgumentsError(
+              `${message}: ${cause instanceof Error ? cause.message : String(cause)}`,
+              {
+                toolName: options.toolName,
+                stopReason,
+                stopReasonClassification,
+                ...(cause instanceof LLMToolArgumentsError
+                  ? { argumentsLength: cause.argumentsLength, usage: cause.usage }
+                  : {}),
+                cause,
+              },
+            ),
+      ...errorAccounting(),
+    });
+  };
   const complete = async (
     nextRequest: LLMCompleteOptions,
     schemaRepair: boolean,
   ): Promise<LLMCompleteResult> => {
     attemptCount += 1;
     traceStarted(options, nextRequest, attemptCount, schemaRepair);
-    const remainingBeforeCall = outputLimitRepairBudget?.remainingCalls;
+    const remainingBeforeCall = outputLimitRepairBudget.remainingCalls;
     const accountLogicalResponse = (): void => {
       // Compatibility translation accounts its responses, including a reminder.
       // Untranslated/custom clients leave that accounting to this layer.
-      if (
-        outputLimitRepairBudget !== undefined &&
-        outputLimitRepairBudget.remainingCalls === remainingBeforeCall
-      ) {
+      if (outputLimitRepairBudget.remainingCalls === remainingBeforeCall) {
         outputLimitRepairBudget.remainingCalls -= 1;
       }
     };
@@ -417,6 +462,15 @@ export async function callStructuredTool<T>(
       );
       if (unparseable !== undefined) accountLogicalResponse();
 
+      if (stopReasonClassification.kind === "max_tokens") {
+        throw outputLimitError(
+          nextRequest,
+          unparseable?.stopReason ?? stopReasonClassification.raw,
+          stopReasonClassification,
+          error,
+        );
+      }
+
       throw new StructuredToolCallError(
         `Structured tool call ${options.toolName} failed before a response was available`,
         {
@@ -434,25 +488,22 @@ export async function callStructuredTool<T>(
     accountLogicalResponse();
     usage = addLlmUsage(usage, response);
     traceResponse(options, response, attemptCount, schemaRepair);
-    if (
-      (options.repairMaxTokens !== undefined ||
-        options.outputLimitRepairInstruction !== undefined) &&
-      response.stop_reason === "max_tokens"
-    ) {
-      throw new StructuredToolCallError("Structured tool response reached its output limit", {
-        kind: "llm_failed",
-        toolName: options.toolName,
-        acceptedToolNames: names,
-        stopReason: response.stop_reason,
-        stopReasonClassification: response.stop_reason_classification,
-        cause: new LLMToolArgumentsError("Structured tool response reached its output limit", {
+    const stopReasonClassification = normalizeLlmStopReason(
+      response.stop_reason,
+      response.stop_reason_classification,
+    );
+    if (stopReasonClassification.kind === "max_tokens") {
+      throw outputLimitError(
+        nextRequest,
+        response.stop_reason,
+        stopReasonClassification,
+        new LLMToolArgumentsError("Structured tool response reached its output limit", {
           toolName: options.toolName,
           stopReason: response.stop_reason,
-          stopReasonClassification: response.stop_reason_classification,
+          stopReasonClassification,
           usage: response,
         }),
-        ...errorAccounting(),
-      });
+      );
     }
     return response;
   };
@@ -484,31 +535,46 @@ export async function callStructuredTool<T>(
     response = await complete(request, false);
   } catch (error) {
     // Syntactically broken tool arguments surface inside complete(), so the
-    // validation-repair path below never sees them. Re-issue the identical
-    // request once. An output-limit stop requires a larger repair cap or caller
-    // guidance; both branches share the same two-attempt accounting and deadline.
+    // validation-repair path below never sees them. A cut discards the whole
+    // response and uses a fresh cut-aware request; both branches share the retry.
     const unparseable = findInErrorCauseChain(
       error,
       (candidate): candidate is LLMToolArgumentsError => candidate instanceof LLMToolArgumentsError,
     );
 
+    const cut = getLlmErrorStopReason(error).kind === "max_tokens";
     if (
       error instanceof BudgetExceededError ||
-      unparseable === undefined ||
-      (unparseable.stopReason === "max_tokens" &&
-        options.outputLimitRepairInstruction === undefined &&
-        (options.repairMaxTokens === undefined ||
-          options.repairMaxTokens <= (request.max_tokens ?? 0))) ||
+      (!cut && unparseable === undefined) ||
       attemptCount >= maxAttempts ||
-      outputLimitRepairBudget?.remainingCalls === 0
+      exhausted()
     ) {
       throw error;
     }
 
     notifySchemaRepair(options, { status: "attempted", attempt: 2, error });
 
-    const repairInstruction =
-      unparseable.stopReason === "max_tokens" ? options.outputLimitRepairInstruction : undefined;
+    const originalLimit = effectiveLimit(request);
+    const repairLimit =
+      options.outputLimitIsHard === true
+        ? originalLimit
+        : cut && options.outputLimitRepairInstruction === undefined
+          ? clampMaxOutputTokens(
+              request.model,
+              Math.max(
+                originalLimit,
+                Math.min(
+                  Math.max(originalLimit * 2, MIN_OUTPUT_LIMIT_REPAIR_TOKENS),
+                  MAX_GENERIC_OUTPUT_LIMIT_REPAIR_TOKENS,
+                ),
+                options.repairMaxTokens ?? 0,
+              ),
+            )
+          : options.repairMaxTokens;
+    const repairInstruction = cut
+      ? (options.outputLimitRepairInstruction ??
+        `Your previous output was cut at the limit of ${originalLimit} output tokens and was discarded whole. Emit exactly one complete ${options.toolName} tool call within the retry limit of ${repairLimit} output tokens, including thinking.`)
+      : undefined;
 
     try {
       response = await complete(
@@ -519,7 +585,7 @@ export async function callStructuredTool<T>(
             : {
                 messages: [...request.messages, { role: "user", content: repairInstruction }],
               }),
-          ...(options.repairMaxTokens === undefined ? {} : { max_tokens: options.repairMaxTokens }),
+          ...(repairLimit === undefined ? {} : { max_tokens: repairLimit }),
         },
         true,
       );
@@ -574,7 +640,7 @@ export async function callStructuredTool<T>(
       );
     };
 
-    if (attemptCount >= maxAttempts || outputLimitRepairBudget?.remainingCalls === 0) {
+    if (attemptCount >= maxAttempts || exhausted()) {
       const failure = originalInvalidPayload();
       if (retriedMalformedArguments) {
         notifySchemaRepair(options, { status: "failed", attempt: 2, error: failure });
@@ -589,7 +655,11 @@ export async function callStructuredTool<T>(
       response = await complete(
         {
           ...repairRequest,
-          ...(options.repairMaxTokens === undefined ? {} : { max_tokens: options.repairMaxTokens }),
+          ...(options.outputLimitIsHard === true
+            ? { max_tokens: effectiveLimit(request) }
+            : options.repairMaxTokens === undefined
+              ? {}
+              : { max_tokens: options.repairMaxTokens }),
         },
         true,
       );

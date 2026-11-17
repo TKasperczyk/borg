@@ -175,6 +175,7 @@ describe("consolidator process", () => {
       dryRun: true,
     });
     expect(dryRun.changes).toHaveLength(1);
+    expect(llm.requests[0]?.max_tokens).toBe(8_000);
     expect(llm.requests[0]?.tool_choice).toEqual({
       type: "tool",
       name: CONSOLIDATION_TOOL_NAME,

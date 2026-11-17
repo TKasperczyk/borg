@@ -14,6 +14,9 @@ import { cosineSimilarity } from "../../retrieval/embedding-similarity.js";
 import type { WorkingMemory } from "../../memory/working/index.js";
 import type { GenerationSuppressionReason } from "./types.js";
 
+// Thinking shares the output allowance with the structured result.
+const GENERATION_GATE_MAX_OUTPUT_TOKENS = 2_000;
+
 const GATE_TOOL_NAME = "EmitGenerationGateDecision";
 const MINIMAL_LOOP_TURN_COUNT = 3;
 
@@ -272,7 +275,7 @@ export class GenerationGate {
             ],
             tools: [GENERATION_GATE_TOOL],
             tool_choice: { type: "tool", name: GATE_TOOL_NAME },
-            max_tokens: 512,
+            max_tokens: GENERATION_GATE_MAX_OUTPUT_TOKENS,
             budget: "generation-gate",
           },
           toolName: GATE_TOOL_NAME,

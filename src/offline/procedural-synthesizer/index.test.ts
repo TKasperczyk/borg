@@ -403,7 +403,7 @@ describe("ProceduralSynthesizerProcess", () => {
       approach: "Compare the failing deploy state against the last clean release.",
     });
     expect(llm.requests).toHaveLength(1);
-    expect(llm.requests[0]?.max_tokens).toBe(1_500);
+    expect(llm.requests[0]?.max_tokens).toBe(8_000);
 
     const result = await process.apply(harness.createContext(), plan);
 
@@ -587,7 +587,7 @@ describe("ProceduralSynthesizerProcess", () => {
     expect(result.changes).toHaveLength(2);
     expect(harness.skillRepository.list()).toHaveLength(2);
     expect(llm.requests).toHaveLength(3);
-    expect(llm.requests.map((request) => request.max_tokens)).toEqual([1_500, 1_500, 1_500]);
+    expect(llm.requests.map((request) => request.max_tokens)).toEqual([8_000, 8_000, 8_000]);
   });
 
   it.each([
@@ -1119,6 +1119,40 @@ describe("ProceduralSynthesizerProcess", () => {
     expect(second.changes).toEqual([]);
     expect(llm.requests).toHaveLength(2);
   });
+
+  it.each(["cut", "schema"])(
+    "preserves %s failure accounting when the split repair is cut",
+    async (first) => {
+      const invalid = {
+        text: "",
+        input_tokens: 10,
+        output_tokens: 5,
+        stop_reason: "tool_use",
+        tool_calls: [{ id: "split", name: "EmitSkillSplit", input: { decision: "split" } }],
+      };
+      const cut = { ...invalid, stop_reason: "max_tokens" };
+      const llm = new FakeLLMClient({ responses: [first === "cut" ? cut : invalid, cut] });
+      harness = await createOfflineTestHarness({
+        llmClient: llm,
+        configOverrides: proceduralConfig({
+          minContextAttemptsForSplit: 3,
+          minDivergenceForSplit: 0.01,
+          maxSplitParseFailures: 1,
+        }),
+      });
+      const { skill } = await addSkillWithContextStats(harness);
+      const result = await createProcess(harness).run(harness.createContext(), {});
+      expect(result.errors).toHaveLength(1);
+      expect(harness.skillRepository.get(skill.id)).toMatchObject({
+        split_failure_count: first === "schema" ? 1 : 0,
+        requires_manual_review: first === "schema",
+        splitting_at: null,
+        status: "active",
+      });
+      expect(llm.requests).toHaveLength(2);
+      expect(llm.requests[0]?.max_tokens).toBe(8_000);
+    },
+  );
 
   it("suppresses a split candidate after repeated malformed split output", async () => {
     const malformedResponse = {

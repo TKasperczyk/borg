@@ -21,6 +21,9 @@ import {
 } from "../../util/ids.js";
 import type { OpenQuestionDuplicatePresentation } from "./open-question-duplicates.js";
 
+// Thinking shares the output allowance with the structured result.
+const REVIEW_OPEN_QUESTION_MAX_OUTPUT_TOKENS = 8_000;
+
 const episodeIdToolSchema = z.string().regex(episodeIdHelpers.pattern, {
   message: "Invalid episode id",
 });
@@ -162,7 +165,7 @@ export class ReviewOpenQuestionExtractor {
           ],
           tools: [REVIEW_OPEN_QUESTION_TOOL],
           tool_choice: { type: "tool", name: REVIEW_OPEN_QUESTION_TOOL_NAME },
-          max_tokens: 1_000,
+          max_tokens: REVIEW_OPEN_QUESTION_MAX_OUTPUT_TOKENS,
           budget: "offline-review-open-question",
         },
         toolName: REVIEW_OPEN_QUESTION_TOOL_NAME,
@@ -196,7 +199,9 @@ export class ReviewOpenQuestionExtractor {
 
       await this.reportDegraded(item, {
         reason: "llm_call_failed",
-        error: errorMessage(isStructuredToolCallError(error, "llm_failed") ? (error.cause ?? error) : error),
+        error: errorMessage(
+          isStructuredToolCallError(error, "llm_failed") ? (error.cause ?? error) : error,
+        ),
       });
       return null;
     }

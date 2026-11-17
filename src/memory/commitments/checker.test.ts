@@ -47,6 +47,172 @@ function textResponse(text: string): LLMCompleteResult {
 }
 
 describe("commitment checker", () => {
+  it.each([
+    { stop: "max_tokens", conflictingMetadata: false },
+    { stop: "length", conflictingMetadata: false },
+    { stop: "max_tokens", conflictingMetadata: true },
+    { stop: "length", conflictingMetadata: true },
+  ])(
+    "suppresses a rewrite cut by $stop with conflicting metadata = $conflictingMetadata without judging or emitting it",
+    async ({ stop, conflictingMetadata }) => {
+      const db = openDatabase(":memory:", { migrations: commitmentMigrations });
+      try {
+        const clock = new FixedClock(1_000);
+        const entities = new EntityRepository({ db, clock });
+        const commitments = new CommitmentRepository({ db, clock });
+        const boundary = commitments.add({
+          type: "boundary",
+          kind: "boundary",
+          directiveFamily: "private_data",
+          directive: "Keep confidential details private",
+          priority: 10,
+          provenance: { kind: "manual" },
+        });
+        const llm = new FakeLLMClient({
+          responses: [
+            judgeResponse([
+              { commitment_id: boundary.id, reason: "Confidential details disclosed" },
+            ]),
+            {
+              ...textResponse("Partial rewrite"),
+              stop_reason: stop,
+              ...(conflictingMetadata
+                ? { stop_reason_classification: { kind: "unknown" as const, raw: stop } }
+                : {}),
+            },
+            judgeResponse([]),
+          ],
+        });
+        const checker = new CommitmentChecker({
+          llmClient: llm,
+          detectionModel: "claude-opus-5-5",
+          rewriteModel: "claude-opus-5-5",
+          entityRepository: entities,
+        });
+        const result = await checker.check({
+          response: "Confidential details",
+          userMessage: "Give an update",
+          commitments: [boundary],
+          rewriteOnViolation: true,
+        });
+        expect(result).toMatchObject({
+          revised: true,
+          emission: { kind: "suppressed", reason: "commitment_revision_failed" },
+        });
+        expect(llm.requests).toHaveLength(2);
+        expect(llm.requests.map((request) => request.budget)).toEqual([
+          "commitment-judge",
+          "commitment-revision",
+        ]);
+        expect(llm.requests[1]?.max_tokens).toBe(16_000);
+      } finally {
+        db.close();
+      }
+    },
+  );
+
+  it.each(["end_turn", null])("handles rewrite cut metadata with raw reason %s", async (raw) => {
+    const db = openDatabase(":memory:", { migrations: commitmentMigrations });
+    try {
+      const clock = new FixedClock(1_000);
+      const entities = new EntityRepository({ db, clock });
+      const commitments = new CommitmentRepository({ db, clock });
+      const boundary = commitments.add({
+        type: "boundary",
+        kind: "boundary",
+        directiveFamily: "private_data",
+        directive: "Keep confidential details private",
+        priority: 10,
+        provenance: { kind: "manual" },
+      });
+      const llm = new FakeLLMClient({
+        responses: [
+          judgeResponse([{ commitment_id: boundary.id, reason: "Confidential details disclosed" }]),
+          {
+            ...textResponse("General update."),
+            stop_reason: raw,
+            stop_reason_classification: { kind: "max_tokens", raw: "length" },
+          },
+          judgeResponse([]),
+        ],
+      });
+      const checker = new CommitmentChecker({
+        llmClient: llm,
+        detectionModel: "claude-opus-5-5",
+        rewriteModel: "claude-opus-5-5",
+        entityRepository: entities,
+      });
+      const result = await checker.check({
+        response: "Confidential details",
+        userMessage: "Give an update",
+        commitments: [boundary],
+        rewriteOnViolation: true,
+      });
+      expect(result.revised).toBe(true);
+      expect(result.emission).toEqual(
+        raw === null
+          ? { kind: "suppressed", reason: "commitment_revision_failed" }
+          : { kind: "message", content: "General update." },
+      );
+      expect(llm.requests.map((request) => request.budget)).toEqual(
+        raw === null
+          ? ["commitment-judge", "commitment-revision"]
+          : ["commitment-judge", "commitment-revision", "commitment-judge"],
+      );
+    } finally {
+      db.close();
+    }
+  });
+
+  it("uses the fail-closed violation path when both judge verdicts are cut", async () => {
+    const db = openDatabase(":memory:", { migrations: commitmentMigrations });
+    try {
+      const clock = new FixedClock(1_000);
+      const entities = new EntityRepository({ db, clock });
+      const commitments = new CommitmentRepository({ db, clock });
+      const boundary = commitments.add({
+        type: "boundary",
+        kind: "boundary",
+        directiveFamily: "private_data",
+        directive: "Keep confidential details private",
+        priority: 10,
+        provenance: { kind: "manual" },
+      });
+      const cut = { ...judgeResponse([]), stop_reason: "max_tokens" };
+      const llm = new FakeLLMClient({ responses: [cut, cut, judgeResponse([])] });
+      const checker = new CommitmentChecker({
+        llmClient: llm,
+        detectionModel: "claude-opus-5-5",
+        rewriteModel: "claude-opus-5-5",
+        entityRepository: entities,
+      });
+      const result = await checker.check({
+        response: "An update.",
+        userMessage: "Give an update.",
+        commitments: [boundary],
+      });
+      expect(result).toMatchObject({
+        violations: [
+          {
+            commitment_id: boundary.id,
+            confidence: 1,
+            reason: expect.stringContaining("Commitment judge failed before returning a verdict"),
+          },
+        ],
+        revised: false,
+        emission: { kind: "suppressed", reason: "commitment_violation" },
+      });
+      expect(result.violations[0]?.reason).toContain("output limit of 4000");
+      expect(llm.requests.map((request) => request.budget)).toEqual([
+        "commitment-judge",
+        "commitment-judge",
+      ]);
+      expect(llm.requests.map((request) => request.max_tokens)).toEqual([1_000, 4_000]);
+    } finally {
+      db.close();
+    }
+  });
+
   it("passes through when the judge reports no violations", async () => {
     const db = openDatabase(":memory:", { migrations: commitmentMigrations });
     const clock = new FixedClock(1_000);

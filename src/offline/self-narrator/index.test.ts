@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { LLMCompleteResult } from "../../llm/index.js";
+import type { LLMCompleteOptions, LLMCompleteResult } from "../../llm/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import {
   publicMemoryDisclosureLabel,
@@ -255,6 +255,81 @@ describe("SelfNarratorProcess", () => {
         await harness.cleanup();
       }
     });
+  });
+
+  it("stores a cut-aware retry near the default prompt bound within the default provider-token budget", async () => {
+    const episodes = [createEpisodeFixture(), createEpisodeFixture()];
+    const complete = createSelfNarratorResponse({
+      observation: {
+        category: "understanding",
+        what_changed: "I developed a broader perspective.",
+        before_description: null,
+        after_description: null,
+        confidence: 0.5,
+        evidence_episode_ids: episodes.map((episode) => episode.id),
+      },
+      period_decision: "continue_current",
+      period_narrative: "My updated narrative.",
+    });
+    const providerInputs: number[] = [];
+    const billedResponse = (stop: string) => (request: LLMCompleteOptions) => {
+      const estimate =
+        estimatePromptTokens(String(request.system)) +
+        estimatePromptTokens(JSON.stringify(request.tools)) +
+        request.messages.reduce(
+          (sum, message) => sum + estimatePromptTokens(String(message.content)),
+          0,
+        );
+      // Model the observed roughly 2x provider/estimator ratio, including the repair instruction.
+      providerInputs.push(estimate * 2);
+      return { ...complete, stop_reason: stop, input_tokens: estimate * 2, output_tokens: 16_000 };
+    };
+    const llm = new FakeLLMClient({
+      responses: [billedResponse("max_tokens"), billedResponse("tool_use")],
+    });
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      configOverrides: { anthropic: { models: { background: "claude-opus-5-5" } } },
+    });
+    const process = new SelfNarratorProcess({
+      autobiographicalRepository: harness.autobiographicalRepository,
+      growthMarkersRepository: harness.growthMarkersRepository,
+      registry: harness.registry,
+    });
+    try {
+      const defaults = harness.config.offline.selfNarrator;
+      expect(defaults.budget).toBe(1_200_000);
+      expect(defaults.maxPromptTokens).toBe(250_000);
+      const period = harness.autobiographicalRepository.upsertPeriod({
+        label: "Current period",
+        start_ts: 1_000,
+        narrative: "x".repeat(4 * (defaults.maxPromptTokens - 10_000)),
+        provenance: { kind: "offline", process: "self-narrator" },
+      });
+      for (const episode of episodes) await harness.episodicRepository.createEpisode(episode);
+      const result = await process.run(harness.createContext(), {});
+      expect(result.errors).toEqual([]);
+      expect(result.budget_exhausted).toBe(false);
+      expect(llm.requests).toHaveLength(2);
+      expect(providerInputs[0]).toBeGreaterThan(defaults.maxPromptTokens * 2 * 0.95);
+      expect(providerInputs[0]).toBeLessThanOrEqual(defaults.maxPromptTokens * 2);
+      expect(providerInputs[1]).toBeGreaterThan(providerInputs[0]!);
+      expect(result.tokens_used).toBe(providerInputs[0]! + providerInputs[1]! + 2 * 16_000);
+      expect(result.tokens_used).toBeLessThan(defaults.budget);
+      const review = harness.reviewQueueRepository
+        .getOpen()
+        .find((item) => item.refs.target_id === period.id)!;
+      expect(review.refs.patch).toMatchObject({ narrative: "My updated narrative." });
+      await harness.reviewQueueRepository.resolve(review.id, "accept");
+      expect(harness.autobiographicalRepository.currentPeriod()?.narrative).toBe(
+        "My updated narrative.",
+      );
+      expect(harness.growthMarkersRepository.list()).toEqual([
+        expect.objectContaining({ what_changed: "I developed a broader perspective." }),
+      ]);
+    } finally {
+      await harness.cleanup();
+    }
   });
 
   it("preserves seeded state and audit on failure, then stores the next run through normal review", async () => {
