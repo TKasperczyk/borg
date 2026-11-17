@@ -472,6 +472,27 @@ describe("buildContradictionRoutingOverride", () => {
     });
   });
 
+  it("forces S2 for ledger-surfaced contradiction OQs scoped to a different audience", () => {
+    const audienceEntityId = createEntityId();
+    const override = buildContradictionRoutingOverride({
+      isUserTurn: true,
+      perception: { isOperational: true },
+      audienceEntityId,
+      openQuestionsRepository: openQuestionsById([
+        contradictionOpenQuestion("oq_aaaaaaaaaaaaaaaa", {
+          audience_entity_id: createEntityId(),
+        }),
+      ]),
+      evidenceLedger: ledgerWithOpenQuestionIds(["oq_aaaaaaaaaaaaaaaa"]),
+    });
+
+    expect(override).toMatchObject({
+      forceSystem2: true,
+      oqIds: ["oq_aaaaaaaaaaaaaaaa"],
+      audienceEntityId,
+    });
+  });
+
   it("does not build the v55 P2 override when contradiction routing is disabled", () => {
     const override = buildContradictionRoutingOverride({
       enabled: false,

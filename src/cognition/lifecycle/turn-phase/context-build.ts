@@ -44,8 +44,7 @@ export function buildContradictionRoutingOverride(
       (question): question is OpenQuestion =>
         question !== null &&
         question.status === "open" &&
-        question.source === "contradiction" &&
-        openQuestionScopesToAudience(question, input.audienceEntityId),
+        question.source === "contradiction",
     );
 
   if (openQuestions.length === 0) {
@@ -94,13 +93,6 @@ function collectEvidenceLedgerOpenQuestionIds(ledger: EvidenceLedger | null): Se
   }
 
   return ids;
-}
-
-function openQuestionScopesToAudience(
-  question: Pick<OpenQuestion, "audience_entity_id">,
-  audienceEntityId: EntityId | null,
-): boolean {
-  return question.audience_entity_id === null || question.audience_entity_id === audienceEntityId;
 }
 
 export function listConstrainedRelationalSlotsForParticipants(
