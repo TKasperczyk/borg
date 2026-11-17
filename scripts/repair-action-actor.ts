@@ -235,7 +235,13 @@ export async function applyActionActorRepair(
             // Earlier writes can update sibling metadata. Re-read immediately before
             // each write and guard only the handle and actor this repair depends on.
             const before = assertActor(repo.get(row.before.id), row.before.id, plan.from);
-            const { id, created_at: _createdAt, ...currentFields } = before;
+            const {
+              id,
+              created_at: _createdAt,
+              selection_audit: _selectionAudit,
+              origin_stream_entry_ids: _originSources,
+              ...currentFields
+            } = before;
             // Zod defaults in the general patch schema fill omitted nullable fields.
             // Carry the fresh fields so an actor correction cannot clear archive,
             // session, or reference metadata. Never carry the stale plan snapshot.

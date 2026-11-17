@@ -1,4 +1,4 @@
-import { similarityThresholds, type SimilarityConfigSource } from "../../config/similarity.js";
+import { type SimilarityConfigSource } from "../../config/similarity.js";
 import { z } from "zod";
 
 import {
@@ -11,7 +11,6 @@ import {
 } from "../../llm/index.js";
 import type { EmbeddingClient } from "../../embeddings/index.js";
 import {
-  ACTIVE_ACTION_STATES,
   ACTION_STATE_METADATA,
   ACTION_STATES,
   actionIdSchema,
@@ -19,20 +18,16 @@ import {
   actionActorSchema,
   actionSessionScopeSchema,
   type ActionRecord,
-  type ActionRecordPatch,
+  type ActionSelectionAudit,
   type ActionRepository,
   type ActionSessionScope,
   type ActionState,
   type ActionStateTimestampField,
 } from "../../memory/actions/index.js";
-import {
-  completeAction,
-  markActionNotDone,
-  declineAction,
-  type LifecycleOperationResult,
-} from "../../memory/lifecycle-ops/index.js";
 import type { SharedStateEntry } from "../../memory/shared-state/index.js";
-import { cosineSimilarity } from "../../retrieval/embedding-similarity.js";
+import { StorageError } from "../../util/errors.js";
+import { goalIdSchema, type GoalRecord } from "../../memory/self/index.js";
+import { presentActionCandidates, presentActionGoals } from "./action-candidates.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import {
   createActionId,
@@ -46,7 +41,6 @@ import {
 import { ACTION_STATE_SYSTEM_PROMPT } from "../prompts/action-extraction.js";
 import { EXTRACTOR_MAX_TOKENS_DEFAULT } from "../prompts/constants.js";
 import {
-  actionMemoryDisclosureLabel,
   memoryDisclosurePayloadFields,
   sharedStateMemoryDisclosureLabel,
 } from "../../memory/common/disclosure-serializers.js";
@@ -97,6 +91,7 @@ const actionStateCandidateSchema = z
     audience_entity_id: actionEntityIdSchema.nullable().optional(),
     session_scope: actionSessionScopeSchema.nullable().optional(),
     matched_existing_action_id: actionIdSchema.nullable().optional(),
+    goal_id: goalIdSchema.nullable().optional(),
     evidence_stream_entry_ids: z.array(z.string().min(1)),
     confidence: z.number().min(0).max(1),
   })
@@ -118,13 +113,6 @@ const actionStateOutputSchema = z
   })
   .strict();
 
-const actionStateEnvelopeSchema = z
-  .object({
-    referenced_action_ids: z.array(z.unknown()).optional(),
-    action_states: z.array(z.unknown()),
-  })
-  .strict();
-
 const ACTION_STATE_TOOL = {
   name: ACTION_STATE_TOOL_NAME,
   description:
@@ -132,7 +120,7 @@ const ACTION_STATE_TOOL = {
   inputSchema: toToolInputSchema(actionStateOutputSchema),
 } satisfies LLMToolDefinition;
 
-type ActionStateEnvelopeInput = z.infer<typeof actionStateEnvelopeSchema>;
+type ActionStateEnvelopeInput = z.infer<typeof actionStateOutputSchema>;
 type ParsedActionStateCandidate = z.infer<typeof actionStateCandidateSchema>;
 type ParsedActionStateCandidateWithIndex = {
   candidateIndex: number;
@@ -141,17 +129,14 @@ type ParsedActionStateCandidateWithIndex = {
 type ActionStateSkippedReason =
   | "missing_current_user_evidence"
   | "repository_failed"
-  | "lifecycle_no_op"
-  | "lifecycle_conflict"
   | "invalid_classification"
   | "invalid_candidate"
-  | "non_concrete_classification"
-  | "embedding_dedup";
+  | "non_concrete_classification";
 type ActionStateSkippedCandidate = {
   candidate_index: number;
   reason: ActionStateSkippedReason;
 };
-type ActionCandidateRejectedReason = "non_concrete_classification" | "embedding_dedup";
+type ActionCandidateRejectedReason = "non_concrete_classification";
 type ActionCandidateRejected = {
   candidate_index: number;
   classification: ActionCandidateClassification;
@@ -167,16 +152,6 @@ type ActionStateParseResult = {
   classificationCounts: Record<ActionCandidateClassificationCountKey, number>;
   rejectedCandidates: ActionCandidateRejected[];
 };
-type EmbeddedActionVector = {
-  actionId: ActionId;
-  vector: Float32Array;
-  record: ActionRecord;
-};
-type ActionEmbeddingDedupState = {
-  activeVectors: EmbeddedActionVector[];
-  acceptedVectors: EmbeddedActionVector[];
-};
-
 class MissingActionStateToolCallError extends Error {}
 
 export type ActionStateExtractorDegradedReason =
@@ -188,11 +163,18 @@ export type ActionStateExtractorDegradedReason =
   | "repository_failed";
 
 export type ActionStateExtractorOptions = {
+  /** @deprecated Ignored: similarity retrieves candidates, never determines persistence. */
   similarityConfig?: SimilarityConfigSource;
   llmClient?: LLMClient;
   model?: string;
   actionRepository?: Pick<ActionRepository, "add"> &
-    Partial<Pick<ActionRepository, "get" | "list" | "update">>;
+    Partial<
+      Pick<
+        ActionRepository,
+        "get" | "list" | "update" | "appendExtractionUpdate" | "applyExtractionDecision"
+      >
+    >;
+  /** @deprecated Ignored: candidates are retrieved by the calling service. */
   embeddingClient?: EmbeddingClient;
   clock?: Clock;
   tracer?: TurnTracer;
@@ -220,32 +202,19 @@ export type ExtractActionStatesInput = {
     senderEntityId: EntityId | null;
     senderDisplayName?: string;
   }[];
+  /** @deprecated Ignored: a turn focus is not an action goal. */
   goalId?: GoalId | null;
+  suppliedGoals?: readonly GoalRecord[];
   openQuestionId?: OpenQuestionId | null;
   turnCounter?: number | null;
   activeActionsForReference?: readonly ActionRecord[];
+  actionCandidateTotal?: number;
   postTurnSelfPerformance?: {
     activeBorgActions: readonly ActionRecord[];
     currentTurnSharedStateEntries: readonly SharedStateEntry[];
     agentResponse: string;
   };
-  persistNewActions?: boolean;
 };
-
-function compactActionForPrompt(action: ActionRecord): Record<string, unknown> {
-  return {
-    id: action.id,
-    description: action.description,
-    actor: action.actor,
-    state: action.state,
-    audience_entity_id: action.audience_entity_id,
-    session_scope: action.session_scope,
-    session_anchor_id: action.session_anchor_id,
-    last_referenced_turn_counter: action.last_referenced_turn_counter,
-    last_referenced_turn_global: action.last_referenced_turn_global ?? null,
-    ...memoryDisclosurePayloadFields(actionMemoryDisclosureLabel(action)),
-  };
-}
 
 function compactSharedStateEntryForPrompt(entry: SharedStateEntry): Record<string, unknown> {
   return {
@@ -259,7 +228,11 @@ function compactSharedStateEntryForPrompt(entry: SharedStateEntry): Record<strin
   };
 }
 
-function buildActionStateMessages(input: ExtractActionStatesInput): LLMMessage[] {
+function buildActionStateMessages(
+  input: ExtractActionStatesInput,
+  candidates: ReturnType<typeof presentActionCandidates>,
+  goals: ReturnType<typeof presentActionGoals>,
+): LLMMessage[] {
   return [
     {
       role: "user",
@@ -290,15 +263,17 @@ function buildActionStateMessages(input: ExtractActionStatesInput): LLMMessage[]
           sender_display_name: item.senderDisplayName ?? null,
         })),
         current_agent_stream_entry_id: input.currentAgentStreamEntryId ?? null,
-        active_actions_for_reference: (input.activeActionsForReference ?? []).map(
-          compactActionForPrompt,
-        ),
+        active_actions_for_reference: candidates.rows,
+        action_candidate_omitted_count: candidates.omitted,
+        supplied_goals: goals.rows,
+        goal_candidate_omitted_count: goals.omitted,
         post_turn_self_performance:
           input.postTurnSelfPerformance === undefined
             ? null
             : {
-                active_borg_actions:
-                  input.postTurnSelfPerformance.activeBorgActions.map(compactActionForPrompt),
+                active_borg_action_ids: candidates.shown
+                  .filter((row) => row.actor === "borg")
+                  .map((row) => row.id),
                 current_turn_shared_state_entries:
                   input.postTurnSelfPerformance.currentTurnSharedStateEntries.map(
                     compactSharedStateEntryForPrompt,
@@ -333,16 +308,6 @@ function descriptionExcerpt(description: string): string {
   return description.trim().slice(0, 60);
 }
 
-function skippedReasonFromIssue(issue: {
-  path: readonly (string | number | symbol)[];
-}): ActionStateSkippedReason {
-  return issue.path[0] === "classification" ? "invalid_classification" : "invalid_candidate";
-}
-
-function skippedReasonFromError(error: z.ZodError): ActionStateSkippedReason {
-  return skippedReasonFromIssue(error.issues[0] ?? { path: [] });
-}
-
 function rejectedCandidate(input: {
   candidateIndex: number;
   classification: ActionCandidateClassification;
@@ -368,31 +333,15 @@ function parseCandidates(envelope: ActionStateEnvelopeInput): {
   const classificationCounts = zeroClassificationCounts();
   const rejectedCandidates: ActionCandidateRejected[] = [];
 
-  for (const [candidateIndex, rawCandidate] of envelope.action_states.entries()) {
-    const parsed = actionStateCandidateSchema.safeParse(rawCandidate);
+  for (const [candidateIndex, candidate] of envelope.action_states.entries()) {
+    incrementClassificationCount(classificationCounts, candidate.classification);
 
-    if (!parsed.success) {
-      const reason = skippedReasonFromError(parsed.error);
-
-      if (reason === "invalid_classification") {
-        incrementClassificationCount(classificationCounts, "invalid_classification");
-      }
-
-      skippedCandidates.push({
-        candidate_index: candidateIndex,
-        reason,
-      });
-      continue;
-    }
-
-    incrementClassificationCount(classificationCounts, parsed.data.classification);
-
-    if (parsed.data.classification !== "concrete_action") {
+    if (candidate.classification !== "concrete_action") {
       rejectedCandidates.push(
         rejectedCandidate({
           candidateIndex,
-          classification: parsed.data.classification,
-          description: parsed.data.description,
+          classification: candidate.classification,
+          description: candidate.description,
           reason: "non_concrete_classification",
         }),
       );
@@ -401,7 +350,7 @@ function parseCandidates(envelope: ActionStateEnvelopeInput): {
 
     candidates.push({
       candidateIndex,
-      candidate: parsed.data,
+      candidate,
     });
   }
 
@@ -414,18 +363,14 @@ function parseCandidates(envelope: ActionStateEnvelopeInput): {
 }
 
 function parseResponse(input: unknown): ActionStateParseResult {
-  const parsed = actionStateEnvelopeSchema.safeParse(input);
+  const parsed = actionStateOutputSchema.safeParse(input);
 
   if (!parsed.success) {
     throw parsed.error;
   }
 
   const candidates = parseCandidates(parsed.data);
-  const referencedActionIds = (parsed.data.referenced_action_ids ?? []).flatMap((rawId) => {
-    const parsedId = actionIdSchema.safeParse(rawId);
-
-    return parsedId.success ? [parsedId.data] : [];
-  });
+  const referencedActionIds = parsed.data.referenced_action_ids;
 
   return {
     referencedActionIds,
@@ -568,11 +513,13 @@ function toActionRecord(input: {
     actor: input.candidate.actor === "user" ? (actorEntityId ?? "user") : input.candidate.actor,
     audience_entity_id: input.candidate.audience_entity_id ?? input.audienceEntityId,
     goal_id: input.goalId,
+    goal_link_basis: "extractor",
     open_question_id: input.openQuestionId,
     state: input.candidate.state,
     confidence: input.candidate.confidence,
     provenance_episode_ids: [],
     provenance_stream_entry_ids: provenanceStreamEntryIds,
+    origin_stream_entry_ids: provenanceStreamEntryIds,
     created_at: input.nowMs,
     updated_at: input.nowMs,
     considering_at: null,
@@ -607,48 +554,6 @@ function isTerminalEmissionState(
   return ACTION_STATE_METADATA[state].terminal;
 }
 
-function isActiveTerminalTransitionTarget(state: ActionState): boolean {
-  return ACTION_STATE_METADATA[state].active;
-}
-
-function mergeUniqueIds<T extends string>(left: readonly T[], right: readonly T[]): T[] {
-  return [...new Set([...left, ...right])];
-}
-
-type TerminalClosureState = "completed" | "not_done" | "declined";
-type TerminalClosurePatch = Omit<ActionRecordPatch, "state">;
-type TerminalClosureRepository = Pick<ActionRepository, "update"> &
-  Partial<Pick<ActionRepository, "get">>;
-type TerminalClosureLifecycleResult = LifecycleOperationResult<{
-  actionId: ActionId;
-  previous: ActionRecord | null;
-}>;
-
-function closeActionThroughLifecycle(input: {
-  actionId: ActionId;
-  state: TerminalClosureState;
-  repository: TerminalClosureRepository;
-  patch: TerminalClosurePatch;
-}): TerminalClosureLifecycleResult {
-  return input.state === "completed"
-    ? completeAction({
-        actionId: input.actionId,
-        repository: input.repository,
-        patch: input.patch,
-      })
-    : (input.state === "declined" ? declineAction : markActionNotDone)({
-        actionId: input.actionId,
-        repository: input.repository,
-        patch: input.patch,
-      });
-}
-
-function skippedReasonFromLifecycleResult(
-  result: Exclude<TerminalClosureLifecycleResult, { status: "success" }>,
-): ActionStateSkippedReason {
-  return result.status === "conflict" ? "lifecycle_conflict" : "lifecycle_no_op";
-}
-
 function traceExtractorCompleted(options: {
   tracer?: TurnTracer;
   turnId?: string;
@@ -660,8 +565,6 @@ function traceExtractorCompleted(options: {
   skippedCandidates?: readonly ActionStateSkippedCandidate[];
   classificationCounts?: Record<ActionCandidateClassificationCountKey, number>;
   rejectedCandidates?: readonly ActionCandidateRejected[];
-  dedupSkippedEmbedding?: number;
-  dedupDegraded?: number;
   terminalEmissionClosures?: number;
   selfPerformanceClosures?: number;
   degraded: boolean;
@@ -712,8 +615,9 @@ function traceExtractorCompleted(options: {
     classification_counts: classificationCounts,
     rejected_by_classification: rejectedByClassification,
     rejected_invalid_enum: classificationCounts.invalid_classification,
-    action_persistence_dedup_skipped_embedding: options.dedupSkippedEmbedding ?? 0,
-    action_persistence_dedup_degraded: options.dedupDegraded ?? 0,
+    // Preserve existing telemetry keys; similarity-based persistence no longer runs.
+    action_persistence_dedup_skipped_embedding: 0,
+    action_persistence_dedup_degraded: 0,
     actions_closed_by_terminal_emission: options.terminalEmissionClosures ?? 0,
     actions_closed_by_borg_self_performance: options.selfPerformanceClosures ?? 0,
     degraded: options.degraded,
@@ -736,77 +640,6 @@ function incrementSkippedCandidate(
   skippedCandidates.push({
     candidate_index: candidateIndex,
     reason,
-  });
-}
-
-type ActionDedupAxis = Pick<
-  ActionRecord,
-  "actor" | "audience_entity_id" | "goal_id" | "open_question_id"
->;
-
-function actionAxisKey(record: ActionDedupAxis): string {
-  return JSON.stringify([
-    record.actor,
-    record.audience_entity_id,
-    record.goal_id,
-    record.open_question_id,
-  ]);
-}
-
-function sameActionDedupAxis(left: ActionDedupAxis, right: ActionDedupAxis): boolean {
-  return (
-    left.actor === right.actor &&
-    left.audience_entity_id === right.audience_entity_id &&
-    left.goal_id === right.goal_id &&
-    left.open_question_id === right.open_question_id
-  );
-}
-
-function traceDedupSkippedEmbedding(options: {
-  tracer?: TurnTracer;
-  turnId?: string;
-  sessionId?: SessionId;
-  candidate: ActionCandidateRejected;
-  matchedActionId?: ActionId;
-  similarity: number;
-}): void {
-  if (options.tracer?.enabled !== true || options.turnId === undefined) {
-    return;
-  }
-
-  options.tracer.emit("action_persistence.dedup.skipped", {
-    turnId: options.turnId,
-    ...(options.sessionId !== undefined ? { session_id: options.sessionId } : {}),
-    classification: options.candidate.classification,
-    description_excerpt: options.candidate.description_excerpt,
-    reason: options.candidate.reason,
-    similarity: options.similarity,
-    ...(options.matchedActionId === undefined
-      ? {}
-      : { matched_action_id: options.matchedActionId }),
-  });
-}
-
-function traceDedupDegraded(options: {
-  tracer?: TurnTracer;
-  turnId?: string;
-  sessionId?: SessionId;
-  reason: string;
-  error: unknown;
-  candidateDescription?: string;
-}): void {
-  if (options.tracer?.enabled !== true || options.turnId === undefined) {
-    return;
-  }
-
-  options.tracer.emit("action_persistence.dedup.degraded", {
-    turnId: options.turnId,
-    ...(options.sessionId !== undefined ? { session_id: options.sessionId } : {}),
-    reason: options.reason,
-    error: options.error instanceof Error ? options.error.message : String(options.error),
-    ...(options.candidateDescription === undefined
-      ? {}
-      : { description_excerpt: descriptionExcerpt(options.candidateDescription) }),
   });
 }
 
@@ -836,6 +669,8 @@ export class ActionStateExtractor {
     sessionId?: SessionId,
   ): Promise<ActionRecord[]> {
     const result = await this.degraded(reason, error);
+    if (reason === "llm_unavailable" || reason === "repository_unavailable")
+      this.traceSelection(0, 0, 0, 0, []);
 
     traceExtractorCompleted({
       tracer: this.options.tracer,
@@ -850,6 +685,28 @@ export class ActionStateExtractor {
     return result;
   }
 
+  private traceSelection(
+    shown: number,
+    omitted: number,
+    matched: number,
+    inserted: number,
+    decisions: ActionSelectionAudit[],
+  ): void {
+    if (this.options.tracer?.enabled !== true || this.options.turnId === undefined) return;
+    const rejected: Record<string, number> = {};
+    for (const decision of decisions)
+      if (decision.rejection_reason !== null)
+        rejected[decision.rejection_reason] = (rejected[decision.rejection_reason] ?? 0) + 1;
+    this.options.tracer.emit("extraction.actions.selection_summary", {
+      turnId: this.options.turnId,
+      candidates_shown: shown,
+      candidates_omitted: omitted,
+      matched,
+      inserted,
+      rejected_by_reason: rejected,
+    });
+  }
+
   async extract(input: ExtractActionStatesInput): Promise<ActionRecord[]> {
     const sessionId = input.sessionId ?? this.options.sessionId;
 
@@ -861,7 +718,20 @@ export class ActionStateExtractor {
       return this.degradedWithTrace("repository_unavailable", undefined, sessionId);
     }
 
-    const messages = buildActionStateMessages(input);
+    const candidateRecords = [
+      ...new Map(
+        [
+          ...(input.activeActionsForReference ?? []),
+          ...(input.postTurnSelfPerformance?.activeBorgActions ?? []),
+        ].map((record) => [record.id, record]),
+      ).values(),
+    ];
+    const candidates = presentActionCandidates(
+      candidateRecords,
+      input.actionCandidateTotal ?? candidateRecords.length,
+    );
+    const goals = presentActionGoals(input.suppliedGoals ?? []);
+    const messages = buildActionStateMessages(input, candidates, goals);
     const tools = [ACTION_STATE_TOOL];
 
     let parsed: ActionStateParseResult;
@@ -893,6 +763,7 @@ export class ActionStateExtractor {
         })
       ).parsed;
     } catch (error) {
+      this.traceSelection(candidates.shown.length, candidates.omitted, 0, 0, []);
       const reason = degradedReasonForStructuredToolError(error);
 
       if (reason === "llm_failed") {
@@ -934,390 +805,139 @@ export class ActionStateExtractor {
     const skippedCandidates = [...parsed.skippedCandidates];
     const rejectedCandidates = [...parsed.rejectedCandidates];
     for (const rejected of rejectedCandidates) {
-      incrementSkippedReason(
-        skippedReasons,
-        rejected.reason === "embedding_dedup" ? "embedding_dedup" : "non_concrete_classification",
-      );
+      incrementSkippedReason(skippedReasons, rejected.reason);
     }
     let degraded = false;
-    let dedupSkippedEmbedding = 0;
-    let dedupDegraded = 0;
     let terminalEmissionClosures = 0;
     let selfPerformanceClosures = 0;
     const nowMs = this.clock.now();
     const turnCounter = input.turnCounter ?? null;
-    const dedupStates = new Map<string, ActionEmbeddingDedupState | null>();
-    const allowedReferencedActionIds = new Set(
-      [
-        ...(input.activeActionsForReference ?? []),
-        ...(input.postTurnSelfPerformance?.activeBorgActions ?? []),
-      ].map((action) => action.id),
-    );
+    const offeredIds = new Set(candidates.shown.map((record) => record.id));
+    const suppliedGoalIds = new Set(goals.shown.map((goal) => goal.id));
 
-    if (this.options.actionRepository.update !== undefined && allowedReferencedActionIds.size > 0) {
-      for (const actionId of parsed.referencedActionIds) {
-        if (!allowedReferencedActionIds.has(actionId)) {
-          continue;
-        }
-
-        try {
-          this.options.actionRepository.update(actionId, {
-            last_referenced_at_ms: nowMs,
-            last_referenced_turn_counter: turnCounter,
-            last_referenced_turn_global: turnCounter,
-          });
-        } catch (error) {
-          degraded = true;
-          await this.degraded("repository_failed", error);
-        }
-      }
-    }
-
-    const getEmbeddingDedupState = async (
-      record: ActionRecord,
-    ): Promise<ActionEmbeddingDedupState | null> => {
-      if (
-        this.options.embeddingClient === undefined ||
-        this.options.actionRepository?.list === undefined
-      ) {
-        return null;
-      }
-
-      const axisKey = actionAxisKey(record);
-
-      if (dedupStates.has(axisKey)) {
-        return dedupStates.get(axisKey) ?? null;
-      }
-
-      try {
-        const activeActions = this.options.actionRepository
-          .list({
-            states: ACTIVE_ACTION_STATES,
-            actor: record.actor,
-            audienceEntityId: record.audience_entity_id,
-          })
-          .filter((action) => sameActionDedupAxis(action, record));
-        const embeddings =
-          activeActions.length === 0
-            ? []
-            : await this.options.embeddingClient.embedBatch(
-                activeActions.map((action) => action.description),
-              );
-        const state = {
-          activeVectors: activeActions.flatMap((action, index) => {
-            const vector = embeddings[index];
-            return vector === undefined ? [] : [{ actionId: action.id, vector, record: action }];
-          }),
-          acceptedVectors: [],
-        } satisfies ActionEmbeddingDedupState;
-
-        dedupStates.set(axisKey, state);
-        return state;
-      } catch (error) {
-        degraded = true;
-        dedupDegraded += 1;
-        traceDedupDegraded({
-          tracer: this.options.tracer,
-          turnId: this.options.turnId,
-          sessionId,
-          reason: "active_action_embedding_failed",
-          error,
-        });
-        dedupStates.set(axisKey, null);
-        return null;
-      }
-    };
-
-    for (const parsedCandidate of parsed.candidates) {
-      const candidate = parsedCandidate.candidate;
+    const decisions: ActionRecord[] = [];
+    for (const { candidate, candidateIndex } of parsed.candidates) {
       if (!hasAllowedEvidence(candidate, input)) {
         incrementSkippedReason(skippedReasons, "missing_current_user_evidence");
         incrementSkippedCandidate(
           skippedCandidates,
-          parsedCandidate.candidateIndex,
+          candidateIndex,
           "missing_current_user_evidence",
         );
         continue;
       }
-
-      const matchedExistingActionId = candidate.matched_existing_action_id ?? null;
-      if (
-        matchedExistingActionId !== null &&
-        input.postTurnSelfPerformance !== undefined &&
-        isTerminalEmissionState(candidate.state)
-      ) {
-        const activeBorgAction = input.postTurnSelfPerformance.activeBorgActions.find(
-          (action) => action.id === matchedExistingActionId,
-        );
-
-        if (activeBorgAction !== undefined && this.options.actionRepository.update !== undefined) {
-          const patch = {
-            confidence: Math.max(activeBorgAction.confidence, candidate.confidence),
-            provenance_stream_entry_ids: mergeUniqueIds(
-              activeBorgAction.provenance_stream_entry_ids,
-              allowedCandidateEvidenceStreamEntryIds(candidate, input),
-            ),
-            updated_at: nowMs,
-            last_referenced_at_ms: nowMs,
-            last_referenced_turn_counter: turnCounter,
-            last_referenced_turn_global: turnCounter,
-            ...stateTimestampPatch(candidate.state, nowMs),
-          } satisfies TerminalClosurePatch;
-
-          try {
-            const lifecycleResult = closeActionThroughLifecycle({
-              actionId: matchedExistingActionId,
-              state: candidate.state,
-              repository: this.options.actionRepository as TerminalClosureRepository,
-              patch,
-            });
-
-            if (lifecycleResult.status !== "success") {
-              const reason = skippedReasonFromLifecycleResult(lifecycleResult);
-
-              incrementSkippedReason(skippedReasons, reason);
-              incrementSkippedCandidate(skippedCandidates, parsedCandidate.candidateIndex, reason);
-              continue;
-            }
-
-            selfPerformanceClosures += 1;
-            terminalEmissionClosures += 1;
-            traceBorgSelfPerformanceClosure({
-              tracer: this.options.tracer,
-              turnId: this.options.turnId,
-              sessionId,
-              candidateIndex: parsedCandidate.candidateIndex,
-              matchedActionId: matchedExistingActionId,
-              terminalState: candidate.state,
-              description: candidate.description,
-            });
-            continue;
-          } catch (error) {
-            degraded = true;
-            incrementSkippedReason(skippedReasons, "repository_failed");
-            incrementSkippedCandidate(
-              skippedCandidates,
-              parsedCandidate.candidateIndex,
-              "repository_failed",
-            );
-            await this.degraded("repository_failed", error);
-            continue;
-          }
-        }
-
-        if (input.persistNewActions === false) {
-          continue;
-        }
-      }
-
-      if (input.persistNewActions === false) {
-        continue;
-      }
-
+      const chosenId = candidate.matched_existing_action_id ?? null;
+      const chosenGoalId = candidate.goal_id ?? null;
+      const goalWasOffered = chosenGoalId === null || suppliedGoalIds.has(chosenGoalId);
+      const audit: ActionSelectionAudit = {
+        turn_id: this.options.turnId ?? null,
+        candidate_index: candidateIndex,
+        candidate_ids: [...offeredIds],
+        candidate_omitted_count: candidates.omitted,
+        chosen_action_id: chosenId,
+        rejection_reason: chosenId !== null && !offeredIds.has(chosenId) ? "not_offered" : null,
+        supplied_goal_ids: [...suppliedGoalIds],
+        chosen_goal_id: chosenGoalId,
+        goal_rejection_reason: goalWasOffered ? null : "not_offered",
+      };
       const record = toActionRecord({
         candidate,
-        currentUserStreamEntryIds: input.currentUserStreamEntryIds ?? [
-          input.currentUserStreamEntryId,
-        ],
+        currentUserStreamEntryIds: allowedCandidateEvidenceStreamEntryIds(candidate, input),
         audienceEntityId: input.audienceEntityId,
         sessionId: input.sessionId ?? null,
         speakerEntityId: input.speakerEntityId ?? null,
         senderAttribution: input.senderAttribution,
-        goalId: input.goalId ?? null,
+        goalId: goalWasOffered ? chosenGoalId : null,
         openQuestionId: input.openQuestionId ?? null,
         nowMs,
         turnCounter,
       });
-      const dedupState = await getEmbeddingDedupState(record);
-      let candidateVector: Float32Array | null = null;
-
-      if (dedupState !== null && this.options.embeddingClient !== undefined) {
-        try {
-          candidateVector = await this.options.embeddingClient.embed(record.description);
-        } catch (error) {
-          degraded = true;
-          dedupDegraded += 1;
-          traceDedupDegraded({
-            tracer: this.options.tracer,
-            turnId: this.options.turnId,
-            sessionId,
-            reason: "candidate_embedding_failed",
-            error,
-            candidateDescription: record.description,
-          });
-        }
-
-        if (candidateVector !== null) {
-          let bestMatch: { actionId: ActionId; similarity: number; record: ActionRecord } | null =
-            null;
-
-          const duplicateThreshold = similarityThresholds(
-            this.options.similarityConfig ?? { embedding: this.options.embeddingClient.profile },
-          ).actionPersistenceDuplicate;
-          for (const existing of [...dedupState.activeVectors, ...dedupState.acceptedVectors]) {
-            const similarity = cosineSimilarity(candidateVector, existing.vector);
-
-            if (
-              similarity >= duplicateThreshold &&
-              (bestMatch === null || similarity > bestMatch.similarity)
-            ) {
-              bestMatch = {
-                actionId: existing.actionId,
-                similarity,
-                record: existing.record,
-              };
-            }
-          }
-
-          if (bestMatch !== null) {
-            let persistTerminalWithoutUpdate = false;
-            if (
-              isTerminalEmissionState(record.state) &&
-              isActiveTerminalTransitionTarget(bestMatch.record.state)
-            ) {
-              if (this.options.actionRepository.update === undefined) {
-                // Repository fakes that only support add/list cannot retire the predecessor;
-                // fall through so the terminal evidence is still persisted.
-                persistTerminalWithoutUpdate = true;
-              } else {
-                const patch = {
-                  confidence: Math.max(bestMatch.record.confidence, record.confidence),
-                  provenance_episode_ids: mergeUniqueIds(
-                    bestMatch.record.provenance_episode_ids,
-                    record.provenance_episode_ids,
-                  ),
-                  provenance_stream_entry_ids: mergeUniqueIds(
-                    bestMatch.record.provenance_stream_entry_ids,
-                    record.provenance_stream_entry_ids,
-                  ),
-                  updated_at: nowMs,
-                  last_referenced_at_ms: nowMs,
-                  last_referenced_turn_counter: turnCounter,
-                  last_referenced_turn_global: turnCounter,
-                  ...stateTimestampPatch(record.state, nowMs),
-                } satisfies TerminalClosurePatch;
-
-                try {
-                  const lifecycleResult = closeActionThroughLifecycle({
-                    actionId: bestMatch.actionId,
-                    state: record.state,
-                    repository: this.options.actionRepository as TerminalClosureRepository,
-                    patch,
-                  });
-
-                  if (lifecycleResult.status !== "success") {
-                    const reason = skippedReasonFromLifecycleResult(lifecycleResult);
-
-                    incrementSkippedReason(skippedReasons, reason);
-                    incrementSkippedCandidate(
-                      skippedCandidates,
-                      parsedCandidate.candidateIndex,
-                      reason,
-                    );
-                    continue;
-                  }
-
-                  Object.assign(bestMatch.record, patch, { state: record.state });
-                  terminalEmissionClosures += 1;
-                  traceTerminalEmissionClosure({
-                    tracer: this.options.tracer,
-                    turnId: this.options.turnId,
-                    sessionId,
-                    candidateIndex: parsedCandidate.candidateIndex,
-                    matchedActionId: bestMatch.actionId,
-                    terminalState: record.state,
-                    description: record.description,
-                    similarity: bestMatch.similarity,
-                  });
-                  continue;
-                } catch (error) {
-                  degraded = true;
-                  incrementSkippedReason(skippedReasons, "repository_failed");
-                  incrementSkippedCandidate(
-                    skippedCandidates,
-                    parsedCandidate.candidateIndex,
-                    "repository_failed",
-                  );
-                  await this.degraded("repository_failed", error);
-                  continue;
-                }
-              }
-            }
-
-            if (!persistTerminalWithoutUpdate && bestMatch.record.state !== "unknown") {
-              if (this.options.actionRepository.update !== undefined) {
-                try {
-                  const referencePatch = {
-                    last_referenced_at_ms: nowMs,
-                    last_referenced_turn_counter: turnCounter,
-                    last_referenced_turn_global: turnCounter,
-                  } satisfies ActionRecordPatch;
-
-                  this.options.actionRepository.update(bestMatch.actionId, referencePatch);
-                  Object.assign(bestMatch.record, referencePatch, { updated_at: nowMs });
-                } catch (error) {
-                  degraded = true;
-                  traceDedupDegraded({
-                    tracer: this.options.tracer,
-                    turnId: this.options.turnId,
-                    sessionId,
-                    reason: "reference_touch_failed",
-                    error,
-                    candidateDescription: record.description,
-                  });
-                }
-              }
-
-              const rejection = rejectedCandidate({
-                candidateIndex: parsedCandidate.candidateIndex,
-                classification: "concrete_action",
-                description: record.description,
-                reason: "embedding_dedup",
-              });
-
-              dedupSkippedEmbedding += 1;
-              incrementSkippedReason(skippedReasons, "embedding_dedup");
-              incrementSkippedCandidate(
-                skippedCandidates,
-                parsedCandidate.candidateIndex,
-                "embedding_dedup",
-              );
-              rejectedCandidates.push(rejection);
-              traceDedupSkippedEmbedding({
-                tracer: this.options.tracer,
-                turnId: this.options.turnId,
-                sessionId,
-                candidate: rejection,
-                matchedActionId: bestMatch.actionId,
-                similarity: bestMatch.similarity,
-              });
-              continue;
-            }
-          }
-        }
-      }
-
-      try {
-        this.options.actionRepository.add(record, { creationSource: "extractor" });
-        persisted.push(record);
-        if (dedupState !== null && candidateVector !== null) {
-          dedupState.acceptedVectors.push({
-            actionId: record.id,
-            vector: candidateVector,
-            record,
-          });
-        }
-      } catch (error) {
-        degraded = true;
-        incrementSkippedReason(skippedReasons, "repository_failed");
-        incrementSkippedCandidate(
-          skippedCandidates,
-          parsedCandidate.candidateIndex,
-          "repository_failed",
-        );
-        await this.degraded("repository_failed", error);
-      }
+      record.selection_audit = audit;
+      decisions.push(record);
     }
+
+    let matchedCount = 0;
+    let committedDecisions: ActionSelectionAudit[] = [];
+    try {
+      if (this.options.actionRepository.applyExtractionDecision === undefined) {
+        throw new StorageError("Atomic action decision repository unavailable", {
+          code: "ACTION_DECISION_REPOSITORY_UNAVAILABLE",
+        });
+      }
+      const result = this.options.actionRepository.applyExtractionDecision({
+        records: decisions,
+        audit: {
+          turn_id: this.options.turnId ?? null,
+          candidate_ids: [...offeredIds],
+          candidate_omitted_count: candidates.omitted,
+          referenced_action_ids: parsed.referencedActionIds,
+          applied_reference_ids: [],
+          ignored_reference_ids: [],
+          decisions: [],
+        },
+        nowMs,
+        turnCounter,
+      });
+      persisted.push(...result.inserted);
+      matchedCount = result.matched.length;
+      committedDecisions = result.audit.decisions;
+      for (const failure of result.completionFailures) {
+        if (this.options.tracer?.enabled === true && this.options.turnId !== undefined)
+          this.options.tracer.emit("action_state.completion_hook_failed", {
+            turnId: this.options.turnId,
+            action_id: failure.actionId,
+            error: failure.error instanceof Error ? failure.error.message : String(failure.error),
+          });
+      }
+      for (const { decision } of result.matched) {
+        if (isTerminalEmissionState(decision.state)) {
+          terminalEmissionClosures += 1;
+          if (input.postTurnSelfPerformance !== undefined) selfPerformanceClosures += 1;
+        }
+        if (this.options.tracer?.enabled === true && this.options.turnId !== undefined) {
+          this.options.tracer.emit("action_state.transitioned", {
+            turnId: this.options.turnId,
+            action_id: decision.selection_audit!.chosen_action_id,
+            candidate_index: decision.selection_audit!.candidate_index,
+            terminal_state: decision.state,
+            description_excerpt: descriptionExcerpt(decision.description),
+          });
+          if (input.postTurnSelfPerformance !== undefined)
+            this.options.tracer.emit("action_state.borg_self_performance.completed", {
+              turnId: this.options.turnId,
+              action_id: decision.selection_audit!.chosen_action_id,
+              terminal_state: decision.state,
+            });
+        }
+      }
+      for (const audit of committedDecisions) {
+        if (
+          (audit.rejection_reason !== null || audit.goal_rejection_reason !== null) &&
+          this.options.tracer?.enabled === true &&
+          this.options.turnId !== undefined
+        ) {
+          this.options.tracer.emit("extraction.actions.selection_rejected", {
+            turnId: this.options.turnId,
+            candidate_index: audit.candidate_index,
+            chosen_action_id: audit.chosen_action_id,
+            reason: audit.rejection_reason,
+            chosen_goal_id: audit.chosen_goal_id,
+            goal_reason: audit.goal_rejection_reason,
+          });
+        }
+      }
+    } catch (error) {
+      degraded = true;
+      incrementSkippedReason(skippedReasons, "repository_failed");
+      await this.degraded("repository_failed", error);
+    }
+    this.traceSelection(
+      candidates.shown.length,
+      candidates.omitted,
+      matchedCount,
+      persisted.length,
+      committedDecisions,
+    );
 
     traceExtractorCompleted({
       tracer: this.options.tracer,
@@ -1330,8 +950,6 @@ export class ActionStateExtractor {
       skippedCandidates,
       classificationCounts: parsed.classificationCounts,
       rejectedCandidates,
-      dedupSkippedEmbedding,
-      dedupDegraded,
       terminalEmissionClosures,
       selfPerformanceClosures,
       degraded,
@@ -1339,54 +957,6 @@ export class ActionStateExtractor {
 
     return persisted;
   }
-}
-
-function traceTerminalEmissionClosure(options: {
-  tracer?: TurnTracer;
-  turnId?: string;
-  sessionId?: SessionId;
-  candidateIndex: number;
-  matchedActionId: ActionId;
-  terminalState: "completed" | "not_done" | "declined";
-  description: string;
-  similarity: number;
-}): void {
-  if (options.tracer?.enabled !== true || options.turnId === undefined) {
-    return;
-  }
-
-  options.tracer.emit("action_state.transitioned", {
-    turnId: options.turnId,
-    ...(options.sessionId !== undefined ? { session_id: options.sessionId } : {}),
-    action_id: options.matchedActionId,
-    candidate_index: options.candidateIndex,
-    terminal_state: options.terminalState,
-    description_excerpt: descriptionExcerpt(options.description),
-    similarity: options.similarity,
-  });
-}
-
-function traceBorgSelfPerformanceClosure(options: {
-  tracer?: TurnTracer;
-  turnId?: string;
-  sessionId?: SessionId;
-  candidateIndex: number;
-  matchedActionId: ActionId;
-  terminalState: "completed" | "not_done" | "declined";
-  description: string;
-}): void {
-  if (options.tracer?.enabled !== true || options.turnId === undefined) {
-    return;
-  }
-
-  options.tracer.emit("action_state.borg_self_performance.completed", {
-    turnId: options.turnId,
-    ...(options.sessionId !== undefined ? { session_id: options.sessionId } : {}),
-    action_id: options.matchedActionId,
-    candidate_index: options.candidateIndex,
-    terminal_state: options.terminalState,
-    description_excerpt: descriptionExcerpt(options.description),
-  });
 }
 
 export { ACTION_STATE_TOOL_NAME };

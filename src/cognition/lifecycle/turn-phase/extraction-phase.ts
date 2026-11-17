@@ -150,7 +150,6 @@ export async function runExtractionPhase(input: {
           audienceEntityId: input.audienceEntityId,
         })
       : null;
-  const actionLinkGoalId = actionLinkSelfContext?.executiveFocus.selected_goal?.id ?? null;
   const activeGoalsForPromotion = input.isUserTurn
     ? await input.options.selfContextBuilder.listActiveGoalsForCognition(input.audienceEntityId)
     : [];
@@ -251,7 +250,10 @@ export async function runExtractionPhase(input: {
         speakerDisplayName: actionSpeaker.displayName,
         senderDisplayNameById: (entityId) =>
           input.options.entityRepository.get(entityId)?.canonical_name ?? null,
-        goalId: actionLinkGoalId,
+        suppliedGoals: activeGoalsForPromotion,
+        participantEntityIds: input.participantRoster?.participants.map(
+          (participant) => participant.entity_id,
+        ),
         turnCounter: input.turnInput.globalTurnCounter ?? input.workingMemory.turn_counter,
         frameAnomaly: input.currentTurnFrameAnomaly,
         frameAnomalyDisposition: input.frameAnomalyDisposition,

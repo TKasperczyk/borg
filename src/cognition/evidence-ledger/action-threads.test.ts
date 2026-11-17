@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   makeActionRecord,
@@ -265,67 +265,15 @@ describe("allocateActionThreadRenderSlots", () => {
 });
 
 describe("renderActionThreadText", () => {
-  function mergedThread(originCreatedAt: number, currentCreatedAt: number): ActionThread {
-    const origin = makeActionRecord({
-      id: "act_aaaaaaaaaaaaaaaa" as ActionRecord["id"],
-      description: "commit to filing the finding",
-      state: "committed_to_do",
-      created_at: originCreatedAt,
-      updated_at: originCreatedAt,
-    });
-    const current = makeActionRecord({
-      id: "act_bbbbbbbbbbbbbbbb" as ActionRecord["id"],
-      description: "filed the finding",
-      state: "completed",
-      created_at: currentCreatedAt,
-      updated_at: currentCreatedAt + 5,
-    });
-
-    return {
-      id: origin.id,
-      records: [origin, current],
-      origin,
-      current,
-      scope: "current_session",
-    };
-  }
-
-  // The two descriptions belong to two records with independent states, and only the current
-  // record's state was ever printed. A reader takes the one state on the page for the state of the
-  // text nearest it, which reads an open commitment as discharged.
-  it("renders the origin's own state beside the origin's description", () => {
-    const text = renderActionThreadText(mergedThread(1_000, 2_000), undefined);
-
-    expect(text).toContain(
-      `originating_intent (committed_to_do since ${new Date(
-        1_000,
-      ).toISOString()}, open): commit to filing the finding`,
+  async function build(records: ActionRecord[]) {
+    const findSimilarDescriptionPairs = vi.fn(async () =>
+      records
+        .slice(1)
+        .map((record) => ({ leftId: records[0]!.id, rightId: record.id, similarity: 1 })),
     );
-    expect(text).toContain("records: 2, current: completed (closed by outcome)");
-  });
-
-  it("renders a grouped thread when the oldest record is also the most recently updated", async () => {
-    const goalId = createGoalId();
-    const older = makeActionRecord({
-      goal_id: goalId,
-      description: "確認を続ける。",
-      state: "committed_to_do",
-      created_at: 1_000,
-      updated_at: 3_000,
-    });
-    const newer = makeActionRecord({
-      goal_id: goalId,
-      created_at: 2_000,
-      updated_at: 2_000,
-    });
     const threads = await buildActionThreads({
-      records: [newer, older],
-      repository: {
-        list: () => [newer, older],
-        findSimilarDescriptionPairs: async () => [
-          { leftId: older.id, rightId: newer.id, similarity: 0.9 },
-        ],
-      },
+      records,
+      repository: { list: () => records, findSimilarDescriptionPairs },
       resolver: {
         currentSessionId: DEFAULT_SESSION_ID,
         streamEntriesById: new Map(),
@@ -333,118 +281,151 @@ describe("renderActionThreadText", () => {
         episodeScopesById: new Map(),
         episodeSourceStreamIdsById: new Map(),
       },
-      similarityThreshold: 0.85,
     });
-    expect(threads).toHaveLength(1);
-    const thread = threads[0]!;
-    expect(thread.records).toHaveLength(2);
-    expect(thread.origin.id).toBe(older.id);
-    expect(thread.current.id).toBe(older.id);
-    const text = renderActionThreadText(thread, undefined);
-    expect(text).toContain("originating_intent (committed_to_do since ");
-    expect(text).toContain("records: 2");
-    expect(text).toContain(
-      "grouped with this one by description similarity rather than by any recorded link",
+    expect(findSimilarDescriptionPairs).not.toHaveBeenCalled();
+    return threads;
+  }
+
+  it("renders each separate row's own description and disposition", async () => {
+    const open = makeActionRecord({
+      description: "commit to filing",
+      state: "committed_to_do",
+      goal_id: createGoalId(),
+    });
+    const closed = makeActionRecord({
+      description: "filed it",
+      state: "completed",
+      goal_id: open.goal_id,
+    });
+    const threads = await build([open, closed]);
+    expect(threads).toHaveLength(2);
+    expect(renderActionThreadText(threads[0]!, undefined)).toContain(`action: ${open.description}`);
+    expect(renderActionThreadText(threads[1]!, undefined)).toContain(
+      "current: completed (closed by outcome)",
     );
-    expect(text).toContain(`current_intent: ${older.description}`);
-    expect(text).not.toContain("\naction:");
-    expect(text).not.toContain("separate record created");
-    expect(text).not.toContain("record-id order");
+    expect(
+      threads.every(
+        (thread) => thread.records.length === 1 && thread.origin.id === thread.current.id,
+      ),
+    ).toBe(true);
   });
 
-  // The disposition was printed with no date, so the page could say the originating record is closed
-  // and never when. Whether it was still open when the current record was written is what separates
-  // a fold the writer declined from a pair it could not see: the extractor's duplicate pool is drawn
-  // over active states only. The stamp is the origin's own state field rather than its `created_at`,
-  // so the current record's creation is printed beside the origin's for a same-kind comparison.
-  it("dates the origin's state from its own state stamp and prints both creations", () => {
-    const origin = makeActionRecord({
-      id: "act_aaaaaaaaaaaaaaaa" as ActionRecord["id"],
-      description: "report the spent window",
+  it("keeps same-goal similar rows separate even when the oldest row was updated last", async () => {
+    const goal = createGoalId();
+    const older = makeActionRecord({
+      goal_id: goal,
+      description: "確認を続ける。",
+      created_at: 1_000,
+      updated_at: 3_000,
+    });
+    const newer = makeActionRecord({
+      goal_id: goal,
+      description: older.description,
+      created_at: 2_000,
+      updated_at: 2_000,
+    });
+    const threads = await build([newer, older]);
+    expect(threads.map((thread) => thread.id)).toEqual([older.id, newer.id]);
+    expect(
+      threads.map((thread) => renderActionThreadText(thread, undefined)).join("\n"),
+    ).not.toMatch(/originating_intent|current_intent|grouped|similarity/);
+  });
+
+  it("dates each separate row's state from its own stamp", async () => {
+    const closed = makeActionRecord({
       state: "completed",
       created_at: 1_000,
       updated_at: 4_000,
       completed_at: 4_000,
     });
-    const current = makeActionRecord({
-      id: "act_bbbbbbbbbbbbbbbb" as ActionRecord["id"],
-      description: "report the spent window again",
+    const scheduled = makeActionRecord({
       state: "scheduled",
       created_at: 9_000,
       updated_at: 9_000,
       scheduled_at: 9_000,
     });
-    const text = renderActionThreadText(
-      { id: origin.id, records: [origin, current], origin, current, scope: "current_session" },
-      undefined,
+    const threads = await build([closed, scheduled]);
+    expect(renderActionThreadText(threads[0]!, undefined)).toContain(
+      `current: scheduled (open) since ${new Date(9_000).toISOString()}`,
     );
-
-    expect(text).toContain(
-      `originating_intent (completed since ${new Date(
-        4_000,
-      ).toISOString()}, closed by outcome): report the spent window`,
+    expect(renderActionThreadText(threads[1]!, undefined)).toContain(
+      `current: completed (closed by outcome) since ${new Date(4_000).toISOString()}`,
     );
-    expect(text).not.toContain(`completed since ${new Date(1_000).toISOString()}`);
-    expect(text).toContain(
-      `separate record created ${new Date(1_000).toISOString()}, this record created ${new Date(
-        9_000,
-      ).toISOString()}, grouped with this one by description similarity`,
-    );
-    // Both stamps are the same kind of quantity, so they render with the same word.
-    expect(text).toContain(`current: scheduled (open) since ${new Date(9_000).toISOString()}`);
   });
 
-  // The counts-line stamp is the `actionTimestampForState` quantity the origin line prints, and was
-  // rendered as a bare `at`. For `scheduled` -- defined to the extractor as "arranged for a time" --
-  // a timestamp in that slot reads as the arranged time, and no record carries a due column for it
-  // to be. A single-record thread is where it bites hardest: there is no origin line, so the bare
-  // stamp is the only one on the entry.
-  it("names a single-record thread's stamp as a state-entry time rather than a bare at", () => {
+  it("names a single-record thread's stamp as a state-entry time rather than a bare at", async () => {
     const record = makeActionRecord({
-      id: "act_cccccccccccccccc" as ActionRecord["id"],
       description: "requested the restart",
       state: "scheduled",
       created_at: 7_000,
       updated_at: 7_000,
       scheduled_at: 7_000,
     });
-    const text = renderActionThreadText(
-      {
-        id: record.id,
-        records: [record],
-        origin: record,
-        current: record,
-        scope: "current_session",
-      },
-      undefined,
-    );
-
+    const [thread] = await build([record]);
+    const text = renderActionThreadText(thread!, undefined);
     expect(text).toContain(
       `records: 1, current: scheduled (open) since ${new Date(7_000).toISOString()}`,
     );
     expect(text).not.toContain("(open) at ");
     expect(text).toContain(`action: ${record.description}`);
-    expect(text).not.toContain("grouped with this one");
-    expect(text).not.toContain("current_intent:");
   });
 
-  // `selectThreadOrigin` compares `created_at` and falls through to an id tie-break. Every record
-  // an extraction pass mints carries that pass's single stamp, so a thread built out of one pass
-  // has no earliest member and `originating_intent` names an id sort order. The dated clause reads
-  // as precedence unless it says otherwise.
-  it("says that an equal created_at makes originating an id order rather than precedence", () => {
-    const sameStamp = renderActionThreadText(mergedThread(1_000, 1_000), undefined);
-    const laterCurrent = renderActionThreadText(mergedThread(1_000, 2_000), undefined);
+  it("keeps equal-created-at rows separate without inventing an origin", async () => {
+    const first = makeActionRecord({ created_at: 1_000, updated_at: 1_000 });
+    const second = makeActionRecord({ ...first, id: makeActionRecord().id });
+    const threads = await build([first, second]);
+    expect(threads).toHaveLength(2);
+    for (const thread of threads)
+      expect(renderActionThreadText(thread, undefined)).not.toContain("originating");
+  });
 
-    expect(sameStamp).toContain(
-      "carrying the same created_at as it, so which of the two is named originating follows record-id order and not precedence",
+  it("labels legacy goal links without changing them, and labels extractor-selected links", async () => {
+    const legacy = makeActionRecord({ goal_id: createGoalId() });
+    const [thread] = await build([legacy]);
+    expect(renderActionThreadText(thread!, undefined)).toContain(
+      "legacy turn-selected goal, not an action-specific link",
     );
-    expect(laterCurrent).not.toContain("record-id order");
-    // The equal-stamp clause already accounts for the second creation; printing it as well would put
-    // the same value on the line twice.
-    expect(sameStamp).not.toContain("this record created");
-    expect(laterCurrent).toContain(`this record created ${new Date(2_000).toISOString()}`);
+    expect(legacy.goal_id).not.toBeNull();
+    thread!.current = { ...legacy, goal_link_basis: "extractor" };
+    expect(renderActionThreadText(thread!, undefined)).toContain(
+      "goal_link_basis: extractor selected",
+    );
   });
+});
+
+it("allocates open rows before terminal audience or salience reservations", () => {
+  const threads: ActionThreadWithSalience[] = [
+    "considering",
+    "committed_to_do",
+    "scheduled",
+    "unknown",
+    "completed",
+    "declined",
+  ].map((state, index) => {
+    const current = makeActionRecord({
+      state: state as ActionRecord["state"],
+      audience_entity_id: createEntityId(),
+      updated_at: index + 1,
+    });
+    return {
+      id: current.id,
+      current,
+      origin: current,
+      records: [current],
+      scope: "global",
+      salienceClass: index < 4 ? "participant_pending_stale" : "completed_recent",
+    };
+  });
+  const selected = allocateActionThreadRenderSlots({
+    threads,
+    limit: 4,
+    salienceClassReservedSlots: 1,
+    audienceReservedSlots: 1,
+    audienceOrder: [...threads].reverse().map((thread) => thread.current.audience_entity_id!),
+  });
+  expect(selected.map((thread) => thread.current.state).sort()).toEqual(
+    ["considering", "committed_to_do", "scheduled", "unknown"].sort(),
+  );
 });
 
 describe("renderOlderActionThreadsSummary", () => {
@@ -463,7 +444,6 @@ describe("renderOlderActionThreadsSummary", () => {
     ],
     renderedThreadCount: 1,
     renderLimit: 12,
-    staleParticipantThreadsWithheldCount: 0,
     threadsBuiltCount: 2,
     salienceDroppedThreadCount: 0,
     sourceRecordTotal: 8,
@@ -503,28 +483,18 @@ describe("renderOlderActionThreadsSummary", () => {
     );
   });
 
-  // `rendered` is the allocator's output over a pool, not the render limit. A stale-participant
-  // cap withholds threads before the slot draw, so the count can fall below the limit without the
-  // limit ever binding -- and with neither operand printed, the two cases looked identical.
-  it("prints the slot limit and the pool withheld before it, so a short rendered count decomposes", () => {
+  it("prints the slot limit without the removed stale-participant cap", () => {
     const summary = renderOlderActionThreadsSummary({
       ...summaryInput({ consideredRecordCount: 256, sourceRecordLimit: 256 }),
       renderedThreadCount: 8,
       renderLimit: 12,
-      staleParticipantThreadsWithheldCount: 1,
       threadsBuiltCount: 214,
       salienceDroppedThreadCount: 205,
     });
 
-    // The withheld thread is the omitted one: it stays inside the identity rather than opening a
-    // fourth term, and rendered = 214 - 205 - 1 = 8 reads off the printed operands, below the
-    // twelve slots without twelve ever having been the binding constraint.
     expect(summary).toContain("threads_built=214 = rendered 8 + omitted 1 + dropped 205");
-    expect(summary).toContain(
-      "render_slots=12, stale_participant_threads_withheld=1 of that omitted count, " +
-        "held out before the slot draw, so rendered can sit below render_slots without " +
-        "render_slots binding",
-    );
+    expect(summary).toContain("render_slots=12;");
+    expect(summary).not.toContain("stale_participant_threads_withheld");
   });
 
   // A repository that cannot count says so. Falling back to 0 would claim the draw saw everything.
@@ -574,3 +544,38 @@ describe("renderOlderActionThreadsSummary", () => {
     expect(summary).toContain("disclosure_label=disclosure_class=public recent_samples=");
   });
 });
+
+it.each(["borg", "speaker"] as const)(
+  "reserves open Borg and speaker slots when %s owns the newest rows",
+  (dominant) => {
+    const speaker = createEntityId();
+    const actors =
+      dominant === "borg" ? (["borg", speaker] as const) : ([speaker, "borg"] as const);
+    const records = [
+      ...Array.from({ length: 30 }, (_, i) =>
+        makeActionRecord({ actor: actors[0], updated_at: 1_000 + i }),
+      ),
+      makeActionRecord({ actor: actors[1], updated_at: 1 }),
+    ];
+    const threads: ActionThreadWithSalience[] = records.map((current) => ({
+      id: current.id,
+      current,
+      origin: current,
+      records: [current],
+      scope: "global",
+      salienceClass: "participant_pending_stale",
+    }));
+    const selected = allocateActionThreadRenderSlots({
+      threads,
+      limit: 12,
+      salienceClassReservedSlots: 1,
+      audienceReservedSlots: 1,
+      audienceOrder: [],
+      reservedActors: ["borg", speaker],
+    });
+    expect(selected).toHaveLength(12);
+    expect(new Set(selected.map((thread) => thread.current.actor))).toEqual(
+      new Set(["borg", speaker]),
+    );
+  },
+);

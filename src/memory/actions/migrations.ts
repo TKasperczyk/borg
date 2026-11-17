@@ -105,4 +105,36 @@ export const actionMigrations = [
       for (const object of objects) db.exec(object.sql);
     },
   },
+  {
+    id: 3,
+    name: "action_identity_updates",
+    up: (db) => {
+      db.exec(`
+        ALTER TABLE action_records ADD COLUMN goal_link_basis TEXT NULL
+          CHECK (goal_link_basis IS NULL OR goal_link_basis IN ('extractor', 'unlinked'));
+        ALTER TABLE action_records ADD COLUMN selection_audit TEXT NULL;
+        ALTER TABLE action_records ADD COLUMN disclosure_label TEXT NULL;
+        ALTER TABLE action_records ADD COLUMN origin_stream_entry_ids TEXT NULL;
+        CREATE TABLE action_extraction_decisions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          timestamp INTEGER NOT NULL,
+          audit TEXT NOT NULL
+        );
+        CREATE TABLE action_record_updates (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          action_id TEXT NOT NULL,
+          text TEXT NOT NULL,
+          from_state TEXT NOT NULL,
+          to_state TEXT NOT NULL,
+          turn_id TEXT NULL,
+          source_stream_entry_ids TEXT NOT NULL,
+          timestamp INTEGER NOT NULL,
+          selection_audit TEXT NOT NULL,
+          disclosure_label TEXT NOT NULL
+        );
+        CREATE INDEX action_record_updates_action_idx
+          ON action_record_updates(action_id, timestamp DESC, id DESC);
+      `);
+    },
+  },
 ] as const satisfies readonly Migration[];

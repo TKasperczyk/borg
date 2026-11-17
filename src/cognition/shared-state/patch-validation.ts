@@ -152,6 +152,7 @@ export function allowedCanonicalizationIds(
         .map((candidate) => candidate.id)
         .filter((id): id is ActionId => actionIdHelpers.is(id)),
     ),
+    actionCandidateOmittedCount: candidates?.actionCandidateOmittedCount ?? 0,
     openQuestionIds: new Set(
       (candidates?.openQuestions ?? [])
         .map((candidate) => candidate.id)
@@ -206,6 +207,7 @@ function normalizeCanonicalizes(input: {
   value: ParsedCanonicalizes | undefined;
   kind: SharedStateEntryKind;
   allowedIds: AllowedCanonicalizationIds;
+  selfEntityId: EntityId;
   operation: ParsedPatchOperation;
   operationIndex: number;
   dropped: DroppedCanonicalizeId[];
@@ -266,6 +268,13 @@ function normalizeCanonicalizes(input: {
     }),
   };
 
+  if (canonicalizes.action_ids.length > 0)
+    canonicalizes.action_selections = canonicalizes.action_ids.map((action_id) => ({
+      action_id,
+      candidate_ids: [...input.allowedIds.actionIds] as ActionId[],
+      candidate_omitted_count: input.allowedIds.actionCandidateOmittedCount,
+      self_entity_id: input.selfEntityId,
+    }));
   return hasCanonicalizes(canonicalizes) ? canonicalizes : emptyCanonicalizes();
 }
 
@@ -723,6 +732,7 @@ export function normalizePatch<
           value: operation.canonicalizes,
           kind: operation.kind,
           allowedIds: input.allowedCanonicalizationIds,
+          selfEntityId: input.selfEntityId,
           operation,
           operationIndex,
           dropped: droppedCanonicalizeIds,
@@ -782,6 +792,7 @@ export function normalizePatch<
           value: operation.canonicalizes,
           kind: nextKind,
           allowedIds: input.allowedCanonicalizationIds,
+          selfEntityId: input.selfEntityId,
           operation,
           operationIndex,
           dropped: operationDroppedCanonicalizeIds,
@@ -932,6 +943,7 @@ export function normalizePatch<
           value: operation.replacement.canonicalizes ?? operation.canonicalizes,
           kind: operation.replacement.kind,
           allowedIds: input.allowedCanonicalizationIds,
+          selfEntityId: input.selfEntityId,
           operation,
           operationIndex,
           dropped: droppedCanonicalizeIds,
@@ -1260,6 +1272,13 @@ export function dedupeCanonicalizesAcrossOperations(operations: readonly SharedS
       goal_ids: goals.kept,
       commitment_ids: commitments.kept,
       action_ids: actions.kept,
+      ...(input.canonicalizes.action_selections === undefined
+        ? {}
+        : {
+            action_selections: input.canonicalizes.action_selections.filter((selection) =>
+              actions.kept.includes(selection.action_id),
+            ),
+          }),
       open_question_ids: openQuestions.kept,
     };
   };

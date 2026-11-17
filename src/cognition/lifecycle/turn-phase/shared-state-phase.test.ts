@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { ActionRecord } from "../../../memory/actions/index.js";
+import {
+  ActionRepository,
+  actionMigrations,
+  type ActionRecord,
+} from "../../../memory/actions/index.js";
+import { openDatabase } from "../../../storage/sqlite/index.js";
 import type { ActionRecordListFilter } from "../../../memory/actions/repository.js";
 import {
   createActionId,
@@ -175,5 +180,34 @@ it.each(["annotate", "quarantine"] as const)(
     });
     if (disposition === "annotate") expect(skip).toBeNull();
     else expect(skip?.reason).toBe("quarantined_current_turn");
+  },
+);
+
+it.each([null, "audience"] as const)(
+  "counts all 85 eligible rows before the 80-row canonicalization cap in %s scope",
+  (scope) => {
+    const db = openDatabase(":memory:", { migrations: actionMigrations });
+    try {
+      const repository = new ActionRepository({ db });
+      const audienceEntityId = scope === null ? null : createEntityId();
+      for (let i = 0; i < 85; i++)
+        repository.add(makeAction({ audience_entity_id: audienceEntityId, updated_at: 1_000 + i }));
+      repository.add(makeAction({ audience_entity_id: createEntityId(), updated_at: 9_000 }));
+      repository.add(
+        makeAction({ audience_entity_id: audienceEntityId, state: "completed", updated_at: 9_000 }),
+      );
+      const selected = selectCurrentAudienceSharedStateActionCandidatesForCanonicalization({
+        actionRepository: repository,
+        audienceEntityId,
+        activeParticipants: [],
+      });
+      expect(selected.candidates).toHaveLength(80);
+      expect(selected.omittedCount).toBe(5);
+      expect(selected.countByScope).toEqual(
+        scope === null ? { audience: 0, global: 80 } : { audience: 80, global: 0 },
+      );
+    } finally {
+      db.close();
+    }
   },
 );

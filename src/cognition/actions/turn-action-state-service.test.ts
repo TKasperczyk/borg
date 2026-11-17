@@ -1,3 +1,9 @@
+import { ActionRepository, actionMigrations } from "../../memory/actions/index.js";
+import { openDatabase } from "../../storage/sqlite/index.js";
+import { makeActionRecord } from "../../test-support/factories/memory.js";
+import { makeLockedSharedStateEntry } from "../../test-support/factories/shared-state.js";
+import { TurnLifecycleTracker } from "../lifecycle/turn-lifecycle-tracker.js";
+import { createWorkingMemory } from "../../memory/working/index.js";
 import { describe, expect, it, vi } from "vitest";
 
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
@@ -44,7 +50,12 @@ describe("TurnActionStateService", () => {
       });
       const service = new TurnActionStateService({
         model: "test-recall",
-        actionRepository: { add: vi.fn(), list: vi.fn(() => []) } as never,
+        actionRepository: {
+          add: vi.fn(),
+          list: vi.fn(() => []),
+          count: () => 0,
+          findByDescription: async () => [],
+        } as never,
         embeddingClient: new TestEmbeddingClient(),
         clock: new FixedClock(1_000),
         tracer: NOOP_TRACER,
@@ -94,6 +105,8 @@ describe("TurnActionStateService", () => {
       actionRepository: {
         add: vi.fn(),
         list: vi.fn(() => []),
+        count: () => 0,
+        findByDescription: async () => [],
       } as never,
       embeddingClient: new TestEmbeddingClient(),
       clock: new FixedClock(1_000),
@@ -204,23 +217,7 @@ describe("TurnActionStateService", () => {
 
   it("persists goal-linked extracted actions so completion resolves linked open questions", async () => {
     const streamEntryId = createStreamEntryId();
-    const llm = new FakeLLMClient({
-      responses: [
-        createActionStateResponse({
-          action_states: [
-            {
-              classification: "concrete_action",
-              description: "Send the Atlas follow-up",
-              actor: "borg",
-              state: "committed_to_do",
-              audience_entity_id: null,
-              evidence_stream_entry_ids: [streamEntryId],
-              confidence: 0.91,
-            },
-          ],
-        }),
-      ],
-    });
+    const llm = new FakeLLMClient();
     const harness = await createOfflineTestHarness({ llmClient: llm });
 
     try {
@@ -229,6 +226,22 @@ describe("TurnActionStateService", () => {
         priority: 0.8,
         provenance: { kind: "manual" },
       });
+      llm.pushResponse(
+        createActionStateResponse({
+          action_states: [
+            {
+              classification: "concrete_action",
+              description: "Send the Atlas follow-up",
+              actor: "borg",
+              state: "committed_to_do",
+              goal_id: goal.id,
+              audience_entity_id: null,
+              evidence_stream_entry_ids: [streamEntryId],
+              confidence: 0.91,
+            },
+          ],
+        }),
+      );
       const question = harness.openQuestionsRepository.add({
         question: "Was the Atlas follow-up sent?",
         urgency: 0.7,
@@ -252,7 +265,7 @@ describe("TurnActionStateService", () => {
         persistedUserEntryId: streamEntryId,
         recentHistory: [],
         audienceEntityId: null,
-        goalId: goal.id,
+        suppliedGoals: [goal],
       });
 
       expect(ids).toHaveLength(1);
@@ -280,4 +293,169 @@ describe("TurnActionStateService", () => {
       await harness.cleanup();
     }
   });
+  it.each([
+    "unrelated",
+    "continued",
+    "new",
+    "completed",
+    "shared_state",
+    "empty",
+    "empty_shared_state",
+  ] as const)("uses the existing extraction call sites for %s", async (scenario) => {
+    const db = openDatabase(":memory:", { migrations: actionMigrations });
+    try {
+      const repository = new ActionRepository({ db });
+      const source = createStreamEntryId();
+      const prior = makeActionRecord({ actor: "borg" });
+      if (scenario !== "new" && scenario !== "empty" && scenario !== "empty_shared_state")
+        repository.add(prior);
+      const assertsAction = ["continued", "new", "completed"].includes(scenario);
+      const llm = new FakeLLMClient({
+        responses: [
+          createActionStateResponse({
+            action_states: assertsAction
+              ? [
+                  {
+                    classification: "concrete_action",
+                    description: "Current wording",
+                    actor: "borg",
+                    state: scenario === "completed" ? "completed" : "scheduled",
+                    matched_existing_action_id: scenario === "new" ? null : prior.id,
+                    evidence_stream_entry_ids: [source],
+                    confidence: 0.9,
+                  },
+                ]
+              : [],
+          }),
+          createActionStateResponse({ action_states: [] }),
+        ],
+      });
+      const service = new TurnActionStateService({
+        actionRepository: repository,
+        embeddingClient: new TestEmbeddingClient(),
+        clock: new FixedClock(2_000),
+        model: "mock",
+        tracer: NOOP_TRACER,
+      });
+      await service.extract({
+        llmClient: llm,
+        turnId: "budget",
+        isUserTurn: true,
+        userMessage: "opaque",
+        persistedUserEntryId: source,
+        recentHistory: [],
+        audienceEntityId: null,
+      });
+      if (scenario === "continued")
+        expect(repository.get(prior.id)?.provenance_stream_entry_ids).toContain(source);
+      await service.closeBorgSelfPerformedActions({
+        llmClient: llm,
+        turnId: "budget",
+        userMessage: "opaque",
+        persistedUserEntryId: source,
+        persistedAgentEntryId: createStreamEntryId(),
+        agentResponse: "opaque",
+        recentHistory: [],
+        audienceEntityId: null,
+        currentTurnSharedStateEntries:
+          scenario === "shared_state" || scenario === "empty_shared_state"
+            ? [makeLockedSharedStateEntry()]
+            : [],
+      });
+      expect(llm.requests).toHaveLength(scenario === "new" || scenario === "shared_state" ? 2 : 1);
+    } finally {
+      db.close();
+    }
+  });
+
+  it.each([false, true])(
+    "returns committed post-turn IDs for abort cleanup when completion hook throws=%s",
+    async (hookThrows) => {
+      const db = openDatabase(":memory:", { migrations: actionMigrations });
+      try {
+        const onCompleted = vi.fn(() => {
+          if (hookThrows) throw new Error("question resolution failed");
+        });
+        const repository = new ActionRepository({ db, onCompleted });
+        const emit = vi.fn();
+        const source = createStreamEntryId(),
+          agentSource = createStreamEntryId();
+        const prior = makeActionRecord({ actor: "borg", provenance_stream_entry_ids: [source] });
+        repository.add(prior);
+        const llm = new FakeLLMClient({
+          responses: [
+            createActionStateResponse({
+              action_states: [
+                {
+                  classification: "concrete_action",
+                  description: "Closing wording",
+                  actor: "borg",
+                  state: "completed",
+                  matched_existing_action_id: createActionId(),
+                  evidence_stream_entry_ids: [agentSource],
+                  confidence: 0.9,
+                },
+              ],
+            }),
+          ],
+        });
+        const service = new TurnActionStateService({
+          actionRepository: repository,
+          embeddingClient: new TestEmbeddingClient(),
+          clock: new FixedClock(2_000),
+          model: "mock",
+          tracer: { enabled: true, includePayloads: false, emit },
+        });
+        const inserted = await service.closeBorgSelfPerformedActions({
+          llmClient: llm,
+          turnId: "aborted",
+          userMessage: "opaque",
+          persistedUserEntryId: source,
+          persistedAgentEntryId: agentSource,
+          agentResponse: "opaque",
+          recentHistory: [],
+          audienceEntityId: null,
+          currentTurnSharedStateEntries: [],
+        });
+        expect(inserted).toHaveLength(1);
+        expect(onCompleted).toHaveBeenCalledOnce();
+        if (hookThrows)
+          expect(emit).toHaveBeenCalledWith(
+            "action_state.completion_hook_failed",
+            expect.objectContaining({
+              action_id: inserted[0],
+              error: "question resolution failed",
+            }),
+          );
+        expect(emit).toHaveBeenCalledWith(
+          "extraction.actions.selection_summary",
+          expect.objectContaining({ inserted: 1, matched: 0 }),
+        );
+        expect(repository.get(inserted[0]!)?.selection_audit?.rejection_reason).toBe("not_offered");
+        const wm = createWorkingMemory(createSessionId(), 1_000);
+        const tracker = new TurnLifecycleTracker({
+          actionRepository: repository,
+          workingMemoryStore: {
+            load: () => wm,
+            save: (value) => value,
+            recordPendingActionMerges: () => wm,
+          },
+          executiveStepsRepository: {} as never,
+          goalsRepository: {} as never,
+          openQuestionsRepository: {} as never,
+          episodicRepository: {} as never,
+          relationalSlotRepository: {} as never,
+        });
+        tracker.captureInitialWorkingMemory(wm);
+        tracker.trackCreatedActionIds(inserted);
+        expect(
+          await tracker.cleanupAbortedTurnState({ turnId: "aborted", sessionId: wm.session_id }),
+        ).toEqual([]);
+        expect(repository.get(inserted[0]!)).toBeNull();
+        expect(repository.get(prior.id)).toEqual({ ...prior, last_referenced_turn_global: null });
+      } finally {
+        db.close();
+      }
+    },
+  );
 });

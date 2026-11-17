@@ -8,8 +8,13 @@ import type {
   ActionRecord,
   ActionRecordListFilter,
   ActionRecordPatch,
+  ActionUpdateOptions,
+  ActionRepository,
 } from "../../memory/actions/index.js";
-import { ACTION_STATE_METADATA } from "../../memory/actions/index.js";
+import {
+  ACTION_STATE_METADATA,
+  isActionTerminalClosureGuardState,
+} from "../../memory/actions/index.js";
 import { FixedClock } from "../../util/clock.js";
 import {
   createActionId,
@@ -140,23 +145,29 @@ function makeActionRecord(
   };
 }
 
-function makeActionRepository(records: ActionRecord[] = []) {
+function makeActionRepository(
+  records: ActionRecord[] = [],
+  addOverride?: (record: ActionRecord) => void,
+) {
   const add = vi.fn((record: ActionRecord) => {
+    addOverride?.(record);
     records.push(record);
   });
-  const update = vi.fn((id: ActionRecord["id"], patch: ActionRecordPatch) => {
-    const index = records.findIndex((record) => record.id === id);
-    const existing = records[index];
+  const update = vi.fn(
+    (id: ActionRecord["id"], patch: ActionRecordPatch, _options?: ActionUpdateOptions) => {
+      const index = records.findIndex((record) => record.id === id);
+      const existing = records[index];
 
-    if (existing === undefined) {
-      throw new Error(`Missing action ${id}`);
-    }
+      if (existing === undefined) {
+        throw new Error(`Missing action ${id}`);
+      }
 
-    records[index] = {
-      ...existing,
-      ...patch,
-    };
-  });
+      records[index] = {
+        ...existing,
+        ...patch,
+      };
+    },
+  );
   const get = vi.fn((id: ActionRecord["id"]) => records.find((record) => record.id === id) ?? null);
   const list = vi.fn((filter: ActionRecordListFilter = {}) =>
     records.filter((record) => {
@@ -191,10 +202,83 @@ function makeActionRepository(records: ActionRecord[] = []) {
     }),
   );
 
+  const appendExtractionUpdate = vi.fn(
+    (id: ActionRecord["id"], candidate: ActionRecord, _turnId: string | null) => {
+      const current = get(id);
+      if (current === null) return { status: "rejected", reason: "missing" } as const;
+      if (isActionTerminalClosureGuardState(current.state))
+        return { status: "rejected", reason: "terminal" } as const;
+      if (current.actor !== candidate.actor)
+        return { status: "rejected", reason: "actor_mismatch" } as const;
+      const patch = {
+        state: candidate.state,
+        confidence: Math.max(current.confidence, candidate.confidence),
+        provenance_stream_entry_ids: [
+          ...new Set([
+            ...current.provenance_stream_entry_ids,
+            ...candidate.provenance_stream_entry_ids,
+          ]),
+        ],
+        updated_at: candidate.updated_at,
+        last_referenced_at_ms: candidate.last_referenced_at_ms,
+        last_referenced_turn_counter: candidate.last_referenced_turn_counter,
+        last_referenced_turn_global: candidate.last_referenced_turn_global,
+        [ACTION_STATE_METADATA[candidate.state].timestamp_field]: candidate.updated_at,
+      };
+      update(id, patch, { skipSideEffects: undefined });
+      return {
+        status: "applied",
+        record: { ...current, ...patch },
+        completionFailures: [],
+      } as const;
+    },
+  );
+
+  const applyExtractionDecision = vi.fn(
+    (input: Parameters<ActionRepository["applyExtractionDecision"]>[0]) => {
+      const inserted: ActionRecord[] = [];
+      const matched: Array<{
+        record: ActionRecord;
+        decision: ActionRecord;
+        previous: ActionRecord | null;
+      }> = [];
+      const audit = input.audit;
+      for (const id of audit.referenced_action_ids)
+        if (audit.candidate_ids.includes(id)) {
+          update(id, {
+            last_referenced_at_ms: input.nowMs,
+            last_referenced_turn_counter: input.turnCounter,
+            last_referenced_turn_global: input.turnCounter,
+          });
+          audit.applied_reference_ids.push(id);
+        }
+      for (const record of input.records) {
+        const selection = record.selection_audit!;
+        const id = selection.chosen_action_id;
+        if (id !== null && selection.candidate_ids.includes(id)) {
+          const previous = get(id);
+          const result = appendExtractionUpdate(id, record, audit.turn_id);
+          if (result.status === "applied") {
+            matched.push({ record: result.record, decision: record, previous });
+            audit.decisions.push(selection);
+            continue;
+          }
+          selection.rejection_reason = result.reason;
+        }
+        add(record);
+        inserted.push(record);
+        audit.decisions.push(selection);
+      }
+      return { inserted, matched, audit, completionFailures: [] };
+    },
+  );
+
   return {
     add,
     get,
     update,
+    appendExtractionUpdate,
+    applyExtractionDecision,
     list,
     records,
   };
@@ -262,7 +346,7 @@ describe("ActionStateExtractor", () => {
     const extractor = new ActionStateExtractor({
       llmClient: llm,
       model: "haiku",
-      actionRepository: { add },
+      actionRepository: makeActionRepository([], add),
       clock: new FixedClock(2_000),
     });
 
@@ -306,7 +390,7 @@ describe("ActionStateExtractor", () => {
     const extractor = new ActionStateExtractor({
       llmClient: llm,
       model: "haiku",
-      actionRepository: { add },
+      actionRepository: makeActionRepository([], add),
       clock: new FixedClock(2_000),
     });
 
@@ -366,7 +450,7 @@ describe("ActionStateExtractor", () => {
     const extractor = new ActionStateExtractor({
       llmClient: llm,
       model: "haiku",
-      actionRepository: { add },
+      actionRepository: makeActionRepository([], add),
       clock: new FixedClock(2_000),
     });
 
@@ -410,7 +494,7 @@ describe("ActionStateExtractor", () => {
     const extractor = new ActionStateExtractor({
       llmClient: llm,
       model: "haiku",
-      actionRepository: { add },
+      actionRepository: makeActionRepository([], add),
       clock: new FixedClock(2_000),
     });
 
@@ -429,9 +513,7 @@ describe("ActionStateExtractor", () => {
       audience_entity_id: group,
       state: "committed_to_do",
     });
-    expect(add).toHaveBeenCalledWith(expect.objectContaining({ actor: alice }), {
-      creationSource: "extractor",
-    });
+    expect(add).toHaveBeenCalledWith(expect.objectContaining({ actor: alice }));
     expect(String(llm.requests[0]?.messages[0]?.content ?? "")).toContain(
       `"speaker_entity_id":"${alice}"`,
     );
@@ -456,7 +538,7 @@ describe("ActionStateExtractor", () => {
     const extractor = new ActionStateExtractor({
       llmClient: llm,
       model: "haiku",
-      actionRepository: { add },
+      actionRepository: makeActionRepository([], add),
       clock: new FixedClock(2_000),
     });
 
@@ -525,7 +607,7 @@ describe("ActionStateExtractor", () => {
     const extractor = new ActionStateExtractor({
       llmClient: llm,
       model: "haiku",
-      actionRepository: { add },
+      actionRepository: makeActionRepository([], add),
       clock: new FixedClock(2_000),
     });
 
@@ -559,7 +641,7 @@ describe("ActionStateExtractor", () => {
     const extractor = new ActionStateExtractor({
       llmClient: llm,
       model: "haiku",
-      actionRepository: { add },
+      actionRepository: makeActionRepository([], add),
       clock: new FixedClock(2_000),
       turnId: "turn_action_trace",
       tracer: {
@@ -641,7 +723,7 @@ describe("ActionStateExtractor", () => {
       const extractor = new ActionStateExtractor({
         llmClient: llm,
         model: "haiku",
-        actionRepository: { add },
+        actionRepository: makeActionRepository([], add),
         clock: new FixedClock(2_000),
         turnId: "turn_action_classification",
         tracer: {
@@ -705,7 +787,7 @@ describe("ActionStateExtractor", () => {
     const extractor = new ActionStateExtractor({
       llmClient: llm,
       model: "haiku",
-      actionRepository: { add },
+      actionRepository: makeActionRepository([], add),
       clock: new FixedClock(2_000),
       turnId: "turn_action_capability_boundary",
       tracer: {
@@ -737,7 +819,7 @@ describe("ActionStateExtractor", () => {
     });
   });
 
-  it("rejects items missing classification with invalid_classification telemetry", async () => {
+  it("rejects items missing classification after the single schema repair", async () => {
     const currentUserStreamEntryId = createStreamEntryId();
     const add = vi.fn();
     const events: Array<{ event: string; data: Record<string, unknown> }> = [];
@@ -755,10 +837,11 @@ describe("ActionStateExtractor", () => {
         ]),
       ],
     });
+    llm.pushResponse(rawActionStateResponse([{ classification: "invalid" }]));
     const extractor = new ActionStateExtractor({
       llmClient: llm,
       model: "haiku",
-      actionRepository: { add },
+      actionRepository: makeActionRepository([], add),
       clock: new FixedClock(2_000),
       turnId: "turn_missing_classification",
       tracer: {
@@ -770,28 +853,22 @@ describe("ActionStateExtractor", () => {
 
     const records = await extractor.extract(makeExtractorInput(currentUserStreamEntryId));
 
+    expect(llm.requests).toHaveLength(2);
     expect(records).toEqual([]);
     expect(add).not.toHaveBeenCalled();
     expect(events).toContainEqual({
       event: "extraction.actions.completed",
       data: expect.objectContaining({
         turnId: "turn_missing_classification",
-        candidates_emitted: 1,
-        valid_candidate_count: 0,
+        candidates_emitted: 0,
         persisted_count: 0,
-        skipped_count: 1,
-        skipped_reasons: [{ reason: "invalid_classification", count: 1 }],
-        skipped_candidates: [{ candidate_index: 0, reason: "invalid_classification" }],
-        classification_counts: expect.objectContaining({
-          invalid_classification: 1,
-        }),
-        rejected_invalid_enum: 1,
-        degraded: false,
+        fatal_reason: "invalid_payload",
+        degraded: true,
       }),
     });
   });
 
-  it("rejects invalid classification values with invalid_classification telemetry", async () => {
+  it("rejects invalid classification values after the single schema repair", async () => {
     const currentUserStreamEntryId = createStreamEntryId();
     const add = vi.fn();
     const events: Array<{ event: string; data: Record<string, unknown> }> = [];
@@ -807,10 +884,11 @@ describe("ActionStateExtractor", () => {
         ]),
       ],
     });
+    llm.pushResponse(rawActionStateResponse([{ classification: "invalid" }]));
     const extractor = new ActionStateExtractor({
       llmClient: llm,
       model: "haiku",
-      actionRepository: { add },
+      actionRepository: makeActionRepository([], add),
       clock: new FixedClock(2_000),
       turnId: "turn_invalid_classification",
       tracer: {
@@ -822,28 +900,22 @@ describe("ActionStateExtractor", () => {
 
     const records = await extractor.extract(makeExtractorInput(currentUserStreamEntryId));
 
+    expect(llm.requests).toHaveLength(2);
     expect(records).toEqual([]);
     expect(add).not.toHaveBeenCalled();
     expect(events).toContainEqual({
       event: "extraction.actions.completed",
       data: expect.objectContaining({
         turnId: "turn_invalid_classification",
-        candidates_emitted: 1,
-        valid_candidate_count: 0,
+        candidates_emitted: 0,
         persisted_count: 0,
-        skipped_count: 1,
-        skipped_reasons: [{ reason: "invalid_classification", count: 1 }],
-        skipped_candidates: [{ candidate_index: 0, reason: "invalid_classification" }],
-        classification_counts: expect.objectContaining({
-          invalid_classification: 1,
-        }),
-        rejected_invalid_enum: 1,
-        degraded: false,
+        fatal_reason: "invalid_payload",
+        degraded: true,
       }),
     });
   });
 
-  it("skips a concrete action that matches an existing active same-axis action", async () => {
+  it("persists an unmatched assertion despite identical same-axis embeddings", async () => {
     const currentUserStreamEntryId = createStreamEntryId();
     const audience = createEntityId();
     const goalId = createGoalId();
@@ -898,27 +970,10 @@ describe("ActionStateExtractor", () => {
       openQuestionId,
     });
 
-    expect(records).toEqual([]);
-    expect(repository.add).not.toHaveBeenCalled();
-    expect(events).toContainEqual({
-      event: "action_persistence.dedup.skipped",
-      data: expect.objectContaining({
-        turnId: "turn_action_dedup",
-        classification: "concrete_action",
-        description_excerpt: candidateDescription,
-        reason: "embedding_dedup",
-        similarity: 1,
-      }),
-    });
-    expect(events).toContainEqual({
-      event: "extraction.actions.rejected",
-      data: {
-        turnId: "turn_action_dedup",
-        classification: "concrete_action",
-        description_excerpt: candidateDescription,
-        reason: "embedding_dedup",
-      },
-    });
+    expect(records.map((record) => record.description)).toEqual([candidateDescription]);
+    expect(repository.add).toHaveBeenCalledOnce();
+    expect(repository.records).toHaveLength(2);
+    expect(events.some((event) => event.event === "action_persistence.dedup.skipped")).toBe(false);
   });
 
   it.each(["completed", "not_done", "declined"] as const)(
@@ -951,6 +1006,7 @@ describe("ActionStateExtractor", () => {
           actionStateResponse([
             {
               description: terminalDescription,
+              matched_existing_action_id: existingAction.id,
               actor,
               state: terminalState,
               audience_entity_id: audience,
@@ -978,6 +1034,7 @@ describe("ActionStateExtractor", () => {
         ...makeExtractorInput(currentUserStreamEntryId),
         userMessage: "X deployed the fix.",
         audienceEntityId: audience,
+        activeActionsForReference: [existingAction],
       });
 
       expect(records).toEqual([]);
@@ -1008,7 +1065,6 @@ describe("ActionStateExtractor", () => {
           candidate_index: 0,
           terminal_state: terminalState,
           description_excerpt: terminalDescription,
-          similarity: 1,
         }),
       });
       expect(events).toContainEqual({
@@ -1024,7 +1080,7 @@ describe("ActionStateExtractor", () => {
   );
 
   it.each(TERMINAL_RACE_CASES)(
-    "skips embedding terminal closure when lifecycle sees concurrent $terminalState",
+    "writes a new assertion when a proposed match has concurrently become $terminalState",
     async ({ terminalState, candidateState }) => {
       const currentUserStreamEntryId = createStreamEntryId();
       const audience = createEntityId();
@@ -1061,6 +1117,7 @@ describe("ActionStateExtractor", () => {
           actionStateResponse([
             {
               description: terminalDescription,
+              matched_existing_action_id: existingAction.id,
               state: candidateState,
               audience_entity_id: audience,
               evidence_stream_entry_ids: [currentUserStreamEntryId],
@@ -1087,12 +1144,14 @@ describe("ActionStateExtractor", () => {
         ...makeExtractorInput(currentUserStreamEntryId),
         userMessage: "X deployed the fix.",
         audienceEntityId: audience,
+        activeActionsForReference: [existingAction],
       });
 
-      expect(records).toEqual([]);
-      expect(repository.add).not.toHaveBeenCalled();
+      expect(records).toHaveLength(1);
+      expect(records[0]?.selection_audit?.rejection_reason).toBe("terminal");
+      expect(repository.add).toHaveBeenCalledOnce();
       expect(repository.update).not.toHaveBeenCalled();
-      expect(repository.records).toHaveLength(1);
+      expect(repository.records).toHaveLength(2);
       expect(repository.records[0]).toMatchObject({
         id: existingAction.id,
         state: terminalState,
@@ -1106,10 +1165,10 @@ describe("ActionStateExtractor", () => {
         event: "extraction.actions.completed",
         data: expect.objectContaining({
           turnId: `turn_embedding_race_${terminalState}`,
-          persisted_count: 0,
-          skipped_count: 1,
-          skipped_reasons: [{ reason: "lifecycle_no_op", count: 1 }],
-          skipped_candidates: [{ candidate_index: 0, reason: "lifecycle_no_op" }],
+          persisted_count: 1,
+          skipped_count: 0,
+          skipped_reasons: [],
+          skipped_candidates: [],
           actions_closed_by_terminal_emission: 0,
         }),
       });
@@ -1173,7 +1232,6 @@ describe("ActionStateExtractor", () => {
         currentTurnSharedStateEntries: [sharedStateEntry],
         agentResponse: "I logged Mom's medication incident in the shared state.",
       },
-      persistNewActions: false,
       turnCounter: 18,
     });
 
@@ -1236,7 +1294,7 @@ describe("ActionStateExtractor", () => {
   });
 
   it.each(TERMINAL_RACE_CASES)(
-    "skips matched-action terminal closure when lifecycle sees concurrent $terminalState",
+    "writes a new post-turn assertion when the matched row concurrently becomes $terminalState",
     async ({ terminalState, candidateState }) => {
       const currentUserStreamEntryId = createStreamEntryId();
       const agentStreamEntryId = createStreamEntryId();
@@ -1294,14 +1352,14 @@ describe("ActionStateExtractor", () => {
           currentTurnSharedStateEntries: [],
           agentResponse: "I logged the incident.",
         },
-        persistNewActions: false,
         turnCounter: 18,
       });
 
-      expect(records).toEqual([]);
-      expect(repository.add).not.toHaveBeenCalled();
+      expect(records).toHaveLength(1);
+      expect(records[0]?.selection_audit?.rejection_reason).toBe("terminal");
+      expect(repository.add).toHaveBeenCalledOnce();
       expect(repository.update).not.toHaveBeenCalled();
-      expect(repository.records).toHaveLength(1);
+      expect(repository.records).toHaveLength(2);
       expect(repository.records[0]).toMatchObject({
         id: existingAction.id,
         state: terminalState,
@@ -1315,10 +1373,10 @@ describe("ActionStateExtractor", () => {
         event: "extraction.actions.completed",
         data: expect.objectContaining({
           turnId: `turn_self_performed_race_${terminalState}`,
-          persisted_count: 0,
-          skipped_count: 1,
-          skipped_reasons: [{ reason: "lifecycle_no_op", count: 1 }],
-          skipped_candidates: [{ candidate_index: 0, reason: "lifecycle_no_op" }],
+          persisted_count: 1,
+          skipped_count: 0,
+          skipped_reasons: [],
+          skipped_candidates: [],
           actions_closed_by_terminal_emission: 0,
           actions_closed_by_borg_self_performance: 0,
         }),
@@ -1356,7 +1414,6 @@ describe("ActionStateExtractor", () => {
         currentTurnSharedStateEntries: [],
         agentResponse: "I can keep that in mind.",
       },
-      persistNewActions: false,
       turnCounter: 18,
     });
 
@@ -1407,7 +1464,7 @@ describe("ActionStateExtractor", () => {
     expect(repository.add).toHaveBeenCalledOnce();
   });
 
-  it("closes an existing unknown-state action when a terminal emission embedding-matches it", async () => {
+  it("closes an unknown-state action only when the model names its offered id", async () => {
     const currentUserStreamEntryId = createStreamEntryId();
     const previousStreamEntryId = createStreamEntryId();
     const audience = createEntityId();
@@ -1434,6 +1491,7 @@ describe("ActionStateExtractor", () => {
         actionStateResponse([
           {
             description: terminalDescription,
+            matched_existing_action_id: existingAction.id,
             state: "completed",
             audience_entity_id: audience,
             evidence_stream_entry_ids: [currentUserStreamEntryId],
@@ -1454,6 +1512,7 @@ describe("ActionStateExtractor", () => {
       ...makeExtractorInput(currentUserStreamEntryId),
       userMessage: "I confirmed the release window.",
       audienceEntityId: audience,
+      activeActionsForReference: [existingAction],
     });
 
     expect(records).toEqual([]);
@@ -1560,7 +1619,7 @@ describe("ActionStateExtractor", () => {
     expect(repository.add).toHaveBeenCalledOnce();
   });
 
-  it("dedups near-identical concrete actions within the same batch", async () => {
+  it("keeps separate near-identical assertions within one batch", async () => {
     const currentUserStreamEntryId = createStreamEntryId();
     const firstDescription = "review the billing PR";
     const secondDescription = "review the billing pull request";
@@ -1597,8 +1656,11 @@ describe("ActionStateExtractor", () => {
 
     const records = await extractor.extract(makeExtractorInput(currentUserStreamEntryId));
 
-    expect(records.map((record) => record.description)).toEqual([firstDescription]);
-    expect(repository.add).toHaveBeenCalledOnce();
+    expect(records.map((record) => record.description)).toEqual([
+      firstDescription,
+      secondDescription,
+    ]);
+    expect(repository.add).toHaveBeenCalledTimes(2);
   });
 
   it.each([
@@ -1653,7 +1715,7 @@ describe("ActionStateExtractor", () => {
     expect(repository.add).toHaveBeenCalledOnce();
   });
 
-  it("fails open when embedding dedup is unavailable", async () => {
+  it("does not need embeddings to persist an unmatched assertion", async () => {
     const currentUserStreamEntryId = createStreamEntryId();
     const audience = createEntityId();
     const description = "send the design review note";
@@ -1697,14 +1759,7 @@ describe("ActionStateExtractor", () => {
 
     expect(records.map((record) => record.description)).toEqual([description]);
     expect(repository.add).toHaveBeenCalledOnce();
-    expect(events).toContainEqual({
-      event: "action_persistence.dedup.degraded",
-      data: expect.objectContaining({
-        turnId: "turn_action_dedup_degraded",
-        reason: "active_action_embedding_failed",
-        error: "embedding offline",
-      }),
-    });
+    expect(events.some((event) => event.event === "action_persistence.dedup.degraded")).toBe(false);
   });
 
   it("uses the configured recallExpansion model slot", async () => {
@@ -1715,7 +1770,7 @@ describe("ActionStateExtractor", () => {
     const extractor = new ActionStateExtractor({
       llmClient: llm,
       model: "recall-expansion-model",
-      actionRepository: { add: vi.fn() },
+      actionRepository: makeActionRepository(),
       clock: new FixedClock(2_000),
     });
 
@@ -1740,7 +1795,7 @@ describe("ActionStateExtractor", () => {
     const extractor = new ActionStateExtractor({
       llmClient: llm,
       model: "haiku",
-      actionRepository: { add: vi.fn() },
+      actionRepository: makeActionRepository(),
       clock: new FixedClock(2_000),
     });
 

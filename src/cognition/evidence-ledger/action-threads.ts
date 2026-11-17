@@ -2,7 +2,7 @@ import {
   ACTION_STATE_METADATA,
   ACTION_STATES,
   lastReferencedActionLifecycleTurn,
-  type ActionDescriptionSimilarityPair,
+  type ActionUpdateHistory,
   type ActionRecord,
   type ActionState,
   type ActionStateTimestampField,
@@ -13,7 +13,6 @@ import {
   renderMemoryDisclosureLabelFieldsForModel,
   type MemoryDisclosureLabel,
 } from "../../retrieval/index.js";
-import { DisjointSet } from "../../util/disjoint-set.js";
 import type { EntityId, StreamEntryId } from "../../util/ids.js";
 import { actionMemoryDisclosureLabel } from "../../memory/common/disclosure-serializers.js";
 import type { ActiveParticipant } from "../participants.js";
@@ -26,7 +25,9 @@ export const DEFAULT_ACTION_THREAD_SOURCE_RECORD_LIMIT = 256;
 export const DEFAULT_ACTION_THREAD_SALIENCE_CLASS_RESERVED_SLOTS = 1;
 export const DEFAULT_ACTION_THREAD_AUDIENCE_RESERVED_SLOTS = 1;
 export const PARTICIPANT_RECENT_ACTION_TURN_WINDOW = 3;
-export const STALE_PARTICIPANT_ACTION_RENDER_LIMIT = 5;
+export const ACTION_UPDATE_HISTORY_LIMIT = 5;
+export const ACTION_UPDATE_HISTORY_MAX_CHARS = 4_000;
+export const ACTION_ACTOR_RESERVED_RENDER_SLOTS = 1;
 
 const OLDER_ACTION_THREAD_SAMPLE_LIMIT = 4;
 const OLDER_ACTION_THREAD_SAMPLE_MAX_CHARS = 80;
@@ -125,6 +126,8 @@ export function listActionCandidatesForCognition(input: {
     ...(input.states === undefined ? {} : { states: input.states }),
     ...(input.actor === undefined ? {} : { actor: input.actor }),
     recallAllAudiences: true,
+    prioritizeActive: true,
+    reserveActors: ["borg", ...participantEntityIds],
     rankAudienceEntityIds,
     rankActorEntityIds: participantEntityIds,
     limit: input.limit,
@@ -133,6 +136,7 @@ export function listActionCandidatesForCognition(input: {
   return records
     .sort(
       (left, right) =>
+        Number(!isActiveActionState(left.state)) - Number(!isActiveActionState(right.state)) ||
         actionCognitionRank({
           action: left,
           audienceEntityId: input.audienceEntityId,
@@ -182,107 +186,27 @@ function combineActionScopes(
   return combineScopes(records.map((record) => actionScope(record, resolver)));
 }
 
-function selectThreadOrigin(records: readonly ActionRecord[]): ActionRecord {
-  return [...records].sort(
-    (left, right) => left.created_at - right.created_at || left.id.localeCompare(right.id),
-  )[0] as ActionRecord;
-}
-
-function selectThreadCurrent(records: readonly ActionRecord[]): ActionRecord {
-  return [...records].sort(
-    (left, right) => right.updated_at - left.updated_at || left.id.localeCompare(right.id),
-  )[0] as ActionRecord;
-}
-
-function canThreadActions(left: ActionRecord, right: ActionRecord): boolean {
-  return (
-    left.goal_id !== null &&
-    right.goal_id !== null &&
-    left.goal_id === right.goal_id &&
-    left.actor === right.actor
-  );
-}
-
-function sameThreadablePair(
-  pair: ActionDescriptionSimilarityPair,
-  actionsById: ReadonlyMap<string, ActionRecord>,
-  threshold: number,
-): [ActionRecord, ActionRecord] | null {
-  if (pair.similarity < threshold) {
-    return null;
-  }
-
-  const left = actionsById.get(pair.leftId);
-  const right = actionsById.get(pair.rightId);
-
-  if (left === undefined || right === undefined || !canThreadActions(left, right)) {
-    return null;
-  }
-
-  return [left, right];
-}
-
 export async function buildActionThreads(input: {
   records: readonly ActionRecord[];
   repository: ActionLedgerRepository;
   resolver: ScopeResolver;
-  similarityThreshold: number;
+  /** Retained for callers; similarity never establishes action identity. */
+  similarityThreshold?: number;
 }): Promise<ActionThread[]> {
-  // Exact lexicographic (`<`) tie-break: union-by-min root, matching the prior
-  // hand-rolled union-find (localeCompare could reorder for non-ActionId strings).
-  const parents = new DisjointSet<string>((leftRoot, rightRoot) =>
-    leftRoot < rightRoot ? -1 : leftRoot > rightRoot ? 1 : 0,
-  );
-  const actionsById = new Map(input.records.map((record) => [record.id, record]));
-
-  for (const record of input.records) {
-    parents.add(record.id);
-  }
-
-  const pairs =
-    input.repository.findSimilarDescriptionPairs === undefined
-      ? []
-      : await input.repository.findSimilarDescriptionPairs(
-          input.records.filter((record) => record.goal_id !== null),
-          input.similarityThreshold,
-        );
-
-  for (const pair of pairs) {
-    const records = sameThreadablePair(pair, actionsById, input.similarityThreshold);
-
-    if (records === null) {
-      continue;
-    }
-
-    parents.union(records[0].id, records[1].id);
-  }
-
-  const groups = new Map<string, ActionRecord[]>();
-
-  for (const record of input.records) {
-    const root = parents.find(record.id);
-    groups.set(root, [...(groups.get(root) ?? []), record]);
-  }
-
-  return [...groups.entries()]
-    .map(([id, records]) => {
-      const origin = selectThreadOrigin(records);
-      const current = selectThreadCurrent(records);
-
-      return {
-        id,
-        records: [...records].sort(
-          (left, right) => left.updated_at - right.updated_at || left.id.localeCompare(right.id),
-        ),
-        origin,
-        current,
-        scope: combineActionScopes(records, input.resolver),
-      };
-    })
+  return [...new Map(input.records.map((record) => [record.id, record])).values()]
+    .map((record) => ({
+      id: record.id,
+      records: [record],
+      origin: record,
+      current: record,
+      scope: combineActionScopes([record], input.resolver),
+    }))
     .sort(
       (left, right) =>
+        Number(!isActiveActionState(left.current.state)) -
+          Number(!isActiveActionState(right.current.state)) ||
         right.current.updated_at - left.current.updated_at ||
-        left.current.id.localeCompare(right.current.id),
+        left.id.localeCompare(right.id),
     );
 }
 
@@ -306,132 +230,48 @@ function renderActionStateDisposition(state: ActionState): string {
   return metadata.terminal ? "closed by outcome" : "closed without an outcome";
 }
 
-// A thread merges records written across a span -- `selectThreadOrigin` takes the earliest
-// `created_at`, `selectThreadCurrent` the latest `updated_at` -- so the two intents below are
-// separate writes and can be days or weeks apart. Only `current` carried a stamp, which left the
-// originating text undated on the page: a description that accurately reported the world at its own
-// write time, set beside a later one that accurately reports the world now, reads as one row
-// disagreeing with itself. Nothing on the page distinguished that from a bad write. The origin stamp
-// is rendered only when the origin is not also the current record, matching the `current_intent`
-// line: on a single-record thread there is no second write for the reader to date it against.
-//
-// Dating the two writes made the gap legible and, on its own, made the link between them look
-// better sourced than it is. `buildActionThreads` has exactly one union road -- description-embedding
-// pairs at or above the similarity threshold, guarded on equal actor and equal non-null `goal_id` --
-// so every thread holding more than one record was grouped by resemblance and none by a stored link.
-// Neither guard narrows that much: `goal_id` is the turn's executive-focus selection, stamped
-// identically onto every record that turn mints rather than chosen per record, so equal `goal_id`
-// means "extracted while the same goal held focus". A fact that simply recurs -- phrased alike each
-// time because it is the same fact -- therefore threads exactly as readily as two records of one
-// undertaking, and `originating_intent` then states a causal claim the store never made. The clause
-// that dates the origin now also names how it was attached, so the inference is visible at the one
-// place a reader would otherwise read it as record.
-//
-// The two counts follow the same rule. `transitions` named the record count after the designed case,
-// where successive states of one undertaking merge; on a resemblance-grouped thread it asserts a
-// lifecycle nobody observed, and a record's own transitions are its state stamps, not its
-// thread-mates. It is the number of records, and says so. And on a single-record thread nothing was
-// attached and nothing originated: the description is the record's own, so it is rendered under a
-// name that does not claim otherwise.
-//
-// One state was printed for two descriptions. `current:` names the disposition of `thread.current`,
-// and on a merged thread the origin is a different record with its own independent state -- the
-// origin line sat above it carrying no disposition at all, so the only state on the page attached
-// itself to the nearest text. An action description states what was undertaken, not whether it
-// happened; the record's state is the field that settles that, and reading it off a thread-mate
-// makes an intent look discharged or a discharged act look pending, with nothing on the page to
-// catch it. So the origin's own state and disposition are rendered on the origin's own line, beside
-// the words they govern rather than beneath them: this section truncates from the tail, and a
-// disposition placed on the counts line can be cut while the description it qualifies survives.
-// A single-record thread keeps the bare `action:` name -- there is no second record for `current:`
-// to be mistaken for, so repeating the state there would only restate the line below it.
 export function renderActionThreadText(
   thread: ActionThread,
   entityRepository: Pick<EntityRepository, "get"> | undefined,
+  history?: ActionUpdateHistory,
 ): string {
-  const currentAt = new Date(actionTimestampForState(thread.current)).toISOString();
-  const actor = actionActorDisplay(thread.current.actor, entityRepository);
-  const singleRecord = thread.records.length === 1;
-  const originIsCurrent = thread.current.id === thread.origin.id;
-  // One extraction pass writes every record it mints under a single stamp, so a thread assembled
-  // out of one pass has no earliest member: `selectThreadOrigin` falls through the `created_at`
-  // comparison to its id tie-break, and `originating_intent` then names whichever record id sorts
-  // first. The dated clause reads as precedence -- one write, then a later one -- and there is
-  // none. Stated as the observation that the two stamps are equal rather than as a claim about
-  // passes, since equal stamps are what the render can see.
-  // The origin's disposition arrived undated. `current:` carries a stamp and the origin line did
-  // not, so the page could say the originating record is closed and never when -- and whether it was
-  // still open when the current record was written is the one fact separating two writes about one
-  // undertaking from two records the writer never had the chance to fold. The extractor's duplicate
-  // check draws its pool with `states: ACTIVE_ACTION_STATES`, on the same actor/audience/goal/
-  // open-question axis this thread's guard uses and at the same similarity threshold, so a record
-  // that has already gone terminal is invisible to it and a later near-duplicate is minted rather
-  // than merged. This render then groups exactly the pairs the writer could not, and read without
-  // the origin's stamp that is indistinguishable from a fold the writer declined.
-  //
-  // The stamp is the origin's own state field, which is a different clock from the `created_at`
-  // beside it -- so the current record's creation is printed too, and the comparison a reader needs
-  // is between two values of the same kind rather than between a creation and a state change. It is
-  // omitted when the two creations are equal: the clause below already explains that case, and
-  // printing a repeated value there would only widen a line this section truncates from the tail.
-  const originStateAt = new Date(actionTimestampForState(thread.origin)).toISOString();
-  const createdAtDiffers = thread.origin.created_at !== thread.current.created_at;
-  const originCreation = originIsCurrent
-    ? ""
-    : `originating_intent is a separate record created ${new Date(
-        thread.origin.created_at,
-      ).toISOString()}${
-        createdAtDiffers
-          ? `, this record created ${new Date(thread.current.created_at).toISOString()}`
-          : ""
-      }, `;
-  // Earliest creation and latest update can select the same member of a multi-record thread.
-  const originAt = singleRecord
-    ? ""
-    : `; ${originCreation}grouped with this one by description similarity rather than by any recorded link${
-        !originIsCurrent && !createdAtDiffers
-          ? ", and carrying the same created_at as it, so which of the two is named originating follows record-id order and not precedence"
-          : ""
-      }`;
-  const lines = [
-    `actor: ${actor}`,
-    `${
-      singleRecord
-        ? "action"
-        : `originating_intent (${thread.origin.state} since ${originStateAt}, ${renderActionStateDisposition(
-            thread.origin.state,
-          )})`
-    }: ${thread.origin.description}`,
-    // Both stamps on this entry are state-entry times from `actionTimestampForState`, but only the
-    // origin's said so: the current record's was printed as a bare `at`, and for `scheduled` that
-    // is the exact shape a due time takes -- the state's own definition is "arranged for a time",
-    // so a timestamp in that slot reads as the slot it is arranged for. No action record carries a
-    // due or appointment column at all (`scheduled_at` is the state-entry stamp, per
-    // ACTION_STATE_METADATA), so the page was offering the one quantity a reader would go looking
-    // for, spelled as a different one. `since` is the word the origin line already uses for this
-    // quantity; two values of one kind on adjacent lines now render alike. The absence of a due
-    // time is not named here: it holds for every state and every record, and a clause true on every
-    // row is a constant, not a distinction.
-    `records: ${thread.records.length}, current: ${thread.current.state} (${renderActionStateDisposition(
-      thread.current.state,
-    )}) since ${currentAt}${originAt}`,
-  ];
-
-  if (!singleRecord) {
-    lines.push(`current_intent: ${thread.current.description}`);
+  const action = thread.current;
+  const updates: string[] = [];
+  let chars = 0;
+  for (const update of history?.updates ?? []) {
+    const text = `${new Date(update.timestamp).toISOString()} ${update.from_state} -> ${update.to_state}; turn=${update.turn_id ?? "unknown"}; sources=${update.source_stream_entry_ids.join(",")}: ${update.text}`;
+    if (
+      updates.length >= ACTION_UPDATE_HISTORY_LIMIT ||
+      chars + text.length > ACTION_UPDATE_HISTORY_MAX_CHARS
+    )
+      break;
+    updates.push(text);
+    chars += text.length;
   }
-
-  return lines.join("\n");
+  const goalLabel =
+    action.goal_id === null
+      ? "goal: none"
+      : action.goal_link_basis === "extractor"
+        ? `goal: ${action.goal_id}; goal_link_basis: extractor selected`
+        : `goal: ${action.goal_id}; goal_link_basis: legacy turn-selected goal, not an action-specific link`;
+  return [
+    `actor: ${actionActorDisplay(action.actor, entityRepository)}`,
+    goalLabel,
+    `action: ${action.description}`,
+    `records: 1, current: ${action.state} (${renderActionStateDisposition(action.state)}) since ${new Date(actionTimestampForState(action)).toISOString()}`,
+    ...(history === undefined
+      ? []
+      : [
+          `updates: total=${history.total}, shown=${updates.length}, omitted=${Math.max(0, history.total - updates.length)}; newest first`,
+          ...updates,
+        ]),
+  ].join("\n");
 }
 
 export function actionThreadStateMetadata(
   thread: ActionThread,
   entityRepository: Pick<EntityRepository, "get"> | undefined,
 ): Record<string, unknown> {
-  // `record_ids` lists the thread's members in update order and `current_action_id` names one of
-  // them; the record whose description is rendered as `originating_intent` was identified by
-  // neither, so the one row a reader is actually shown could not be looked up. Named alongside its
-  // state for the same reason the render carries it: origin and current are independent records.
   return {
     record_ids: thread.records.map((record) => record.id),
     records: thread.records.length,
@@ -441,6 +281,7 @@ export function actionThreadStateMetadata(
     current_updated_at: thread.current.updated_at,
     current_actor: actionActorDisplay(thread.current.actor, entityRepository),
     goal_id: thread.current.goal_id,
+    goal_link_basis: thread.current.goal_link_basis ?? "legacy_turn_selected",
     open_question_id: thread.current.open_question_id,
   };
 }
@@ -560,6 +401,8 @@ export function orderActionThreadsBySalience(
 ): ActionThreadWithSalience[] {
   return [...threads].sort(
     (left, right) =>
+      Number(!isActiveActionState(left.current.state)) -
+        Number(!isActiveActionState(right.current.state)) ||
       salienceRank(left.salienceClass) - salienceRank(right.salienceClass) ||
       right.current.updated_at - left.current.updated_at ||
       left.current.id.localeCompare(right.current.id),
@@ -580,6 +423,7 @@ export function allocateActionThreadRenderSlots(input: {
   salienceClassReservedSlots: number;
   audienceReservedSlots: number;
   audienceOrder?: readonly ActionThreadAudienceBucket[];
+  reservedActors?: readonly ActionRecord["actor"][];
 }): ActionThreadWithSalience[] {
   const ordered = orderActionThreadsBySalience(input.threads);
   const selectedIds = new Set<string>();
@@ -594,7 +438,11 @@ export function allocateActionThreadRenderSlots(input: {
         return;
       }
 
-      let remaining = reservedSlots;
+      // An actor reservation also satisfies the row's salience/audience minimum.
+      let remaining = Math.max(
+        0,
+        reservedSlots - group.filter((thread) => selectedIds.has(thread.id)).length,
+      );
 
       for (const thread of group) {
         if (remaining === 0 || selected.length >= input.limit) {
@@ -612,30 +460,42 @@ export function allocateActionThreadRenderSlots(input: {
     }
   }
 
-  const salienceGroups = ACTION_SALIENCE_ORDER.map((salienceClass) =>
-    ordered.filter((thread) => thread.salienceClass === salienceClass),
-  ).filter((group) => group.length > 0);
-  reserve(salienceGroups, input.salienceClassReservedSlots);
+  for (const active of [true, false]) {
+    const pool = ordered.filter((thread) => isActiveActionState(thread.current.state) === active);
+    if (active)
+      reserve(
+        [...new Set(input.reservedActors ?? ["borg"])].map((actor) =>
+          pool
+            .filter((thread) => thread.current.actor === actor)
+            .sort((a, b) => b.current.updated_at - a.current.updated_at),
+        ),
+        ACTION_ACTOR_RESERVED_RENDER_SLOTS,
+      );
+    const salienceGroups = ACTION_SALIENCE_ORDER.map((salienceClass) =>
+      pool.filter((thread) => thread.salienceClass === salienceClass),
+    ).filter((group) => group.length > 0);
+    reserve(salienceGroups, input.salienceClassReservedSlots);
 
-  const audienceOrder = [
-    ...new Set([
-      ...(input.audienceOrder ?? []),
-      ...ordered.map((thread) => actionThreadAudienceBucket(thread)),
-    ]),
-  ].filter((audience) => ordered.some((thread) => actionThreadAudienceBucket(thread) === audience));
-  const audienceGroups = audienceOrder.map((audience) =>
-    ordered.filter((thread) => actionThreadAudienceBucket(thread) === audience),
-  );
-  reserve(audienceGroups, input.audienceReservedSlots);
+    const audienceOrder = [
+      ...new Set([
+        ...(input.audienceOrder ?? []),
+        ...pool.map((thread) => actionThreadAudienceBucket(thread)),
+      ]),
+    ].filter((audience) => pool.some((thread) => actionThreadAudienceBucket(thread) === audience));
+    const audienceGroups = audienceOrder.map((audience) =>
+      pool.filter((thread) => actionThreadAudienceBucket(thread) === audience),
+    );
+    reserve(audienceGroups, input.audienceReservedSlots);
 
-  for (const thread of ordered) {
-    if (selected.length >= input.limit) {
-      break;
-    }
+    for (const thread of pool) {
+      if (selected.length >= input.limit) {
+        break;
+      }
 
-    if (!selectedIds.has(thread.id)) {
-      selectedIds.add(thread.id);
-      selected.push(thread);
+      if (!selectedIds.has(thread.id)) {
+        selectedIds.add(thread.id);
+        selected.push(thread);
+      }
     }
   }
 
@@ -651,9 +511,6 @@ export function isPromptSalientActionSalienceClass(
 export function summarizeActionPromptSalience(
   threads: readonly ActionThreadWithSalience[],
 ): ActionPromptSalienceSummary {
-  const staleParticipantThreadCount = threads.filter(
-    (thread) => thread.salienceClass === "participant_pending_stale",
-  ).length;
   let promptSalientActionsTotal = 0;
   let borgOwnedSalientActiveActions = 0;
   let participantOwnedSalientActiveActions = 0;
@@ -683,10 +540,7 @@ export function summarizeActionPromptSalience(
     promptSalientActionsTotal,
     borgOwnedSalientActiveActions,
     participantOwnedSalientActiveActions,
-    staleActionsOmittedFromPrompt: Math.max(
-      0,
-      staleParticipantThreadCount - STALE_PARTICIPANT_ACTION_RENDER_LIMIT,
-    ),
+    staleActionsOmittedFromPrompt: 0,
   };
 }
 
@@ -743,7 +597,6 @@ export function renderOlderActionThreadsSummary(input: {
   groups: readonly OlderActionThreadSummaryGroup[];
   renderedThreadCount: number;
   renderLimit: number;
-  staleParticipantThreadsWithheldCount: number;
   threadsBuiltCount: number;
   consideredRecordCount: number;
   sourceRecordLimit: number;
@@ -753,45 +606,8 @@ export function renderOlderActionThreadsSummary(input: {
   const { groups } = input;
   const olderThreads = groups.flatMap((group) => group.threads);
   const olderRecordCount = olderThreads.reduce((count, thread) => count + thread.records.length, 0);
-  // The omitted-thread counts describe the render pool only. Two populations never enter it:
-  // threads whose salience class resolved to null, and records below the source draw floor
-  // (never counted, because the draw stops at the limit). Naming both keeps "omitted" from
-  // reading as a complete accounting of everything this section did not show.
-  //
-  // Three of these counts are threads and one -- `records_considered` -- is records,
-  // distinguished only by a field-name prefix, and the total that would let the thread counts
-  // be checked against each other was never printed. Without it the three populations read as
-  // summable against the record total, which they are not: every considered record lands in
-  // exactly one thread (`buildActionThreads` groups the drawn records and nothing else), so
-  // the record total exceeds the thread total by the merge surplus and the sum never closes.
-  // `threads_built` comes from the builder's own thread count rather than from adding the
-  // three, so the printed identity is falsifiable instead of tautological.
-  //
-  // `records_below_draw_floor` used to be an enumeration -- a count when the draw exhausted the
-  // source, a refusal when it stopped at the limit -- and in production only the refusal has ever
-  // rendered, because the store has never been smaller than the draw. A token whose contrast set
-  // never appears is indistinguishable from a constant to a reader holding one page, and naming
-  // the condition it refuses under only lengthens the constant: the named condition is the
-  // comparison of the two numbers printed beside it, so the token restates its own operands and
-  // can never disagree with them.
-  //
-  // The exit is to stop enumerating and measure. The source total is one COUNT away, so the field
-  // prints how many records the draw never looked at. It is rendered as the stated difference of
-  // the two totals rather than as a bare number, so it cannot be mistaken for an independent
-  // count of the below-floor rows -- it is derived from them, and says so.
-  //
-  // `rendered` was the one term with no scale printed beside it, which let it read as the render
-  // limit itself: a reader holding one page saw `rendered 12` with nothing to distinguish a full
-  // slot draw from a pool that happened to be twelve deep, and `rendered 8` with nothing to say
-  // why it fell. It is not the limit. Two caps apply in sequence and only the later one was
-  // named: stale participant threads past STALE_PARTICIPANT_ACTION_RENDER_LIMIT are withheld from
-  // the pool BEFORE the slot draw, so whenever that cap bites `rendered` collapses to the pool
-  // size and the limit never binds at all. Printing the limit and the withheld count makes the
-  // fall decomposable. The withheld threads stay inside `omitted` -- they are unrendered, not a
-  // fourth population -- so the printed identity still closes while `rendered` becomes checkable
-  // against its own operands instead of assumed to be the limit. It is stated as a share of the
-  // omitted count rather than spelled out as an arithmetic rule: this section truncates from the
-  // tail, and every character on the head lines is taken from the group detail below them.
+  // Threads now correspond one-to-one to action IDs. Keep the populations and
+  // source-floor count explicit so past similarity-grouped counts are not conflated.
   const recordsBelowDrawFloor =
     input.sourceRecordTotal === null
       ? "unknown_count_source_total_unavailable"
@@ -809,7 +625,7 @@ export function renderOlderActionThreadsSummary(input: {
 
   return [
     `Action threads omitted from this section: threads=${olderThreads.length}, records=${olderRecordCount}.`,
-    `Not counted above: salience_dropped_threads=${input.salienceDroppedThreadCount}, records_below_draw_floor=${recordsBelowDrawFloor} (threads_built=${input.threadsBuiltCount} = rendered ${input.renderedThreadCount} + omitted ${olderThreads.length} + dropped ${input.salienceDroppedThreadCount}; render_slots=${input.renderLimit}, stale_participant_threads_withheld=${input.staleParticipantThreadsWithheldCount} of that omitted count, held out before the slot draw, so rendered can sit below render_slots without render_slots binding; records_considered=${input.consideredRecordCount} records, source_record_limit=${input.sourceRecordLimit}, ${sourceRecordTotalField}).`,
+    `Not counted above: salience_dropped_threads=${input.salienceDroppedThreadCount}, records_below_draw_floor=${recordsBelowDrawFloor} (threads_built=${input.threadsBuiltCount} = rendered ${input.renderedThreadCount} + omitted ${olderThreads.length} + dropped ${input.salienceDroppedThreadCount}; render_slots=${input.renderLimit}; records_considered=${input.consideredRecordCount} records, source_record_limit=${input.sourceRecordLimit}, ${sourceRecordTotalField}).`,
     ...disclosureNote,
     ...groups.map(
       (group) =>

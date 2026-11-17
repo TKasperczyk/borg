@@ -131,7 +131,12 @@ export type TurnPhaseCoordinatorOptions = {
   socialRepository: SocialRepository;
   relationalSlotRepository: RelationalSlotRepository;
   actionRepository: Pick<ActionRepository, "get" | "list" | "update"> &
-    Partial<Pick<ActionRepository, "findSimilarDescriptionPairs">>;
+    Partial<
+      Pick<
+        ActionRepository,
+        "findSimilarDescriptionPairs" | "countActive" | "appendExtractionUpdate"
+      >
+    >;
   commitmentRepository: CommitmentRepository;
   sourceStreamAudienceDisclosureResolver?: SourceStreamAudienceDisclosureResolver;
   creatorDirectiveRepository: CreatorDirectiveRepository;

@@ -196,7 +196,7 @@ describe("runPostGenerationPhase", () => {
       turnReflectionCoordinator: {
         run: runReflection,
       },
-      turnActionStateService: { closeBorgSelfPerformedActions: vi.fn(async () => undefined) },
+      turnActionStateService: { closeBorgSelfPerformedActions: vi.fn(async () => []) },
       correctivePreferenceTurnService: { persistCommitment: vi.fn(async () => undefined) },
       streamIngestionCoordinator: undefined,
     } as unknown as TurnPhaseCoordinatorOptions;
@@ -226,6 +226,7 @@ describe("runPostGenerationPhase", () => {
       },
       streamWriter: writer,
       lifecycleTracker: {
+        trackCreatedActionIds: vi.fn(),
         trackPendingActionMerges: vi.fn(),
         trackReflectionEffects: vi.fn(),
       } as never,
@@ -574,7 +575,7 @@ describe("runPostGenerationPhase", () => {
         markClosureLoopNamed: vi.fn((arg: { workingMemory: unknown }) => arg.workingMemory),
       },
       turnReflectionCoordinator: { run: vi.fn(async () => undefined) },
-      turnActionStateService: { closeBorgSelfPerformedActions: vi.fn(async () => undefined) },
+      turnActionStateService: { closeBorgSelfPerformedActions: vi.fn(async () => []) },
       correctivePreferenceTurnService: { persistCommitment: vi.fn(async () => undefined) },
       streamIngestionCoordinator: undefined,
     } as unknown as TurnPhaseCoordinatorOptions;
@@ -593,6 +594,7 @@ describe("runPostGenerationPhase", () => {
       },
       streamWriter: writer,
       lifecycleTracker: {
+        trackCreatedActionIds: vi.fn(),
         trackPendingActionMerges: vi.fn(),
         trackReflectionEffects: vi.fn(),
       } as never,
@@ -833,7 +835,7 @@ describe("runPostGenerationPhase", () => {
           markClosureLoopNamed: vi.fn((arg: { workingMemory: unknown }) => arg.workingMemory),
         },
         turnReflectionCoordinator: { run: vi.fn(async () => undefined) },
-        turnActionStateService: { closeBorgSelfPerformedActions: vi.fn(async () => undefined) },
+        turnActionStateService: { closeBorgSelfPerformedActions: vi.fn(async () => []) },
         correctivePreferenceTurnService: { persistCommitment: vi.fn(async () => undefined) },
         streamIngestionCoordinator: undefined,
       } as unknown as TurnPhaseCoordinatorOptions,
@@ -849,6 +851,7 @@ describe("runPostGenerationPhase", () => {
       },
       streamWriter: writer,
       lifecycleTracker: {
+        trackCreatedActionIds: vi.fn(),
         trackPendingActionMerges: vi.fn(),
         trackReflectionEffects: vi.fn(),
       } as never,
@@ -967,7 +970,7 @@ describe("runPostGenerationPhase", () => {
           markClosureLoopNamed: vi.fn((arg: { workingMemory: unknown }) => arg.workingMemory),
         },
         turnReflectionCoordinator: { run: vi.fn(async () => undefined) },
-        turnActionStateService: { closeBorgSelfPerformedActions: vi.fn(async () => undefined) },
+        turnActionStateService: { closeBorgSelfPerformedActions: vi.fn(async () => []) },
         correctivePreferenceTurnService: { persistCommitment: vi.fn(async () => undefined) },
       } as never,
       appendHookFailureEvent: vi.fn(async () => undefined),
@@ -979,6 +982,7 @@ describe("runPostGenerationPhase", () => {
       turnInput: { userMessage: "Caught-up batch" },
       streamWriter: { append: vi.fn(async () => agentEntry) } as never,
       lifecycleTracker: {
+        trackCreatedActionIds: vi.fn(),
         trackPendingActionMerges: vi.fn(),
         trackReflectionEffects: vi.fn(),
       } as never,
@@ -1151,7 +1155,7 @@ describe("runPostGenerationPhase", () => {
           run: vi.fn(async () => undefined),
         },
         turnActionStateService: {
-          closeBorgSelfPerformedActions: vi.fn(async () => undefined),
+          closeBorgSelfPerformedActions: vi.fn(async () => []),
         },
         correctivePreferenceTurnService: {
           persistCommitment: vi.fn(async () => undefined),
@@ -1170,6 +1174,7 @@ describe("runPostGenerationPhase", () => {
       },
       streamWriter: {} as never,
       lifecycleTracker: {
+        trackCreatedActionIds: vi.fn(),
         trackPendingActionMerges: vi.fn(),
         trackReflectionEffects: vi.fn(),
       } as never,
@@ -1357,6 +1362,7 @@ describe("runPostGenerationPhase", () => {
       },
       streamWriter: {} as never,
       lifecycleTracker: {
+        trackCreatedActionIds: vi.fn(),
         trackPendingActionMerges: vi.fn(),
         trackReflectionEffects: vi.fn(),
       } as never,
@@ -1530,7 +1536,7 @@ describe("runPostGenerationPhase outbound activity gate", () => {
           markClosureLoopNamed: vi.fn((arg: { workingMemory: unknown }) => arg.workingMemory),
         },
         turnReflectionCoordinator: { run: vi.fn(async () => undefined) },
-        turnActionStateService: { closeBorgSelfPerformedActions: vi.fn(async () => undefined) },
+        turnActionStateService: { closeBorgSelfPerformedActions: vi.fn(async () => []) },
         correctivePreferenceTurnService: { persistCommitment: vi.fn(async () => undefined) },
         streamIngestionCoordinator: undefined,
       } as never,
@@ -1543,6 +1549,7 @@ describe("runPostGenerationPhase outbound activity gate", () => {
       turnInput: { userMessage: "Directed outbound instruction", origin: "directed_outbound" },
       streamWriter: { append: vi.fn(async () => agentEntry) } as never,
       lifecycleTracker: {
+        trackCreatedActionIds: vi.fn(),
         trackPendingActionMerges: vi.fn(),
         trackReflectionEffects: vi.fn(),
       } as never,
@@ -1660,6 +1667,8 @@ describe("runPostGenerationPhase regeneration record", () => {
       sourceType: "demo",
     }));
     const reflectionRun = vi.fn(async () => undefined);
+    const postTurnActionId = createActionId();
+    const trackCreatedActionIds = vi.fn();
 
     await runPostGenerationPhase({
       options: {
@@ -1718,7 +1727,9 @@ describe("runPostGenerationPhase regeneration record", () => {
           markClosureLoopNamed: vi.fn((arg: { workingMemory: unknown }) => arg.workingMemory),
         },
         turnReflectionCoordinator: { run: reflectionRun },
-        turnActionStateService: { closeBorgSelfPerformedActions: vi.fn(async () => undefined) },
+        turnActionStateService: {
+          closeBorgSelfPerformedActions: vi.fn(async () => [postTurnActionId]),
+        },
         correctivePreferenceTurnService: { persistCommitment: vi.fn(async () => undefined) },
         streamIngestionCoordinator: undefined,
       } as never,
@@ -1731,6 +1742,7 @@ describe("runPostGenerationPhase regeneration record", () => {
       turnInput: { userMessage: "Instruction", origin },
       streamWriter: { append: vi.fn(async () => agentEntry) } as never,
       lifecycleTracker: {
+        trackCreatedActionIds,
         trackPendingActionMerges: vi.fn(),
         trackReflectionEffects: vi.fn(),
       } as never,
@@ -1775,6 +1787,8 @@ describe("runPostGenerationPhase regeneration record", () => {
     });
 
     return {
+      postTurnActionId,
+      trackCreatedActionIds,
       stored,
       reloaded: workingMemoryStore.load(sessionId),
       reflectionRun,
@@ -1822,5 +1836,9 @@ describe("runPostGenerationPhase regeneration record", () => {
     expect(reflectionRun).toHaveBeenCalledWith(
       expect.objectContaining({ recalledOpenQuestions: [recalledOpenQuestion] }),
     );
+  });
+  it("registers post-turn fallback insert IDs before returning to the turn coordinator", async () => {
+    const { postTurnActionId, trackCreatedActionIds } = await runRegeneratedMessageTurn("user");
+    expect(trackCreatedActionIds).toHaveBeenCalledWith([postTurnActionId]);
   });
 });

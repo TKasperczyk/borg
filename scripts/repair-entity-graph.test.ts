@@ -640,6 +640,39 @@ describe("offline entity graph repair", () => {
     ).toBeDefined();
   });
 
+  it("projects and validates real action continuation history without rewriting wording or audits", async () => {
+    const f = await fixture();
+    const refs = await addReferenceClasses(f);
+    const actions = new ActionRepository({ db: f.db, clock: f.clock });
+    const audit = {
+      turn_id: "graph_fixture",
+      candidate_index: 0,
+      candidate_ids: [refs.action.id],
+      candidate_omitted_count: 2,
+      chosen_action_id: refs.action.id,
+      rejection_reason: null,
+      supplied_goal_ids: [],
+      chosen_goal_id: null,
+      goal_rejection_reason: null,
+    };
+    actions.add({ ...refs.action, selection_audit: { ...audit, chosen_action_id: null } });
+    actions.appendExtractionUpdate(
+      refs.action.id,
+      { ...refs.action, description: `Opaque wording ${f.named.id}`, selection_audit: audit },
+      "graph_fixture",
+    );
+    expect(actions.readUpdateHistory(refs.action.id, 5).total).toBe(1);
+    const before = actions.readUpdateHistory(refs.action.id, 5).updates[0]!;
+    const plan = await planEntityGraphRepair(f.input);
+    expect(plan.sql.some((change) => change.table === "action_record_updates")).toBe(true);
+    await applyEntityGraphRepair(plan);
+    const after = actions.readUpdateHistory(refs.action.id, 5).updates[0]!;
+    expect(after.text).toBe(before.text);
+    expect(after.selection_audit).toEqual(before.selection_audit);
+    expect(after.source_stream_entry_ids).toEqual(before.source_stream_entry_ids);
+    expect(after.disclosure_label.originAudienceEntityIds).toContain(f.participant.id);
+    expect(after.disclosure_label.originAudienceEntityIds).not.toContain(f.room.id);
+  });
   it("covers derived keys, every reference class, immutable provenance, tuple retirement and untouched vectors", async () => {
     const f = await fixture();
     const refs = await addReferenceClasses(f);

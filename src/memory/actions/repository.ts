@@ -17,6 +17,11 @@ import { cosineSimilarity } from "../../retrieval/embedding-similarity.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { StorageError } from "../../util/errors.js";
 import { serializeJsonValue } from "../../util/json-value.js";
+import { actionMemoryDisclosureLabel } from "../common/disclosure-serializers.js";
+import {
+  combineMemoryDisclosureLabels,
+  parseMemoryDisclosureLabel,
+} from "../common/disclosure-label.js";
 import {
   createActionId,
   parseActionId,
@@ -27,6 +32,7 @@ import {
   type OpenQuestionId,
   type SessionId,
   type StreamEntryId,
+  type SharedStateEntryId,
 } from "../../util/ids.js";
 import {
   ACTIVE_ACTION_STATES,
@@ -35,6 +41,14 @@ import {
   actionRecordPatchSchema,
   actionRecordSchema,
   actionStateSchema,
+  actionSelectionAuditSchema,
+  actionRecordUpdateSchema,
+  actionExtractionDecisionSchema,
+  type ActionExtractionDecision,
+  isActionTerminalClosureGuardState,
+  type ActionMatchRejection,
+  type ActionSelectionAudit,
+  type ActionUpdateHistory,
   type ActionActor,
   type ActionRecord,
   type ActionRecordPatch,
@@ -48,6 +62,20 @@ const ACTION_JSON_ARRAY_CODEC = {
   errorMessage: (label: string) => `Failed to parse action record ${label}`,
 } satisfies JsonArrayCodecOptions;
 
+export const ACTION_ACTOR_RESERVED_RECORDS = 4;
+
+function parseSelectionAudit(value: unknown): ActionSelectionAudit | null {
+  if (value == null) return null;
+  try {
+    return actionSelectionAuditSchema.parse(JSON.parse(String(value)));
+  } catch (cause) {
+    throw new StorageError("Invalid action selection audit", {
+      code: "ACTION_RECORD_ROW_INVALID",
+      cause,
+    });
+  }
+}
+
 export function mapActionRow(row: Record<string, unknown>): ActionRecord {
   const parsed = actionRecordSchema.safeParse({
     id: row.id,
@@ -58,6 +86,22 @@ export function mapActionRow(row: Record<string, unknown>): ActionRecord {
         ? null
         : row.audience_entity_id,
     goal_id: row.goal_id === null || row.goal_id === undefined ? null : row.goal_id,
+    ...(row.goal_link_basis == null ? {} : { goal_link_basis: row.goal_link_basis }),
+    ...(row.origin_stream_entry_ids == null
+      ? {}
+      : {
+          origin_stream_entry_ids: parseJsonArray<StreamEntryId>(
+            String(row.origin_stream_entry_ids),
+            "origin_stream_entry_ids",
+            ACTION_JSON_ARRAY_CODEC,
+          ),
+        }),
+    ...(row.selection_audit == null
+      ? {}
+      : { selection_audit: parseSelectionAudit(row.selection_audit) }),
+    ...(row.disclosure_label == null
+      ? {}
+      : { disclosure_label: parseMemoryDisclosureLabel(row.disclosure_label) }),
     open_question_id:
       row.open_question_id === null || row.open_question_id === undefined
         ? null
@@ -130,6 +174,30 @@ export function mapActionRow(row: Record<string, unknown>): ActionRecord {
   return parsed.data;
 }
 
+export function mapActionUpdateRow(row: Record<string, unknown>) {
+  return actionRecordUpdateSchema.parse({
+    ...row,
+    source_stream_entry_ids: parseJsonArray<StreamEntryId>(
+      String(row.source_stream_entry_ids),
+      "source_stream_entry_ids",
+      ACTION_JSON_ARRAY_CODEC,
+    ),
+    selection_audit: parseSelectionAudit(row.selection_audit),
+    disclosure_label: parseMemoryDisclosureLabel(row.disclosure_label),
+  });
+}
+
+function monotonic(
+  current: number | null | undefined,
+  incoming: number | null | undefined,
+): number | null {
+  return current == null
+    ? (incoming ?? null)
+    : incoming == null
+      ? current
+      : Math.max(current, incoming);
+}
+
 function vectorRowFromAction(record: ActionRecord, embedding: Float32Array) {
   return {
     id: record.id,
@@ -191,6 +259,8 @@ export type ActionRecordListFilter = {
   recallAllAudiences?: boolean;
   rankAudienceEntityIds?: readonly EntityId[];
   rankActorEntityIds?: readonly EntityId[];
+  prioritizeActive?: boolean;
+  reserveActors?: readonly ActionActor[];
   goalId?: GoalId;
   openQuestionId?: OpenQuestionId;
   createdSinceMs?: number;
@@ -214,6 +284,8 @@ export type ActionDescriptionSimilarityPair = {
   rightId: ActionId;
   similarity: number;
 };
+export type ActionCompletionFailure = { actionId: ActionId; error: unknown };
+
 export type ActionAddOptions = {
   creationSource?: ActionRecordCreationSource;
 };
@@ -390,13 +462,17 @@ export class ActionRepository {
             considering_at, committed_at, scheduled_at, completed_at, not_done_at, declined_at, expired_at,
             archived_at, unknown_at, canonicalized_by_artifact_entry_id, session_scope,
             session_anchor_id, last_referenced_at_ms, last_referenced_turn_counter,
-            last_referenced_turn_global
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            last_referenced_turn_global, goal_link_basis, selection_audit, disclosure_label, origin_stream_entry_ids
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT (id) DO UPDATE SET
             description = excluded.description,
             actor = excluded.actor,
             audience_entity_id = excluded.audience_entity_id,
             goal_id = excluded.goal_id,
+            goal_link_basis = excluded.goal_link_basis,
+            selection_audit = excluded.selection_audit,
+            disclosure_label = excluded.disclosure_label,
+            origin_stream_entry_ids = excluded.origin_stream_entry_ids,
             open_question_id = excluded.open_question_id,
             state = excluded.state,
             confidence = excluded.confidence,
@@ -448,9 +524,255 @@ export class ActionRepository {
         record.last_referenced_at_ms ?? null,
         record.last_referenced_turn_counter ?? null,
         record.last_referenced_turn_global ?? null,
+        record.goal_link_basis ?? null,
+        record.selection_audit == null ? null : serializeJsonValue(record.selection_audit),
+        record.disclosure_label == null ? null : serializeJsonValue(record.disclosure_label),
+        record.origin_stream_entry_ids == null
+          ? null
+          : serializeJsonValue(record.origin_stream_entry_ids),
       );
   }
 
+  // Opus 5.0: in-scope because identity is the model's choice; this transaction
+  // checks handles, actor and lifecycle only, and keeps both the assertion and its audit.
+  appendExtractionUpdate(
+    id: ActionId,
+    candidate: ActionRecord,
+    turnId: string | null,
+    options: {
+      skipSideEffects?: boolean;
+      canonicalizedByArtifactEntryId?: SharedStateEntryId;
+    } = {},
+  ):
+    | {
+        status: "applied";
+        record: ActionRecord;
+        completionFailures: readonly ActionCompletionFailure[];
+      }
+    | { status: "replayed"; record: ActionRecord }
+    | { status: "rejected"; reason: ActionMatchRejection } {
+    const incoming = actionRecordSchema.parse(candidate);
+    const audit = actionSelectionAuditSchema.parse(incoming.selection_audit);
+    const result = this.db.transaction(() =>
+      this.persistContinuation(id, incoming, audit, turnId, options.canonicalizedByArtifactEntryId),
+    )();
+    if (result.status !== "applied") return result;
+    // Completion-hook suppression does not suppress the deferred, best-effort mirror refresh.
+    this.scheduleVectorUpsert(result.record);
+    return {
+      ...result,
+      completionFailures: options.skipSideEffects
+        ? []
+        : this.runCompletionHook(result.record, result.previous),
+    };
+  }
+
+  private runCompletionHook(
+    record: ActionRecord,
+    previous: ActionRecord | null,
+  ): ActionCompletionFailure[] {
+    if (record.state !== "completed") return [];
+    try {
+      this.options.onCompleted?.(record, previous);
+      return [];
+    } catch (error) {
+      // SQL has committed. Return the failure separately so callers retain every committed ID.
+      return [{ actionId: record.id, error }];
+    }
+  }
+
+  // Called only inside a transaction; callers schedule effects after their outer commit.
+  private persistContinuation(
+    id: ActionId,
+    incoming: ActionRecord,
+    audit: ActionSelectionAudit,
+    turnId: string | null,
+    canonicalizedByArtifactEntryId?: SharedStateEntryId,
+  ) {
+    if (!audit.candidate_ids.includes(id))
+      return { status: "rejected", reason: "not_offered" } as const;
+    const current = this.get(id);
+    if (current === null) return { status: "rejected", reason: "missing" } as const;
+    if (
+      audit.shared_state_entry_id !== undefined &&
+      this.db
+        .prepare(
+          "SELECT 1 FROM action_record_updates WHERE action_id = ? AND json_extract(selection_audit, '$.shared_state_entry_id') = ? LIMIT 1",
+        )
+        .get(id, audit.shared_state_entry_id)
+    )
+      return { status: "replayed", record: current } as const;
+    // The same five protected states as completeAction / markActionNotDone / declineAction.
+    if (isActionTerminalClosureGuardState(current.state))
+      return { status: "rejected", reason: "terminal" } as const;
+    if (current.actor !== incoming.actor)
+      return { status: "rejected", reason: "actor_mismatch" } as const;
+    const next = actionRecordSchema.parse({
+      ...current,
+      // Overlapping non-terminal decisions are last-finisher-wins; history keeps both.
+      state: incoming.state,
+      origin_stream_entry_ids:
+        current.origin_stream_entry_ids ?? current.provenance_stream_entry_ids,
+      ...(canonicalizedByArtifactEntryId === undefined
+        ? {}
+        : { canonicalized_by_artifact_entry_id: canonicalizedByArtifactEntryId }),
+      confidence: Math.max(current.confidence, incoming.confidence),
+      disclosure_label: combineMemoryDisclosureLabels([
+        actionMemoryDisclosureLabel(current),
+        actionMemoryDisclosureLabel(incoming),
+      ]),
+      provenance_episode_ids: [
+        ...new Set([...current.provenance_episode_ids, ...incoming.provenance_episode_ids]),
+      ],
+      provenance_stream_entry_ids: [
+        ...new Set([
+          ...current.provenance_stream_entry_ids,
+          ...incoming.provenance_stream_entry_ids,
+        ]),
+      ],
+      updated_at: incoming.updated_at,
+      last_referenced_at_ms: monotonic(
+        current.last_referenced_at_ms,
+        incoming.last_referenced_at_ms,
+      ),
+      last_referenced_turn_counter: monotonic(
+        current.last_referenced_turn_counter,
+        incoming.last_referenced_turn_counter,
+      ),
+      last_referenced_turn_global: monotonic(
+        current.last_referenced_turn_global,
+        incoming.last_referenced_turn_global,
+      ),
+      ...(current.state === incoming.state
+        ? {}
+        : { [stateTimestampField(incoming.state)]: incoming.updated_at }),
+    });
+    this.db
+      .prepare(
+        `
+      INSERT INTO action_record_updates
+        (action_id, text, from_state, to_state, turn_id, source_stream_entry_ids, timestamp, selection_audit, disclosure_label)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+      )
+      .run(
+        id,
+        incoming.description,
+        current.state,
+        incoming.state,
+        turnId,
+        serializeJsonValue(incoming.provenance_stream_entry_ids),
+        incoming.updated_at,
+        serializeJsonValue(audit),
+        serializeJsonValue(actionMemoryDisclosureLabel(incoming)),
+      );
+    this.upsertSqlRow(next);
+    return { status: "applied", record: next, previous: current } as const;
+  }
+
+  applyExtractionDecision(input: {
+    records: readonly ActionRecord[];
+    audit: ActionExtractionDecision;
+    nowMs: number;
+    turnCounter: number | null;
+  }) {
+    const records = input.records.map((record) => actionRecordSchema.parse(record));
+    const audit = actionExtractionDecisionSchema.parse(input.audit);
+    const inserted: ActionRecord[] = [];
+    const matched: Array<{
+      record: ActionRecord;
+      decision: ActionRecord;
+      previous: ActionRecord | null;
+    }> = [];
+    const touched: ActionRecord[] = [];
+    this.db.transaction(() => {
+      const offered = new Set(audit.candidate_ids);
+      for (const id of new Set(audit.referenced_action_ids)) {
+        const current = offered.has(id) ? this.get(id) : null;
+        if (current === null) {
+          audit.ignored_reference_ids.push(id);
+          continue;
+        }
+        const next = {
+          ...current,
+          updated_at: Math.max(current.updated_at, input.nowMs),
+          last_referenced_at_ms: monotonic(current.last_referenced_at_ms, input.nowMs),
+          last_referenced_turn_counter: monotonic(
+            current.last_referenced_turn_counter,
+            input.turnCounter,
+          ),
+          last_referenced_turn_global: monotonic(
+            current.last_referenced_turn_global,
+            input.turnCounter,
+          ),
+        };
+        this.upsertSqlRow(next);
+        touched.push(next);
+        audit.applied_reference_ids.push(id);
+      }
+      for (const record of records) {
+        const decision = actionSelectionAuditSchema.parse({
+          ...record.selection_audit,
+          referenced_action_ids: audit.referenced_action_ids,
+          applied_reference_ids: audit.applied_reference_ids,
+        });
+        record.selection_audit = decision;
+        const id = decision.chosen_action_id;
+        if (id !== null) {
+          const previous = this.get(id);
+          const result = this.persistContinuation(id, record, decision, audit.turn_id);
+          if (result.status !== "rejected") {
+            matched.push({ record: result.record, decision: record, previous });
+            audit.decisions.push(decision);
+            continue;
+          }
+          decision.rejection_reason = result.reason;
+        }
+        this.upsertSqlRow(record);
+        inserted.push(record);
+        audit.decisions.push(decision);
+      }
+      this.db
+        .prepare("INSERT INTO action_extraction_decisions(timestamp, audit) VALUES (?, ?)")
+        .run(input.nowMs, serializeJsonValue(audit));
+    })();
+    // No vector writes, completion callbacks or creation counters escape a rolled-back decision.
+    this.creationCountsBySource.extractor += inserted.length;
+    for (const record of new Map(
+      [...touched, ...inserted, ...matched.map((item) => item.record)].map((record) => [
+        record.id,
+        record,
+      ]),
+    ).values())
+      this.scheduleVectorUpsert(record);
+    const completionFailures = [
+      ...inserted.flatMap((record) => this.runCompletionHook(record, null)),
+      ...matched.flatMap((item) => this.runCompletionHook(item.record, item.previous)),
+    ];
+    return { inserted, matched, audit, completionFailures };
+  }
+
+  readUpdateHistory(id: ActionId, limit: number): ActionUpdateHistory {
+    // Like identity events, this append-only audit survives an explicit record deletion.
+    const total = Number(
+      (
+        this.db
+          .prepare("SELECT COUNT(*) AS n FROM action_record_updates WHERE action_id = ?")
+          .get(id) as { n: number }
+      ).n,
+    );
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM action_record_updates WHERE action_id = ? ORDER BY timestamp DESC, id DESC LIMIT ?`,
+      )
+      .all(id, Math.max(0, Math.floor(limit))) as Record<string, unknown>[];
+    return {
+      total,
+      updates: rows.map(mapActionUpdateRow),
+    };
+  }
+
+  // Operator/admin write: bypasses semantic continuation checks and history.
   add(record: ActionRecord, options: ActionAddOptions = {}): void {
     const parsed = actionRecordSchema.parse({
       ...record,
@@ -470,6 +792,7 @@ export class ActionRepository {
     }
   }
 
+  // Operator/admin write: bypasses semantic continuation checks and history.
   update(id: ActionId, patch: ActionRecordPatch, options: ActionUpdateOptions = {}): void {
     const current = this.get(id);
 
@@ -530,10 +853,52 @@ export class ActionRepository {
   }
 
   list(filter: ActionRecordListFilter = {}): ActionRecord[] {
+    if (filter.reserveActors?.length && filter.limit !== undefined) {
+      const limit = Math.max(1, Math.floor(filter.limit));
+      const actors = [...new Set(filter.reserveActors)].filter(
+        (actor) => filter.actor === undefined || actor === filter.actor,
+      );
+      const openStates = ACTIVE_ACTION_STATES.filter(
+        (state) =>
+          (filter.state === undefined || state === filter.state) &&
+          (filter.states === undefined || filter.states.includes(state)),
+      );
+      const groups = actors.map((actor) =>
+        this.list({
+          ...filter,
+          reserveActors: undefined,
+          actor,
+          state: undefined,
+          states: openStates,
+          rankAudienceEntityIds: undefined,
+          rankActorEntityIds: undefined,
+          limit: ACTION_ACTOR_RESERVED_RECORDS,
+        }),
+      );
+      const records = new Map<ActionId, ActionRecord>();
+      for (let index = 0; index < ACTION_ACTOR_RESERVED_RECORDS; index++) {
+        for (const group of groups) {
+          const row = group[index];
+          if (row !== undefined && records.size < limit) records.set(row.id, row);
+        }
+      }
+      for (const row of this.list({ ...filter, reserveActors: undefined })) {
+        if (records.size >= limit) break;
+        records.set(row.id, row);
+      }
+      return [...records.values()];
+    }
     const clauses: string[] = [];
     const values: unknown[] = [];
     const orderBy: string[] = [];
     const orderValues: unknown[] = [];
+
+    if (filter.prioritizeActive === true) {
+      orderBy.push(
+        `CASE WHEN state IN (${ACTIVE_ACTION_STATES.map(() => "?").join(", ")}) THEN 0 ELSE 1 END ASC`,
+      );
+      orderValues.push(...ACTIVE_ACTION_STATES);
+    }
 
     if (filter.recallAllAudiences === true && "audienceEntityId" in filter) {
       throw new StorageError("Action recallAllAudiences cannot be combined with audienceEntityId", {
@@ -694,7 +1059,7 @@ export class ActionRepository {
     return Number(row?.count ?? 0);
   }
 
-  countActive(): number {
+  countActive(filter: Pick<ActionRecordListFilter, "audienceEntityId"> = {}): number {
     if (ACTIVE_ACTION_STATES.length === 0) {
       return 0;
     }
@@ -705,9 +1070,13 @@ export class ActionRepository {
           SELECT COUNT(*) AS count
           FROM action_records
           WHERE state IN (${ACTIVE_ACTION_STATES.map(() => "?").join(", ")})
+          ${!("audienceEntityId" in filter) || filter.audienceEntityId === undefined ? "" : filter.audienceEntityId === null ? "AND audience_entity_id IS NULL" : "AND audience_entity_id = ?"}
         `,
       )
-      .get(...ACTIVE_ACTION_STATES) as { count: number } | undefined;
+      .get(
+        ...ACTIVE_ACTION_STATES,
+        ...(filter.audienceEntityId == null ? [] : [filter.audienceEntityId]),
+      ) as { count: number } | undefined;
 
     return Number(row?.count ?? 0);
   }

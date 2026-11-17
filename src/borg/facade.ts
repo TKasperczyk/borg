@@ -172,6 +172,7 @@ function participationPolicyRollbackFailedError(
 }
 
 function createActionsFacade(deps: BorgDependencies): BorgFacades["actions"] {
+  // Public add/update are operator/admin writes that bypass semantic continuation checks.
   return new Proxy(deps.actionRepository, {
     get(target, property) {
       if (property === "add") {

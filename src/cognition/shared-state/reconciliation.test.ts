@@ -1164,11 +1164,16 @@ describe("reconcileSharedStateCanonicalizations", () => {
     const commitmentId = createCommitmentId();
     const actionId = createActionId();
     const openQuestionId = createOpenQuestionId();
+    const owner = createEntityId();
     const entry = makeLockedSharedStateEntry({
+      owner_entity_id: owner,
       canonicalizes: {
         goal_ids: [goalId],
         commitment_ids: [commitmentId],
         action_ids: [actionId],
+        action_selections: [
+          { action_id: actionId, candidate_ids: [actionId], self_entity_id: createEntityId() },
+        ],
         open_question_ids: [openQuestionId],
       },
     });
@@ -1190,8 +1195,15 @@ describe("reconcileSharedStateCanonicalizations", () => {
         }),
       ),
     };
+    const action = makeCompletedActionRecord({ id: actionId, actor: owner, state: "scheduled" });
     const actionRepository = {
       update: vi.fn(),
+      get: () => action,
+      appendExtractionUpdate: vi.fn(() => ({
+        status: "applied" as const,
+        record: action,
+        completionFailures: [],
+      })),
     };
     const openQuestionsRepository = {
       resolve: vi.fn(),
@@ -1237,18 +1249,11 @@ describe("reconcileSharedStateCanonicalizations", () => {
         canonicalizedByArtifactEntryId: entry.id,
       },
     );
-    expect(actionRepository.update).toHaveBeenCalledWith(
+    expect(actionRepository.appendExtractionUpdate).toHaveBeenCalledWith(
       actionId,
-      {
-        state: "completed",
-        canonicalized_by_artifact_entry_id: entry.id,
-        last_referenced_at_ms: expect.any(Number),
-        last_referenced_turn_counter: null,
-        last_referenced_turn_global: null,
-      },
-      {
-        skipSideEffects: true,
-      },
+      expect.objectContaining({ description: entry.text, actor: owner, state: "completed" }),
+      null,
+      { skipSideEffects: true, canonicalizedByArtifactEntryId: entry.id },
     );
     expect(openQuestionsRepository.resolve).toHaveBeenCalledWith(
       openQuestionId,
@@ -1325,12 +1330,17 @@ describe("reconcileSharedStateCanonicalizations", () => {
         last_referenced_at_ms: clock.now(),
         last_referenced_turn_counter: null,
       });
+      const selfId = createEntityId();
       const entry = makeLockedSharedStateEntry({
+        owner_entity_id: selfId,
         last_updated_stream_entry_ids: [source],
         canonicalizes: {
           goal_ids: [],
           commitment_ids: [],
           action_ids: [actionId],
+          action_selections: [
+            { action_id: actionId, candidate_ids: [actionId], self_entity_id: selfId },
+          ],
           open_question_ids: [question.id],
         },
       });

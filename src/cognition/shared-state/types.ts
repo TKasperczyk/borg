@@ -185,6 +185,7 @@ export type SharedStateCanonicalizationCandidates = {
   goals?: readonly SharedStateCanonicalizationCandidate[];
   commitments?: readonly SharedStateCommitmentCanonicalizationCandidate[];
   actions?: readonly SharedStateActionCanonicalizationCandidate[];
+  actionCandidateOmittedCount?: number;
   openQuestions?: readonly SharedStateCanonicalizationCandidate[];
 };
 
@@ -326,6 +327,7 @@ export type AllowedCanonicalizationIds = {
   goalIds: ReadonlySet<GoalId>;
   commitmentIds: ReadonlySet<CommitmentId>;
   actionIds: ReadonlySet<ActionId>;
+  actionCandidateOmittedCount: number;
   openQuestionIds: ReadonlySet<OpenQuestionId>;
 };
 

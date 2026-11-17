@@ -79,7 +79,12 @@ function canonicalizationKey(input: {
 function emptyReconciliationEntry(entry: SharedStateEntry): SharedStateEntry {
   return {
     ...entry,
-    canonicalizes: emptyCanonicalizes(),
+    canonicalizes: {
+      ...emptyCanonicalizes(),
+      ...(entry.canonicalizes.action_selections === undefined
+        ? {}
+        : { action_selections: entry.canonicalizes.action_selections }),
+    },
   };
 }
 

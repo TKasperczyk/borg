@@ -268,6 +268,7 @@ export function selectCurrentAudienceSharedStateActionCandidatesForCanonicalizat
 }): {
   candidates: SharedStateCanonicalizationCandidates["actions"];
   countByScope: Record<SharedStateArtifactActionCandidateScope, number>;
+  omittedCount: number;
 } {
   const scoped = new Map<string, ScopedSharedStateArtifactActionCandidate>();
 
@@ -311,6 +312,16 @@ export function selectCurrentAudienceSharedStateActionCandidatesForCanonicalizat
     countByScope[candidate.scope] += 1;
   }
 
+  // Count the same eligible scopes before their bounded draws; never infer omissions from the draw.
+  const eligibleCount = (
+    input.audienceEntityId === null ? [null] : [input.audienceEntityId, null]
+  ).reduce<number>(
+    (total, audienceEntityId) =>
+      total +
+      (input.actionRepository.countActive?.({ audienceEntityId }) ??
+        input.actionRepository.list({ states: ACTIVE_ACTION_STATES, audienceEntityId }).length),
+    0,
+  );
   return {
     candidates: selected.map(({ action }) => ({
       id: action.id,
@@ -321,6 +332,7 @@ export function selectCurrentAudienceSharedStateActionCandidatesForCanonicalizat
       ...memoryDisclosurePayloadFields(actionMemoryDisclosureLabel(action)),
     })),
     countByScope,
+    omittedCount: Math.max(0, eligibleCount - selected.length),
   };
 }
 

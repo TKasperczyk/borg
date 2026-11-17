@@ -18,6 +18,7 @@ import {
   parseSessionId,
 } from "../../util/ids.js";
 import { goalIdSchema, openQuestionIdSchema } from "../self/types.js";
+import { memoryDisclosureLabelSchema } from "../common/disclosure-label.js";
 
 export const ACTION_STATES = [
   "considering",
@@ -169,12 +170,74 @@ export const actionCanonicalizedByArtifactEntryIdSchema = z
   })
   .transform((value) => value as SharedStateEntryId);
 
+export const actionMatchRejectionSchema = z.enum([
+  "not_offered",
+  "missing",
+  "terminal",
+  "actor_mismatch",
+]);
+
+export const actionSelectionAuditSchema = z
+  .object({
+    turn_id: z.string().nullable(),
+    candidate_index: z.number().int().nonnegative(),
+    candidate_ids: z.array(actionIdSchema),
+    candidate_omitted_count: z.number().int().nonnegative(),
+    chosen_action_id: actionIdSchema.nullable(),
+    rejection_reason: actionMatchRejectionSchema.nullable(),
+    supplied_goal_ids: z.array(goalIdSchema),
+    chosen_goal_id: goalIdSchema.nullable(),
+    goal_rejection_reason: z.literal("not_offered").nullable(),
+    referenced_action_ids: z.array(actionIdSchema).optional(),
+    applied_reference_ids: z.array(actionIdSchema).optional(),
+    shared_state_entry_id: actionCanonicalizedByArtifactEntryIdSchema.optional(),
+  })
+  .strict();
+
+export const actionRecordUpdateSchema = z
+  .object({
+    id: z.number().int().positive(),
+    action_id: actionIdSchema,
+    text: z.string().min(1),
+    from_state: actionStateSchema,
+    to_state: actionStateSchema,
+    turn_id: z.string().nullable(),
+    source_stream_entry_ids: z.array(actionStreamEntryIdSchema),
+    timestamp: z.number().finite(),
+    selection_audit: actionSelectionAuditSchema,
+    disclosure_label: memoryDisclosureLabelSchema,
+  })
+  .strict();
+
+export type ActionMatchRejection = z.infer<typeof actionMatchRejectionSchema>;
+export type ActionSelectionAudit = z.infer<typeof actionSelectionAuditSchema>;
+export type ActionRecordUpdate = z.infer<typeof actionRecordUpdateSchema>;
+export type ActionUpdateHistory = { updates: ActionRecordUpdate[]; total: number };
+
+export const actionExtractionDecisionSchema = z
+  .object({
+    turn_id: z.string().nullable(),
+    candidate_ids: z.array(actionIdSchema),
+    candidate_omitted_count: z.number().int().nonnegative(),
+    referenced_action_ids: z.array(actionIdSchema),
+    applied_reference_ids: z.array(actionIdSchema),
+    ignored_reference_ids: z.array(actionIdSchema),
+    decisions: z.array(actionSelectionAuditSchema),
+  })
+  .strict();
+export type ActionExtractionDecision = z.infer<typeof actionExtractionDecisionSchema>;
+
 const actionRecordShape = z.object({
   id: actionIdSchema,
   description: z.string().min(1),
   actor: actionActorSchema,
   audience_entity_id: actionEntityIdSchema.nullable(),
   goal_id: goalIdSchema.nullable().default(null),
+  // Null/absent marks pre-model-selection links; migrations never rewrite their goal_id.
+  goal_link_basis: z.enum(["extractor", "unlinked"]).nullable().optional(),
+  selection_audit: actionSelectionAuditSchema.nullable().optional(),
+  disclosure_label: memoryDisclosureLabelSchema.nullable().optional(),
+  origin_stream_entry_ids: z.array(actionStreamEntryIdSchema).nullable().optional(),
   open_question_id: openQuestionIdSchema.nullable().default(null),
   state: actionStateSchema,
   confidence: z.number().min(0).max(1),
@@ -219,6 +282,8 @@ export const actionRecordPatchSchema = actionRecordShape
   .omit({
     id: true,
     created_at: true,
+    selection_audit: true,
+    origin_stream_entry_ids: true,
   })
   .partial()
   // A missing patch field must remain absent so lifecycle transitions stamp it.

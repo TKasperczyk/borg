@@ -29,6 +29,7 @@ describe("action declined migration", () => {
       expect(
         db.prepare("SELECT name FROM sqlite_master WHERE name = 'deployment_action_note'").get(),
       ).toBeDefined();
+      actionMigrations[2].up(db);
       const repo = new ActionRepository({ db });
       const declined = makeActionRecord({ state: "declined", declined_at: 300 });
       repo.add(declined);
@@ -38,6 +39,36 @@ describe("action declined migration", () => {
         db.prepare("SELECT id FROM action_changes WHERE id = ?").get(declined.id),
       ).toBeDefined();
       expect(repo.get(id)?.state).toBe("not_done");
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe("action identity migration", () => {
+  it("adds empty history and nullable metadata without rewriting any legacy goal or row", () => {
+    const db = openDatabase(":memory:", { migrations: actionMigrations.slice(0, 2) });
+    try {
+      db.prepare(
+        "INSERT INTO action_records(id, description, actor, goal_id, state, confidence, provenance_episode_ids, provenance_stream_entry_ids, created_at, updated_at) VALUES (?, 'Original', 'borg', 'goal_legacy', 'committed_to_do', 0.8, '[]', ?, 100, 100)",
+      ).run(createActionId(), JSON.stringify([createStreamEntryId()]));
+      db.exec(
+        "CREATE TABLE mutation_watch(n INTEGER); CREATE TRIGGER watch_legacy_action AFTER UPDATE ON action_records BEGIN INSERT INTO mutation_watch VALUES(1); END;",
+      );
+      const before = db.prepare("SELECT * FROM action_records").all();
+      db.transaction(() => actionMigrations[2].up(db))();
+      expect(db.prepare("SELECT * FROM action_records ORDER BY id").all()).toEqual(
+        before.map((row) => ({
+          ...row,
+          goal_link_basis: null,
+          selection_audit: null,
+          disclosure_label: null,
+          origin_stream_entry_ids: null,
+        })),
+      );
+      expect(db.prepare("SELECT * FROM action_record_updates").all()).toEqual([]);
+      expect(db.prepare("SELECT * FROM mutation_watch").all()).toEqual([]);
+      expect(db.pragma("foreign_key_check")).toEqual([]);
     } finally {
       db.close();
     }

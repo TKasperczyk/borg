@@ -29,7 +29,7 @@ import type { TurnTracer } from "../../tracing/tracer.js";
 import type { AutobiographicalRecallResult } from "../autobiographical-recall.js";
 
 export type ActionLedgerRepository = Pick<ActionRepository, "list"> &
-  Partial<Pick<ActionRepository, "findSimilarDescriptionPairs" | "count">>;
+  Partial<Pick<ActionRepository, "findSimilarDescriptionPairs" | "count" | "readUpdateHistory">>;
 export type CommitmentLedgerRepository = Pick<CommitmentRepository, "list">;
 export type GoalLedgerRepository = Pick<GoalsRepository, "list">;
 

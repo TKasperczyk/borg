@@ -18,6 +18,7 @@ export type LifecycleOperationResult<T = unknown> =
 
 export type LifecycleTraceEventName =
   | "action_state.transitioned"
+  | "action_state.continuation_rejected"
   | "action_state.borg_self_performance.completed"
   | "action_state.archived"
   | "action_session_scope.expired"

@@ -1,3 +1,4 @@
+import { goalSchema } from "../../../memory/self/index.js";
 import { describe, expect, it, vi } from "vitest";
 
 import { createWorkingMemory, type WorkingMemory } from "../../../memory/working/index.js";
@@ -81,14 +82,18 @@ function baseExtractionPhaseInput(input: {
 
 describe("runExtractionPhase", () => {
   it.each(["annotate", "quarantine", "none"] as const)(
-    "preserves action goal linking and extraction gates for the %s disposition",
+    "supplies goal records without inheriting executive focus for the %s disposition",
     async (frameAnomalyDisposition) => {
       const sessionId = createSessionId();
       const goalId = createGoalId();
       const selfContext = { executiveFocus: { selected_goal: { id: goalId } } };
       const actionService = new TurnActionStateService({
         model: "test-recall",
-        actionRepository: { list: vi.fn(() => []) } as never,
+        actionRepository: {
+          list: vi.fn(() => []),
+          count: () => 0,
+          findByDescription: async () => [],
+        } as never,
         embeddingClient: new TestEmbeddingClient(),
         clock: new FixedClock(1_000),
         tracer: NOOP_TRACER,
@@ -100,6 +105,21 @@ describe("runExtractionPhase", () => {
         extractActionState,
       });
       vi.mocked(input.options.selfContextBuilder.build).mockResolvedValue(selfContext as never);
+      const suppliedGoal = goalSchema.parse({
+        id: createGoalId(),
+        description: "An independently supplied purpose",
+        status: "active",
+        priority: 0.5,
+        parent_goal_id: null,
+        progress_notes: null,
+        last_progress_ts: null,
+        created_at: 1,
+        target_at: null,
+        provenance: { kind: "manual" },
+      });
+      vi.mocked(input.options.selfContextBuilder.listActiveGoalsForCognition).mockResolvedValue([
+        suppliedGoal,
+      ]);
       const currentTurnFrameAnomaly =
         frameAnomalyDisposition === "none"
           ? null
@@ -124,15 +144,19 @@ describe("runExtractionPhase", () => {
           expect.objectContaining({
             frameAnomaly: currentTurnFrameAnomaly,
             frameAnomalyDisposition,
-            goalId: runsActionPass ? goalId : null,
+            suppliedGoals: [suppliedGoal],
           }),
         );
         expect(input.options.selfContextBuilder.build).toHaveBeenCalledTimes(
           runsActionPass ? 1 : 0,
         );
+        expect(firstMockCallInput(extractActionState)).not.toHaveProperty("goalId");
+        expect(suppliedGoal.id).not.toBe(goalId);
         expect(result.actionLinkSelfContext).toBe(runsActionPass ? selfContext : null);
         if (runsActionPass) {
-          expect(extractSpy).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ goalId }));
+          expect(extractSpy).toHaveBeenCalledExactlyOnceWith(
+            expect.objectContaining({ suppliedGoals: [suppliedGoal] }),
+          );
         } else {
           expect(extractSpy).not.toHaveBeenCalled();
         }

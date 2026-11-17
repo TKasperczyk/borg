@@ -20,6 +20,9 @@ export function makeSharedStateCanonicalizes(
     goal_ids: overrides.goal_ids ?? [],
     commitment_ids: overrides.commitment_ids ?? [],
     action_ids: overrides.action_ids ?? [],
+    ...(overrides.action_selections === undefined
+      ? {}
+      : { action_selections: overrides.action_selections }),
     open_question_ids: overrides.open_question_ids ?? [],
   };
 }

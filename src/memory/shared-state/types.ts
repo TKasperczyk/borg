@@ -97,6 +97,18 @@ export const sharedStateCanonicalizesSchema = z
     goal_ids: z.array(sharedStateGoalIdSchema).default([]),
     commitment_ids: z.array(sharedStateCommitmentIdSchema).default([]),
     action_ids: z.array(sharedStateActionIdSchema).default([]),
+    action_selections: z
+      .array(
+        z
+          .object({
+            action_id: sharedStateActionIdSchema,
+            candidate_ids: z.array(sharedStateActionIdSchema),
+            candidate_omitted_count: z.number().int().nonnegative().optional(),
+            self_entity_id: sharedStateEntityIdSchema,
+          })
+          .strict(),
+      )
+      .optional(),
     open_question_ids: z.array(sharedStateOpenQuestionIdSchema).default([]),
   })
   .strict();

@@ -139,6 +139,9 @@ function uniqueCanonicalizes(
     goal_ids: dedupePreservingOrder(source.goal_ids),
     commitment_ids: dedupePreservingOrder(source.commitment_ids),
     action_ids: dedupePreservingOrder(source.action_ids),
+    ...(source.action_selections === undefined
+      ? {}
+      : { action_selections: source.action_selections }),
     open_question_ids: dedupePreservingOrder(source.open_question_ids),
   });
 }
@@ -155,6 +158,17 @@ function mergeCanonicalizes(
     goal_ids: [...current.goal_ids, ...next.goal_ids],
     commitment_ids: [...current.commitment_ids, ...next.commitment_ids],
     action_ids: [...current.action_ids, ...next.action_ids],
+    ...((current.action_selections ?? next.action_selections) === undefined
+      ? {}
+      : {
+          action_selections: [
+            ...new Map(
+              [...(current.action_selections ?? []), ...(next.action_selections ?? [])].map(
+                (selection) => [selection.action_id, selection],
+              ),
+            ).values(),
+          ],
+        }),
     open_question_ids: [...current.open_question_ids, ...next.open_question_ids],
   });
 }

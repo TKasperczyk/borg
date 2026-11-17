@@ -1,7 +1,17 @@
 import { describe, expect, it } from "vitest";
 
+import { ActionRepository, actionMigrations } from "../../memory/actions/index.js";
+import { SharedStateRepository, sharedStateMigrations } from "../../memory/shared-state/index.js";
+import { openDatabase } from "../../storage/sqlite/index.js";
+import { makeActionRecord } from "../../test-support/factories/memory.js";
+import { selectCurrentAudienceSharedStateActionCandidatesForCanonicalization } from "../lifecycle/turn-phase/shared-state-phase.js";
+import { canonicalizeActionWithSharedStateEntry } from "../../memory/lifecycle-ops/index.js";
+import { findUnsettledSharedStateReconciliation } from "./reconciliation.js";
+import { runSharedStateArtifactRetryOnlyReconciliation } from "../lifecycle/turn-phase/reconciliation-phase.js";
+import { buildCanonicalizationCandidatePromptPayload } from "./compiler-prompt.js";
 import type { SharedStateArtifact, SharedStateEntry } from "../../memory/shared-state/index.js";
 import {
+  createActionId,
   createEntityId,
   createGoalId,
   createRelationalSlotId,
@@ -97,6 +107,7 @@ function makeEntry(input: {
 }
 
 function normalizeKeyedPatch(input: {
+  selfEntityId?: EntityId;
   previousEntries: readonly SharedStateEntry[];
   operations: EmitSharedStatePatch["operations"];
   audienceEntityId: EntityId;
@@ -111,7 +122,7 @@ function normalizeKeyedPatch(input: {
   promptExposure?: SharedStatePromptExposure | null;
   maxLockedEntryTextChars?: number;
 }) {
-  const selfEntityId = createEntityId();
+  const selfEntityId = input.selfEntityId ?? createEntityId();
   const speakerEntityId = createEntityId();
   const previousArtifact = makeArtifact({
     audienceEntityId: input.audienceEntityId,
@@ -2176,3 +2187,139 @@ describe("normalizePatch state_key validation", () => {
     ]);
   });
 });
+
+it("persists the action handles actually offered for shared-state continuation replay", () => {
+  const audienceEntityId = createEntityId();
+  const sourceStreamEntryId = createStreamEntryId();
+  const chosen = createActionId();
+  const other = createActionId();
+  const result = normalizeKeyedPatch({
+    audienceEntityId,
+    sourceStreamEntryId,
+    previousEntries: [],
+    canonicalizationCandidates: {
+      actions: [chosen, other].map((id) => canonicalizationCandidate({ id, text: "Candidate" })),
+    },
+    operations: [
+      {
+        ...addOperation({ stateKey: "decision.rule", kind: "locked", sourceStreamEntryId }),
+        canonicalizes: { action_ids: [chosen] },
+      },
+    ],
+  });
+  expect(result.rejected).toEqual([]);
+  expect(result.operations[0]).toMatchObject({
+    canonicalizes: {
+      action_ids: [chosen],
+      action_selections: [
+        {
+          action_id: chosen,
+          candidate_ids: [chosen, other],
+          self_entity_id: expect.stringMatching(/^ent_/),
+        },
+      ],
+    },
+  });
+});
+
+it.each([false, true])(
+  "audits 85 eligible actions as 80 offered and 5 omitted, retry=%s",
+  (retry) => {
+    const actionDb = openDatabase(":memory:", { migrations: actionMigrations });
+    const sharedDb = openDatabase(":memory:", { migrations: sharedStateMigrations });
+    try {
+      const repository = new ActionRepository({ db: actionDb });
+      const shared = new SharedStateRepository({ db: sharedDb });
+      const audienceEntityId = createEntityId(),
+        selfEntityId = createEntityId(),
+        sourceStreamEntryId = createStreamEntryId();
+      const eligible = Array.from({ length: 85 }, (_, i) =>
+        makeActionRecord({
+          actor: "borg",
+          audience_entity_id: i < 40 ? audienceEntityId : null,
+          updated_at: 1_000 + i,
+        }),
+      );
+      for (const record of eligible) repository.add(record);
+      repository.add(makeActionRecord({ audience_entity_id: createEntityId(), updated_at: 9_000 }));
+      repository.add(
+        makeActionRecord({
+          audience_entity_id: audienceEntityId,
+          state: "completed",
+          updated_at: 9_000,
+        }),
+      );
+      const selection = selectCurrentAudienceSharedStateActionCandidatesForCanonicalization({
+        actionRepository: repository,
+        audienceEntityId,
+        activeParticipants: [],
+      });
+      expect(selection.candidates).toHaveLength(80);
+      expect(selection.omittedCount).toBe(5);
+      const chosen = eligible.find((row) => row.id === selection.candidates![0]!.id)!;
+      const canonicalizationCandidates = {
+        actions: selection.candidates,
+        actionCandidateOmittedCount: selection.omittedCount,
+      };
+      expect(
+        buildCanonicalizationCandidatePromptPayload(canonicalizationCandidates)
+          .active_actions_omitted_count,
+      ).toBe(5);
+      const normalized = normalizeKeyedPatch({
+        audienceEntityId,
+        selfEntityId,
+        sourceStreamEntryId,
+        previousEntries: [],
+        canonicalizationCandidates,
+        operations: [
+          {
+            ...addOperation({ stateKey: "decision.result", kind: "locked", sourceStreamEntryId }),
+            owner_entity_id: selfEntityId,
+            canonicalizes: { action_ids: [chosen.id] },
+          },
+        ],
+      });
+      expect(normalized.rejected).toEqual([]);
+      shared.upsert(audienceEntityId, normalized.plan.operations, { now: 2_000 });
+      const artifact = new SharedStateRepository({ db: sharedDb }).get(audienceEntityId)!;
+      const entry = artifact.entries[0]!;
+      expect(entry.canonicalizes.action_selections?.[0]?.candidate_omitted_count).toBe(5);
+      if (retry) {
+        const repositories = { actionRepository: repository };
+        const unsettled = findUnsettledSharedStateReconciliation({
+          previousArtifact: artifact,
+          repositories,
+          nowMs: 2_000,
+        })!;
+        runSharedStateArtifactRetryOnlyReconciliation({
+          unsettledReconciliation: unsettled,
+          repositories,
+          sourceTrustValidator: () => ({ allowed: true }),
+          nowMs: 2_000,
+          tracer: { enabled: false, includePayloads: false, emit: () => {} },
+          turnId: "retry",
+        });
+      } else {
+        expect(
+          canonicalizeActionWithSharedStateEntry({
+            actionId: chosen.id,
+            entry,
+            repository,
+            nowMs: 2_000,
+            turnId: "direct",
+          }).status,
+        ).toBe("success");
+      }
+      const history = repository.readUpdateHistory(chosen.id, 5);
+      expect(history.total).toBe(1);
+      expect(history.updates[0]?.selection_audit).toMatchObject({
+        candidate_omitted_count: 5,
+        chosen_action_id: chosen.id,
+      });
+      expect(history.updates[0]?.selection_audit.candidate_ids).toHaveLength(80);
+    } finally {
+      sharedDb.close();
+      actionDb.close();
+    }
+  },
+);

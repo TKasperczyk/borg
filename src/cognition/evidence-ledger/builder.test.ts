@@ -3781,7 +3781,7 @@ describe("EvidenceLedgerBuilder", () => {
     ).toBe("Atlas needs a rollback plan.");
   });
 
-  it("renders one action thread for same-goal similar action transitions", async () => {
+  it("renders separate action rows for same-goal similar assertions", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
     const writer = new StreamWriter({
@@ -3855,46 +3855,28 @@ describe("EvidenceLedgerBuilder", () => {
     const actionEntries =
       ledger.sections.find((section) => section.id === "action_states")?.entries ?? [];
 
-    expect(actionEntries).toHaveLength(1);
-    expect(actionEntries[0]).toMatchObject({
-      id: expect.stringMatching(/^action_thread:/),
-      state: expect.stringContaining("completed"),
-      state_metadata: expect.objectContaining({
-        records: 3,
-        current_action_id: completed.id,
+    expect(actionEntries).toHaveLength(3);
+    expect(actionEntries.map((entry) => entry.state_metadata?.current_action_id)).toEqual([
+      committed.id,
+      considering.id,
+      completed.id,
+    ]);
+    for (const record of [considering, committed, completed]) {
+      const entry = actionEntries.find(
+        (entry) => entry.state_metadata?.current_action_id === record.id,
+      )!;
+      expect(entry.state_metadata).toMatchObject({
+        records: 1,
+        record_ids: [record.id],
         goal_id: goalId,
-      }),
-    });
-    expect(actionEntries[0]?.state).toContain("disclosure_class=unknown");
-    // The origin is a different record from the current one and holds its own state. `current:`
-    // below names only `completed`, so without a disposition on this line the description of a
-    // still-open intent renders under the one state on the page -- a thread-mate's. Asserted on the
-    // rendered line rather than on the metadata: the line is what a reader is handed.
-    expect(actionEntries[0]?.text).toContain(
-      `originating_intent (considering since ${new Date(
-        NOW_MS,
-      ).toISOString()}, open): consider writing the harness presentation`,
-    );
-    expect(actionEntries[0]?.text).toContain("records: 3, current: completed");
-    expect(actionEntries[0]?.state_metadata).toMatchObject({
-      origin_action_id: considering.id,
-      origin_state: "considering",
-    });
-    // The originating description is the oldest write in the thread; without its own stamp a reader
-    // cannot tell whether it disagrees with `current_intent` because the world changed or because
-    // one of them is wrong. And the stamp alone dates a link that no row records: the only thing
-    // that put these three records in one thread is description similarity, so the clause says that
-    // where a reader would otherwise take the grouping for a stored fact.
-    expect(actionEntries[0]?.text).toContain(
-      `since ${new Date(NOW_MS + 20).toISOString()}; originating_intent is a separate record created ${new Date(
-        NOW_MS,
-      ).toISOString()}, this record created ${new Date(
-        NOW_MS + 2,
-      ).toISOString()}, grouped with this one by description similarity rather than by any recorded link`,
-    );
-    expect(actionEntries[0]?.text).toContain(
-      "current_intent: finished writing the harness presentation",
-    );
+        origin_action_id: record.id,
+        origin_state: record.state,
+      });
+      expect(entry.text).toContain(`action: ${record.description}`);
+      expect(entry.text).toContain("legacy turn-selected goal");
+      expect(entry.text).not.toContain("originating_intent");
+      expect(entry.state).toContain("disclosure_class=unknown");
+    }
   });
 
   it("uses the global lifecycle clock for action recency across a small session counter", async () => {
@@ -4053,7 +4035,7 @@ describe("EvidenceLedgerBuilder", () => {
     ).toBe(false);
   });
 
-  it("renders action salience ordering and caps stale participant actions", async () => {
+  it("renders open stale participant actions before terminal rows without a pre-cap", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
     const writer = new StreamWriter({
@@ -4143,7 +4125,7 @@ describe("EvidenceLedgerBuilder", () => {
     expect(actionEntries.some((entry) => entry.salience_class === "completed_recent")).toBe(true);
     expect(
       actionEntries.filter((entry) => entry.salience_class === "participant_pending_stale"),
-    ).toHaveLength(5);
+    ).toHaveLength(7);
     expect(
       actionEntries.filter((entry) => entry.id.startsWith("action_thread:")).slice(-5),
     ).toEqual(
@@ -4154,10 +4136,8 @@ describe("EvidenceLedgerBuilder", () => {
       ]),
     );
     expect(
-      actionEntries.find((entry) => entry.id === "action_threads:older_summary")?.text,
-    ).toContain(
-      "audience_scope=global salience_class=participant_pending_stale threads=2 records=2",
-    );
+      actionEntries.find((entry) => entry.id === "action_threads:older_summary"),
+    ).toBeUndefined();
   });
 
   it("prevents a top-ranked Borg flood from starving participant and audience reservations", async () => {
@@ -4432,25 +4412,31 @@ describe("EvidenceLedgerBuilder", () => {
     const summaryText = summaries[0]?.text ?? "";
     const summaryLines = summaryText.split("\n");
     const aliceLine = summaryLines.find((line) => line.includes(`audience_scope=${alice}`));
-    const globalLine = summaryLines.find((line) => line.includes("audience_scope=global"));
+    const selfPrivateLine = summaryLines.find(
+      (line) =>
+        line.includes("salience_class=borg_current_turn_action") &&
+        line.includes("audience_scope=global"),
+    );
+    const globalLine = summaryLines.find((line) =>
+      line.includes("salience_class=participant_pending_recent"),
+    );
 
     expect(actionEntries.filter((entry) => entry.id.startsWith("action_thread:"))).toHaveLength(1);
     expect(summaries).toHaveLength(1);
-    expect(summaries[0]?.text).toContain("threads=2, records=3");
-    expect(aliceLine).toContain(`salience_class=borg_current_turn_action threads=1 records=2`);
-    expect(aliceLine).toContain("disclosure_label=disclosure_class=self_private");
+    expect(summaries[0]?.text).toContain("threads=3, records=3");
+    expect(aliceLine).toContain(`salience_class=borg_current_turn_action threads=1 records=1`);
+    expect(aliceLine).toContain("disclosure_label=disclosure_class=relationship_private");
     expect(aliceLine).toContain(`origin_audience=${alice}`);
+    expect(selfPrivateLine).toContain("threads=1 records=1");
+    expect(selfPrivateLine).toContain("disclosure_label=disclosure_class=self_private");
     expect(globalLine).toContain("salience_class=participant_pending_recent threads=1 records=1");
     expect(globalLine).toContain("disclosure_label=disclosure_class=unknown");
     expect(globalLine).not.toContain(alice);
 
-    // Budget covers the head lines (omitted counts + uncounted-population bounds) plus both
-    // group labels, and still cuts inside the second group's samples. The number tracks the head
-    // lines: they are charged first, so widening them buys the same shape at a higher price. The
-    // shape holds across roughly 305-316 here; the value sits mid-band rather than at an edge, so
-    // a head line that moves by a few characters does not silently change what is being tested.
+    // Separate action IDs now produce three disclosure groups. Cut inside the last sample,
+    // after its label, without tying the budget to the length of the earlier group headings.
     const compacted = compactEvidenceLedger(ledger, {
-      maxEntryTextTokens: 310,
+      maxEntryTextTokens: Math.ceil((summaryText.indexOf("Unknown sample") + 60) / 4),
     });
     const compactedSummaryText =
       compacted.ledger.sections
@@ -4458,8 +4444,12 @@ describe("EvidenceLedgerBuilder", () => {
         ?.entries.find((entry) => entry.id === "action_threads:older_summary")?.text ?? "";
     const disclosureSamples = [
       {
-        label: "disclosure_label=disclosure_class=self_private",
+        label: "disclosure_label=disclosure_class=relationship_private",
         sample: "Alice-private omitted Borg action",
+      },
+      {
+        label: "disclosure_label=disclosure_class=self_private",
+        sample: "Earlier self-private phase of Alice action",
       },
       {
         label: "disclosure_label=disclosure_class=unknown",
@@ -4496,8 +4486,7 @@ describe("EvidenceLedgerBuilder", () => {
     // count is a different unit -- nor the slot count that says what `rendered` was measured
     // against, which is the one term a reader cannot reconstruct from the others.
     expect(compactedSummaryText).toContain(
-      "threads_built=3 = rendered 1 + omitted 2 + dropped 0; render_slots=1, " +
-        "stale_participant_threads_withheld=0 of that omitted count",
+      "threads_built=4 = rendered 1 + omitted 3 + dropped 0; render_slots=1;",
     );
     expect(compactedSummaryText).toContain("records_considered=4");
     expect(compactedSummaryText).not.toContain("Unknown sample should be dropped");

@@ -13,7 +13,8 @@ import type {
   StreamEntryId,
 } from "../../util/ids.js";
 import type { ExtractCorrectivePreferenceInput } from "../commitments/corrective-preference-extractor.js";
-import { listActionCandidatesForCognition } from "../evidence-ledger/action-threads.js";
+import { retrieveActionCandidates } from "./action-candidates.js";
+import type { GoalRecord } from "../../memory/self/index.js";
 import type { ActualFrameAnomalyClassification } from "../frame-anomaly/index.js";
 import type { FrameAnomalyDisposition } from "../lifecycle/turn-phase/perception-phase.js";
 import type { TurnTracer } from "../../tracing/tracer.js";
@@ -43,7 +44,10 @@ export type ExtractTurnActionStatesInput = {
   speakerEntityId?: EntityId | null;
   speakerDisplayName?: string | null;
   senderDisplayNameById?: (entityId: EntityId) => string | null | undefined;
+  /** @deprecated Ignored; supply goal records for the model instead. */
   goalId?: GoalId | null;
+  suppliedGoals?: readonly GoalRecord[];
+  participantEntityIds?: readonly EntityId[];
   openQuestionId?: OpenQuestionId | null;
   turnCounter?: number | null;
   frameAnomaly?: ActualFrameAnomalyClassification | null;
@@ -118,16 +122,18 @@ export class TurnActionStateService {
         });
       },
     });
-    const activeActionsForReference = listActionCandidatesForCognition({
-      actionRepository: this.options.actionRepository,
+    const candidates = await retrieveActionCandidates({
+      repository: this.options.actionRepository,
+      text: input.userMessage,
       audienceEntityId: input.audienceEntityId,
-      rankParticipantEntityIds:
-        input.speakerEntityId === null || input.speakerEntityId === undefined
-          ? []
-          : [input.speakerEntityId],
-      states: ACTIVE_ACTION_STATES,
-      limit: 80,
-    }).map((candidate) => candidate.record);
+      speakerEntityId: input.speakerEntityId,
+      participantEntityIds: input.participantEntityIds,
+      onSearchFailure: (error) =>
+        this.options.tracer.emit("extraction.actions.candidate_search_failed", {
+          turnId: input.turnId,
+          error: error instanceof Error ? error.message : String(error),
+        }),
+    });
     const actionStateRecords = await actionStateExtractor.extract({
       userMessage: input.userMessage,
       currentUserStreamEntryId,
@@ -139,16 +145,19 @@ export class TurnActionStateService {
       speakerDisplayName: input.speakerDisplayName ?? null,
       senderDisplayNameById: input.senderDisplayNameById,
       senderAttribution: input.senderAttribution,
-      goalId: input.goalId ?? null,
+      suppliedGoals: input.suppliedGoals,
       openQuestionId: input.openQuestionId ?? null,
       turnCounter: input.turnCounter ?? null,
-      activeActionsForReference,
+      activeActionsForReference: candidates.records,
+      actionCandidateTotal: candidates.total,
     });
 
     return actionStateRecords.map((record) => record.id);
   }
 
-  async closeBorgSelfPerformedActions(input: CloseBorgSelfPerformedActionsInput): Promise<void> {
+  async closeBorgSelfPerformedActions(
+    input: CloseBorgSelfPerformedActionsInput,
+  ): Promise<ActionId[]> {
     const sessionId = input.sessionId ?? undefined;
 
     const activeBorgActions = this.options.actionRepository.list({
@@ -158,7 +167,7 @@ export class TurnActionStateService {
     });
 
     if (activeBorgActions.length === 0) {
-      return;
+      return [];
     }
 
     const sourceUserEntryIds =
@@ -166,11 +175,13 @@ export class TurnActionStateService {
         ? [input.persistedUserEntryId]
         : [...input.sourceUserEntryIds];
     const currentTurnBorgActions = activeBorgActions.filter((action) =>
-      action.provenance_stream_entry_ids.some((entryId) => sourceUserEntryIds.includes(entryId)),
+      (action.origin_stream_entry_ids ?? action.provenance_stream_entry_ids).some((entryId) =>
+        sourceUserEntryIds.includes(entryId),
+      ),
     );
 
     if (currentTurnBorgActions.length === 0 && input.currentTurnSharedStateEntries.length === 0) {
-      return;
+      return [];
     }
 
     const actionStateExtractor = new ActionStateExtractor({
@@ -199,7 +210,7 @@ export class TurnActionStateService {
       },
     });
 
-    await actionStateExtractor.extract({
+    const inserted = await actionStateExtractor.extract({
       userMessage: input.userMessage,
       currentUserStreamEntryId: input.persistedUserEntryId,
       currentUserStreamEntryIds: sourceUserEntryIds,
@@ -211,12 +222,13 @@ export class TurnActionStateService {
       speakerDisplayName: input.speakerDisplayName ?? null,
       turnCounter: input.turnCounter ?? null,
       activeActionsForReference: currentTurnBorgActions,
+      actionCandidateTotal: currentTurnBorgActions.length,
       postTurnSelfPerformance: {
         activeBorgActions: currentTurnBorgActions,
         currentTurnSharedStateEntries: input.currentTurnSharedStateEntries,
         agentResponse: input.agentResponse,
       },
-      persistNewActions: false,
     });
+    return inserted.map((record) => record.id);
   }
 }

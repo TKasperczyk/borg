@@ -96,6 +96,37 @@ async function fixture(withVectors = true, liveShape = false) {
   };
 }
 describe("orphan action actor repair", () => {
+  it("preserves immutable selection audit and continuation history on an actor repair", async () => {
+    const f = await fixture(false);
+    const audit = {
+      turn_id: "repair_fixture",
+      candidate_index: 0,
+      candidate_ids: [f.action.id],
+      candidate_omitted_count: 3,
+      chosen_action_id: null,
+      rejection_reason: null,
+      supplied_goal_ids: [],
+      chosen_goal_id: null,
+      goal_rejection_reason: null,
+    };
+    f.repo.add({ ...f.action, state: "scheduled", selection_audit: audit });
+    f.repo.appendExtractionUpdate(
+      f.action.id,
+      {
+        ...f.action,
+        description: "New closing wording",
+        selection_audit: { ...audit, chosen_action_id: f.action.id },
+      },
+      "repair_fixture",
+    );
+    const before = f.repo.get(f.action.id)!;
+    const history = f.repo.readUpdateHistory(f.action.id, 5);
+    expect(history.total).toBe(1);
+    const plan = await planActionActorRepair(f, 2000);
+    await applyActionActorRepair(plan);
+    expect(f.repo.get(f.action.id)).toEqual({ ...before, actor: f.to });
+    expect(f.repo.readUpdateHistory(f.action.id, 5)).toEqual(history);
+  });
   it("applies and resumes the explicit live-store override with audited SQL and mirror repair", async () => {
     const f = await fixture(true, true);
     const backup = repairBackupFixture(f.dataDir);

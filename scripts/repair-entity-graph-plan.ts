@@ -422,6 +422,14 @@ export async function planEntityGraphRepair(
         )
           continue;
         const next = remap(row, allIds, table) as Row;
+        if (table === "action_record_updates") {
+          // Repair disclosure handles; retain the historical wording, provenance and decision snapshot.
+          next.text = row.text;
+          next.source_stream_entry_ids = row.source_stream_entry_ids;
+          next.selection_audit = row.selection_audit;
+        }
+        if (table === "shared_state_entries")
+          next.canonicalizes = JSON.stringify(remap(JSON.parse(String(row.canonicalizes)), allIds));
         if (["entities", "semantic_nodes", "semantic_edges"].includes(table)) next.id = row.id;
         if (table === "entities") next.merged_into = row.merged_into;
         if (table === "semantic_node_vector_sync_outbox") next.node_id = row.node_id;

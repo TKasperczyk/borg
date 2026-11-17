@@ -111,8 +111,10 @@ export function openQuestionMemoryDisclosureLabel(
 }
 
 export function actionMemoryDisclosureLabel(
-  action: Pick<ActionRecord, "actor" | "audience_entity_id">,
+  action: Pick<ActionRecord, "actor" | "audience_entity_id"> & DisclosureMetadataCarrier,
 ): MemoryDisclosureLabel {
+  const attached = disclosureLabelFromCarrier(action);
+  if (attached !== null) return attached;
   const entityIds = uniqueDisclosureEntityIds([action.audience_entity_id]);
 
   if (entityIds.length > 0) {

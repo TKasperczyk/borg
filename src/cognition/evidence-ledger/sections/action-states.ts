@@ -1,10 +1,9 @@
-import { similarityThresholds } from "../../../config/similarity.js";
 import {
   DEFAULT_ACTION_THREAD_AUDIENCE_RESERVED_SLOTS,
   DEFAULT_ACTION_THREAD_RENDER_LIMIT,
   DEFAULT_ACTION_THREAD_SALIENCE_CLASS_RESERVED_SLOTS,
   DEFAULT_ACTION_THREAD_SOURCE_RECORD_LIMIT,
-  STALE_PARTICIPANT_ACTION_RENDER_LIMIT,
+  ACTION_UPDATE_HISTORY_LIMIT,
   actionThreadAudienceBucket,
   actionSalienceClass,
   actionActorDisplay,
@@ -18,10 +17,7 @@ import {
   renderOlderActionThreadsSummary,
   type OlderActionThreadSummaryGroup,
 } from "../action-threads.js";
-import {
-  clampPositiveIntegerOrFallback,
-  coerceUnitIntervalOrFallback,
-} from "../../../util/math.js";
+import { clampPositiveIntegerOrFallback } from "../../../util/math.js";
 import type { BuilderSectionContext } from "../builder-context.js";
 import {
   appendMemoryDisclosureState,
@@ -49,10 +45,6 @@ export async function addActionStatesSection(context: BuilderSectionContext): Pr
     context.options.actionThreadRenderLimit,
     DEFAULT_ACTION_THREAD_RENDER_LIMIT,
   );
-  const similarityThreshold = coerceUnitIntervalOrFallback(
-    context.options.actionThreadSimilarityThreshold,
-    similarityThresholds().actionThread,
-  );
   const salienceClassReservedSlots = clampNonnegativeIntegerOrFallback(
     context.options.actionThreadSalienceClassReservedSlots,
     DEFAULT_ACTION_THREAD_SALIENCE_CLASS_RESERVED_SLOTS,
@@ -61,12 +53,16 @@ export async function addActionStatesSection(context: BuilderSectionContext): Pr
     context.options.actionThreadAudienceReservedSlots,
     DEFAULT_ACTION_THREAD_AUDIENCE_RESERVED_SLOTS,
   );
-  // Future work: reservations start after the bounded source pool is classified.
-  // The pre-classification 256-record pool remains repository-ranked and unreserved.
+  // Active rows win before the 256-record cutoff; audience/salience reservations
+  // then operate within the active pool before any terminal row gets a render slot.
   const actionCandidates = listActionCandidatesForCognition({
     actionRepository: context.repos.actions,
     audienceEntityId: context.input.audienceEntityId,
     activeParticipants: context.input.activeParticipants,
+    rankParticipantEntityIds:
+      context.input.currentUserEntry?.sender_entity_id == null
+        ? []
+        : [context.input.currentUserEntry.sender_entity_id],
     limit: sourceRecordLimit,
   });
   const disclosureLabelByActionId = new Map(
@@ -76,7 +72,6 @@ export async function addActionStatesSection(context: BuilderSectionContext): Pr
     records: actionCandidates.map((candidate) => candidate.record),
     repository: context.repos.actions,
     resolver: context.resolver,
-    similarityThreshold,
   });
   const threadsWithSalience = threads.flatMap((thread) => {
     const salienceClass = actionSalienceClass({
@@ -88,17 +83,20 @@ export async function addActionStatesSection(context: BuilderSectionContext): Pr
 
     return salienceClass === null ? [] : [{ ...thread, salienceClass }];
   });
-  const staleParticipantThreads = threadsWithSalience.filter(
-    (thread) => thread.salienceClass === "participant_pending_stale",
-  );
-  const cappedStaleIds = new Set(
-    staleParticipantThreads.slice(STALE_PARTICIPANT_ACTION_RENDER_LIMIT).map((thread) => thread.id),
-  );
   const renderedThreads = allocateActionThreadRenderSlots({
-    threads: threadsWithSalience.filter((thread) => !cappedStaleIds.has(thread.id)),
+    threads: threadsWithSalience,
     limit: renderLimit,
     salienceClassReservedSlots,
     audienceReservedSlots,
+    reservedActors: [
+      "borg",
+      ...(context.input.currentUserEntry?.sender_entity_id == null
+        ? []
+        : [context.input.currentUserEntry.sender_entity_id]),
+      ...(context.input.activeParticipants ?? [])
+        .filter((p) => p.role === "speaker")
+        .map((p) => p.entityId),
+    ],
     audienceOrder: [
       ...new Set(
         actionCandidates.map((candidate) => candidate.record.audience_entity_id ?? "global"),
@@ -123,7 +121,14 @@ export async function addActionStatesSection(context: BuilderSectionContext): Pr
         trust_rank: ACTION_TRUST_RANK,
         text: [
           `salience: ${thread.salienceClass}`,
-          renderActionThreadText(thread, context.repos.entities),
+          renderActionThreadText(
+            thread,
+            context.repos.entities,
+            context.repos.actions.readUpdateHistory?.(
+              thread.current.id,
+              ACTION_UPDATE_HISTORY_LIMIT,
+            ),
+          ),
         ].join("\n"),
         value: actionActorDisplay(thread.current.actor, context.repos.entities),
         state: appendMemoryDisclosureState({
@@ -215,7 +220,6 @@ export async function addActionStatesSection(context: BuilderSectionContext): Pr
       groups: summaryGroups,
       renderedThreadCount: renderedThreads.length,
       renderLimit,
-      staleParticipantThreadsWithheldCount: cappedStaleIds.size,
       threadsBuiltCount: threads.length,
       consideredRecordCount: actionCandidates.length,
       sourceRecordLimit,

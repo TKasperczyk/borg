@@ -2242,6 +2242,7 @@ async function compileSharedStateArtifactForEvidenceLedgerResultInternal(input: 
       enforcement_class: effectiveCommitmentEnforcementClass(commitment),
     })),
     actions: currentAudienceActionCandidatesForCanonicalization.candidates ?? [],
+    actionCandidateOmittedCount: currentAudienceActionCandidatesForCanonicalization.omittedCount,
     openQuestions: activeOpenQuestions.map((question) => ({
       id: question.id,
       text: compactSharedStateArtifactCandidateText(question.question),
@@ -2253,6 +2254,7 @@ async function compileSharedStateArtifactForEvidenceLedgerResultInternal(input: 
       turnId: input.input.turnId,
       session_id: input.input.sessionId,
       candidate_count_by_scope: currentAudienceActionCandidatesForCanonicalization.countByScope,
+      candidate_omitted_count: currentAudienceActionCandidatesForCanonicalization.omittedCount,
       candidate_count_total: (currentAudienceActionCandidatesForCanonicalization.candidates ?? [])
         .length,
     });

@@ -2732,16 +2732,22 @@ describe("reflector", () => {
         pending_actions: pendingIntents,
         mode: "problem_solving" as const,
       });
+      const executiveGoal = harness.goalsRepository.add({
+        description: "Executive focus only",
+        priority: 8,
+        provenance: { kind: "manual" },
+      });
       const currentTurnStreamEntryIds = [createStreamEntryId(), createStreamEntryId()];
 
       const { workingMemory: reflected } = await reflector.reflect(
         {
           turnId: "turn_intent_updates",
+          executiveFocus: createExecutiveReflectionContext({ goal: executiveGoal }).executiveFocus,
           userMessage: "The rollout passed and don't open a new incident.",
           workingMemory,
           selfSnapshot: {
             values: [],
-            goals: [],
+            goals: [executiveGoal],
             traits: [],
           },
           deliberationResult: {
@@ -2785,6 +2791,8 @@ describe("reflector", () => {
           state: "completed",
           completed_at: 1_000_000,
           provenance_stream_entry_ids: currentTurnStreamEntryIds,
+          goal_id: null,
+          goal_link_basis: "unlinked",
         }),
       ]);
       expect(harness.actionRepository.list({ state: terminalState })).toEqual([
@@ -2795,6 +2803,8 @@ describe("reflector", () => {
           not_done_at: status === "declined" ? null : 1_000_000,
           declined_at: status === "declined" ? 1_000_000 : null,
           provenance_stream_entry_ids: currentTurnStreamEntryIds,
+          goal_id: null,
+          goal_link_basis: "unlinked",
         }),
       ]);
       expect(
@@ -3863,7 +3873,11 @@ describe("reflector", () => {
 
     expect(payload.current_turn_tool_calls).toEqual([
       { name: "tool.stream.get", input: { stream_entry_id: "strm_aaaaaaaaaaaaaaaa" }, ok: true },
-      { name: "tool.episodic.search", input: { query: "zakupy na głodniaka", limit: 5 }, ok: false },
+      {
+        name: "tool.episodic.search",
+        input: { query: "zakupy na głodniaka", limit: 5 },
+        ok: false,
+      },
     ]);
     expect(String(content)).not.toContain("recorded output body");
   });

@@ -1,9 +1,10 @@
+import { actionExtractionDecisionSchema } from "../src/memory/actions/types.js";
 /** Offline projection validation uses the same decoders as repository reads. */
 import { z } from "zod";
 import { mapPeriodRow } from "../src/memory/self/autobiographical.js";
 import { mapEntityRow, mapCommitmentRow } from "../src/memory/commitments/repository.js";
 import { entityIdSchema } from "../src/memory/commitments/types.js";
-import { mapActionRow } from "../src/memory/actions/repository.js";
+import { mapActionRow, mapActionUpdateRow } from "../src/memory/actions/repository.js";
 import { mapActivityRow } from "../src/memory/activity/repository.js";
 import { mapDaySummaryRow } from "../src/memory/activity/lived-experience-day-summary.js";
 import { mapRow as mapIdentityRow } from "../src/memory/identity/repository.js";
@@ -50,6 +51,9 @@ const decoders: Record<string, (row: Row) => unknown> = {
   entities: mapEntityRow,
   commitments: mapCommitmentRow,
   action_records: mapActionRow,
+  action_record_updates: mapActionUpdateRow,
+  action_extraction_decisions: (row) =>
+    actionExtractionDecisionSchema.parse(JSON.parse(String(row.audit))),
   activity_events: mapActivityRow,
   lived_experience_day_summaries: mapDaySummaryRow,
   identity_events: mapIdentityRow,

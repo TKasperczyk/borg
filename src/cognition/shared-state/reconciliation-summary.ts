@@ -25,7 +25,8 @@ import { toTraceJsonValue, type TurnTracer } from "../../tracing/tracer.js";
 export type SharedStateReconciliationRepositories = {
   goalsRepository?: Pick<GoalsRepository, "updateStatus"> & Partial<Pick<GoalsRepository, "get">>;
   commitmentRepository?: Pick<CommitmentRepository, "get" | "revoke">;
-  actionRepository?: Pick<ActionRepository, "update"> & Partial<Pick<ActionRepository, "get">>;
+  actionRepository?: Pick<ActionRepository, "update"> &
+    Partial<Pick<ActionRepository, "get" | "appendExtractionUpdate">>;
   openQuestionsRepository?: Pick<OpenQuestionsRepository, "resolve"> &
     Partial<Pick<OpenQuestionsRepository, "get">>;
 };
@@ -47,7 +48,7 @@ export type SharedStateSemanticBeliefRevisionDependencies = {
 export type SharedStateReconciliationLookupRepositories = {
   goalsRepository?: Partial<Pick<GoalsRepository, "get">>;
   commitmentRepository?: Partial<Pick<CommitmentRepository, "get">>;
-  actionRepository?: Partial<Pick<ActionRepository, "get">>;
+  actionRepository?: Partial<Pick<ActionRepository, "get" | "appendExtractionUpdate">>;
   openQuestionsRepository?: Partial<Pick<OpenQuestionsRepository, "get">>;
 };
 

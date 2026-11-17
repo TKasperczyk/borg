@@ -33,7 +33,12 @@ import {
   type SessionId,
   type StreamEntryId,
 } from "../../../util/ids.js";
-import type { ActionRecord } from "../../../memory/actions/index.js";
+import {
+  ActionRepository,
+  actionMigrations,
+  type ActionRecord,
+} from "../../../memory/actions/index.js";
+import { makeActionRecord } from "../../../test-support/factories/memory.js";
 import {
   QUARANTINED_USER_ENTRY_EVENT,
   StreamReader,
@@ -3052,321 +3057,340 @@ describe("compileSharedStateArtifactForEvidenceLedgerResult", () => {
     }
   });
 
-  it.each(["pre_answer", "post_response"] as const)("uses compiler model in %s", async (pass) => {
-    const tempDir = mkdtempSync(join(tmpdir(), "borg-retrieval-phase-"));
-    cleanup.push(() => rmSync(tempDir, { recursive: true, force: true }));
-    const db = openDatabase(join(tempDir, "borg.db"), {
-      migrations: sharedStateMigrations,
-    });
-    cleanup.push(() => db.close());
-    const clock = new FixedClock(10_000);
-    const sharedStateRepository = new SharedStateRepository({ db, clock });
-    const audienceEntityId = createEntityId();
-    const selfEntityId = createEntityId();
-    const actionId = createActionId();
-    const commitmentId = createCommitmentId();
-    const openQuestionId = createOpenQuestionId();
-    const priorSourceEntryId = createStreamEntryId();
-    const streamEntryId = createStreamEntryId();
-    const currentUserContent = "The clinic callback follow-up is locked.";
-    const priorSourceEntry = {
-      id: priorSourceEntryId,
-      kind: "user_msg",
-      content: "The clinic callback follow-up is locked.",
-      timestamp: 9_500,
-      session_id: DEFAULT_SESSION_ID,
-      compressed: false,
-      sender_entity_id: null,
-      reply_target_entity_id: null,
-    } as StreamEntry;
-    const currentUserEntry = {
-      id: streamEntryId,
-      kind: "user_msg",
-      content: currentUserContent,
-      timestamp: 10_000,
-      session_id: DEFAULT_SESSION_ID,
-      compressed: false,
-      sender_entity_id: null,
-      reply_target_entity_id: null,
-    } as StreamEntry;
-    const action = {
-      id: actionId,
-      description: "Follow up with the clinic",
-      actor: "user",
-      audience_entity_id: audienceEntityId,
-      state: "committed_to_do",
-      updated_at: 9_000,
-      session_scope: null,
-      scheduled_at: null,
-      last_referenced_turn_counter: 2,
-      last_referenced_turn_global: null,
-    } as ActionRecord;
-    const privateCommitment = {
-      id: commitmentId,
-      kind: "assistant_commitment",
-      type: "promise",
-      enforcement_class: "advisory",
-      critical_domain: null,
-      directive_family: "clinic_callback",
-      closure_pressure_relevance: "neutral",
-      directive: "Keep the clinic callback detail private.",
-      priority: 1,
-      made_to_entity: audienceEntityId,
-      restricted_audience: audienceEntityId,
-      about_entity: null,
-      status: "active",
-      provenance: { kind: "online", process: "test" },
-      source_stream_entry_ids: [priorSourceEntryId],
-      created_at: 9_000,
-      updated_at: 9_000,
-      expires_at: null,
-      expired_at: null,
-      revoked_at: null,
-      revoked_reason: null,
-      revoke_provenance: null,
-      superseded_by: null,
-      canonicalized_by_artifact_entry_id: null,
-    } as never;
-    const privateOpenQuestion = {
-      id: openQuestionId,
-      question: "Should the clinic callback remain private?",
-      urgency: 0.5,
-      status: "open",
-      goal_id: null,
-      audience_entity_id: audienceEntityId,
-      related_episode_ids: [],
-      related_semantic_node_ids: [],
-      provenance: { kind: "online", process: "test" },
-      source: "user",
-      created_at: 9_000,
-      updated_at: 9_000,
-      last_touched: 9_000,
-      resolution_evidence_episode_ids: [],
-      resolution_evidence_stream_entry_ids: [],
-      resolution_note: null,
-      resolved_at: null,
-      abandoned_reason: null,
-      abandoned_at: null,
-      unresolved_rumination_ticks: 0,
-      last_ruminated_at: null,
-    } as never;
-    const update = vi.fn();
-    const llmClient = new FakeLLMClient({
-      responses: [
-        {
-          text: "",
-          input_tokens: 12,
-          output_tokens: 8,
-          stop_reason: "tool_use",
-          tool_calls: [
-            {
-              id: "toolu_shared_state",
-              name: SHARED_STATE_TOOL_NAME,
-              input: {
-                operations: [
-                  {
-                    type: "add",
-                    state_key: "decision.route",
-                    kind: "locked",
-                    text: "The clinic callback follow-up is locked.",
-                    owner_entity_id: audienceEntityId,
-                    source_stream_entry_ids: [priorSourceEntryId],
-                    canonicalizes: {
-                      action_ids: [actionId],
-                    },
-                  },
-                ],
-              },
-            },
-          ],
-        },
-      ],
-    });
-    const options = {
-      config: {
-        ...DEFAULT_CONFIG,
-        anthropic: {
-          ...DEFAULT_CONFIG.anthropic,
-          models: {
-            ...DEFAULT_CONFIG.anthropic.models,
-            recallExpansion: "test-recall-model",
-            sharedStateCompiler: "test-shared-state-compiler-model",
-          },
-        },
-        dataDir: tempDir,
-        generation: {
-          ...DEFAULT_CONFIG.generation,
-          evidenceLedger: {
-            ...DEFAULT_CONFIG.generation.evidenceLedger,
-            decisionArtifact: {
-              ...DEFAULT_CONFIG.generation.evidenceLedger.decisionArtifact,
-              maxLockedEntryTextChars: 64,
-              compilerPrefilter: {
-                enabled: false,
-              },
-            },
-          },
-        },
-      },
-      sharedStateRepository,
-      llmFactory: () => llmClient,
-      clock,
-      tracer: {
-        enabled: false,
-        emit: vi.fn(),
-      },
-      entityRepository: {
-        resolve: () => selfEntityId,
-      },
-      relationalSlotRepository: {
-        list: () => [],
-      },
-      actionRepository: {
-        list: () => [action],
-        get: () => action,
-        update,
-      },
-      goalsRepository: {
-        list: () => [],
-      },
-      commitmentRepository: {
-        list: () => [privateCommitment],
-      },
-      openQuestionsRepository: {
-        list: () => [privateOpenQuestion],
-      },
-      createStreamReader: () =>
-        ({
-          async *iterate() {
-            yield priorSourceEntry;
-            yield currentUserEntry;
-          },
-        }) as StreamReader,
-    } as unknown as TurnPhaseCoordinatorOptions;
-
-    await compileSharedStateArtifactForEvidenceLedgerResult({
-      options,
-      compilePass: pass,
-      input: {
-        sessionId: DEFAULT_SESSION_ID,
-        turnId: "turn-global-canonicalization",
-        audienceEntityId,
-        currentUserMessage: currentUserContent,
-        currentUserEntry,
-        globalTurnCounter: 42,
-        workingMemory: {
-          turn_counter: 3,
-        } as never,
-        applicableCommitments: [],
-        retrievedEvidence: [],
-        retrievedEpisodes: [],
-        openQuestions: [],
-        pendingCorrections: [],
-        activeParticipants: [],
-        participantRoster: null,
-        isUserTurn: true,
-        perception: {
-          entities: [],
-          mode: "problem_solving",
-          affectiveSignal: {
-            valence: 0,
-            arousal: 0,
-            dominant_emotion: null,
-          },
-          temporalCue: null,
-        } satisfies PerceptionResult,
-        closureLoopAssessment: null,
-      },
-      ledger: {
-        sections: [
+  it.each(["pre_answer", "post_response"] as const)(
+    "uses compiler model and audits the bounded action offer in %s",
+    async (pass) => {
+      const tempDir = mkdtempSync(join(tmpdir(), "borg-retrieval-phase-"));
+      cleanup.push(() => rmSync(tempDir, { recursive: true, force: true }));
+      const db = openDatabase(join(tempDir, "borg.db"), {
+        migrations: sharedStateMigrations,
+      });
+      cleanup.push(() => db.close());
+      const clock = new FixedClock(10_000);
+      const sharedStateRepository = new SharedStateRepository({ db, clock });
+      const audienceEntityId = createEntityId();
+      const selfEntityId = createEntityId();
+      const actionId = createActionId();
+      const commitmentId = createCommitmentId();
+      const openQuestionId = createOpenQuestionId();
+      const priorSourceEntryId = createStreamEntryId();
+      const streamEntryId = createStreamEntryId();
+      const currentUserContent = "The clinic callback follow-up is locked.";
+      const priorSourceEntry = {
+        id: priorSourceEntryId,
+        kind: "user_msg",
+        content: "The clinic callback follow-up is locked.",
+        timestamp: 9_500,
+        session_id: DEFAULT_SESSION_ID,
+        compressed: false,
+        sender_entity_id: null,
+        reply_target_entity_id: null,
+      } as StreamEntry;
+      const currentUserEntry = {
+        id: streamEntryId,
+        kind: "user_msg",
+        content: currentUserContent,
+        timestamp: 10_000,
+        session_id: DEFAULT_SESSION_ID,
+        compressed: false,
+        sender_entity_id: null,
+        reply_target_entity_id: null,
+      } as StreamEntry;
+      const action = makeActionRecord({
+        id: actionId,
+        description: "Follow up with the clinic",
+        actor: audienceEntityId,
+        audience_entity_id: audienceEntityId,
+        state: "committed_to_do",
+        updated_at: 9_000,
+        session_scope: null,
+        scheduled_at: null,
+        last_referenced_turn_counter: 2,
+        last_referenced_turn_global: null,
+      });
+      const privateCommitment = {
+        id: commitmentId,
+        kind: "assistant_commitment",
+        type: "promise",
+        enforcement_class: "advisory",
+        critical_domain: null,
+        directive_family: "clinic_callback",
+        closure_pressure_relevance: "neutral",
+        directive: "Keep the clinic callback detail private.",
+        priority: 1,
+        made_to_entity: audienceEntityId,
+        restricted_audience: audienceEntityId,
+        about_entity: null,
+        status: "active",
+        provenance: { kind: "online", process: "test" },
+        source_stream_entry_ids: [priorSourceEntryId],
+        created_at: 9_000,
+        updated_at: 9_000,
+        expires_at: null,
+        expired_at: null,
+        revoked_at: null,
+        revoked_reason: null,
+        revoke_provenance: null,
+        superseded_by: null,
+        canonicalized_by_artifact_entry_id: null,
+      } as never;
+      const privateOpenQuestion = {
+        id: openQuestionId,
+        question: "Should the clinic callback remain private?",
+        urgency: 0.5,
+        status: "open",
+        goal_id: null,
+        audience_entity_id: audienceEntityId,
+        related_episode_ids: [],
+        related_semantic_node_ids: [],
+        provenance: { kind: "online", process: "test" },
+        source: "user",
+        created_at: 9_000,
+        updated_at: 9_000,
+        last_touched: 9_000,
+        resolution_evidence_episode_ids: [],
+        resolution_evidence_stream_entry_ids: [],
+        resolution_note: null,
+        resolved_at: null,
+        abandoned_reason: null,
+        abandoned_at: null,
+        unresolved_rumination_ticks: 0,
+        last_ruminated_at: null,
+      } as never;
+      const actionDb = openDatabase(":memory:", { migrations: actionMigrations });
+      cleanup.push(() => actionDb.close());
+      const actionRepository = new ActionRepository({ db: actionDb });
+      actionRepository.add(action);
+      for (let i = 0; i < 84; i++)
+        actionRepository.add(
+          makeActionRecord({
+            actor: audienceEntityId,
+            audience_entity_id: i < 42 ? audienceEntityId : null,
+            updated_at: 1_000 + i,
+          }),
+        );
+      const llmClient = new FakeLLMClient({
+        responses: [
           {
-            id: "current_user_message",
-            label: "1. Current User Message",
-            entries: [
+            text: "",
+            input_tokens: 12,
+            output_tokens: 8,
+            stop_reason: "tool_use",
+            tool_calls: [
               {
-                id: `current_session_stream:${priorSourceEntryId}`,
-                source_type: "current_session_stream",
-                session_scope: "current_session",
-                actor: "user",
-                trust_rank: 1,
-                text: "The clinic callback follow-up is locked.",
-              },
-              {
-                id: `current_user_message:${streamEntryId}`,
-                source_type: "current_user_message",
-                session_scope: "current_session",
-                actor: "user",
-                trust_rank: 0,
-                text: currentUserContent,
+                id: "toolu_shared_state",
+                name: SHARED_STATE_TOOL_NAME,
+                input: {
+                  operations: [
+                    {
+                      type: "add",
+                      state_key: "decision.route",
+                      kind: "locked",
+                      text: "The clinic callback follow-up is locked.",
+                      owner_entity_id: audienceEntityId,
+                      source_stream_entry_ids: [priorSourceEntryId],
+                      canonicalizes: {
+                        action_ids: [actionId],
+                      },
+                    },
+                  ],
+                },
               },
             ],
           },
         ],
-        transcriptIncluded: false,
-        transcriptCompacted: false,
-        originalTranscriptTokenEstimate: 0,
-        compactedTranscriptEntryCount: 0,
-        rawPreservedUserTranscriptEntryCount: 0,
-        estimatedTokens: 0,
-      },
-      promptVisibleLedger: "Action candidate: Follow up with the clinic.",
-    });
-    expect(llmClient.requests[0]?.model).toBe("test-shared-state-compiler-model");
-    expect(JSON.stringify(llmClient.requests[0]?.system)).toContain("64 UTF-16 code units per row");
-    const requestPayload = JSON.parse(
-      String(llmClient.requests[0]?.messages[0]?.content ?? "{}"),
-    ) as {
-      canonicalization_candidates?: {
-        active_commitments?: Array<{
-          id: string;
-          disclosure?: string;
-          disclosure_label?: {
-            disclosure_class?: string;
-            private_to_entity_ids?: string[];
-          };
-        }>;
-        open_questions?: Array<{
-          id: string;
-          disclosure?: string;
-          disclosure_label?: {
-            disclosure_class?: string;
-            private_to_entity_ids?: string[];
-          };
-        }>;
-      };
-    };
-    const commitmentCandidate =
-      requestPayload.canonicalization_candidates?.active_commitments?.find(
-        (candidate) => candidate.id === commitmentId,
+      });
+      const options = {
+        config: {
+          ...DEFAULT_CONFIG,
+          anthropic: {
+            ...DEFAULT_CONFIG.anthropic,
+            models: {
+              ...DEFAULT_CONFIG.anthropic.models,
+              recallExpansion: "test-recall-model",
+              sharedStateCompiler: "test-shared-state-compiler-model",
+            },
+          },
+          dataDir: tempDir,
+          generation: {
+            ...DEFAULT_CONFIG.generation,
+            evidenceLedger: {
+              ...DEFAULT_CONFIG.generation.evidenceLedger,
+              decisionArtifact: {
+                ...DEFAULT_CONFIG.generation.evidenceLedger.decisionArtifact,
+                maxLockedEntryTextChars: 64,
+                compilerPrefilter: {
+                  enabled: false,
+                },
+              },
+            },
+          },
+        },
+        sharedStateRepository,
+        llmFactory: () => llmClient,
+        clock,
+        tracer: {
+          enabled: false,
+          emit: vi.fn(),
+        },
+        entityRepository: {
+          resolve: () => selfEntityId,
+        },
+        relationalSlotRepository: {
+          list: () => [],
+        },
+        actionRepository,
+        goalsRepository: {
+          list: () => [],
+        },
+        commitmentRepository: {
+          list: () => [privateCommitment],
+        },
+        openQuestionsRepository: {
+          list: () => [privateOpenQuestion],
+        },
+        createStreamReader: () =>
+          ({
+            async *iterate() {
+              yield priorSourceEntry;
+              yield currentUserEntry;
+            },
+          }) as StreamReader,
+      } as unknown as TurnPhaseCoordinatorOptions;
+
+      await compileSharedStateArtifactForEvidenceLedgerResult({
+        options,
+        compilePass: pass,
+        input: {
+          sessionId: DEFAULT_SESSION_ID,
+          turnId: "turn-global-canonicalization",
+          audienceEntityId,
+          currentUserMessage: currentUserContent,
+          currentUserEntry,
+          globalTurnCounter: 42,
+          workingMemory: {
+            turn_counter: 3,
+          } as never,
+          applicableCommitments: [],
+          retrievedEvidence: [],
+          retrievedEpisodes: [],
+          openQuestions: [],
+          pendingCorrections: [],
+          activeParticipants: [],
+          participantRoster: null,
+          isUserTurn: true,
+          perception: {
+            entities: [],
+            mode: "problem_solving",
+            affectiveSignal: {
+              valence: 0,
+              arousal: 0,
+              dominant_emotion: null,
+            },
+            temporalCue: null,
+          } satisfies PerceptionResult,
+          closureLoopAssessment: null,
+        },
+        ledger: {
+          sections: [
+            {
+              id: "current_user_message",
+              label: "1. Current User Message",
+              entries: [
+                {
+                  id: `current_session_stream:${priorSourceEntryId}`,
+                  source_type: "current_session_stream",
+                  session_scope: "current_session",
+                  actor: "user",
+                  trust_rank: 1,
+                  text: "The clinic callback follow-up is locked.",
+                },
+                {
+                  id: `current_user_message:${streamEntryId}`,
+                  source_type: "current_user_message",
+                  session_scope: "current_session",
+                  actor: "user",
+                  trust_rank: 0,
+                  text: currentUserContent,
+                },
+              ],
+            },
+          ],
+          transcriptIncluded: false,
+          transcriptCompacted: false,
+          originalTranscriptTokenEstimate: 0,
+          compactedTranscriptEntryCount: 0,
+          rawPreservedUserTranscriptEntryCount: 0,
+          estimatedTokens: 0,
+        },
+        promptVisibleLedger: "Action candidate: Follow up with the clinic.",
+      });
+      expect(llmClient.requests[0]?.model).toBe("test-shared-state-compiler-model");
+      expect(JSON.stringify(llmClient.requests[0]?.system)).toContain(
+        "64 UTF-16 code units per row",
       );
-    const openQuestionCandidate = requestPayload.canonicalization_candidates?.open_questions?.find(
-      (candidate) => candidate.id === openQuestionId,
-    );
+      const requestPayload = JSON.parse(
+        String(llmClient.requests[0]?.messages[0]?.content ?? "{}"),
+      ) as {
+        canonicalization_candidates?: {
+          active_actions_omitted_count?: number;
+          active_commitments?: Array<{
+            id: string;
+            disclosure?: string;
+            disclosure_label?: {
+              disclosure_class?: string;
+              private_to_entity_ids?: string[];
+            };
+          }>;
+          open_questions?: Array<{
+            id: string;
+            disclosure?: string;
+            disclosure_label?: {
+              disclosure_class?: string;
+              private_to_entity_ids?: string[];
+            };
+          }>;
+        };
+      };
+      const commitmentCandidate =
+        requestPayload.canonicalization_candidates?.active_commitments?.find(
+          (candidate) => candidate.id === commitmentId,
+        );
+      const openQuestionCandidate =
+        requestPayload.canonicalization_candidates?.open_questions?.find(
+          (candidate) => candidate.id === openQuestionId,
+        );
 
-    expect(commitmentCandidate).toMatchObject({
-      disclosure_label: {
-        disclosure_class: "relationship_private",
-        private_to_entity_ids: [audienceEntityId],
-      },
-    });
-    expect(commitmentCandidate?.disclosure).toContain("disclosure_class=relationship_private");
-    expect(openQuestionCandidate).toMatchObject({
-      disclosure_label: {
-        disclosure_class: "relationship_private",
-        private_to_entity_ids: [audienceEntityId],
-      },
-    });
-    expect(openQuestionCandidate?.disclosure).toContain("disclosure_class=relationship_private");
+      expect(commitmentCandidate).toMatchObject({
+        disclosure_label: {
+          disclosure_class: "relationship_private",
+          private_to_entity_ids: [audienceEntityId],
+        },
+      });
+      expect(commitmentCandidate?.disclosure).toContain("disclosure_class=relationship_private");
+      expect(openQuestionCandidate).toMatchObject({
+        disclosure_label: {
+          disclosure_class: "relationship_private",
+          private_to_entity_ids: [audienceEntityId],
+        },
+      });
+      expect(openQuestionCandidate?.disclosure).toContain("disclosure_class=relationship_private");
 
-    expect(update).toHaveBeenCalledWith(
-      actionId,
-      expect.objectContaining({
+      expect(requestPayload.canonicalization_candidates?.active_actions_omitted_count).toBe(5);
+      expect(actionRepository.get(actionId)).toMatchObject({
+        state: "completed",
         last_referenced_turn_counter: 42,
         last_referenced_turn_global: 42,
-      }),
-      { skipSideEffects: true },
-    );
-  });
+      });
+      const history = actionRepository.readUpdateHistory(actionId, 5);
+      expect(history.total).toBe(1);
+      expect(history.updates[0]?.selection_audit).toMatchObject({
+        chosen_action_id: actionId,
+        candidate_omitted_count: 5,
+      });
+      expect(history.updates[0]?.selection_audit.candidate_ids).toHaveLength(80);
+    },
+  );
 
   it("ages image-derived shared-state updates by the durable attachment turn", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-retrieval-phase-image-aging-"));

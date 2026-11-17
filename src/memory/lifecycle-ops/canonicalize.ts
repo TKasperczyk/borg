@@ -14,7 +14,8 @@ import {
   SHARED_STATE_COMMITMENT_CANONICALIZATION_TYPES,
   type SharedStateCommitmentCanonicalizationType,
 } from "./commitment-types.js";
-import { completeAction, type CompleteActionRepository } from "./complete.js";
+import type { ActionRepository } from "../actions/repository.js";
+import { sharedStateMemoryDisclosureLabel } from "../common/disclosure-serializers.js";
 import { resolveOpenQuestionWithEvidence } from "./resolve.js";
 import type { LifecycleOperationResult, LifecycleTracer } from "./types.js";
 
@@ -127,24 +128,93 @@ export function canonicalizeGoalWithSharedStateEntry(input: {
 export function canonicalizeActionWithSharedStateEntry(input: {
   actionId: ActionId;
   entry: SharedStateEntry;
-  repository: CompleteActionRepository;
+  repository: Partial<Pick<ActionRepository, "get" | "appendExtractionUpdate">>;
   nowMs?: number;
   turnCounter?: number | null;
   tracer?: LifecycleTracer;
   turnId?: string;
 }): LifecycleOperationResult<{ actionId: ActionId; previous: ActionRecord | null }> {
-  return completeAction({
-    actionId: input.actionId,
-    repository: input.repository,
-    canonicalizedByArtifactEntryId: input.entry.id,
-    skipSideEffects: true,
-    lastReferencedAtMs: input.nowMs,
-    lastReferencedTurnCounter: input.turnCounter,
-    lastReferencedTurnGlobal: input.turnCounter,
-    tracer: input.tracer,
-    turnId: input.turnId,
-    traceSource: "shared_state_reconciliation",
-  });
+  const previous = input.repository.get?.(input.actionId) ?? null;
+  const selection = input.entry.canonicalizes.action_selections?.find(
+    (choice) => choice.action_id === input.actionId,
+  );
+  const reject = (
+    reason: string,
+  ): LifecycleOperationResult<{ actionId: ActionId; previous: ActionRecord | null }> => {
+    if (input.tracer?.enabled && input.turnId !== undefined)
+      input.tracer.emit("action_state.continuation_rejected", {
+        turnId: input.turnId,
+        action_id: input.actionId,
+        artifact_entry_id: input.entry.id,
+        reason,
+      });
+    return { status: "no_op", reason, value: { actionId: input.actionId, previous } };
+  };
+  if (previous === null) return reject("missing");
+  if (input.entry.owner_entity_id === null) return reject("actor_mismatch");
+  if (input.repository.appendExtractionUpdate === undefined)
+    return reject("repository_unavailable");
+  const nowMs = input.nowMs ?? input.entry.last_updated_at;
+  let result;
+  try {
+    result = input.repository.appendExtractionUpdate(
+      input.actionId,
+      {
+        ...previous,
+        actor:
+          input.entry.owner_entity_id === selection?.self_entity_id
+            ? "borg"
+            : input.entry.owner_entity_id,
+        description: input.entry.text,
+        state: "completed",
+        updated_at: nowMs,
+        provenance_episode_ids: [],
+        provenance_stream_entry_ids: [
+          ...new Set([
+            ...input.entry.provenance_stream_entry_ids,
+            ...input.entry.last_updated_stream_entry_ids,
+          ]),
+        ],
+        disclosure_label: sharedStateMemoryDisclosureLabel(input.entry),
+        last_referenced_at_ms: nowMs,
+        last_referenced_turn_counter: input.turnCounter ?? null,
+        last_referenced_turn_global: input.turnCounter ?? null,
+        selection_audit: {
+          turn_id: input.turnId ?? null,
+          candidate_index: 0,
+          candidate_ids: selection?.candidate_ids ?? [],
+          candidate_omitted_count: selection?.candidate_omitted_count ?? 0,
+          chosen_action_id: input.actionId,
+          rejection_reason: null,
+          supplied_goal_ids: [],
+          chosen_goal_id: null,
+          goal_rejection_reason: null,
+          shared_state_entry_id: input.entry.id,
+        },
+      },
+      input.turnId ?? null,
+      { skipSideEffects: true, canonicalizedByArtifactEntryId: input.entry.id },
+    );
+  } catch (error) {
+    if (error instanceof IdentityCasMismatchError) return { status: "conflict", error };
+    throw error;
+  }
+  if (result.status === "rejected") return reject(result.reason);
+  if (result.status === "replayed")
+    return {
+      status: "no_op",
+      reason: "already_applied",
+      value: { actionId: input.actionId, previous },
+    };
+  if (input.tracer?.enabled && input.turnId !== undefined)
+    input.tracer.emit("action_state.transitioned", {
+      turnId: input.turnId,
+      action_id: input.actionId,
+      terminal_state: "completed",
+      source: "shared_state_reconciliation",
+      artifact_entry_id: input.entry.id,
+    });
+  return { status: "success", value: { actionId: input.actionId, previous } };
 }
 
 export function canonicalizeCommitmentWithSharedStateEntry(input: {

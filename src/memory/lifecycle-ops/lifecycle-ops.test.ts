@@ -1,3 +1,4 @@
+import { makeActionRecord } from "../../test-support/factories/memory.js";
 import { describe, expect, it, vi } from "vitest";
 
 import type { CommitmentRecord } from "../commitments/types.js";
@@ -102,28 +103,46 @@ describe("lifecycle ops", () => {
     );
   });
 
-  it("canonicalizes actions by completing them without side effects", () => {
-    const entry = lockedEntry();
-    const actionId = createActionId();
-    const update = vi.fn();
-
-    const result = canonicalizeActionWithSharedStateEntry({
-      actionId,
-      entry,
-      repository: {
-        get: vi.fn(() => ({ id: actionId, state: "scheduled" }) as never),
-        update,
+  it("canonicalizes actions through the checked continuation interface without completion side effects", () => {
+    const owner = createEntityId();
+    const action = makeActionRecord({ actor: owner });
+    const entry = lockedEntry({
+      owner_entity_id: owner,
+      canonicalizes: {
+        goal_ids: [],
+        commitment_ids: [],
+        action_ids: [action.id],
+        open_question_ids: [],
+        action_selections: [
+          { action_id: action.id, candidate_ids: [action.id], self_entity_id: createEntityId() },
+        ],
       },
     });
-
+    const appendExtractionUpdate = vi.fn(() => ({
+      status: "applied" as const,
+      record: action,
+      completionFailures: [],
+    }));
+    const result = canonicalizeActionWithSharedStateEntry({
+      actionId: action.id,
+      entry,
+      repository: { get: () => action, appendExtractionUpdate },
+    });
     expect(result.status).toBe("success");
-    expect(update).toHaveBeenCalledWith(
-      actionId,
-      {
+    expect(appendExtractionUpdate).toHaveBeenCalledWith(
+      action.id,
+      expect.objectContaining({
+        description: entry.text,
+        actor: owner,
         state: "completed",
-        canonicalized_by_artifact_entry_id: entry.id,
-      },
-      { skipSideEffects: true },
+        selection_audit: expect.objectContaining({
+          shared_state_entry_id: entry.id,
+          candidate_ids: [action.id],
+          chosen_action_id: action.id,
+        }),
+      }),
+      null,
+      { skipSideEffects: true, canonicalizedByArtifactEntryId: entry.id },
     );
   });
 
@@ -372,7 +391,7 @@ describe("lifecycle ops", () => {
         entry,
         repository: {
           get: vi.fn(() => null),
-          update,
+          appendExtractionUpdate: update,
         },
       }),
     ).toMatchObject({ status: "no_op", reason: "missing" });
@@ -429,11 +448,11 @@ describe("lifecycle ops", () => {
         actionId,
         entry,
         repository: {
-          update,
+          appendExtractionUpdate: update,
         },
       }).status,
-    ).toBe("success");
-    expect(update).toHaveBeenCalledOnce();
+    ).toBe("no_op");
+    expect(update).not.toHaveBeenCalled();
 
     expect(
       canonicalizeOpenQuestionWithSharedStateEntry({
@@ -657,10 +676,10 @@ describe("lifecycle ops", () => {
     expect(
       canonicalizeActionWithSharedStateEntry({
         actionId,
-        entry,
+        entry: { ...entry, owner_entity_id: createEntityId() },
         repository: {
           get: vi.fn(() => ({ id: actionId, state: "scheduled" }) as never),
-          update: vi.fn(() => {
+          appendExtractionUpdate: vi.fn(() => {
             throw actionError;
           }),
         },

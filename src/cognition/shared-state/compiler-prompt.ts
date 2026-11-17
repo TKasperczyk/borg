@@ -32,12 +32,14 @@ export function buildCanonicalizationCandidatePromptPayload(
   active_goals: readonly SharedStateCanonicalizationCandidate[];
   active_commitments: readonly SharedStateCommitmentCanonicalizationCandidate[];
   active_actions: readonly SharedStateActionCanonicalizationCandidate[];
+  active_actions_omitted_count: number;
   open_questions: readonly SharedStateCanonicalizationCandidate[];
 } {
   return {
     active_goals: candidates.goals ?? [],
     active_commitments: candidates.commitments ?? [],
     active_actions: candidates.actions ?? [],
+    active_actions_omitted_count: candidates.actionCandidateOmittedCount ?? 0,
     open_questions: candidates.openQuestions ?? [],
   };
 }

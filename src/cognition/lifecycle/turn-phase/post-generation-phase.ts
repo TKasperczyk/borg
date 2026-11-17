@@ -917,25 +917,27 @@ export async function runPostGenerationPhase(input: {
       : [...input.sourceUserEntryIds];
 
   if (actionEmission.kind === "message" && closeActionSourceUserEntryIds.length > 0) {
-    await input.options.turnActionStateService.closeBorgSelfPerformedActions({
-      llmClient: input.llmClient,
-      turnId: input.turnId,
-      userMessage: input.turnInput.userMessage,
-      persistedUserEntryId: closeActionSourceUserEntryIds[0]!,
-      sourceUserEntryIds: closeActionSourceUserEntryIds,
-      persistedAgentEntryId: persistedAgentEntry.id,
-      agentResponse: actionResult.response,
-      recentHistory: [],
-      audienceEntityId: input.audienceEntityId,
-      sessionId: input.sessionId,
-      speakerEntityId: input.senderEntityId,
-      currentTurnSharedStateEntries: currentTurnSharedStateEntries({
-        retrievalPhase: input.retrievalPhase,
-        persistedUserEntryId: input.persistedUserEntryId,
-        sourceUserEntryIds: input.sourceUserEntryIds,
-      }),
-      turnCounter: lifecycleTurnCounter,
-    });
+    const postTurnActionIds =
+      await input.options.turnActionStateService.closeBorgSelfPerformedActions({
+        llmClient: input.llmClient,
+        turnId: input.turnId,
+        userMessage: input.turnInput.userMessage,
+        persistedUserEntryId: closeActionSourceUserEntryIds[0]!,
+        sourceUserEntryIds: closeActionSourceUserEntryIds,
+        persistedAgentEntryId: persistedAgentEntry.id,
+        agentResponse: actionResult.response,
+        recentHistory: [],
+        audienceEntityId: input.audienceEntityId,
+        sessionId: input.sessionId,
+        speakerEntityId: input.senderEntityId,
+        currentTurnSharedStateEntries: currentTurnSharedStateEntries({
+          retrievalPhase: input.retrievalPhase,
+          persistedUserEntryId: input.persistedUserEntryId,
+          sourceUserEntryIds: input.sourceUserEntryIds,
+        }),
+        turnCounter: lifecycleTurnCounter,
+      });
+    input.lifecycleTracker.trackCreatedActionIds(postTurnActionIds);
   }
   archiveInactiveParticipantActions({
     options: input.options,

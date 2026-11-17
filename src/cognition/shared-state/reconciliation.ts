@@ -1,7 +1,4 @@
-import type {
-  SharedStateArtifact,
-  SharedStateEntry,
-} from "../../memory/shared-state/index.js";
+import type { SharedStateArtifact, SharedStateEntry } from "../../memory/shared-state/index.js";
 import {
   isSharedStateArtifactCanonicalizableCommitmentType,
   isTerminalActionState,
@@ -61,7 +58,12 @@ function retryEntry(
 
   const next = {
     ...entry,
-    canonicalizes: emptyCanonicalizes(),
+    canonicalizes: {
+      ...emptyCanonicalizes(),
+      ...(entry.canonicalizes.action_selections === undefined
+        ? {}
+        : { action_selections: entry.canonicalizes.action_selections }),
+    },
   };
 
   entriesById.set(entry.id, next);

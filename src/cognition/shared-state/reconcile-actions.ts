@@ -13,7 +13,8 @@ export function reconcileActionCanonicalizations(input: {
   entry: SharedStateEntry;
   actionIds: readonly ActionId[];
   repository:
-    | (Pick<ActionRepository, "update"> & Partial<Pick<ActionRepository, "get">>)
+    | (Pick<ActionRepository, "update"> &
+        Partial<Pick<ActionRepository, "get" | "appendExtractionUpdate">>)
     | undefined;
   retiredActions: Set<ActionId>;
   result: SharedStateReconciliationResult;
