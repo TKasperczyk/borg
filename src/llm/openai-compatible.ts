@@ -396,6 +396,7 @@ export class OpenAICompatibleLLMClient implements LLMClient {
 
     const translated = translateForcedToolUse({
       options,
+      provider: "openai",
       usageSink: this.usageSink,
       hasToolUse: (response: OpenAIChatCompletionResponse) =>
         response.choices[0]?.message.tool_calls?.some((call) => call.type === "function") === true,

@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Message } from "@anthropic-ai/sdk/resources/messages/messages.js";
 
 import { DEFAULT_CONFIG } from "../../config/index.js";
+import { AnthropicLLMClient, type LLMClient } from "../../llm/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import type { ActionRecord } from "../../memory/actions/index.js";
 import { sharedStateMigrations } from "../../memory/shared-state/migrations.js";
@@ -414,7 +416,7 @@ describe("compileSharedStateArtifact", () => {
     );
   });
 
-  function baseInput(llmClient: FakeLLMClient) {
+  function baseInput(llmClient: LLMClient) {
     return {
       llmClient,
       model: "claude-haiku-test",
@@ -5036,6 +5038,69 @@ describe("compileSharedStateArtifact", () => {
       trace.events.find((event) => event.event === "shared_state.compile.degraded")?.data.reason,
     ).toBe("invalid_payload");
   });
+
+  it.each(["success", "cut"] as const)(
+    "bounds the compiler transport to two calls after a no-tool cut, ending with %s",
+    async (lastResult) => {
+      vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const trace = createTraceRecorder();
+      const valid = emitSharedStateArtifactPatchResponse({
+        operations: [
+          {
+            type: "add",
+            kind: "locked",
+            text: "Retain the agreed decision.",
+            source_stream_entry_ids: [priorAllowedStreamEntryId],
+          },
+        ],
+      });
+      let calls = 0;
+      const create = vi.fn(async (_params: unknown): Promise<Message> => {
+        calls += 1;
+        const cut = calls === 1 || lastResult === "cut";
+        return {
+          id: "msg_compiler",
+          type: "message",
+          role: "assistant",
+          model: "claude-opus-5-5",
+          content: cut
+            ? [{ type: "text", text: "Unfinished output.", citations: null }]
+            : [{ type: "tool_use", ...valid.tool_calls[0]! }],
+          stop_reason: cut ? "max_tokens" : "tool_use",
+          stop_sequence: null,
+          usage: { input_tokens: 12, output_tokens: cut ? 16_000 : 8 },
+        } as Message;
+      });
+      const llmClient = new AnthropicLLMClient({ client: { messages: { create } } });
+
+      const patch = await compileSharedStateArtifact({
+        ...baseInput(llmClient),
+        model: "claude-opus-5-5",
+        tracer: trace,
+      });
+
+      expect(create).toHaveBeenCalledTimes(2);
+      const firstRequest = create.mock.calls[0]![0] as { messages: unknown[] };
+      expect(create.mock.calls[1]![0]).toMatchObject({
+        messages: [
+          ...firstRequest.messages,
+          {
+            role: "user",
+            content:
+              "Your previous output reached the limit of 16000 output tokens, and nothing from it was stored. Emit a complete patch that fits: the operations that matter most, each text as short as accuracy allows. An operation you leave out is not queued for a later compile.",
+          },
+        ],
+      });
+      expect(patch.operations).toHaveLength(lastResult === "success" ? 1 : 0);
+      expect(activeEntries()).toHaveLength(lastResult === "success" ? 1 : 0);
+      if (lastResult === "cut") {
+        expect(trace.events).toContainEqual({
+          event: "shared_state.compile.degraded",
+          data: expect.objectContaining({ stopReason: "max_tokens", reason: "llm_failed" }),
+        });
+      }
+    },
+  );
 
   it.each(
     COMPILER_MODEL_CAP_CASES.flatMap((modelCase) =>

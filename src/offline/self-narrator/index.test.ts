@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import type { LLMCompleteResult } from "../../llm/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import {
   publicMemoryDisclosureLabel,
@@ -66,6 +67,279 @@ function createSelfNarratorResponse(input: {
 }
 
 describe("SelfNarratorProcess", () => {
+  describe.each([
+    { model: "claude-opus-5-5", maxOutputTokens: 16_000 },
+    { model: "custom-model", maxOutputTokens: 8_192 },
+  ])("output limit for $model", ({ model, maxOutputTokens }) => {
+    it.each(["partial", "schema-valid"] as const)(
+      "discards a cut %s payload and stores the complete retry with the effective cap",
+      async (payloadShape) => {
+        const episodes = [createEpisodeFixture(), createEpisodeFixture()];
+        const response = createSelfNarratorResponse({
+          observation: {
+            category: "understanding",
+            what_changed: "I learned to consider more alternatives.",
+            before_description: null,
+            after_description: null,
+            confidence: 0.5,
+            evidence_episode_ids: episodes.map((episode) => episode.id),
+          },
+          period_narrative: "I developed a broader perspective.",
+        });
+        const cut: LLMCompleteResult = {
+          ...response,
+          stop_reason: "max_tokens",
+          output_tokens: maxOutputTokens,
+          tool_calls: [
+            {
+              ...response.tool_calls[0]!,
+              input:
+                payloadShape === "partial"
+                  ? { observations: response.tool_calls[0]!.input.observations }
+                  : { ...response.tool_calls[0]!.input, period_narrative: "Discarded narrative." },
+            },
+          ],
+        };
+        const llm = new FakeLLMClient({ responses: [cut, response] });
+        const harness = await createOfflineTestHarness({
+          llmClient: llm,
+          configOverrides: { anthropic: { models: { background: model } } },
+        });
+        const process = new SelfNarratorProcess({
+          autobiographicalRepository: harness.autobiographicalRepository,
+          growthMarkersRepository: harness.growthMarkersRepository,
+          registry: harness.registry,
+        });
+
+        try {
+          for (const episode of episodes) {
+            await harness.episodicRepository.createEpisode(episode);
+          }
+          const plan = await process.plan(harness.createContext());
+
+          expect(llm.requests.map((request) => request.max_tokens)).toEqual([
+            maxOutputTokens,
+            maxOutputTokens,
+          ]);
+          for (const request of llm.requests) {
+            expect(request.system).toContain(
+              `My response must fit within ${maxOutputTokens} output tokens, including thinking; any output cut at that limit is discarded whole, so I keep my observations and period narrative concise enough to finish.`,
+            );
+          }
+          expect(llm.requests[1]!.messages).toEqual([
+            ...llm.requests[0]!.messages,
+            {
+              role: "user",
+              content: `Your previous output was cut at the limit of ${maxOutputTokens} output tokens and was discarded whole. Re-emit exactly one complete ${SELF_NARRATOR_TOOL_NAME} tool call that fits within that limit, including thinking; keep the strongest supported observations and the period narrative as concise as accuracy allows.`,
+            },
+          ]);
+          expect(plan.errors).toEqual([]);
+          expect(plan.tokens_used).toBe(cut.input_tokens + maxOutputTokens + 70);
+          const result = await process.apply(harness.createContext(), plan);
+          expect(result.errors).toEqual([]);
+          expect(harness.autobiographicalRepository.currentPeriod()?.narrative).toBe(
+            "I developed a broader perspective.",
+          );
+          expect(harness.growthMarkersRepository.list()).toEqual([
+            expect.objectContaining({ what_changed: "I learned to consider more alternatives." }),
+          ]);
+        } finally {
+          await harness.cleanup();
+        }
+      },
+    );
+
+    it.each([
+      { firstFailure: "output-limit", payloadShape: "partial" },
+      { firstFailure: "schema", payloadShape: "partial" },
+      { firstFailure: "output-limit", payloadShape: "schema-valid" },
+    ] as const)(
+      "reports a final $payloadShape cut after a $firstFailure failure without storing anything or reporting a schema error",
+      async ({ firstFailure, payloadShape }) => {
+        const response = createSelfNarratorResponse({
+          observation: null,
+          period_narrative: "Discarded narrative.",
+        });
+        const partial: LLMCompleteResult = {
+          ...response,
+          tool_calls: [{ ...response.tool_calls[0]!, input: { observations: [] } }],
+        };
+        const cut: LLMCompleteResult = {
+          ...(payloadShape === "schema-valid" ? response : partial),
+          stop_reason: "max_tokens",
+          output_tokens: maxOutputTokens,
+        };
+        const llm = new FakeLLMClient({
+          responses: [firstFailure === "output-limit" ? cut : partial, cut],
+        });
+        const harness = await createOfflineTestHarness({
+          llmClient: llm,
+          configOverrides: { anthropic: { models: { background: model } } },
+        });
+        const process = new SelfNarratorProcess({
+          autobiographicalRepository: harness.autobiographicalRepository,
+          growthMarkersRepository: harness.growthMarkersRepository,
+          registry: harness.registry,
+        });
+
+        try {
+          vi.spyOn(harness.episodicRepository, "listEffectivelyVisible").mockResolvedValue([
+            createEpisodeFixture(),
+            createEpisodeFixture(),
+          ]);
+          const plan = await process.plan(harness.createContext());
+
+          expect(llm.requests).toHaveLength(2);
+          expect(plan.items).toEqual([]);
+          expect(plan.budget_exhausted).toBe(false);
+          expect(plan.errors).toEqual([
+            {
+              process: "self-narrator",
+              code: "SELF_NARRATOR_OUTPUT_LIMIT",
+              message: `Self-narrator output was cut at the limit of ${maxOutputTokens} output tokens; the final attempt was discarded whole.`,
+            },
+          ]);
+          const result = await process.apply(harness.createContext(), plan);
+          expect(result.errors).toEqual(plan.errors);
+          expect(result.changes).toEqual([]);
+          expect(harness.autobiographicalRepository.currentPeriod()).toBeNull();
+          expect(harness.growthMarkersRepository.list()).toEqual([]);
+          expect(harness.reviewQueueRepository.getOpen()).toEqual([]);
+          expect(harness.auditLog.list({ process: "self-narrator" })).toEqual([]);
+        } finally {
+          await harness.cleanup();
+        }
+      },
+    );
+
+    it("reports the schema failure when a cut is followed by an invalid complete response", async () => {
+      const response = createSelfNarratorResponse({ observation: null });
+      const partial: LLMCompleteResult = {
+        ...response,
+        tool_calls: [{ ...response.tool_calls[0]!, input: { observations: [] } }],
+      };
+      const llm = new FakeLLMClient({
+        responses: [
+          { ...partial, stop_reason: "max_tokens", output_tokens: maxOutputTokens },
+          partial,
+        ],
+      });
+      const harness = await createOfflineTestHarness({
+        llmClient: llm,
+        configOverrides: { anthropic: { models: { background: model } } },
+      });
+      const process = new SelfNarratorProcess({
+        autobiographicalRepository: harness.autobiographicalRepository,
+        growthMarkersRepository: harness.growthMarkersRepository,
+        registry: harness.registry,
+      });
+      try {
+        vi.spyOn(harness.episodicRepository, "listEffectivelyVisible").mockResolvedValue([
+          createEpisodeFixture(),
+          createEpisodeFixture(),
+        ]);
+        const plan = await process.plan(harness.createContext());
+        expect(llm.requests).toHaveLength(2);
+        expect(plan.items).toEqual([]);
+        expect(plan.errors).toEqual([
+          {
+            process: "self-narrator",
+            message: "period_narrative: Invalid input: expected string, received undefined",
+          },
+        ]);
+        const result = await process.apply(harness.createContext(), plan);
+        expect(result.errors).toEqual(plan.errors);
+        expect(harness.autobiographicalRepository.currentPeriod()).toBeNull();
+        expect(harness.growthMarkersRepository.list()).toEqual([]);
+      } finally {
+        await harness.cleanup();
+      }
+    });
+  });
+
+  it("preserves seeded state and audit on failure, then stores the next run through normal review", async () => {
+    const episodes = [createEpisodeFixture(), createEpisodeFixture()];
+    const response = (narrative: string, change: string) =>
+      createSelfNarratorResponse({
+        observation: {
+          category: "understanding",
+          what_changed: change,
+          before_description: null,
+          after_description: null,
+          confidence: 0.5,
+          evidence_episode_ids: episodes.map((episode) => episode.id),
+        },
+        period_narrative: narrative,
+        period_decision: "continue_current",
+      });
+    const cut = {
+      ...response("Discarded narrative.", "Discarded observation."),
+      stop_reason: "max_tokens",
+      output_tokens: 16_000,
+    };
+    const llm = new FakeLLMClient({
+      responses: [
+        response("Established narrative.", "Established observation."),
+        cut,
+        cut,
+        response("Updated narrative.", "New observation."),
+      ],
+    });
+    const harness = await createOfflineTestHarness({ llmClient: llm });
+    const process = new SelfNarratorProcess({
+      autobiographicalRepository: harness.autobiographicalRepository,
+      growthMarkersRepository: harness.growthMarkersRepository,
+      registry: harness.registry,
+    });
+    try {
+      for (const episode of episodes) await harness.episodicRepository.createEpisode(episode);
+      const seeded = await process.run(harness.createContext(), {});
+      expect(seeded.errors).toEqual([]);
+      const period = harness.autobiographicalRepository.currentPeriod()!;
+      const markers = harness.growthMarkersRepository.list();
+      const audits = harness.auditLog.list({ process: "self-narrator" });
+      const identityEvents = harness.identityEventRepository.list();
+      const reviews = harness.reviewQueueRepository.getOpen();
+      expect(audits).toHaveLength(2);
+
+      const failed = await process.run(harness.createContext(), {});
+      expect(failed.errors).toEqual([
+        expect.objectContaining({ code: "SELF_NARRATOR_OUTPUT_LIMIT" }),
+      ]);
+      expect(failed.changes).toEqual([]);
+      expect(harness.autobiographicalRepository.currentPeriod()).toEqual(period);
+      expect(harness.growthMarkersRepository.list()).toEqual(markers);
+      expect(harness.auditLog.list({ process: "self-narrator" })).toEqual(audits);
+      expect(harness.identityEventRepository.list()).toEqual(identityEvents);
+      expect(harness.reviewQueueRepository.getOpen()).toEqual(reviews);
+
+      const recovered = await process.run(harness.createContext(), {});
+      expect(recovered.errors).toEqual([]);
+      expect(llm.requests).toHaveLength(4);
+      expect(harness.growthMarkersRepository.list()).toEqual(
+        expect.arrayContaining([
+          ...markers,
+          expect.objectContaining({ what_changed: "New observation." }),
+        ]),
+      );
+      expect(harness.growthMarkersRepository.list()).toHaveLength(2);
+      const updatedAudits = harness.auditLog.list({ process: "self-narrator" });
+      expect(updatedAudits).toHaveLength(audits.length + 1);
+      expect(updatedAudits).toEqual(expect.arrayContaining(audits));
+      const review = harness.reviewQueueRepository
+        .getOpen()
+        .find((item) => item.refs.target_id === period.id)!;
+      expect(review.refs.patch).toMatchObject({ narrative: "Updated narrative." });
+      await harness.reviewQueueRepository.resolve(review.id, "accept");
+      expect(harness.autobiographicalRepository.currentPeriod()).toMatchObject({
+        id: period.id,
+        narrative: "Updated narrative.",
+      });
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
   it("reviews coverage-only revisions, preserves empty-pass coverage, and reverses the stored pair", async () => {
     const llm = new FakeLLMClient({
       responses: [

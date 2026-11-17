@@ -7,6 +7,8 @@ import {
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../../llm/index.js";
+import { clampMaxOutputTokens } from "../../llm/max-tokens.js";
+import { getLlmErrorStopReason } from "../../llm/stop-reason.js";
 import { memoryDisclosurePayloadFields } from "../../memory/common/disclosure-serializers.js";
 import { episodeIdSchema, type Episode } from "../../memory/episodic/index.js";
 import {
@@ -28,7 +30,7 @@ import {
   type GrowthMarker,
 } from "../../memory/self/index.js";
 import { createAutobiographicalPeriodId, createGrowthMarkerId } from "../../util/ids.js";
-import { BudgetExceededError, StorageError } from "../../util/errors.js";
+import { BudgetExceededError, LLMError, StorageError } from "../../util/errors.js";
 import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
 import { estimatePromptTokens, estimatePromptTokensFromLength } from "../../util/token-estimate.js";
 
@@ -46,6 +48,7 @@ import { disclosureLabelForEpisodeIds, episodeEvidencePromptRow } from "../evide
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
 const GROWTH_MARKER_CONFIDENCE_CEILING = 0.6;
+const SELF_NARRATOR_MAX_OUTPUT_TOKENS = 16_000;
 
 const selfNarratorObservationItemSchema = z.object({
   theme: z.string().min(1),
@@ -64,10 +67,13 @@ const selfNarratorObservationSchema = z.object({
   period_decision_confidence: z.number().min(0).max(1).default(0),
 });
 const SELF_NARRATOR_TOOL_NAME = "EmitSelfNarratorObservations";
-const SELF_NARRATOR_SYSTEM_PROMPT = [
-  "I identify grounded autobiographical growth markers by clustering candidate episodes thematically. I return no observations when the evidence is weak.",
-  SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE,
-].join("\n");
+function buildSelfNarratorSystemPrompt(maxOutputTokens: number): string {
+  return [
+    "I identify grounded autobiographical growth markers by clustering candidate episodes thematically. I return no observations when the evidence is weak.",
+    SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE,
+    `My response must fit within ${maxOutputTokens} output tokens, including thinking; any output cut at that limit is discarded whole, so I keep my observations and period narrative concise enough to finish.`,
+  ].join("\n");
+}
 export const SELF_NARRATOR_TOOL = {
   name: SELF_NARRATOR_TOOL_NAME,
   description:
@@ -320,7 +326,18 @@ function buildObservationPrompt(
   };
 }
 
-function invalidObservationResponse(error: unknown): unknown {
+function invalidObservationResponse(error: unknown, maxOutputTokens: number): unknown {
+  // A schema-repair failure can wrap the final attempt separately from its cause.
+  const finalAttemptError = isStructuredToolCallError(error)
+    ? (error.repairFailure ?? error)
+    : error;
+  if (getLlmErrorStopReason(finalAttemptError).kind === "max_tokens") {
+    return new LLMError(
+      `Self-narrator output was cut at the limit of ${maxOutputTokens} output tokens; the final attempt was discarded whole.`,
+      { code: "SELF_NARRATOR_OUTPUT_LIMIT", cause: finalAttemptError },
+    );
+  }
+
   if (isStructuredToolCallError(error, "missing_tool_call")) {
     return new StorageError(`Self-narrator did not emit tool ${SELF_NARRATOR_TOOL_NAME}`, {
       code: "SELF_NARRATOR_INVALID",
@@ -513,9 +530,11 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
       ),
     ];
     const tools = [SELF_NARRATOR_TOOL];
+    const model = ctx.config.anthropic.models.background;
+    const maxOutputTokens = clampMaxOutputTokens(model, SELF_NARRATOR_MAX_OUTPUT_TOKENS);
+    const systemPrompt = buildSelfNarratorSystemPrompt(maxOutputTokens);
     const promptOverheadTokens =
-      estimatePromptTokens(SELF_NARRATOR_SYSTEM_PROMPT) +
-      estimatePromptTokens(JSON.stringify(tools));
+      estimatePromptTokens(systemPrompt) + estimatePromptTokens(JSON.stringify(tools));
     const { sourceEpisodes, prompt, coverage, narrativeCoverage } = buildObservationPrompt(
       candidateEpisodes,
       minSupportEpisodes,
@@ -553,8 +572,8 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
               await callStructuredTool({
                 llmClient,
                 request: {
-                  model: ctx.config.anthropic.models.background,
-                  system: SELF_NARRATOR_SYSTEM_PROMPT,
+                  model,
+                  system: systemPrompt,
                   messages: [
                     {
                       role: "user",
@@ -563,10 +582,11 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
                   ],
                   tools,
                   tool_choice: { type: "tool", name: SELF_NARRATOR_TOOL_NAME },
-                  max_tokens: 8_000,
+                  max_tokens: maxOutputTokens,
                   budget: "offline-self-narrator",
                 },
                 toolName: SELF_NARRATOR_TOOL_NAME,
+                outputLimitRepairInstruction: `Your previous output was cut at the limit of ${maxOutputTokens} output tokens and was discarded whole. Re-emit exactly one complete ${SELF_NARRATOR_TOOL_NAME} tool call that fits within that limit, including thinking; keep the strongest supported observations and the period narrative as concise as accuracy allows.`,
                 parse: parseObservationResponse,
               })
             ).parsed;
@@ -640,7 +660,9 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
               throw error;
             }
 
-            errors.push(offlineProcessError(this.name, invalidObservationResponse(error)));
+            errors.push(
+              offlineProcessError(this.name, invalidObservationResponse(error, maxOutputTokens)),
+            );
           }
         });
 

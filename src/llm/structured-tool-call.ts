@@ -333,6 +333,10 @@ export async function callStructuredTool<T>(
   const maxAttempts = options.maxAttempts ?? 2;
   let attemptCount = 0;
   let usage = emptyUsage();
+  const outputLimitRepairBudget: LLMCompleteOptions["outputLimitRepairBudget"] =
+    options.outputLimitRepairInstruction === undefined
+      ? undefined
+      : { remainingCalls: maxAttempts };
 
   const onTransportRetry =
     options.trace === undefined
@@ -350,6 +354,7 @@ export async function callStructuredTool<T>(
       : traceLlmToolChoiceTranslationHook({ ...options.trace, extra: options.trace.startedExtra });
   const request = {
     ...options.request,
+    ...(outputLimitRepairBudget === undefined ? {} : { outputLimitRepairBudget }),
     ...(onTransportRetry === undefined ? {} : { onTransportRetry }),
     ...(translationTrace === undefined
       ? {}
@@ -368,6 +373,17 @@ export async function callStructuredTool<T>(
   ): Promise<LLMCompleteResult> => {
     attemptCount += 1;
     traceStarted(options, nextRequest, attemptCount, schemaRepair);
+    const remainingBeforeCall = outputLimitRepairBudget?.remainingCalls;
+    const accountLogicalResponse = (): void => {
+      // Compatibility translation accounts its responses, including a reminder.
+      // Untranslated/custom clients leave that accounting to this layer.
+      if (
+        outputLimitRepairBudget !== undefined &&
+        outputLimitRepairBudget.remainingCalls === remainingBeforeCall
+      ) {
+        outputLimitRepairBudget.remainingCalls -= 1;
+      }
+    };
 
     let response: LLMCompleteResult;
 
@@ -399,6 +415,7 @@ export async function callStructuredTool<T>(
         (candidate): candidate is LLMToolArgumentsError =>
           candidate instanceof LLMToolArgumentsError,
       );
+      if (unparseable !== undefined) accountLogicalResponse();
 
       throw new StructuredToolCallError(
         `Structured tool call ${options.toolName} failed before a response was available`,
@@ -414,6 +431,7 @@ export async function callStructuredTool<T>(
       );
     }
 
+    accountLogicalResponse();
     usage = addLlmUsage(usage, response);
     traceResponse(options, response, attemptCount, schemaRepair);
     if (
@@ -481,7 +499,8 @@ export async function callStructuredTool<T>(
         options.outputLimitRepairInstruction === undefined &&
         (options.repairMaxTokens === undefined ||
           options.repairMaxTokens <= (request.max_tokens ?? 0))) ||
-      attemptCount >= maxAttempts
+      attemptCount >= maxAttempts ||
+      outputLimitRepairBudget?.remainingCalls === 0
     ) {
       throw error;
     }
@@ -555,7 +574,7 @@ export async function callStructuredTool<T>(
       );
     };
 
-    if (attemptCount >= maxAttempts) {
+    if (attemptCount >= maxAttempts || outputLimitRepairBudget?.remainingCalls === 0) {
       const failure = originalInvalidPayload();
       if (retriedMalformedArguments) {
         notifySchemaRepair(options, { status: "failed", attempt: 2, error: failure });

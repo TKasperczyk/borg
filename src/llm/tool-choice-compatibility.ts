@@ -1,5 +1,6 @@
 import type { LLMCompleteOptions, TokenUsageSink } from "./index.js";
 import { addLlmUsage, attachLlmErrorUsage, reportLlmErrorUsage, type LLMUsage } from "./usage.js";
+import { classifyLlmStopReason } from "./stop-reason.js";
 
 function parseClaudeModel(model: string): { family: string; version: number[] } | null {
   const match = /^(claude-[a-z]+)-(\d+(?:[-.]\d+)*)(?:[-._].+)?$/i.exec(model.trim());
@@ -66,8 +67,15 @@ export function toolUseReminder(expectedTool: string | null): string {
 export function translateForcedToolUse<Response>(args: {
   options: Pick<
     LLMCompleteOptions,
-    "model" | "tool_choice" | "tools" | "budget" | "signal" | "onToolChoiceTranslated"
+    | "model"
+    | "tool_choice"
+    | "tools"
+    | "budget"
+    | "signal"
+    | "onToolChoiceTranslated"
+    | "outputLimitRepairBudget"
   >;
+  provider?: "anthropic" | "openai";
   send: (context: {
     previous: Response | undefined;
     signal: AbortSignal | null | undefined;
@@ -98,11 +106,24 @@ export function translateForcedToolUse<Response>(args: {
     let usage: LLMUsage | undefined;
     const run = async (signal?: AbortSignal | null): Promise<Response> => {
       const first = await args.send({ previous: undefined, signal, expectedTool });
+      if (options.outputLimitRepairBudget !== undefined) {
+        options.outputLimitRepairBudget.remainingCalls -= 1;
+      }
       usage = args.getUsage(first);
       if (args.hasToolUse(first)) return first;
+      if (
+        options.outputLimitRepairBudget !== undefined &&
+        (options.outputLimitRepairBudget.remainingCalls === 0 ||
+          classifyLlmStopReason(args.describe(first).stop_reason, args.provider).kind ===
+            "max_tokens")
+      )
+        return first;
       retryFired = true;
       firstShape = args.describe(first);
       const second = await args.send({ previous: first, signal, expectedTool });
+      if (options.outputLimitRepairBudget !== undefined) {
+        options.outputLimitRepairBudget.remainingCalls -= 1;
+      }
       usage = addLlmUsage(usage, args.getUsage(second));
       return args.withUsage(second, usage);
     };
