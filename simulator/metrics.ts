@@ -2889,7 +2889,7 @@ async function actionPromptSalienceSummary(input: {
   actions: readonly ActionRecord[];
   borg: Borg;
   sessionId: SessionId;
-  turnCounter: number;
+  nowMs: number;
 }): Promise<ActionPromptSalienceSummary> {
   if (input.actions.length === 0) {
     return emptyActionPromptSalienceSummary();
@@ -2903,16 +2903,16 @@ async function actionPromptSalienceSummary(input: {
     similarityThreshold:
       input.borg.similarityThresholds?.actionThread ?? similarityThresholds().actionThread,
   });
-  const threadsWithSalience = threads.flatMap((thread) => {
+  const threadsWithSalience = threads.map((thread) => {
     const salienceClass = actionSalienceClass({
       thread,
-      currentTurnGlobal: input.turnCounter,
+      nowMs: input.nowMs,
     });
 
-    return salienceClass === null ? [] : [{ ...thread, salienceClass }];
+    return { ...thread, salienceClass };
   });
 
-  return summarizeActionPromptSalience(threadsWithSalience);
+  return summarizeActionPromptSalience(threadsWithSalience, input.nowMs);
 }
 
 function reviewQueueOpenCountByType(borg: Borg): Record<ReviewKind, number> {
@@ -3206,11 +3206,14 @@ export class MetricsCapture {
     turnCounter: number,
     archiveAfterInactiveTurns: number,
     archiveTraceRecords: readonly TraceRecord[],
+    nowMs: number,
   ): Promise<MemoryBandMetricCounts> {
     const actionRecordCountByState = borg.actions.countByState();
     const allActions = borg.actions.list({ limit: LARGE_COUNT_LIMIT });
     const promptSourceActions = borg.actions.list({
       limit: DEFAULT_ACTION_THREAD_SOURCE_RECORD_LIMIT,
+      activityNowMs: nowMs,
+      reserveActors: ["borg"],
     });
     const activeActions = borg.actions.list({
       states: ACTIVE_ACTION_STATES,
@@ -3225,7 +3228,7 @@ export class MetricsCapture {
       actions: promptSourceActions,
       borg,
       sessionId,
-      turnCounter,
+      nowMs,
     });
     const currentActionCreationCounts = actionCreationCountsFromRepository(borg);
     const actionCreationSourcePerTurn = diffActionCreationCounts({
@@ -3449,6 +3452,7 @@ export class MetricsCapture {
       turnCounter,
       archiveAfterInactiveTurns,
       traceRecordsSinceLastCapture,
+      allTraceRecords.at(-1)?.ts ?? Date.now(),
     );
     const frameAnomalyMetricCounts = frameAnomalyMetrics({
       traceRecords,
@@ -3994,6 +3998,7 @@ export class MetricsCapture {
       turnCounter,
       archiveAfterInactiveTurns,
       [],
+      allTraceRecords.at(-1)?.ts ?? Date.now(),
     );
     const turnId = context.turnId ?? `${event}_${turnCounter}`;
     const traceRecords = allTraceRecords.filter((record) => record.turnId === turnId);

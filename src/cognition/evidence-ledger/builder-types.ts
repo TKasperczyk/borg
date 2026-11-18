@@ -29,7 +29,12 @@ import type { TurnTracer } from "../../tracing/tracer.js";
 import type { AutobiographicalRecallResult } from "../autobiographical-recall.js";
 
 export type ActionLedgerRepository = Pick<ActionRepository, "list"> &
-  Partial<Pick<ActionRepository, "findSimilarDescriptionPairs" | "count" | "readUpdateHistory">>;
+  Partial<
+    Pick<
+      ActionRepository,
+      "findSimilarDescriptionPairs" | "count" | "countStaleOpen" | "readUpdateHistory"
+    >
+  >;
 export type CommitmentLedgerRepository = Pick<CommitmentRepository, "list">;
 export type GoalLedgerRepository = Pick<GoalsRepository, "list">;
 
@@ -51,6 +56,7 @@ export type EvidenceLedgerBuilderOptions = {
   actionThreadSimilarityThreshold?: number;
   actionThreadSourceRecordLimit?: number;
   actionThreadSalienceClassReservedSlots?: number;
+  /** Current-audience slots, after actor reservations and subject to the stale cap. */
   actionThreadAudienceReservedSlots?: number;
   openQuestionStaleNoTractionTicks?: number;
   entityRepository?: Pick<EntityRepository, "get">;

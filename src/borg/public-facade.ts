@@ -640,6 +640,9 @@ export type BorgActionRecordListFilter = {
   sessionScope?: ActionSessionScope | null;
   sessionAnchorId?: SessionId | null;
   audienceEntityId?: EntityId | null;
+  /** Rank the page draw using last activity relative to this turn timestamp. */
+  activityNowMs?: number;
+  reserveActors?: readonly ActionActor[];
   goalId?: GoalId;
   openQuestionId?: OpenQuestionId;
   limit?: number;

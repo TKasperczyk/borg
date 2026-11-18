@@ -1,7 +1,7 @@
 import {
   DEFAULT_ACTION_THREAD_AUDIENCE_RESERVED_SLOTS,
-  DEFAULT_ACTION_THREAD_RENDER_LIMIT,
   DEFAULT_ACTION_THREAD_SALIENCE_CLASS_RESERVED_SLOTS,
+  DEFAULT_ACTION_THREAD_RENDER_LIMIT,
   DEFAULT_ACTION_THREAD_SOURCE_RECORD_LIMIT,
   ACTION_UPDATE_HISTORY_LIMIT,
   actionThreadAudienceBucket,
@@ -27,16 +27,14 @@ import { ACTION_TRUST_RANK, addEntry, cappedTrustRank } from "../section-buckets
 import { persistenceClassFromProvenance } from "../scope-resolver.js";
 import { combineMemoryDisclosureLabels } from "../../../retrieval/index.js";
 import { actionMemoryDisclosureLabel } from "../../../memory/common/disclosure-serializers.js";
+import { isStaleOpenAction } from "../../../memory/actions/index.js";
 
 function clampNonnegativeIntegerOrFallback(value: number | undefined, fallback: number): number {
-  if (value === undefined || !Number.isFinite(value)) {
-    return fallback;
-  }
-
-  return Math.max(0, Math.floor(value));
+  return value === undefined || !Number.isFinite(value) ? fallback : Math.max(0, Math.floor(value));
 }
 
 export async function addActionStatesSection(context: BuilderSectionContext): Promise<void> {
+  const nowMs = context.nowMs ?? context.input.currentUserEntry?.timestamp ?? Date.now();
   const sourceRecordLimit = clampPositiveIntegerOrFallback(
     context.options.actionThreadSourceRecordLimit,
     DEFAULT_ACTION_THREAD_SOURCE_RECORD_LIMIT,
@@ -45,16 +43,7 @@ export async function addActionStatesSection(context: BuilderSectionContext): Pr
     context.options.actionThreadRenderLimit,
     DEFAULT_ACTION_THREAD_RENDER_LIMIT,
   );
-  const salienceClassReservedSlots = clampNonnegativeIntegerOrFallback(
-    context.options.actionThreadSalienceClassReservedSlots,
-    DEFAULT_ACTION_THREAD_SALIENCE_CLASS_RESERVED_SLOTS,
-  );
-  const audienceReservedSlots = clampNonnegativeIntegerOrFallback(
-    context.options.actionThreadAudienceReservedSlots,
-    DEFAULT_ACTION_THREAD_AUDIENCE_RESERVED_SLOTS,
-  );
-  // Active rows win before the 256-record cutoff; audience/salience reservations
-  // then operate within the active pool before any terminal row gets a render slot.
+  // Use one turn-time snapshot for the draw, render budget, and global omission count.
   const actionCandidates = listActionCandidatesForCognition({
     actionRepository: context.repos.actions,
     audienceEntityId: context.input.audienceEntityId,
@@ -64,6 +53,7 @@ export async function addActionStatesSection(context: BuilderSectionContext): Pr
         ? []
         : [context.input.currentUserEntry.sender_entity_id],
     limit: sourceRecordLimit,
+    nowMs,
   });
   const disclosureLabelByActionId = new Map(
     actionCandidates.map((candidate) => [candidate.record.id, candidate.disclosureLabel]),
@@ -73,21 +63,29 @@ export async function addActionStatesSection(context: BuilderSectionContext): Pr
     repository: context.repos.actions,
     resolver: context.resolver,
   });
-  const threadsWithSalience = threads.flatMap((thread) => {
+  const threadsWithSalience = threads.map((thread) => {
     const salienceClass = actionSalienceClass({
       thread,
       currentUserStreamEntryId: context.input.currentUserEntry?.id,
       currentUserStreamEntryIds: context.input.currentUserEntries?.map((entry) => entry.id),
-      currentTurnGlobal: context.input.globalTurnCounter,
+      nowMs,
     });
 
-    return salienceClass === null ? [] : [{ ...thread, salienceClass }];
+    return { ...thread, salienceClass };
   });
   const renderedThreads = allocateActionThreadRenderSlots({
     threads: threadsWithSalience,
+    nowMs,
     limit: renderLimit,
-    salienceClassReservedSlots,
-    audienceReservedSlots,
+    audienceEntityId: context.input.audienceEntityId,
+    audienceReservedSlots: clampNonnegativeIntegerOrFallback(
+      context.options.actionThreadAudienceReservedSlots,
+      DEFAULT_ACTION_THREAD_AUDIENCE_RESERVED_SLOTS,
+    ),
+    salienceClassReservedSlots: clampNonnegativeIntegerOrFallback(
+      context.options.actionThreadSalienceClassReservedSlots,
+      DEFAULT_ACTION_THREAD_SALIENCE_CLASS_RESERVED_SLOTS,
+    ),
     reservedActors: [
       "borg",
       ...(context.input.currentUserEntry?.sender_entity_id == null
@@ -96,11 +94,6 @@ export async function addActionStatesSection(context: BuilderSectionContext): Pr
       ...(context.input.activeParticipants ?? [])
         .filter((p) => p.role === "speaker")
         .map((p) => p.entityId),
-    ],
-    audienceOrder: [
-      ...new Set(
-        actionCandidates.map((candidate) => candidate.record.audience_entity_id ?? "global"),
-      ),
     ],
   });
 
@@ -158,6 +151,7 @@ export async function addActionStatesSection(context: BuilderSectionContext): Pr
   const renderedIds = new Set(renderedThreads.map((thread) => thread.id));
   const olderThreads = orderActionThreadsBySalience(
     threadsWithSalience.filter((thread) => !renderedIds.has(thread.id)),
+    nowMs,
   );
   const salienceDroppedThreadCount = threads.length - threadsWithSalience.length;
   const drawSaturated = actionCandidates.length >= sourceRecordLimit;
@@ -165,6 +159,13 @@ export async function addActionStatesSection(context: BuilderSectionContext): Pr
   // the rest is one count away, which is what turns the below-floor field from a refusal into a
   // measurement; a repository that cannot count leaves the field saying so rather than implying 0.
   const sourceRecordTotal = context.repos.actions.count?.() ?? null;
+  const storeStaleOpenCount = context.repos.actions.countStaleOpen?.(nowMs);
+  const staleOpenOmitted = Math.max(
+    0,
+    (storeStaleOpenCount ??
+      threads.filter((thread) => isStaleOpenAction(thread.current, nowMs)).length) -
+      renderedThreads.filter((thread) => isStaleOpenAction(thread.current, nowMs)).length,
+  );
 
   // Absent must not be the only way to say "nothing left over": a saturated draw or a
   // salience-dropped thread is still material this section did not show, so the entry is
@@ -225,6 +226,8 @@ export async function addActionStatesSection(context: BuilderSectionContext): Pr
       sourceRecordLimit,
       sourceRecordTotal,
       salienceDroppedThreadCount,
+      staleOpenOmitted,
+      staleOpenCountScope: storeStaleOpenCount === undefined ? "draw" : "store",
     }),
     value: "older_action_threads",
     state: "omitted",

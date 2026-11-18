@@ -1,5 +1,12 @@
 export { actionMigrations } from "./migrations.js";
 export {
+  STALE_OPEN_ROW_DAYS,
+  actionActivityCutoff,
+  actionActivityTier,
+  lastActionActivityAt,
+  isStaleOpenAction,
+} from "./activity.js";
+export {
   ACTION_ARCHIVE_ACTIVE_STATES,
   ACTION_ARCHIVE_SCAN_LIMIT,
   classifyActionArchiveCandidate,
@@ -12,6 +19,7 @@ export { resolveOpenQuestionsForCompletedAction } from "./open-question-resoluti
 export {
   ActionRepository,
   ACTION_ACTOR_RESERVED_RECORDS,
+  STALE_OPEN_DRAW_LIMIT,
   createActionRecordsTableSchema,
   type ActionAddOptions,
   type ActionCompletionFailure,

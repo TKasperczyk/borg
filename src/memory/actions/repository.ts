@@ -15,6 +15,7 @@ import { SqliteDatabase } from "../../storage/sqlite/index.js";
 import type { EmbeddingClient } from "../../embeddings/index.js";
 import { cosineSimilarity } from "../../retrieval/embedding-similarity.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
+import { actionActivityCutoff, actionActivityTier } from "./activity.js";
 import { StorageError } from "../../util/errors.js";
 import { serializeJsonValue } from "../../util/json-value.js";
 import { actionMemoryDisclosureLabel } from "../common/disclosure-serializers.js";
@@ -63,6 +64,8 @@ const ACTION_JSON_ARRAY_CODEC = {
 } satisfies JsonArrayCodecOptions;
 
 export const ACTION_ACTOR_RESERVED_RECORDS = 4;
+export const STALE_OPEN_DRAW_LIMIT = 16;
+const ACTION_ACTIVITY_SQL = "MAX(updated_at, COALESCE(last_referenced_at_ms, updated_at))";
 
 function parseSelectionAudit(value: unknown): ActionSelectionAudit | null {
   if (value == null) return null;
@@ -260,7 +263,11 @@ export type ActionRecordListFilter = {
   rankAudienceEntityIds?: readonly EntityId[];
   rankActorEntityIds?: readonly EntityId[];
   prioritizeActive?: boolean;
+  /** Page draw: live open, recent other states, stale open, then older closed. */
+  activityNowMs?: number;
   reserveActors?: readonly ActionActor[];
+  /** Boost this audience's live/recent rows before the global page fill. */
+  reserveAudienceEntityId?: EntityId | null;
   goalId?: GoalId;
   openQuestionId?: OpenQuestionId;
   createdSinceMs?: number;
@@ -853,9 +860,17 @@ export class ActionRepository {
   }
 
   list(filter: ActionRecordListFilter = {}): ActionRecord[] {
-    if (filter.reserveActors?.length && filter.limit !== undefined) {
+    const limitStaleOpen = filter.activityNowMs !== undefined && filter.limit !== undefined;
+    const reserveAudience =
+      filter.reserveAudienceEntityId !== undefined && filter.activityNowMs !== undefined;
+    if ((filter.reserveActors?.length || reserveAudience) && filter.limit !== undefined) {
       const limit = Math.max(1, Math.floor(filter.limit));
-      const actors = [...new Set(filter.reserveActors)].filter(
+      const unreserved = {
+        ...filter,
+        reserveActors: undefined,
+        reserveAudienceEntityId: undefined,
+      };
+      const actors = [...new Set(filter.reserveActors ?? [])].filter(
         (actor) => filter.actor === undefined || actor === filter.actor,
       );
       const openStates = ACTIVE_ACTION_STATES.filter(
@@ -864,9 +879,8 @@ export class ActionRepository {
           (filter.states === undefined || filter.states.includes(state)),
       );
       const groups = actors.map((actor) =>
-        this.list({
-          ...filter,
-          reserveActors: undefined,
+        this.listUnreserved({
+          ...unreserved,
           actor,
           state: undefined,
           states: openStates,
@@ -882,18 +896,62 @@ export class ActionRepository {
           if (row !== undefined && records.size < limit) records.set(row.id, row);
         }
       }
-      for (const row of this.list({ ...filter, reserveActors: undefined })) {
-        if (records.size >= limit) break;
-        records.set(row.id, row);
+      if (
+        reserveAudience &&
+        (filter.audienceEntityId === undefined ||
+          filter.audienceEntityId === filter.reserveAudienceEntityId)
+      ) {
+        // This is a reserved prefix, not a recall gate: the global draw fills all
+        // remaining capacity below, and other actors' reservations survive it.
+        const audienceRows = this.listUnreserved({
+          ...unreserved,
+          recallAllAudiences: false,
+          audienceEntityId: filter.reserveAudienceEntityId,
+        });
+        for (const row of audienceRows) {
+          if (records.size >= limit) break;
+          if (actionActivityTier(row, filter.activityNowMs!) <= 1) records.set(row.id, row);
+        }
+      }
+      if (records.size < limit) {
+        for (const row of this.listUnreserved(
+          { ...unreserved, limit: limit - records.size },
+          { excludeIds: [...records.keys()], limitStaleOpen },
+        )) {
+          records.set(row.id, row);
+        }
       }
       return [...records.values()];
     }
+    return this.listUnreserved(filter, { limitStaleOpen });
+  }
+
+  private listUnreserved(
+    filter: ActionRecordListFilter,
+    options: { excludeIds?: readonly ActionId[]; limitStaleOpen?: boolean } = {},
+  ): ActionRecord[] {
     const clauses: string[] = [];
     const values: unknown[] = [];
     const orderBy: string[] = [];
     const orderValues: unknown[] = [];
 
-    if (filter.prioritizeActive === true) {
+    if (options.excludeIds?.length) {
+      clauses.push(`id NOT IN (${options.excludeIds.map(() => "?").join(", ")})`);
+      values.push(...options.excludeIds);
+    }
+
+    if (filter.activityNowMs !== undefined) {
+      const openSql = `state IN (${ACTIVE_ACTION_STATES.map(() => "?").join(", ")})`;
+      orderBy.push(
+        `CASE WHEN ${ACTION_ACTIVITY_SQL} >= ? THEN CASE WHEN ${openSql} THEN 0 ELSE 1 END ELSE CASE WHEN ${openSql} THEN 2 ELSE 3 END END ASC`,
+        `${ACTION_ACTIVITY_SQL} DESC`,
+      );
+      orderValues.push(
+        actionActivityCutoff(filter.activityNowMs),
+        ...ACTIVE_ACTION_STATES,
+        ...ACTIVE_ACTION_STATES,
+      );
+    } else if (filter.prioritizeActive === true) {
       orderBy.push(
         `CASE WHEN state IN (${ACTIVE_ACTION_STATES.map(() => "?").join(", ")}) THEN 0 ELSE 1 END ASC`,
       );
@@ -996,6 +1054,26 @@ export class ActionRepository {
       }
     }
 
+    const ordering = [...orderBy, "updated_at DESC", "id ASC"].join(", ");
+    if (options.limitStaleOpen && filter.activityNowMs !== undefined) {
+      const stale = `state IN (${ACTIVE_ACTION_STATES.map(() => "?").join(", ")}) AND ${ACTION_ACTIVITY_SQL} < ?`;
+      const staleValues = [...ACTIVE_ACTION_STATES, actionActivityCutoff(filter.activityNowMs)];
+      const staleClauses = [...clauses, stale];
+      const staleSelectionValues = [
+        ...values,
+        ...staleValues,
+        ...orderValues,
+        STALE_OPEN_DRAW_LIMIT,
+      ];
+      // Cap stale rows before LIMIT, so older closed rows can reach the renderer.
+      // Actor reservations are excluded from this fill and do not consume its cap.
+      clauses.push(`(NOT (${stale}) OR id IN (
+        SELECT id FROM action_records WHERE ${staleClauses.join(" AND ")}
+        ORDER BY ${ordering} LIMIT ?
+      ))`);
+      values.push(...staleValues, ...staleSelectionValues);
+    }
+
     const limit = filter.limit === undefined ? null : Math.max(1, Math.floor(filter.limit));
     const rows = this.db
       .prepare(
@@ -1003,7 +1081,7 @@ export class ActionRepository {
           SELECT *
           FROM action_records
           ${clauses.length === 0 ? "" : `WHERE ${clauses.join(" AND ")}`}
-          ORDER BY ${[...orderBy, "updated_at DESC", "id ASC"].join(", ")}
+          ORDER BY ${ordering}
           ${limit === null ? "" : "LIMIT ?"}
         `,
       )
@@ -1021,6 +1099,19 @@ export class ActionRepository {
       | undefined;
 
     return Number(row?.count ?? 0);
+  }
+
+  countStaleOpen(nowMs: number): number {
+    const row = this.db
+      .prepare(
+        `
+      SELECT COUNT(*) AS count FROM action_records
+      WHERE state IN (${ACTIVE_ACTION_STATES.map(() => "?").join(", ")})
+        AND ${ACTION_ACTIVITY_SQL} < ?
+    `,
+      )
+      .get(...ACTIVE_ACTION_STATES, actionActivityCutoff(nowMs)) as { count: number };
+    return row.count;
   }
 
   countByState(): ActionCountByState {

@@ -4,7 +4,13 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { ActionRecord, ActionRecordListFilter } from "../../memory/actions/index.js";
+import {
+  ActionRepository,
+  actionMigrations,
+  STALE_OPEN_DRAW_LIMIT,
+  type ActionRecord,
+  type ActionRecordListFilter,
+} from "../../memory/actions/index.js";
 import type {
   CommitmentListOptions,
   CommitmentRecord,
@@ -54,7 +60,10 @@ import {
   type EntityId,
 } from "../../util/ids.js";
 import { EvidenceLedgerBuilder } from "./builder.js";
-import { isPromptSalientActionSalienceClass } from "./action-threads.js";
+import {
+  isPromptSalientActionSalienceClass,
+  listActionCandidatesForCognition,
+} from "./action-threads.js";
 import { renderSection } from "./section-rendering.js";
 import { summarizeEvidenceLedgerTrace } from "./trace-summary.js";
 import {
@@ -3879,7 +3888,7 @@ describe("EvidenceLedgerBuilder", () => {
     }
   });
 
-  it("uses the global lifecycle clock for action recency across a small session counter", async () => {
+  it("uses the turn's timestamp for page recency independently of lifecycle counters", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-action-global-recency-"));
     tempDirs.push(tempDir);
     const writer = new StreamWriter({
@@ -3914,13 +3923,14 @@ describe("EvidenceLedgerBuilder", () => {
       },
       currentSessionTranscriptTokenBudget: 50_000,
     });
-    const actionEntriesAt = async (globalTurnCounter: number) => {
+    const actionEntriesAt = async (globalTurnCounter: number, nowMs = NOW_MS) => {
       const ledger = await builder.build({
         sessionId: DEFAULT_SESSION_ID,
         audienceEntityId: null,
         currentUserMessage: String(currentUserEntry.content),
         currentUserEntry,
         globalTurnCounter,
+        nowMs,
         workingMemory: { ...makeWorkingMemory(), turn_counter: 67 },
         applicableCommitments: [],
         retrievedEvidence: [],
@@ -3938,7 +3948,12 @@ describe("EvidenceLedgerBuilder", () => {
       );
     };
 
-    expect(await actionEntriesAt(stampedTurnGlobal + 4)).toHaveLength(0);
+    expect(await actionEntriesAt(stampedTurnGlobal + 4)).toEqual(
+      await actionEntriesAt(stampedTurnGlobal + 2),
+    );
+    expect(await actionEntriesAt(stampedTurnGlobal, NOW_MS + 31 * 86_400_000)).toEqual([
+      expect.objectContaining({ salience_class: "closed_older" }),
+    ]);
     expect(await actionEntriesAt(stampedTurnGlobal + 2)).toEqual([
       expect.objectContaining({
         salience_class: "completed_recent",
@@ -3947,7 +3962,7 @@ describe("EvidenceLedgerBuilder", () => {
     ]);
   });
 
-  it("drops out-of-window completed threads instead of counting them as older", async () => {
+  it("keeps recent completions eligible despite old lifecycle turn counters", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-action-terminal-drop-"));
     tempDirs.push(tempDir);
     const writer = new StreamWriter({
@@ -4017,130 +4032,215 @@ describe("EvidenceLedgerBuilder", () => {
       ledger.sections.find((section) => section.id === "action_states")?.entries ?? [];
     const summary = actionEntries.find((entry) => entry.id === "action_threads:older_summary");
 
-    // Stale *pending* backlog stays countable: one takes the render slot, one is summarized.
+    // Timestamp-recent open rows win; the completion remains in the omitted population.
     expect(actionEntries.filter((entry) => entry.id.startsWith("action_thread:"))).toHaveLength(1);
-    expect(summary?.text).toContain("threads=1, records=1");
+    expect(summary?.text).toContain("threads=2, records=2");
     expect(summary?.text).toContain(
-      "audience_scope=global salience_class=participant_pending_stale threads=1 records=1",
+      "audience_scope=global salience_class=participant_pending_recent threads=1 records=1",
     );
 
-    // The out-of-window terminal thread is neither rendered nor summarized: a null salience
-    // class removes it from the pool before the older-thread summary is built, so "omitted"
-    // means "omitted from the render", not "omitted from consideration". The count of what
-    // left that way is stated, so the omitted counts cannot read as the whole remainder.
-    expect(summary?.text).not.toContain("completed=");
-    expect(summary?.text).toContain("salience_dropped_threads=1");
-    expect(
-      actionEntries.some((entry) => String(entry.text).includes("Closed long before this turn")),
-    ).toBe(false);
+    expect(summary?.text).toContain("completed=1");
+    expect(summary?.text).toContain("salience_dropped_threads=0");
+    expect(summary?.text).toContain("Closed long before this turn");
   });
 
-  it("renders open stale participant actions before terminal rows without a pre-cap", async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+  it.each([0, 300])(
+    "caps the months-old backlog, keeps recent context, and counts %i rows below the draw",
+    async (extraStale) => {
+      const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
+      tempDirs.push(tempDir);
+      const writer = new StreamWriter({
+        dataDir: tempDir,
+        sessionId: DEFAULT_SESSION_ID,
+        clock: new FixedClock(NOW_MS),
+      });
+      const userEntry = await writer.append({
+        kind: "user_msg",
+        content: "Let's keep the action ledger tight.",
+      });
+      const borgCurrent = makeAction(userEntry.id, {
+        description: "Log the care-plan decision",
+        actor: "borg",
+        state: "committed_to_do",
+        committed_at: NOW_MS,
+        scheduled_at: null,
+      });
+      const participantRecent = makeAction(userEntry.id, {
+        description: "Call the clinic back",
+        actor: "user",
+        state: "committed_to_do",
+        committed_at: NOW_MS - 10,
+        scheduled_at: null,
+        last_referenced_turn_counter: 4,
+        last_referenced_turn_global: 4,
+      });
+      const completedRecent = makeAction(userEntry.id, {
+        description: "Closed the prior clinic email action",
+        actor: "user",
+        state: "completed",
+        completed_at: NOW_MS - 5,
+        scheduled_at: null,
+        last_referenced_turn_counter: 4,
+        last_referenced_turn_global: 4,
+      });
+      const stale = Array.from({ length: 11 + extraStale }, (_, index) =>
+        makeAction(userEntry.id, {
+          description: `Older participant action ${index}`,
+          actor: "user",
+          state: "committed_to_do",
+          updated_at: NOW_MS - (60 + index) * 86_400_000,
+          last_referenced_at_ms: null,
+        }),
+      );
+      const recentClosed = Array.from({ length: 8 }, (_, index) => ({
+        ...completedRecent,
+        id: createActionId(),
+        updated_at: NOW_MS - index,
+      }));
+      const db = openDatabase(":memory:", { migrations: actionMigrations });
+      const repository = new ActionRepository({ db });
+      for (const row of [participantRecent, ...recentClosed, ...stale, borgCurrent])
+        repository.add({ ...row, created_at: Math.min(row.created_at, row.updated_at) });
+      const before = repository.list();
+      const builder = new EvidenceLedgerBuilder({
+        createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+        relationalSlotRepository: { list: () => [] },
+        actionRepository: repository,
+        currentSessionTranscriptTokenBudget: 50_000,
+      });
+
+      try {
+        const ledger = await builder.build({
+          sessionId: DEFAULT_SESSION_ID,
+          audienceEntityId: null,
+          currentUserMessage: String(userEntry.content),
+          currentUserEntry: userEntry,
+          globalTurnCounter: 4,
+          workingMemory: makeWorkingMemory(),
+          applicableCommitments: [],
+          retrievedEvidence: [],
+          retrievedEpisodes: [],
+          retrievedSemantic: null,
+          openQuestions: [],
+          pendingCorrections: [],
+          frameAnomaly: null,
+        });
+        const actionEntries =
+          ledger.sections.find((section) => section.id === "action_states")?.entries ?? [];
+
+        expect(actionEntries[0]?.salience_class).toBe("borg_current_turn_action");
+        expect(actionEntries[1]?.salience_class).toBe("participant_pending_recent");
+        expect(
+          actionEntries.filter(
+            (entry) =>
+              entry.salience_class !== undefined &&
+              isPromptSalientActionSalienceClass(entry.salience_class),
+          ),
+        ).toHaveLength(2);
+        expect(actionEntries.some((entry) => entry.salience_class === "completed_recent")).toBe(
+          true,
+        );
+        expect(
+          actionEntries.filter((entry) => entry.salience_class === "participant_pending_stale"),
+        ).toHaveLength(2);
+        const rendered = actionEntries.filter((entry) => entry.source_type === "action_record");
+        expect(rendered).toHaveLength(12);
+        expect(
+          rendered
+            .slice(2, 10)
+            .map((entry) => entry.id)
+            .sort(),
+        ).toEqual(recentClosed.map((row) => `action_thread:${row.id}`).sort());
+        const summary = actionEntries.find((entry) => entry.id === "action_threads:older_summary");
+        expect(summary?.text).toContain(
+          `${9 + extraStale} older open records (no activity for over 30 days) not shown across the store`,
+        );
+        expect(summary?.text).toContain(
+          `records_below_draw_floor=${Math.max(0, 11 + extraStale - STALE_OPEN_DRAW_LIMIT)}`,
+        );
+        expect(repository.list()).toEqual(before);
+      } finally {
+        db.close();
+      }
+    },
+  );
+
+  it("fills all twelve slots from 300 stale open and 20 older closed records", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-stale-fallback-"));
     tempDirs.push(tempDir);
     const writer = new StreamWriter({
       dataDir: tempDir,
       sessionId: DEFAULT_SESSION_ID,
       clock: new FixedClock(NOW_MS),
     });
-    const userEntry = await writer.append({
+    const currentUserEntry = await writer.append({
       kind: "user_msg",
-      content: "Let's keep the action ledger tight.",
+      content: "Show the action ledger.",
     });
-    const borgCurrent = makeAction(userEntry.id, {
-      description: "Log the care-plan decision",
-      actor: "borg",
-      state: "committed_to_do",
-      committed_at: NOW_MS,
-      scheduled_at: null,
-    });
-    const participantRecent = makeAction(userEntry.id, {
-      description: "Call the clinic back",
-      actor: "user",
-      state: "committed_to_do",
-      committed_at: NOW_MS - 10,
-      scheduled_at: null,
-      last_referenced_turn_counter: 4,
-      last_referenced_turn_global: 4,
-    });
-    const completedRecent = makeAction(userEntry.id, {
-      description: "Closed the prior clinic email action",
-      actor: "user",
-      state: "completed",
-      completed_at: NOW_MS - 5,
-      scheduled_at: null,
-      last_referenced_turn_counter: 4,
-      last_referenced_turn_global: 4,
-    });
-    const stale = Array.from({ length: 7 }, (_, index) =>
-      makeAction(userEntry.id, {
-        description: `Stale participant action ${index}`,
-        actor: "user",
-        state: "committed_to_do",
-        committed_at: NOW_MS - 100 - index,
-        updated_at: NOW_MS - 100 - index,
-        scheduled_at: null,
-        last_referenced_turn_counter: 0,
-        last_referenced_turn_global: 0,
-      }),
-    );
-    const builder = new EvidenceLedgerBuilder({
-      createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
-      relationalSlotRepository: { list: () => [] },
-      actionRepository: {
-        list: () => [participantRecent, completedRecent, ...stale, borgCurrent],
-        findSimilarDescriptionPairs: async () => [],
-      },
-      currentSessionTranscriptTokenBudget: 50_000,
-      actionThreadRenderLimit: 20,
-    });
-
-    const ledger = await builder.build({
-      sessionId: DEFAULT_SESSION_ID,
-      audienceEntityId: null,
-      currentUserMessage: String(userEntry.content),
-      currentUserEntry: userEntry,
-      globalTurnCounter: 4,
-      workingMemory: makeWorkingMemory(),
-      applicableCommitments: [],
-      retrievedEvidence: [],
-      retrievedEpisodes: [],
-      retrievedSemantic: null,
-      openQuestions: [],
-      pendingCorrections: [],
-      frameAnomaly: null,
-    });
-    const actionEntries =
-      ledger.sections.find((section) => section.id === "action_states")?.entries ?? [];
-
-    expect(actionEntries[0]?.salience_class).toBe("borg_current_turn_action");
-    expect(actionEntries[1]?.salience_class).toBe("participant_pending_recent");
-    expect(
-      actionEntries.filter(
-        (entry) =>
-          entry.salience_class !== undefined &&
-          isPromptSalientActionSalienceClass(entry.salience_class),
-      ),
-    ).toHaveLength(2);
-    expect(actionEntries.some((entry) => entry.salience_class === "completed_recent")).toBe(true);
-    expect(
-      actionEntries.filter((entry) => entry.salience_class === "participant_pending_stale"),
-    ).toHaveLength(7);
-    expect(
-      actionEntries.filter((entry) => entry.id.startsWith("action_thread:")).slice(-5),
-    ).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          salience_class: "participant_pending_stale",
-        }),
-      ]),
-    );
-    expect(
-      actionEntries.find((entry) => entry.id === "action_threads:older_summary"),
-    ).toBeUndefined();
+    const db = openDatabase(":memory:", { migrations: actionMigrations });
+    const repository = new ActionRepository({ db });
+    try {
+      for (let i = 0; i < 320; i++)
+        repository.add(
+          makeAction(currentUserEntry.id, {
+            actor: "user",
+            state: i < 300 ? "committed_to_do" : "completed",
+            created_at: 0,
+            updated_at: 1_000 + i,
+            last_referenced_at_ms: null,
+          }),
+        );
+      const before = repository.list();
+      const draw = listActionCandidatesForCognition({
+        actionRepository: repository,
+        audienceEntityId: null,
+        nowMs: NOW_MS,
+        limit: 256,
+      });
+      expect(draw).toHaveLength(STALE_OPEN_DRAW_LIMIT + 20);
+      expect(draw.filter((candidate) => candidate.record.state === "committed_to_do")).toHaveLength(
+        STALE_OPEN_DRAW_LIMIT,
+      );
+      const builder = new EvidenceLedgerBuilder({
+        createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+        relationalSlotRepository: { list: () => [] },
+        actionRepository: repository,
+        currentSessionTranscriptTokenBudget: 50_000,
+      });
+      const ledger = await builder.build({
+        sessionId: DEFAULT_SESSION_ID,
+        audienceEntityId: null,
+        currentUserMessage: String(currentUserEntry.content),
+        currentUserEntry,
+        nowMs: NOW_MS,
+        workingMemory: makeWorkingMemory(),
+        applicableCommitments: [],
+        retrievedEvidence: [],
+        retrievedEpisodes: [],
+        retrievedSemantic: null,
+        openQuestions: [],
+        pendingCorrections: [],
+        frameAnomaly: null,
+      });
+      const entries = ledger.sections.find((section) => section.id === "action_states")!.entries;
+      const rendered = entries.filter((entry) => entry.source_type === "action_record");
+      expect(rendered).toHaveLength(12);
+      expect(
+        rendered.filter((entry) => entry.salience_class === "participant_pending_stale"),
+      ).toHaveLength(2);
+      expect(rendered.filter((entry) => entry.salience_class === "closed_older")).toHaveLength(10);
+      const summary = entries.find((entry) => entry.id === "action_threads:older_summary")!;
+      expect(summary.text).toContain(
+        "298 older open records (no activity for over 30 days) not shown across the store",
+      );
+      expect(summary.text).toContain("records_below_draw_floor=284");
+      expect(repository.list()).toEqual(before);
+    } finally {
+      db.close();
+    }
   });
 
-  it("prevents a top-ranked Borg flood from starving participant and audience reservations", async () => {
+  it("reserves both the speaker and current audience under a Borg flood", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
     const writer = new StreamWriter({
@@ -4226,6 +4326,134 @@ describe("EvidenceLedgerBuilder", () => {
     expect(renderedText).toContain("Borg flood action 0");
     expect(renderedText).toContain("Bob participant action survives");
     expect(renderedText).toContain("Alice audience action survives");
+  });
+
+  it("gives two audiences distinct live slots after a global flood exceeds the draw, preserving global labels", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-action-audience-"));
+    tempDirs.push(tempDir);
+    const writer = new StreamWriter({
+      dataDir: tempDir,
+      sessionId: DEFAULT_SESSION_ID,
+      clock: new FixedClock(NOW_MS),
+    });
+    const audiences = [createEntityId(), createEntityId()];
+    const speakers = [createEntityId(), createEntityId()];
+    const elsewhere = createEntityId();
+    const source = await writer.append({ kind: "user_msg", content: "Track our current work." });
+    const db = openDatabase(":memory:", { migrations: actionMigrations });
+    const repository = new ActionRepository({ db });
+    const globalRows = Array.from({ length: 300 }, (_, i) =>
+      makeAction(source.id, {
+        actor: "borg",
+        audience_entity_id: elsewhere,
+        created_at: 0,
+        updated_at: NOW_MS - i,
+        last_referenced_at_ms: null,
+      }),
+    );
+    const audienceRows = audiences.map((audience, i) => [
+      makeAction(source.id, {
+        actor: speakers[i]!,
+        audience_entity_id: audience,
+        created_at: 0,
+        updated_at: NOW_MS - 10 * 86_400_000,
+        last_referenced_at_ms: null,
+      }),
+      makeAction(source.id, {
+        actor: "borg",
+        audience_entity_id: audience,
+        created_at: 0,
+        updated_at: NOW_MS - 11 * 86_400_000,
+        last_referenced_at_ms: null,
+      }),
+      makeAction(source.id, {
+        actor: "user",
+        audience_entity_id: audience,
+        state: "completed",
+        created_at: 0,
+        updated_at: NOW_MS - 86_400_000,
+        last_referenced_at_ms: null,
+      }),
+    ]);
+    const staleAudienceRows = audiences.map((audience) =>
+      makeAction(source.id, {
+        actor: "user",
+        audience_entity_id: audience,
+        created_at: 0,
+        updated_at: 1,
+        last_referenced_at_ms: null,
+      }),
+    );
+    try {
+      for (const row of [...globalRows, ...audienceRows.flat(), ...staleAudienceRows])
+        repository.add(row);
+      const before = repository.list();
+      const pages = [];
+      const builder = new EvidenceLedgerBuilder({
+        createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+        relationalSlotRepository: { list: () => [] },
+        actionRepository: repository,
+        currentSessionTranscriptTokenBudget: 50_000,
+      });
+      for (const [i, audience] of audiences.entries()) {
+        const draw = listActionCandidatesForCognition({
+          actionRepository: repository,
+          audienceEntityId: audience,
+          rankParticipantEntityIds: [speakers[i]!],
+          nowMs: NOW_MS,
+          limit: 256,
+        });
+        expect(draw).toHaveLength(256);
+        expect(draw.map((candidate) => candidate.record.id)).toEqual(
+          expect.arrayContaining(audienceRows[i]!.map((row) => row.id)),
+        );
+        expect(draw.map((candidate) => candidate.record.id)).not.toContain(
+          staleAudienceRows[i]!.id,
+        );
+        const currentUserEntry = await writer.append({
+          kind: "user_msg",
+          content: "What is current?",
+          sender_entity_id: speakers[i]!,
+        });
+        const ledger = await builder.build({
+          sessionId: DEFAULT_SESSION_ID,
+          audienceEntityId: audience,
+          currentUserMessage: String(currentUserEntry.content),
+          currentUserEntry,
+          nowMs: NOW_MS,
+          workingMemory: makeWorkingMemory(),
+          applicableCommitments: [],
+          retrievedEvidence: [],
+          retrievedEpisodes: [],
+          retrievedSemantic: null,
+          openQuestions: [],
+          pendingCorrections: [],
+          frameAnomaly: null,
+        });
+        const entries = ledger.sections
+          .find((section) => section.id === "action_states")!
+          .entries.filter((entry) => entry.source_type === "action_record");
+        expect(entries).toHaveLength(12);
+        const own = entries.filter(
+          (entry) =>
+            repository.get(entry.state_metadata!.current_action_id as ActionRecord["id"])!
+              .audience_entity_id === audience,
+        );
+        expect(own.map((entry) => entry.state_metadata!.current_action_id).sort()).toEqual(
+          audienceRows[i]!.slice(0, 2)
+            .map((row) => row.id)
+            .sort(),
+        );
+        const global = entries.filter((entry) => !own.includes(entry));
+        expect(global).toHaveLength(10);
+        for (const entry of global) expect(entry.state).toContain(`origin_audience=${elsewhere}`);
+        pages.push(entries.map((entry) => entry.id));
+      }
+      expect(pages[0]).not.toEqual(pages[1]);
+      expect(repository.list()).toEqual(before);
+    } finally {
+      db.close();
+    }
   });
 
   it("keeps legacy top-N action order when reservations create no selection pressure", async () => {

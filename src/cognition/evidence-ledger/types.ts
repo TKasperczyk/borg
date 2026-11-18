@@ -32,7 +32,8 @@ export type EvidenceLedgerActionSalienceClass =
   | "participant_pending_recent"
   | "participant_pending_stale"
   | "group_pending"
-  | "completed_recent";
+  | "completed_recent"
+  | "closed_older";
 
 export type EvidenceLedgerEntry = {
   frame_anomalies?: FrameAnomalyAnnotation[];

@@ -2326,13 +2326,19 @@ describe("MetricsCapture", () => {
   });
 
   it.each([
-    { staleCount: 7, omitted: 0 },
-    { staleCount: 13, omitted: 3 },
+    { staleCount: 7, omitted: 5 },
+    { staleCount: 13, omitted: 11 },
   ])(
     "captures prompt-salient action counts and stale prompt omissions ($staleCount stale rows)",
     async ({ staleCount, omitted }) => {
       const dir = tempDir();
       const metricsPath = join(dir, "metrics.jsonl");
+      const nowMs = 100 * 86_400_000;
+      const tracePath = join(dir, "trace.jsonl");
+      writeFileSync(
+        tracePath,
+        `${JSON.stringify({ event: "turn.completed", turnId: "turn-salience", ts: nowMs })}\n`,
+      );
       const sessionId = createSessionId();
       const audience = createEntityId();
       const actions = [
@@ -2340,6 +2346,7 @@ describe("MetricsCapture", () => {
           actor: "borg",
           audience_entity_id: audience,
           state: "committed_to_do",
+          updated_at: nowMs,
           last_referenced_turn_counter: 2,
           last_referenced_turn_global: 20,
         }),
@@ -2347,6 +2354,7 @@ describe("MetricsCapture", () => {
           actor: "user",
           audience_entity_id: audience,
           state: "committed_to_do",
+          last_referenced_at_ms: nowMs,
           last_referenced_turn_counter: 1,
           last_referenced_turn_global: 19,
         }),
@@ -2406,16 +2414,21 @@ describe("MetricsCapture", () => {
         },
       } as unknown as Borg;
 
-      const row = await new MetricsCapture(metricsPath).capture(borg, "turn-salience", 20, {
-        sessionId,
-        sessionIds: [sessionId],
-        transportChatAttempts: 1,
-      });
+      const row = await new MetricsCapture(metricsPath, { tracePath }).capture(
+        borg,
+        "turn-salience",
+        20,
+        {
+          sessionId,
+          sessionIds: [sessionId],
+          transportChatAttempts: 1,
+        },
+      );
 
       expect(row.prompt_salient_actions_total).toBe(2);
       expect(row.borg_owned_salient_active_actions).toBe(1);
       expect(row.participant_owned_salient_active_actions).toBe(1);
-      // R7: open rows use all 12 slots; there is no separate five-stale-row cap.
+      // Refined R7: the same timestamp-based two-stale-row cap as the page.
       expect(row.stale_actions_omitted_from_prompt).toBe(omitted);
       expect(row.dormant_actions_total).toBe(staleCount);
       expect(row.stale_action_count).toBe(staleCount + 1);

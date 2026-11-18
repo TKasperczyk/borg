@@ -1,7 +1,10 @@
 import {
   ACTION_STATE_METADATA,
   ACTION_STATES,
-  lastReferencedActionLifecycleTurn,
+  STALE_OPEN_ROW_DAYS,
+  actionActivityTier,
+  lastActionActivityAt,
+  isStaleOpenAction,
   type ActionUpdateHistory,
   type ActionRecord,
   type ActionState,
@@ -24,7 +27,7 @@ export const DEFAULT_ACTION_THREAD_RENDER_LIMIT = 12;
 export const DEFAULT_ACTION_THREAD_SOURCE_RECORD_LIMIT = 256;
 export const DEFAULT_ACTION_THREAD_SALIENCE_CLASS_RESERVED_SLOTS = 1;
 export const DEFAULT_ACTION_THREAD_AUDIENCE_RESERVED_SLOTS = 1;
-export const PARTICIPANT_RECENT_ACTION_TURN_WINDOW = 3;
+export const STALE_OPEN_RENDER_SLOTS = 2;
 export const ACTION_UPDATE_HISTORY_LIMIT = 5;
 export const ACTION_UPDATE_HISTORY_MAX_CHARS = 4_000;
 export const ACTION_ACTOR_RESERVED_RENDER_SLOTS = 1;
@@ -113,6 +116,7 @@ export function listActionCandidatesForCognition(input: {
   states?: readonly ActionState[];
   state?: ActionState;
   actor?: ActionRecord["actor"];
+  nowMs?: number;
   limit: number;
 }): ActionCandidateForCognition[] {
   const participantEntityIds = uniqueEntityIds([
@@ -127,6 +131,8 @@ export function listActionCandidatesForCognition(input: {
     ...(input.actor === undefined ? {} : { actor: input.actor }),
     recallAllAudiences: true,
     prioritizeActive: true,
+    activityNowMs: input.nowMs,
+    reserveAudienceEntityId: input.nowMs === undefined ? undefined : input.audienceEntityId,
     reserveActors: ["borg", ...participantEntityIds],
     rankAudienceEntityIds,
     rankActorEntityIds: participantEntityIds,
@@ -136,6 +142,10 @@ export function listActionCandidatesForCognition(input: {
   return records
     .sort(
       (left, right) =>
+        (input.nowMs === undefined
+          ? 0
+          : actionActivityTier(left, input.nowMs) - actionActivityTier(right, input.nowMs) ||
+            lastActionActivityAt(right) - lastActionActivityAt(left)) ||
         Number(!isActiveActionState(left.state)) - Number(!isActiveActionState(right.state)) ||
         actionCognitionRank({
           action: left,
@@ -318,46 +328,15 @@ function isGroupOwnedAction(action: Pick<ActionRecord, "actor" | "audience_entit
   );
 }
 
-function referencedWithinTurns(input: {
-  action: ActionRecord;
-  currentTurnGlobal: number | undefined;
-  windowTurns: number;
-}): boolean {
-  const lastReferencedTurnGlobal = lastReferencedActionLifecycleTurn(input.action);
-
-  if (input.currentTurnGlobal === undefined || lastReferencedTurnGlobal === null) {
-    return false;
-  }
-
-  return input.currentTurnGlobal - lastReferencedTurnGlobal <= input.windowTurns;
-}
-
 export function actionSalienceClass(input: {
   thread: ActionThread;
   currentUserStreamEntryId?: StreamEntryId;
   currentUserStreamEntryIds?: readonly StreamEntryId[];
-  currentTurnGlobal?: number;
-}): EvidenceLedgerActionSalienceClass | null {
+  nowMs: number;
+}): EvidenceLedgerActionSalienceClass {
   const action = input.thread.current;
-
-  if (action.state === "archived") {
-    return null;
-  }
-
-  if (isTerminalRenderedActionState(action.state)) {
-    if (
-      isCurrentTurnAction(action, input.currentUserStreamEntryId, input.currentUserStreamEntryIds)
-    ) {
-      return "completed_recent";
-    }
-
-    return referencedWithinTurns({
-      action,
-      currentTurnGlobal: input.currentTurnGlobal,
-      windowTurns: PARTICIPANT_RECENT_ACTION_TURN_WINDOW,
-    })
-      ? "completed_recent"
-      : null;
+  if (!isActiveActionState(action.state)) {
+    return actionActivityTier(action, input.nowMs) === 1 ? "completed_recent" : "closed_older";
   }
 
   if (action.actor === "borg") {
@@ -374,13 +353,9 @@ export function actionSalienceClass(input: {
     return "group_pending";
   }
 
-  return referencedWithinTurns({
-    action,
-    currentTurnGlobal: input.currentTurnGlobal,
-    windowTurns: PARTICIPANT_RECENT_ACTION_TURN_WINDOW,
-  })
-    ? "participant_pending_recent"
-    : "participant_pending_stale";
+  return isStaleOpenAction(action, input.nowMs)
+    ? "participant_pending_stale"
+    : "participant_pending_recent";
 }
 
 const ACTION_SALIENCE_ORDER: readonly EvidenceLedgerActionSalienceClass[] = [
@@ -390,6 +365,7 @@ const ACTION_SALIENCE_ORDER: readonly EvidenceLedgerActionSalienceClass[] = [
   "group_pending",
   "participant_pending_stale",
   "completed_recent",
+  "closed_older",
 ];
 
 function salienceRank(salienceClass: EvidenceLedgerActionSalienceClass): number {
@@ -398,13 +374,13 @@ function salienceRank(salienceClass: EvidenceLedgerActionSalienceClass): number 
 
 export function orderActionThreadsBySalience(
   threads: readonly ActionThreadWithSalience[],
+  nowMs: number,
 ): ActionThreadWithSalience[] {
   return [...threads].sort(
     (left, right) =>
-      Number(!isActiveActionState(left.current.state)) -
-        Number(!isActiveActionState(right.current.state)) ||
+      actionActivityTier(left.current, nowMs) - actionActivityTier(right.current, nowMs) ||
+      lastActionActivityAt(right.current) - lastActionActivityAt(left.current) ||
       salienceRank(left.salienceClass) - salienceRank(right.salienceClass) ||
-      right.current.updated_at - left.current.updated_at ||
       left.current.id.localeCompare(right.current.id),
   );
 }
@@ -419,29 +395,42 @@ export function actionThreadAudienceBucket(
 
 export function allocateActionThreadRenderSlots(input: {
   threads: readonly ActionThreadWithSalience[];
+  nowMs: number;
   limit: number;
-  salienceClassReservedSlots: number;
-  audienceReservedSlots: number;
-  audienceOrder?: readonly ActionThreadAudienceBucket[];
+  salienceClassReservedSlots?: number;
+  audienceReservedSlots?: number;
+  audienceEntityId?: EntityId | null;
   reservedActors?: readonly ActionRecord["actor"][];
 }): ActionThreadWithSalience[] {
-  const ordered = orderActionThreadsBySalience(input.threads);
+  const ordered = orderActionThreadsBySalience(input.threads, input.nowMs);
   const selectedIds = new Set<string>();
   const selected: ActionThreadWithSalience[] = [];
+  let staleOpenSelected = 0;
+
+  function select(thread: ActionThreadWithSalience): boolean {
+    if (selectedIds.has(thread.id) || selected.length >= input.limit) return false;
+    const stale = isStaleOpenAction(thread.current, input.nowMs);
+    if (stale && staleOpenSelected >= STALE_OPEN_RENDER_SLOTS) return false;
+    selectedIds.add(thread.id);
+    selected.push(thread);
+    if (stale) staleOpenSelected += 1;
+    return true;
+  }
 
   function reserve(
     groups: readonly (readonly ActionThreadWithSalience[])[],
     reservedSlots: number,
+    additional = false,
   ): void {
     for (const group of groups) {
       if (selected.length >= input.limit) {
         return;
       }
 
-      // An actor reservation also satisfies the row's salience/audience minimum.
       let remaining = Math.max(
         0,
-        reservedSlots - group.filter((thread) => selectedIds.has(thread.id)).length,
+        reservedSlots -
+          (additional ? 0 : group.filter((thread) => selectedIds.has(thread.id)).length),
       );
 
       for (const thread of group) {
@@ -449,57 +438,54 @@ export function allocateActionThreadRenderSlots(input: {
           break;
         }
 
-        if (selectedIds.has(thread.id)) {
-          continue;
-        }
-
-        selectedIds.add(thread.id);
-        selected.push(thread);
-        remaining -= 1;
+        if (select(thread)) remaining -= 1;
       }
     }
   }
 
-  for (const active of [true, false]) {
-    const pool = ordered.filter((thread) => isActiveActionState(thread.current.state) === active);
-    if (active)
-      reserve(
-        [...new Set(input.reservedActors ?? ["borg"])].map((actor) =>
-          pool
-            .filter((thread) => thread.current.actor === actor)
-            .sort((a, b) => b.current.updated_at - a.current.updated_at),
+  // Actor minima survive age ranking; a stale reservation consumes the same two-slot budget.
+  reserve(
+    [...new Set(input.reservedActors ?? ["borg"])].map((actor) =>
+      ordered.filter(
+        (thread) => isActiveActionState(thread.current.state) && thread.current.actor === actor,
+      ),
+    ),
+    ACTION_ACTOR_RESERVED_RENDER_SLOTS,
+  );
+  // The current audience receives its own slots after the actor minima. All
+  // candidates remain globally recalled and carry their existing disclosure labels.
+  if (input.audienceEntityId !== undefined) {
+    reserve(
+      [
+        ordered.filter(
+          (thread) =>
+            thread.current.audience_entity_id === input.audienceEntityId &&
+            actionActivityTier(thread.current, input.nowMs) <= 1,
         ),
-        ACTION_ACTOR_RESERVED_RENDER_SLOTS,
-      );
-    const salienceGroups = ACTION_SALIENCE_ORDER.map((salienceClass) =>
-      pool.filter((thread) => thread.salienceClass === salienceClass),
-    ).filter((group) => group.length > 0);
-    reserve(salienceGroups, input.salienceClassReservedSlots);
-
-    const audienceOrder = [
-      ...new Set([
-        ...(input.audienceOrder ?? []),
-        ...pool.map((thread) => actionThreadAudienceBucket(thread)),
-      ]),
-    ].filter((audience) => pool.some((thread) => actionThreadAudienceBucket(thread) === audience));
-    const audienceGroups = audienceOrder.map((audience) =>
-      pool.filter((thread) => actionThreadAudienceBucket(thread) === audience),
+      ],
+      input.audienceReservedSlots ?? DEFAULT_ACTION_THREAD_AUDIENCE_RESERVED_SLOTS,
+      true,
     );
-    reserve(audienceGroups, input.audienceReservedSlots);
-
+  }
+  for (const tier of [0, 1, 2, 3]) {
+    const pool = ordered.filter(
+      (thread) => actionActivityTier(thread.current, input.nowMs) === tier,
+    );
+    if (tier <= 1) {
+      reserve(
+        ACTION_SALIENCE_ORDER.map((salienceClass) =>
+          pool.filter((thread) => thread.salienceClass === salienceClass),
+        ),
+        input.salienceClassReservedSlots ?? DEFAULT_ACTION_THREAD_SALIENCE_CLASS_RESERVED_SLOTS,
+      );
+    }
     for (const thread of pool) {
-      if (selected.length >= input.limit) {
-        break;
-      }
-
-      if (!selectedIds.has(thread.id)) {
-        selectedIds.add(thread.id);
-        selected.push(thread);
-      }
+      if (selected.length >= input.limit) break;
+      select(thread);
     }
   }
 
-  return orderActionThreadsBySalience(selected);
+  return orderActionThreadsBySalience(selected, input.nowMs);
 }
 
 export function isPromptSalientActionSalienceClass(
@@ -510,13 +496,13 @@ export function isPromptSalientActionSalienceClass(
 
 export function summarizeActionPromptSalience(
   threads: readonly ActionThreadWithSalience[],
+  nowMs: number,
 ): ActionPromptSalienceSummary {
   const renderedIds = new Set(
     allocateActionThreadRenderSlots({
       threads,
+      nowMs,
       limit: DEFAULT_ACTION_THREAD_RENDER_LIMIT,
-      salienceClassReservedSlots: DEFAULT_ACTION_THREAD_SALIENCE_CLASS_RESERVED_SLOTS,
-      audienceReservedSlots: DEFAULT_ACTION_THREAD_AUDIENCE_RESERVED_SLOTS,
     }).map((thread) => thread.id),
   );
   let promptSalientActionsTotal = 0;
@@ -549,8 +535,7 @@ export function summarizeActionPromptSalience(
     borgOwnedSalientActiveActions,
     participantOwnedSalientActiveActions,
     staleActionsOmittedFromPrompt: threads.filter(
-      (thread) =>
-        thread.salienceClass === "participant_pending_stale" && !renderedIds.has(thread.id),
+      (thread) => isStaleOpenAction(thread.current, nowMs) && !renderedIds.has(thread.id),
     ).length,
   };
 }
@@ -613,6 +598,8 @@ export function renderOlderActionThreadsSummary(input: {
   sourceRecordLimit: number;
   sourceRecordTotal: number | null;
   salienceDroppedThreadCount: number;
+  staleOpenOmitted?: number;
+  staleOpenCountScope?: "store" | "draw";
 }): string {
   const { groups } = input;
   const olderThreads = groups.flatMap((group) => group.threads);
@@ -636,6 +623,11 @@ export function renderOlderActionThreadsSummary(input: {
 
   return [
     `Action threads omitted from this section: threads=${olderThreads.length}, records=${olderRecordCount}.`,
+    ...(input.staleOpenOmitted === undefined
+      ? []
+      : [
+          `${input.staleOpenOmitted} older open records (no activity for over ${STALE_OPEN_ROW_DAYS} days) not shown${input.staleOpenCountScope === "draw" ? " within this draw; store total unavailable" : " across the store"}. This count overlaps the omitted and below-draw populations.`,
+        ]),
     `Not counted above: salience_dropped_threads=${input.salienceDroppedThreadCount}, records_below_draw_floor=${recordsBelowDrawFloor} (threads_built=${input.threadsBuiltCount} = rendered ${input.renderedThreadCount} + omitted ${olderThreads.length} + dropped ${input.salienceDroppedThreadCount}; render_slots=${input.renderLimit}; records_considered=${input.consideredRecordCount} records, source_record_limit=${input.sourceRecordLimit}, ${sourceRecordTotalField}).`,
     ...disclosureNote,
     ...groups.map(

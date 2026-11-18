@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { EmbeddingClient } from "../../embeddings/index.js";
 import { LanceDbStore } from "../../storage/lancedb/index.js";
@@ -16,8 +16,18 @@ import {
   type ActionId,
 } from "../../util/ids.js";
 import { actionMigrations } from "./migrations.js";
-import { ActionRepository, createActionRecordsTableSchema } from "./repository.js";
+import {
+  ActionRepository,
+  STALE_OPEN_DRAW_LIMIT,
+  createActionRecordsTableSchema,
+} from "./repository.js";
 import type { ActionRecord } from "./types.js";
+import { actionActivityCutoff, actionActivityTier } from "./activity.js";
+import { listActionCandidatesForCognition } from "../../cognition/evidence-ledger/action-threads.js";
+import {
+  presentActionCandidates,
+  retrieveActionCandidates,
+} from "../../cognition/actions/action-candidates.js";
 
 class MapEmbeddingClient implements EmbeddingClient {
   readonly embedTexts: string[] = [];
@@ -155,6 +165,213 @@ describe("ActionRepository", () => {
     } finally {
       db.close();
     }
+  });
+
+  it("orders the page draw by activity before truncation, preserving four open rows per actor without writes", () => {
+    const nowMs = 100 * 86_400_000;
+    const cutoff = actionActivityCutoff(nowMs);
+    const db = openDatabase(":memory:", { migrations: actionMigrations });
+    const repository = new ActionRepository({ db });
+    const speaker = createEntityId();
+    const otherParticipant = createEntityId();
+    try {
+      const records = [
+        ...Array.from({ length: 300 }, (_, i) =>
+          makeAction({ actor: "user", updated_at: cutoff - 1 - i }),
+        ),
+        ...["borg", speaker, otherParticipant].flatMap((actor) =>
+          Array.from({ length: 5 }, (_, i) =>
+            makeAction({
+              actor: actor as ActionRecord["actor"],
+              updated_at: 1 + i,
+              last_referenced_at_ms: 10 - i,
+            }),
+          ),
+        ),
+        makeAction({
+          actor: "user",
+          state: "considering",
+          updated_at: cutoff,
+          last_referenced_at_ms: 1,
+        }),
+        makeAction({
+          actor: "user",
+          state: "unknown",
+          updated_at: 1,
+          last_referenced_at_ms: nowMs,
+        }),
+        ...["completed", "declined", "not_done", "expired", "archived"].map((state, i) =>
+          makeAction({
+            actor: "user",
+            state: state as ActionRecord["state"],
+            updated_at: nowMs - i,
+            last_referenced_at_ms: 1,
+          }),
+        ),
+        makeAction({
+          actor: "user",
+          state: "completed",
+          updated_at: cutoff - 1,
+          last_referenced_at_ms: 1,
+        }),
+      ];
+      for (const record of records) repository.add({ ...record, created_at: 0 });
+      const before = repository.list();
+      const draw = listActionCandidatesForCognition({
+        actionRepository: repository,
+        audienceEntityId: speaker,
+        rankParticipantEntityIds: [speaker, otherParticipant],
+        nowMs,
+        limit: 256,
+      }).map((candidate) => candidate.record);
+      expect(draw).toHaveLength(12 + STALE_OPEN_DRAW_LIMIT + 8);
+      expect(draw.slice(0, 7).map((row) => row.state)).toEqual([
+        "unknown",
+        "considering",
+        "completed",
+        "declined",
+        "not_done",
+        "expired",
+        "archived",
+      ]);
+      for (const actor of ["borg", speaker, otherParticipant]) {
+        expect(
+          draw.filter((row) => row.actor === actor).map((row) => row.last_referenced_at_ms),
+        ).toEqual([10, 9, 8, 7]);
+      }
+      const all = repository.list({ activityNowMs: nowMs });
+      expect(all.map((row) => actionActivityTier(row, nowMs))).toEqual([
+        ...Array(2).fill(0),
+        ...Array(5).fill(1),
+        ...Array(315).fill(2),
+        3,
+      ]);
+      expect(repository.countStaleOpen(nowMs)).toBe(315);
+      expect(repository.list()).toEqual(before);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("keeps actor reservations when the current audience's live rows saturate the draw", () => {
+    const nowMs = 100 * 86_400_000;
+    const db = openDatabase(":memory:", { migrations: actionMigrations });
+    const repository = new ActionRepository({ db });
+    const audience = createEntityId();
+    const speaker = createEntityId();
+    const participant = createEntityId();
+    const elsewhere = createEntityId();
+    try {
+      const actorRows = ["borg", speaker, participant].flatMap((actor) =>
+        Array.from({ length: 4 }, (_, i) =>
+          makeAction({
+            actor: actor as ActionRecord["actor"],
+            audience_entity_id: elsewhere,
+            created_at: 0,
+            updated_at: i,
+          }),
+        ),
+      );
+      for (const row of actorRows) repository.add(row);
+      for (let i = 0; i < 300; i++)
+        repository.add(
+          makeAction({ actor: "user", audience_entity_id: audience, updated_at: nowMs - i }),
+        );
+      const queries = vi.spyOn(db, "prepare");
+      const draw = listActionCandidatesForCognition({
+        actionRepository: repository,
+        audienceEntityId: audience,
+        rankParticipantEntityIds: [speaker, participant],
+        nowMs,
+        limit: 256,
+      });
+      // Three actor queries plus the audience prefix; a full draw needs no global fill query.
+      expect(queries).toHaveBeenCalledTimes(4);
+      queries.mockRestore();
+      expect(draw).toHaveLength(256);
+      expect(draw.map((candidate) => candidate.record.id)).toEqual(
+        expect.arrayContaining(actorRows.map((row) => row.id)),
+      );
+      expect(
+        draw.filter((candidate) => candidate.record.audience_entity_id === audience),
+      ).toHaveLength(244);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("exempts actor reservations from the stale draw cap while continuing through older closed rows", () => {
+    const nowMs = 100 * 86_400_000;
+    const db = openDatabase(":memory:", { migrations: actionMigrations });
+    const repository = new ActionRepository({ db });
+    const actors = Array.from({ length: 5 }, () => createEntityId());
+    try {
+      const reserved = actors.flatMap((actor) =>
+        Array.from({ length: 4 }, (_, i) => makeAction({ actor, updated_at: 2_000 + i })),
+      );
+      const rest = Array.from({ length: 280 }, (_, i) =>
+        makeAction({ actor: "user", updated_at: 1_000 + i }),
+      );
+      const closed = Array.from({ length: 20 }, (_, i) =>
+        makeAction({ actor: "user", state: "completed", updated_at: 1_000 + i }),
+      );
+      for (const row of [...reserved, ...rest, ...closed]) repository.add(row);
+      const draw = repository.list({ activityNowMs: nowMs, reserveActors: actors, limit: 256 });
+      expect(draw.filter((row) => row.state !== "completed")).toHaveLength(
+        reserved.length + STALE_OPEN_DRAW_LIMIT,
+      );
+      expect(draw.filter((row) => row.state === "completed")).toHaveLength(20);
+      expect(draw.map((row) => row.id)).toEqual(
+        expect.arrayContaining(reserved.map((row) => row.id)),
+      );
+      expect(draw.map((row) => row.id)).toEqual(
+        expect.arrayContaining(rest.slice(-STALE_OPEN_DRAW_LIMIT).map((row) => row.id)),
+      );
+      expect(repository.countStaleOpen(nowMs)).toBe(300);
+      expect(repository.list()).toHaveLength(320);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("still offers a stale row found by vector similarity outside the extractor's recent pool", async () => {
+    const nowMs = 100 * 86_400_000;
+    const embeddingClient = new MapEmbeddingClient(
+      new Map([
+        ["Old promise", [1, 0, 0, 0]],
+        ["Current row", [0, 1, 0, 0]],
+        ["Query", [1, 0, 0, 0]],
+      ]),
+    );
+    const repository = await openFixture(embeddingClient);
+    const old = makeAction({
+      description: "Old promise",
+      actor: "user",
+      created_at: 0,
+      updated_at: 1,
+    });
+    repository.add(old);
+    const storedOld = repository.get(old.id);
+    for (let i = 0; i < 85; i++)
+      repository.add(
+        makeAction({ description: "Current row", actor: "user", updated_at: nowMs - i }),
+      );
+    await repository.waitForPendingEmbeddings();
+    expect(
+      repository.list({ prioritizeActive: true, limit: 80 }).some((row) => row.id === old.id),
+    ).toBe(false);
+    const result = await retrieveActionCandidates({
+      repository,
+      text: "Query",
+      audienceEntityId: null,
+      onSearchFailure: (error) => {
+        throw error;
+      },
+    });
+    expect(
+      presentActionCandidates(result.records, result.total).shown.some((row) => row.id === old.id),
+    ).toBe(true);
+    expect(repository.get(old.id)).toEqual(storedOld);
   });
 
   it("adds, gets, updates, and lists action records by state actor and audience", async () => {

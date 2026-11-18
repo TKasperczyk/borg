@@ -10,7 +10,13 @@ import {
   publicMemoryDisclosureLabel,
   selfPrivateMemoryDisclosureLabel,
 } from "../../retrieval/index.js";
-import type { ActionRecord } from "../../memory/actions/index.js";
+import {
+  actionActivityCutoff,
+  actionActivityTier,
+  isStaleOpenAction,
+  lastActionActivityAt,
+  type ActionRecord,
+} from "../../memory/actions/index.js";
 import {
   actionSalienceClass,
   allocateActionThreadRenderSlots,
@@ -27,6 +33,8 @@ const QUIET_AUDIENCE_B = createEntityId();
 
 it("renders declined as a terminal choice with terminal salience", () => {
   const record = makeActionRecord({
+    updated_at: 2_000,
+    last_referenced_at_ms: null,
     state: "declined",
     declined_at: 2_000,
     last_referenced_turn_global: 10,
@@ -40,8 +48,8 @@ it("renders declined as a terminal choice with terminal salience", () => {
   };
   expect(renderActionThreadText(thread, undefined)).toContain("declined");
   expect(renderActionThreadText(thread, undefined)).toContain("choice to decline");
-  expect(actionSalienceClass({ thread, currentTurnGlobal: 10 })).toBe("completed_recent");
-  expect(actionSalienceClass({ thread, currentTurnGlobal: 1_000 })).toBeNull();
+  expect(actionSalienceClass({ thread, nowMs: 2_000 })).toBe("completed_recent");
+  expect(actionSalienceClass({ thread, nowMs: 31 * 86_400_000 })).toBe("closed_older");
 });
 
 function makeCompletedThread(input: {
@@ -53,6 +61,7 @@ function makeCompletedThread(input: {
   const record = makeCompletedActionRecord({
     audience_entity_id: input.audienceEntityId,
     updated_at: input.updatedAt,
+    last_referenced_at_ms: null,
     last_referenced_turn_counter: input.lastReferencedTurnCounter ?? null,
     last_referenced_turn_global: input.lastReferencedTurnGlobal ?? null,
   });
@@ -77,76 +86,48 @@ function makeThread(input: {
   };
 }
 
-function classifyAtGlobalTurn(
-  thread: ActionThread,
-  currentTurnGlobal: number,
-): ActionThreadWithSalience[] {
-  const salienceClass = actionSalienceClass({ thread, currentTurnGlobal });
-
-  return salienceClass === null ? [] : [{ ...thread, salienceClass }];
+function classifyAtTime(thread: ActionThread, nowMs: number): ActionThreadWithSalience[] {
+  return [{ ...thread, salienceClass: actionSalienceClass({ thread, nowMs }) }];
 }
 
-describe("actionSalienceClass", () => {
-  it("compares the global reference stamp to the current global turn", () => {
-    const stampedTurnGlobal = 4_800;
+describe("action activity", () => {
+  it.each(["considering", "committed_to_do", "scheduled", "unknown"] as const)(
+    "uses the later activity timestamp and an inclusive 30-day boundary for %s",
+    (state) => {
+      const nowMs = 100 * 86_400_000;
+      const cutoff = actionActivityCutoff(nowMs);
+      const record = makeActionRecord({ state, updated_at: cutoff, last_referenced_at_ms: null });
+      expect(actionActivityTier(record, nowMs)).toBe(0);
+      expect(isStaleOpenAction({ ...record, updated_at: cutoff - 1 }, nowMs)).toBe(true);
+      expect(
+        actionActivityTier({ ...record, updated_at: 1, last_referenced_at_ms: cutoff }, nowMs),
+      ).toBe(0);
+      expect(lastActionActivityAt({ ...record, last_referenced_at_ms: 1 })).toBe(cutoff);
+    },
+  );
+
+  it("retains recent closed rows despite an old lifecycle turn stamp, and older closed rows last", () => {
     const thread = makeCompletedThread({
       audienceEntityId: DOMINANT_AUDIENCE,
       updatedAt: 2_000,
-      // The dedicated field remains global even when a legacy session stamp is present.
-      lastReferencedTurnCounter: 67,
-      lastReferencedTurnGlobal: stampedTurnGlobal,
+      lastReferencedTurnGlobal: 1,
     });
-
-    expect(actionSalienceClass({ thread, currentTurnGlobal: stampedTurnGlobal + 4 })).toBeNull();
-    expect(actionSalienceClass({ thread, currentTurnGlobal: stampedTurnGlobal + 2 })).toBe(
-      "completed_recent",
-    );
-  });
-
-  it("drops archived threads on state, not on the recency window", () => {
-    const stampedTurnGlobal = 4_800;
-    const archived = makeActionRecord({
-      state: "archived",
-      audience_entity_id: DOMINANT_AUDIENCE,
-      updated_at: 2_000,
-      last_referenced_turn_global: stampedTurnGlobal,
-    });
-    const archivedThread: ActionThread = {
-      id: archived.id,
-      records: [archived],
-      origin: archived,
-      current: archived,
-      scope: "current_session",
-    };
-
-    // Same stamp, same current turn: the window admits the completed thread and the archived
-    // thread still classifies null, so widening the window can never surface it.
-    expect(
-      actionSalienceClass({ thread: archivedThread, currentTurnGlobal: stampedTurnGlobal }),
-    ).toBeNull();
-    expect(
-      actionSalienceClass({
-        thread: makeCompletedThread({
-          audienceEntityId: DOMINANT_AUDIENCE,
-          updatedAt: 2_000,
-          lastReferencedTurnGlobal: stampedTurnGlobal,
-        }),
-        currentTurnGlobal: stampedTurnGlobal,
-      }),
-    ).toBe("completed_recent");
+    expect(actionSalienceClass({ thread, nowMs: 3_000 })).toBe("completed_recent");
+    expect(actionSalienceClass({ thread, nowMs: 31 * 86_400_000 })).toBe("closed_older");
+    const archived = { ...thread, current: { ...thread.current, state: "archived" as const } };
+    expect(actionSalienceClass({ thread: archived, nowMs: 3_000 })).toBe("completed_recent");
+    expect(actionActivityTier(archived.current, 31 * 86_400_000)).toBe(3);
   });
 });
 
 describe("allocateActionThreadRenderSlots", () => {
-  // Once lifecycle recency uses one global clock, the genuinely recent completion
-  // pool is thin enough that both allocation modes preserve every audience.
-  it("needs no audience rescue when the global completion window binds", () => {
+  it("reserves recent rows for the current audience ahead of the global recent fill", () => {
     const currentTurnGlobal = 2_000;
     const threads: ActionThreadWithSalience[] = [
       ...Array.from({ length: 10 }, (_unused, index) => {
         const referencedTurnGlobal = 2_000 - index;
 
-        return classifyAtGlobalTurn(
+        return classifyAtTime(
           makeCompletedThread({
             audienceEntityId: DOMINANT_AUDIENCE,
             updatedAt: referencedTurnGlobal,
@@ -156,7 +137,7 @@ describe("allocateActionThreadRenderSlots", () => {
           currentTurnGlobal,
         );
       }).flat(),
-      ...classifyAtGlobalTurn(
+      ...classifyAtTime(
         makeCompletedThread({
           audienceEntityId: QUIET_AUDIENCE_A,
           updatedAt: 1_000,
@@ -165,7 +146,7 @@ describe("allocateActionThreadRenderSlots", () => {
         }),
         currentTurnGlobal,
       ),
-      ...classifyAtGlobalTurn(
+      ...classifyAtTime(
         makeCompletedThread({
           audienceEntityId: QUIET_AUDIENCE_B,
           updatedAt: 500,
@@ -180,40 +161,33 @@ describe("allocateActionThreadRenderSlots", () => {
     ];
 
     const unreserved = allocateActionThreadRenderSlots({
+      nowMs: 3_000,
       threads,
       limit: 8,
       salienceClassReservedSlots: 0,
       audienceReservedSlots: 0,
     });
     const reserved = allocateActionThreadRenderSlots({
+      nowMs: 3_000,
       threads,
       limit: 8,
       salienceClassReservedSlots: 1,
       audienceReservedSlots: 1,
+      audienceEntityId: QUIET_AUDIENCE_A,
     });
 
-    expect(unreserved).toHaveLength(6);
-    expect(audiencesOf(unreserved).sort()).toEqual(
-      [DOMINANT_AUDIENCE, QUIET_AUDIENCE_A, QUIET_AUDIENCE_B].sort(),
-    );
-
-    expect(reserved).toHaveLength(6);
-    expect(audiencesOf(reserved).sort()).toEqual(
-      [DOMINANT_AUDIENCE, QUIET_AUDIENCE_A, QUIET_AUDIENCE_B].sort(),
-    );
-    expect(reserved.map((thread) => thread.id).sort()).toEqual(
-      unreserved.map((thread) => thread.id).sort(),
-    );
+    expect(unreserved).toHaveLength(8);
+    expect(audiencesOf(unreserved)).toEqual([DOMINANT_AUDIENCE]);
+    expect(reserved).toHaveLength(8);
+    expect(audiencesOf(reserved)).toEqual([DOMINANT_AUDIENCE, QUIET_AUDIENCE_A]);
     expect(
       reserved
         .filter((thread) => thread.current.audience_entity_id === DOMINANT_AUDIENCE)
         .map((thread) => thread.current.updated_at),
-    ).toEqual([2_000, 1_999, 1_998, 1_997]);
+    ).toEqual([2_000, 1_999, 1_998, 1_997, 1_996, 1_995, 1_994]);
   });
 
-  // The salience reservation only bites once the higher-ranked classes can fill the
-  // limit on their own; below that it re-picks threads the recency draw already had.
-  it("only changes the selected set when earlier salience classes fill the limit", () => {
+  it("restores salience-class reservations within a recent tier under slot pressure", () => {
     const headHeavy: ActionThreadWithSalience[] = [
       ...Array.from({ length: 5 }, (_unused, index) =>
         makeThread({
@@ -243,6 +217,7 @@ describe("allocateActionThreadRenderSlots", () => {
       salienceClassReservedSlots: number,
     ): ActionThreadWithSalience[] =>
       allocateActionThreadRenderSlots({
+        nowMs: 3_000,
         threads,
         limit: 6,
         salienceClassReservedSlots,
@@ -393,7 +368,7 @@ describe("renderActionThreadText", () => {
   });
 });
 
-it("allocates open rows before terminal audience or salience reservations", () => {
+it("allocates live open rows before newer completed duplicates", () => {
   const threads: ActionThreadWithSalience[] = [
     "considering",
     "committed_to_do",
@@ -413,20 +388,266 @@ it("allocates open rows before terminal audience or salience reservations", () =
       origin: current,
       records: [current],
       scope: "global",
-      salienceClass: index < 4 ? "participant_pending_stale" : "completed_recent",
+      salienceClass: index < 4 ? "participant_pending_recent" : "completed_recent",
     };
   });
   const selected = allocateActionThreadRenderSlots({
+    nowMs: 3_000,
     threads,
     limit: 4,
     salienceClassReservedSlots: 1,
     audienceReservedSlots: 1,
-    audienceOrder: [...threads].reverse().map((thread) => thread.current.audience_entity_id!),
+    audienceEntityId: threads[0]!.current.audience_entity_id,
   });
   expect(selected.map((thread) => thread.current.state).sort()).toEqual(
     ["considering", "committed_to_do", "scheduled", "unknown"].sort(),
   );
 });
+
+it("fills by activity tier and recency, skipping excess stale rows even when older closed rows remain", () => {
+  const nowMs = 100 * 86_400_000;
+  const cutoff = actionActivityCutoff(nowMs);
+  const row = (state: ActionRecord["state"], updated_at: number) =>
+    makeActionRecord({
+      state,
+      updated_at,
+      last_referenced_at_ms: null,
+      audience_entity_id: createEntityId(),
+    });
+  const live = [row("scheduled", cutoff), row("considering", cutoff + 1)];
+  const recentClosed = [row("declined", nowMs), row("completed", nowMs - 1)];
+  const stale = Array.from({ length: 6 }, (_, i) => row("unknown", cutoff - 1 - i));
+  const oldClosed = Array.from({ length: 10 }, (_, i) => row("archived", cutoff - 1 - i));
+  const threads = [...oldClosed, ...stale, ...recentClosed, ...live].flatMap((current) =>
+    classifyAtTime(
+      {
+        id: current.id,
+        current,
+        origin: current,
+        records: [current],
+        scope: "global",
+      },
+      nowMs,
+    ),
+  );
+  const selected = allocateActionThreadRenderSlots({
+    threads,
+    nowMs,
+    limit: 12,
+    reservedActors: [],
+  });
+  expect(selected.map((thread) => thread.id)).toEqual([
+    live[1]!.id,
+    live[0]!.id,
+    ...recentClosed.map((r) => r.id),
+    ...stale.slice(0, 2).map((r) => r.id),
+    ...oldClosed.slice(0, 6).map((r) => r.id),
+  ]);
+});
+
+it("counts stale entity and speaker reservations toward the cap and fills remaining slots with recent rows", () => {
+  const nowMs = 100 * 86_400_000;
+  const speaker = createEntityId();
+  const stale = (actor: ActionRecord["actor"], activity: number) =>
+    makeActionRecord({
+      actor,
+      state: "committed_to_do",
+      updated_at: activity,
+      last_referenced_at_ms: null,
+    });
+  const borgOld = stale("borg", 1);
+  const borgReferenced = { ...stale("borg", 0), last_referenced_at_ms: 3 };
+  const speakerOld = stale(speaker, 2);
+  const speakerReferenced = { ...stale(speaker, 0), last_referenced_at_ms: 4 };
+  const records = [
+    borgOld,
+    borgReferenced,
+    speakerOld,
+    speakerReferenced,
+    ...Array.from({ length: 20 }, (_, i) =>
+      makeActionRecord({
+        actor: "user",
+        state: "completed",
+        updated_at: nowMs - i,
+        last_referenced_at_ms: null,
+      }),
+    ),
+  ];
+  const threads = records.flatMap((current) =>
+    classifyAtTime(
+      {
+        id: current.id,
+        current,
+        origin: current,
+        records: [current],
+        scope: "global",
+      },
+      nowMs,
+    ),
+  );
+  const selected = allocateActionThreadRenderSlots({
+    threads,
+    nowMs,
+    limit: 12,
+    salienceClassReservedSlots: 1,
+    audienceReservedSlots: 1,
+    reservedActors: ["borg", speaker],
+  });
+  expect(selected).toHaveLength(12);
+  expect(
+    selected
+      .filter((thread) => isStaleOpenAction(thread.current, nowMs))
+      .map((thread) => thread.id),
+  ).toEqual([speakerReferenced.id, borgReferenced.id]);
+  expect(selected.slice(0, 10).map((thread) => thread.current.updated_at)).toEqual(
+    Array.from({ length: 10 }, (_, i) => nowMs - i),
+  );
+});
+
+it("reserves live salience classes without promoting stale or older classes", () => {
+  const nowMs = 100 * 86_400_000;
+  const audience = createEntityId();
+  const liveParticipant = makeActionRecord({ actor: "user", updated_at: nowMs - 20 * 86_400_000 });
+  const staleGroup = makeActionRecord({
+    actor: audience,
+    audience_entity_id: audience,
+    updated_at: 1,
+  });
+  const olderClosed = makeCompletedActionRecord({ updated_at: 1 });
+  const rows = [
+    liveParticipant,
+    staleGroup,
+    olderClosed,
+    ...Array.from({ length: 20 }, (_, i) =>
+      makeActionRecord({ actor: "borg", updated_at: nowMs - i }),
+    ),
+  ];
+  const threads = rows.flatMap((current) =>
+    classifyAtTime(
+      { id: current.id, current, origin: current, records: [current], scope: "global" },
+      nowMs,
+    ),
+  );
+  const selected = allocateActionThreadRenderSlots({
+    threads,
+    nowMs,
+    limit: 12,
+    reservedActors: [],
+  });
+  expect(selected).toHaveLength(12);
+  expect(selected.map((thread) => thread.id)).toContain(liveParticipant.id);
+  expect(selected.map((thread) => thread.id)).not.toContain(staleGroup.id);
+  expect(selected.map((thread) => thread.id)).not.toContain(olderClosed.id);
+});
+
+it.each([0, 1, 2])(
+  "allows only %i stale actor reservations ahead of live rows, never stale audience reservations",
+  (staleActors) => {
+    const nowMs = 100 * 86_400_000;
+    const audience = createEntityId();
+    const otherAudience = createEntityId();
+    const speaker = createEntityId();
+    const actorRows = (["borg", speaker] as const).slice(0, staleActors).map((actor) =>
+      makeActionRecord({
+        actor,
+        updated_at: 1,
+        last_referenced_at_ms: null,
+        audience_entity_id: otherAudience,
+      }),
+    );
+    const rows = [
+      ...actorRows,
+      ...Array.from({ length: 6 }, (_, i) =>
+        makeActionRecord({
+          actor: "user",
+          audience_entity_id: audience,
+          updated_at: 2 + i,
+          last_referenced_at_ms: null,
+        }),
+      ),
+      makeActionRecord({
+        actor: "user",
+        audience_entity_id: audience,
+        state: "archived",
+        updated_at: 10,
+        last_referenced_at_ms: null,
+      }),
+      ...Array.from({ length: 20 }, (_, i) =>
+        makeActionRecord({
+          actor: "user",
+          audience_entity_id: otherAudience,
+          updated_at: nowMs - i,
+        }),
+      ),
+    ];
+    const threads = rows.flatMap((current) =>
+      classifyAtTime(
+        { id: current.id, current, origin: current, records: [current], scope: "global" },
+        nowMs,
+      ),
+    );
+    const selected = allocateActionThreadRenderSlots({
+      threads,
+      nowMs,
+      limit: 12,
+      reservedActors: ["borg", speaker],
+      audienceEntityId: audience,
+      audienceReservedSlots: 5,
+    });
+    expect(selected).toHaveLength(12);
+    expect(selected.filter((thread) => isStaleOpenAction(thread.current, nowMs))).toHaveLength(
+      staleActors,
+    );
+    expect(
+      selected.filter((thread) => thread.current.audience_entity_id === audience),
+    ).toHaveLength(0);
+    expect(selected.map((thread) => thread.id)).toEqual(
+      expect.arrayContaining(actorRows.map((row) => row.id)),
+    );
+  },
+);
+
+it.each([true, false])(
+  "reserves current-audience live rows before its recent closed rows (live=%s)",
+  (includeLive) => {
+    const nowMs = 100 * 86_400_000;
+    const audience = createEntityId();
+    const live = makeActionRecord({
+      actor: "user",
+      audience_entity_id: audience,
+      updated_at: 1,
+      last_referenced_at_ms: nowMs - 1,
+    });
+    const closed = makeCompletedActionRecord({
+      actor: "user",
+      audience_entity_id: audience,
+      updated_at: nowMs,
+    });
+    const rows = [
+      ...(includeLive ? [live] : []),
+      closed,
+      ...Array.from({ length: 20 }, () => makeActionRecord({ actor: "user", updated_at: nowMs })),
+    ];
+    const threads = rows.flatMap((current) =>
+      classifyAtTime(
+        { id: current.id, current, origin: current, records: [current], scope: "global" },
+        nowMs,
+      ),
+    );
+    const selected = allocateActionThreadRenderSlots({
+      threads,
+      nowMs,
+      limit: 12,
+      reservedActors: [],
+      audienceEntityId: audience,
+    });
+    expect(
+      selected
+        .filter((thread) => thread.current.audience_entity_id === audience)
+        .map((thread) => thread.id),
+    ).toEqual([includeLive ? live.id : closed.id]);
+  },
+);
 
 describe("renderOlderActionThreadsSummary", () => {
   const summaryInput = (overrides: {
@@ -483,7 +704,7 @@ describe("renderOlderActionThreadsSummary", () => {
     );
   });
 
-  it("prints the slot limit without the removed stale-participant cap", () => {
+  it("prints the slot limit without the legacy turn-based participant cap", () => {
     const summary = renderOlderActionThreadsSummary({
       ...summaryInput({ consideredRecordCount: 256, sourceRecordLimit: 256 }),
       renderedThreadCount: 8,
@@ -566,11 +787,11 @@ it.each(["borg", "speaker"] as const)(
       salienceClass: "participant_pending_stale",
     }));
     const selected = allocateActionThreadRenderSlots({
+      nowMs: 3_000,
       threads,
       limit: 12,
       salienceClassReservedSlots: 1,
       audienceReservedSlots: 1,
-      audienceOrder: [],
       reservedActors: ["borg", speaker],
     });
     expect(selected).toHaveLength(12);
