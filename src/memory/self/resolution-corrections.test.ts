@@ -309,6 +309,62 @@ describe("corrections stay with their resolution through reversals", () => {
     }
   });
 
+  it("rolls back a generic resolution patch and its audit when recording fails after the insert", async () => {
+    const corrected = await correct();
+    const rowBefore = h.db.prepare("SELECT * FROM open_questions WHERE id = ?").get(open.id);
+    const eventsBefore = h.identityEventRepository.list({ recordId: open.id });
+    const realRecord = h.identityEventRepository.record.bind(h.identityEventRepository);
+    const record = vi.spyOn(h.identityEventRepository, "record").mockImplementationOnce((event) => {
+      realRecord(event);
+      throw new Error("patch audit failed after insert");
+    });
+
+    expect(() =>
+      h.openQuestionsRepository.update(open.id, { resolution_note: "Repaired note" }),
+    ).toThrow("patch audit failed after insert");
+    expect(record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "update_resolution",
+        reason: "open_question_patch",
+        old_value: corrected,
+        new_value: expect.objectContaining({
+          resolution_note: "Repaired note",
+          resolution_corrections: [],
+          resolution_version: corrected.record_version! + 1,
+        }),
+      }),
+    );
+    expect(h.db.prepare("SELECT * FROM open_questions WHERE id = ?").get(open.id)).toEqual(
+      rowBefore,
+    );
+    expect(h.identityEventRepository.list({ recordId: open.id })).toEqual(eventsBefore);
+
+    const repaired = h.openQuestionsRepository.update(open.id, {
+      resolution_note: "Repaired note",
+    });
+    expect(repaired.record_version).toBe(corrected.record_version! + 1);
+    expect(h.identityEventRepository.list({ recordId: open.id })[0]).toMatchObject({
+      action: "update_resolution",
+      old_value: corrected,
+      new_value: repaired,
+    });
+  });
+
+  it("refuses a generic resolution patch without an audit repository and preserves the corrected row", async () => {
+    await correct();
+    const rowBefore = h.db.prepare("SELECT * FROM open_questions WHERE id = ?").get(open.id);
+    const eventsBefore = h.identityEventRepository.list({ recordId: open.id });
+    const unaudited = new OpenQuestionsRepository({ db: h.db, clock });
+
+    expect(() => unaudited.update(open.id, { resolution_note: "Unaudited replacement" })).toThrow(
+      expect.objectContaining({ code: "OPEN_QUESTION_CORRECTION_AUDIT_REQUIRED" }),
+    );
+    expect(h.db.prepare("SELECT * FROM open_questions WHERE id = ?").get(open.id)).toEqual(
+      rowBefore,
+    );
+    expect(h.identityEventRepository.list({ recordId: open.id })).toEqual(eventsBefore);
+  });
+
   it("restores A1 after B and A2 with identical notes and clocks without mixing lifecycle metadata", async () => {
     const a1 = await correct("A1 correction");
     for (const note of ["B", a1.resolution_note!]) {

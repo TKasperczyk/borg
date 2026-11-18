@@ -4863,6 +4863,112 @@ describe("reflector", () => {
     });
   });
 
+  it.each(["complete", "cut", "resolution_changed"])(
+    "discards a cut correction before the %s retry and keeps the shown generation",
+    async (retryOutcome) => {
+      const llm = new FakeLLMClient();
+      const tracer = new CaptureTracer();
+      const h = await createOfflineTestHarness({ llmClient: llm });
+      cleanup.push(h.cleanup);
+      const entry = await h.streamWriter.append({ kind: "thought", content: "Evidence" });
+      const open = h.openQuestionsRepository.add({
+        question: "Reading?",
+        urgency: 0.5,
+        source: "reflection",
+        provenance: { kind: "manual" },
+      });
+      const resolved = h.openQuestionsRepository.resolve(open.id, {
+        resolution_note: "Original note",
+        resolution_evidence_stream_entry_ids: [entry.id],
+      });
+      const eventsBefore = h.identityEventRepository.list({ recordId: open.id });
+      const response = (correction_note: string) =>
+        createRawReflectionResponse({
+          ...createReflectionResponse().tool_calls[0]!.input,
+          resolution_corrections: [
+            {
+              open_question_id: open.id,
+              correction_note,
+              corrects_span: "Original note",
+              evidence: [{ id: entry.id, basis: "own_read" }],
+            },
+          ],
+        });
+      llm.pushResponse({ ...response("Discarded correction"), stop_reason: "max_tokens" });
+      let rowAtRetry: unknown;
+      let eventsAtRetry: unknown;
+      let expectedUnchangedRow = resolved;
+      let expectedUnchangedEvents = eventsBefore;
+      llm.pushResponse(() => {
+        rowAtRetry = h.openQuestionsRepository.get(open.id);
+        eventsAtRetry = h.identityEventRepository.list({ recordId: open.id });
+        if (retryOutcome === "resolution_changed") {
+          h.openQuestionsRepository.reopenForReversal(open.id);
+          expectedUnchangedRow = h.openQuestionsRepository.resolve(open.id, {
+            resolution_note: resolved.resolution_note!,
+            resolution_evidence_stream_entry_ids: [entry.id],
+          });
+          expectedUnchangedEvents = h.identityEventRepository.list({ recordId: open.id });
+        }
+        return {
+          ...response("Retried correction"),
+          stop_reason: retryOutcome === "cut" ? "max_tokens" : "tool_use",
+        };
+      });
+      const reflector = createHarnessReflector(h, {
+        llmClient: llm,
+        model: "claude-opus-5-5",
+        maxTokens: 2_000,
+        tracer,
+        identityService: h.identityService,
+        openQuestionsRepository: h.openQuestionsRepository,
+        entryIndex: h.createContext().entryIndex!,
+      });
+
+      await reflector.reflect(
+        {
+          ...createOpenQuestionReflectionContext(),
+          turnId: "cut-correction",
+          resolvedOpenQuestions: [resolved],
+        },
+        h.streamWriter,
+      );
+
+      expect(llm.requests.map((request) => request.max_tokens)).toEqual([2_000, 4_000]);
+      expect(llm.requests[1]?.messages.at(-1)?.content).toContain(
+        "cut at the limit of 2000 output tokens and was discarded whole",
+      );
+      expect(rowAtRetry).toEqual(resolved);
+      expect(eventsAtRetry).toEqual(eventsBefore);
+      const stored = h.openQuestionsRepository.get(open.id)!;
+      if (retryOutcome === "complete") {
+        expect(stored.resolution_note).toBe(resolved.resolution_note);
+        expect(stored.resolution_version).toBe(resolved.resolution_version);
+        expect(stored.resolution_corrections).toEqual([
+          expect.objectContaining({ seq: 1, text: "Retried correction" }),
+        ]);
+        expect(h.identityEventRepository.list({ recordId: open.id })).toHaveLength(
+          eventsBefore.length + 1,
+        );
+      } else {
+        expect(stored).toEqual(expectedUnchangedRow);
+        expect(h.identityEventRepository.list({ recordId: open.id })).toEqual(
+          expectedUnchangedEvents,
+        );
+      }
+      if (retryOutcome === "resolution_changed") {
+        expect(tracer.events).toContainEqual({
+          event: "open_question_resolution.degraded",
+          data: expect.objectContaining({
+            operation: "correct_resolution",
+            reason: "resolution_changed",
+            question_id: open.id,
+          }),
+        });
+      }
+    },
+  );
+
   it.each(["B", "A"])(
     "rejects a changed resolution during the actual reflection model call (%s)",
     async (note) => {
