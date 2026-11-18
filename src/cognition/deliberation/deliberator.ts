@@ -1143,6 +1143,10 @@ export class Deliberator {
         omitted_entry_counts: toTraceJsonValue(
           compactPlannerLedger.traceSummary.omittedEntryCountsBySection,
         ),
+        accounting_omitted_from_page: toTraceJsonValue(
+          compactPlannerLedger.traceSummary.accountingOmittedFromPage ?? {},
+        ),
+        budget_outcome: toTraceJsonValue(compactPlannerLedger.traceSummary.budgetOutcome),
         estimated_tokens_by_section: toTraceJsonValue(
           compactPlannerLedger.traceSummary.estimatedTokensBySection,
         ),

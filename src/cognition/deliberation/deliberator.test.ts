@@ -2828,6 +2828,7 @@ describe("deliberator", () => {
     expect(compactLedgerEvent?.data).toMatchObject({
       turnId: "turn-phantom-route",
       total_estimated_tokens: expect.any(Number),
+      budget_outcome: { status: "within_budget" },
     });
   });
 

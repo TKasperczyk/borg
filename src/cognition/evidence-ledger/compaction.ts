@@ -1,10 +1,7 @@
 import { estimatePromptTokens } from "../../util/token-estimate.js";
 import { coercePositiveIntegerOrFallback } from "../../util/math.js";
-import { formatUtcDaySpanLabel } from "../../util/utc-day.js";
 import { isRecentLivedExperienceSpineKind } from "../../memory/activity/index.js";
 import { selfPrivateMemoryDisclosureLabel } from "../../memory/common/disclosure-label.js";
-import { OPEN_QUESTION_STATUSES } from "../../memory/self/index.js";
-import { LIFECYCLE_OPEN_QUESTION_STATUSES } from "./open-question-handles.js";
 import { allSectionIds, emptySectionCountRecord } from "./budget.js";
 import { estimateEvidenceLedgerTokens, cloneLedgerWithSections } from "./ledger-copy.js";
 import {
@@ -14,7 +11,14 @@ import {
   type ProvenanceDedupeGrouping,
 } from "./provenance-dedupe.js";
 import { reconcileAutobiographicalRecallCapMetadata } from "./autobiographical-recall-cap-metadata.js";
-import { renderSection } from "./section-rendering.js";
+import { estimateEvidenceLedgerPromptTokens } from "./finalizer-ledger.js";
+import { renderEntry, renderSection } from "./section-rendering.js";
+import {
+  reconcileOmissionAccounting,
+  omissionCounts,
+  mergeOmissionCounts,
+  SECTION_ACCOUNTING_MAX_CHARS,
+} from "./omission-accounting.js";
 import {
   appendMemoryDisclosureState,
   appendMemoryDisclosureStateMetadata,
@@ -24,9 +28,13 @@ import type {
   EvidenceLedgerEntry,
   EvidenceLedgerSection,
   EvidenceLedgerSectionId,
+  EvidenceLedgerGlobalAccounting,
+  EvidenceLedgerOmissionCounts,
+  EvidenceLedgerOmissionCountsBySection,
+  EvidenceLedgerBudgetOutcome,
 } from "./types.js";
 
-type FullEvidenceLedgerSectionOptions = {
+export type FullEvidenceLedgerSectionOptions = {
   maxEntries: number;
   maxTokens: number;
 };
@@ -51,6 +59,8 @@ export type EvidenceLedgerCompactionTraceSummary = {
   droppedSections: EvidenceLedgerSectionId[];
   targetTokens: number;
   hardCapTokens: number;
+  accountingOmittedFromPage?: EvidenceLedgerOmissionCountsBySection;
+  budgetOutcome: EvidenceLedgerBudgetOutcome;
 };
 
 export type CompactedEvidenceLedger = {
@@ -61,6 +71,7 @@ export type CompactedEvidenceLedger = {
 const DEFAULT_FULL_LEDGER_TARGET_TOKENS = 60_000;
 const DEFAULT_FULL_LEDGER_HARD_CAP_TOKENS = 100_000;
 const DEFAULT_FULL_LEDGER_ENTRY_TEXT_TOKEN_CAP = 1_200;
+export const REQUIRED_ENTRY_TEXT_STUB = "\n[truncated]";
 
 const DEFAULT_FULL_LEDGER_SECTION_OPTIONS = {
   current_user_message: {
@@ -175,45 +186,7 @@ const TAIL_PRESERVING_FULL_LEDGER_SECTIONS = new Set<EvidenceLedgerSectionId>([
   "current_session_transcript",
 ]);
 
-function formatStatusList(statuses: readonly string[]): string {
-  return statuses.length <= 1
-    ? (statuses[0] ?? "none")
-    : `${statuses.slice(0, -1).join(", ")} or ${statuses[statuses.length - 1]!}`;
-}
-
-// The statuses a status-bearing `open_questions` row can arrive with, split by the admission that can
-// produce it: handle matching asks for the closed lifecycle statuses only, and the scored retrieval
-// draw asks for their complement. Both lists are derived from the enums rather than restated, so a
-// change to either admission breaks the sentence below instead of leaving it quietly false.
-const HANDLE_MATCHED_OPEN_QUESTION_STATUSES: readonly string[] = LIFECYCLE_OPEN_QUESTION_STATUSES;
-const DRAWN_OPEN_QUESTION_STATUSES: readonly string[] = OPEN_QUESTION_STATUSES.filter(
-  (status) => !HANDLE_MATCHED_OPEN_QUESTION_STATUSES.includes(status),
-);
-
-// Sections whose entries carry a lifecycle status as the leading token of `state`. For these a bare
-// omitted count cannot answer "was anything of this kind cut?": retention keeps a prefix of assembly
-// order, so the omitted tail can be entirely one status, and a reader checking a status that
-// rendered nothing cannot tell an empty draw from a budget cut. The composition is counted off the
-// `state` field itself, so it stays true for whatever statuses the section's rows actually carry.
-//
-// Each opted-in section also states how a status-bearing row is admitted, because "absent from the
-// section" is only as informative as the admission that could have produced it: where two admissions
-// take disjoint status sets, an absent status reports on one of them, and calling that absence one
-// empty draw names a mechanism that never ran for half the statuses in the tally.
-//
-// This clause used to end by saying neither admission counts what the store holds. The section's own
-// framing now prints that count per status, two lines above this breadcrumb on the same section, so
-// the sentence would tell a reader the population is unavailable here while it sits above them.
-const STATUS_COMPOSED_OMISSION_SECTIONS = new Map<EvidenceLedgerSectionId, string>([
-  [
-    "open_questions",
-    ` A status-bearing row reaches this section by one of two admissions, and they take disjoint statuses: ${formatStatusList(
-      HANDLE_MATCHED_OPEN_QUESTION_STATUSES,
-    )} only by handle match on this turn's ids, ${formatStatusList(
-      DRAWN_OPEN_QUESTION_STATUSES,
-    )} only by the scored retrieval draw. So an absent status reports that the one admission able to carry it produced nothing here.`,
-  ],
-]);
+const STATUS_COMPOSED_OMISSION_SECTIONS = new Set<EvidenceLedgerSectionId>(["open_questions"]);
 
 function truncateTextForFullEvidenceLedger(
   value: string | undefined,
@@ -239,6 +212,11 @@ function compactFullLedgerEntry(
   entry: EvidenceLedgerEntry,
   maxEntryTextTokens: number,
 ): EvidenceLedgerEntry {
+  if (
+    entry.omission_accounting !== undefined &&
+    entry.omission_accounting.action_threads === undefined
+  )
+    return entry;
   return {
     ...entry,
     text: truncateTextForFullEvidenceLedger(entry.text, maxEntryTextTokens),
@@ -248,13 +226,17 @@ function compactFullLedgerEntry(
 
 type OmittedStateTally = Readonly<Record<string, number>>;
 
-type FullLedgerSectionState = {
+export type FullLedgerSectionState = {
   section: EvidenceLedgerSection;
   omittedCount: number;
   omittedSpan?: OmittedEntrySpan;
   omittedStates?: OmittedStateTally;
   dropped: boolean;
   retentionPolicy: FullLedgerSectionRetentionPolicy;
+  sourceEntries?: readonly EvidenceLedgerEntry[];
+  sourceAccounting?: readonly EvidenceLedgerEntry[];
+  accountingMode?: "section" | "global";
+  sectionTokenLimit?: number;
 };
 
 function entryOccurredAt(entry: EvidenceLedgerEntry): number | null {
@@ -335,26 +317,6 @@ function mergeOmittedStateTallies(
   return merged;
 }
 
-function formatOmittedStateTally(
-  sectionId: EvidenceLedgerSectionId,
-  tally: OmittedStateTally | undefined,
-): string {
-  if (tally === undefined) {
-    return "";
-  }
-
-  const parts = Object.entries(tally)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([state, count]) => `${state} ${count}`);
-  // The admission sentence describes the section, not this cut, so it rides along on an empty tally
-  // too: a reader meeting the first absent status has already formed the account it would correct.
-  const admission = STATUS_COMPOSED_OMISSION_SECTIONS.get(sectionId) ?? "";
-
-  return parts.length === 0
-    ? ` Omitted by state: none of the omitted entries carried a status, so no status had rows cut here.${admission}`
-    : ` Omitted by state: ${parts.join(", ")}. A status absent from that list had no rows cut here, so its absence from the section above is an absence at admission rather than a budget cut.${admission}`;
-}
-
 function mergeOmittedSpans(
   left: OmittedEntrySpan | undefined,
   right: OmittedEntrySpan | null,
@@ -415,118 +377,96 @@ function recentLivedExperienceBreadcrumbDisclosure(
 function fullLedgerOmittedEntry(
   section: EvidenceLedgerSection,
   omittedCount: number,
-  retentionPolicy: FullLedgerSectionRetentionPolicy,
-  omittedSpan?: OmittedEntrySpan,
+  _retentionPolicy: FullLedgerSectionRetentionPolicy,
+  _omittedSpan?: OmittedEntrySpan,
   omittedStates?: OmittedStateTally,
 ): EvidenceLedgerEntry {
-  const omittedKind = retentionPolicy === "tail" ? "older" : "lower-priority";
-  const text =
-    section.id === "recent_lived_experience"
-      ? omittedSpan === undefined
-        ? `Recent lived experience omitted ${omittedCount} detail entries; retained dated spine entries carry the elapsed span.`
-        : `Recent lived experience omitted ${omittedCount} detail entries from ${formatUtcDaySpanLabel(
-            omittedSpan.firstOccurredAt,
-            omittedSpan.lastOccurredAt,
-          )}; omitted detail is summarized in the dated spine above.`
-      : `Evidence ledger omitted ${omittedCount} ${omittedKind} entries from ${section.id} to stay within the finalizer ledger budget.${formatOmittedStateTally(
-          section.id,
-          omittedStates,
-        )}`;
-  const disclosure = recentLivedExperienceBreadcrumbDisclosure(section, {
-    breadcrumb_kind: "recent_lived_experience_omission",
-    omitted_entry_count: omittedCount,
-    ...(omittedSpan === undefined
-      ? {}
-      : {
-          first_omitted_occurred_at: omittedSpan.firstOccurredAt,
-          last_omitted_occurred_at: omittedSpan.lastOccurredAt,
-        }),
-  });
-
   return {
     id: `evidence_ledger_omitted:${section.id}`,
     source_type: "system_metadata",
     session_scope: "global",
     actor: "system",
     trust_rank: 0,
-    ...disclosure,
-    text,
+    ...recentLivedExperienceBreadcrumbDisclosure(section, {
+      breadcrumb_kind: "recent_lived_experience_omission",
+      omitted_entry_count: omittedCount,
+    }),
+    omission_accounting: {
+      counts: {
+        budget_entries: omittedCount,
+        ...Object.fromEntries(
+          Object.entries(omittedStates ?? {}).map(([state, count]) => [`state_${state}`, count]),
+        ),
+      },
+    },
     taint: "none",
   };
 }
 
-function fullLedgerDroppedSectionEntry(
-  section: EvidenceLedgerSection,
-  omittedCount: number,
-  omittedStates?: OmittedStateTally,
-): EvidenceLedgerEntry {
-  const disclosure = recentLivedExperienceBreadcrumbDisclosure(section, {
-    breadcrumb_kind: "recent_lived_experience_dropped_section",
-    omitted_entry_count: omittedCount,
-  });
-
-  return {
-    id: `evidence_ledger_dropped_section:${section.id}`,
-    source_type: "system_metadata",
-    session_scope: "global",
-    actor: "system",
-    trust_rank: 0,
-    ...disclosure,
-    text: `Evidence ledger dropped all entries from ${section.id} to stay within the global hard cap: entries=${omittedCount}.${formatOmittedStateTally(
-      section.id,
-      omittedStates,
-    )}`,
-    taint: "none",
-  };
-}
-
-function materializeFullLedgerSectionState(state: FullLedgerSectionState): EvidenceLedgerSection {
-  if (state.dropped) {
-    return {
-      ...state.section,
-      entries:
-        state.omittedCount <= 0
-          ? []
-          : [
-              fullLedgerDroppedSectionEntry(
-                state.section,
-                state.omittedCount,
-                state.omittedStates,
-              ),
-            ],
-    };
-  }
-
-  return {
+export function sectionAccountingEntry(
+  state: FullLedgerSectionState,
+): EvidenceLedgerEntry | undefined {
+  const retainedIds = new Set(state.section.entries.map((entry) => entry.id));
+  const removedNotes = (state.sourceEntries ?? []).filter(
+    (entry) => entry.omission_counts !== undefined && !retainedIds.has(entry.id),
+  );
+  const prior = reconcileOmissionAccounting({
     ...state.section,
-    entries:
-      state.omittedCount <= 0
-        ? state.section.entries
-        : [
-            ...state.section.entries,
-            fullLedgerOmittedEntry(
-              state.section,
-              state.omittedCount,
-              state.retentionPolicy,
-              state.omittedSpan,
-              state.omittedStates,
-            ),
-          ],
+    entries: [...state.section.entries, ...(state.sourceAccounting ?? [])],
+  }).entries.filter((entry) => entry.omission_accounting !== undefined);
+  const counts = mergeOmissionCounts(
+    ...prior.map(omissionCounts),
+    ...removedNotes.map((entry) => entry.omission_counts),
+  );
+  if (state.omittedCount === 0 && Object.keys(counts).length === 0) return undefined;
+  const entry = fullLedgerOmittedEntry(
+    state.section,
+    state.omittedCount,
+    state.retentionPolicy,
+    state.omittedSpan,
+    state.omittedStates,
+  );
+  const action = prior.find((entry) => entry.omission_accounting?.action_threads !== undefined);
+  return {
+    ...entry,
+    id:
+      action?.id ??
+      (state.dropped ? `evidence_ledger_dropped_section:${state.section.id}` : entry.id),
+    omission_accounting: {
+      ...action?.omission_accounting,
+      counts: mergeOmissionCounts(
+        counts,
+        entry.omission_accounting?.counts,
+        removedNotes.length === 0 ? undefined : { budget_note_entries: removedNotes.length },
+      ),
+    },
   };
+}
+
+export function materializeFullLedgerSectionState(
+  state: FullLedgerSectionState,
+): EvidenceLedgerSection {
+  const candidate = sectionAccountingEntry(state);
+  const accounting =
+    state.accountingMode === "global" ||
+    (candidate !== undefined && renderEntry(candidate).length > SECTION_ACCOUNTING_MAX_CHARS)
+      ? undefined
+      : candidate;
+  return reconcileOmissionAccounting({
+    ...state.section,
+    entries: [...state.section.entries, ...(accounting === undefined ? [] : [accounting])],
+  });
 }
 
 function materializeFullLedgerStates(
   ledger: EvidenceLedger,
   states: readonly FullLedgerSectionState[],
+  accounting?: EvidenceLedgerGlobalAccounting,
 ): EvidenceLedger {
-  return cloneLedgerWithSections(ledger, states.map(materializeFullLedgerSectionState));
-}
-
-function totalFullLedgerPromptTokens(
-  ledger: EvidenceLedger,
-  states: readonly FullLedgerSectionState[],
-): number {
-  return estimateEvidenceLedgerTokens(materializeFullLedgerStates(ledger, states));
+  return cloneLedgerWithSections(
+    { ...ledger, compaction_accounting: accounting },
+    states.map(materializeFullLedgerSectionState),
+  );
 }
 
 function fullLedgerSectionOptions(
@@ -601,7 +541,8 @@ function capRecentLivedExperienceSection(input: {
 
     omittedCount += omittedSpineEntries.length;
     omittedSpan = mergeOmittedSpans(omittedSpan, omittedSpanForEntries(omittedSpineEntries));
-    includedSpineEntries = includedSpineEntries.slice(-input.options.maxEntries);
+    includedSpineEntries =
+      input.options.maxEntries === 0 ? [] : includedSpineEntries.slice(-input.options.maxEntries);
   }
 
   const detailCapacity = Math.max(0, input.options.maxEntries - includedSpineEntries.length);
@@ -656,7 +597,159 @@ function capRecentLivedExperienceSection(input: {
   };
 }
 
-function capFullLedgerSection(input: {
+export function isRequiredLedgerEntry(
+  _section: EvidenceLedgerSection,
+  entry: EvidenceLedgerEntry,
+): boolean {
+  return entry.source_type === "current_user_message";
+}
+
+/** Measure the complete rendered surface, including metadata, section framing and tag escaping. */
+function fitRequiredEntryText(
+  states: readonly FullLedgerSectionState[],
+  capTokens: number,
+  measure: () => number,
+): void {
+  if (measure() <= capTokens) return;
+  for (const state of [...states].reverse()) {
+    for (let index = state.section.entries.length - 1; index >= 0; index--) {
+      const entry = state.section.entries[index]!;
+      const text = entry.text;
+      if (
+        !isRequiredLedgerEntry(state.section, entry) ||
+        text === undefined ||
+        text.length <= REQUIRED_ENTRY_TEXT_STUB.length
+      )
+        continue;
+      const characters = Array.from(text);
+      const retainPrefix = (length: number) => {
+        state.section.entries[index] = {
+          ...entry,
+          text: characters.slice(0, length).join("") + REQUIRED_ENTRY_TEXT_STUB,
+        };
+      };
+      retainPrefix(0);
+      // Keep the handle and explicit stub even when their framing cannot fit; report that outcome.
+      if (measure() > capTokens) continue;
+      let lower = 0;
+      let upper = characters.length - 1;
+      while (lower < upper) {
+        const middle = Math.ceil((lower + upper) / 2);
+        retainPrefix(middle);
+        if (measure() <= capTokens) lower = middle;
+        else upper = middle - 1;
+      }
+      retainPrefix(lower);
+      return;
+    }
+  }
+}
+
+export function ledgerBudgetOutcome(
+  states: readonly FullLedgerSectionState[],
+  pageTokens: number,
+  pageCapTokens: number,
+): EvidenceLedgerBudgetOutcome {
+  const violations: Extract<EvidenceLedgerBudgetOutcome, { status: "over_budget" }>["violations"] =
+    [];
+  for (const state of states) {
+    const tokens = estimatePromptTokens(renderSection(materializeFullLedgerSectionState(state)));
+    if (state.sectionTokenLimit !== undefined && tokens > state.sectionTokenLimit) {
+      violations.push({
+        scope: "section",
+        section_id: state.section.id,
+        cap_tokens: state.sectionTokenLimit,
+        rendered_tokens: tokens,
+        required_entry_ids: state.section.entries
+          .filter((entry) => isRequiredLedgerEntry(state.section, entry))
+          .map((entry) => entry.id),
+      });
+    }
+  }
+  if (pageTokens > pageCapTokens)
+    violations.push({
+      scope: "page",
+      cap_tokens: pageCapTokens,
+      rendered_tokens: pageTokens,
+      required_entry_ids: states.flatMap((state) =>
+        state.section.entries
+          .filter((entry) => isRequiredLedgerEntry(state.section, entry))
+          .map((entry) => entry.id),
+      ),
+    });
+  return violations.length === 0
+    ? { status: "within_budget" }
+    : { status: "over_budget", reason: "irreducible_framing", violations };
+}
+
+export function capFullLedgerSection(input: {
+  section: EvidenceLedgerSection;
+  maxEntryTextTokens: number;
+  options: FullEvidenceLedgerSectionOptions;
+  carriedAccounting?: EvidenceLedgerOmissionCounts;
+}): FullLedgerSectionState {
+  const accounting = input.section.entries.filter(
+    (entry) => entry.omission_accounting !== undefined,
+  );
+  if (input.carriedAccounting !== undefined) {
+    accounting.push({
+      ...fullLedgerOmittedEntry(
+        input.section,
+        0,
+        fullLedgerSectionRetentionPolicy(input.section.id),
+      ),
+      omission_accounting: { counts: input.carriedAccounting },
+    });
+  }
+  const ordinary = input.section.entries.filter((entry) => entry.omission_accounting === undefined);
+  const required = ordinary.filter((entry) => isRequiredLedgerEntry(input.section, entry));
+  const state = capOrdinaryFullLedgerSection({
+    ...input,
+    section: {
+      ...input.section,
+      entries: ordinary.filter((entry) => !isRequiredLedgerEntry(input.section, entry)),
+    },
+    options: {
+      ...input.options,
+      maxEntries: Math.max(
+        0,
+        input.options.maxEntries - required.length - Number(accounting.length > 0),
+      ),
+    },
+  });
+  state.sourceEntries = ordinary;
+  state.sourceAccounting = accounting;
+  state.sectionTokenLimit = input.options.maxTokens;
+  state.section.entries = [
+    ...required.map((entry) => compactFullLedgerEntry(entry, input.maxEntryTextTokens)),
+    ...state.section.entries,
+  ];
+  const account = sectionAccountingEntry(state);
+  if (
+    input.section.omitted_from_prompt ||
+    (account !== undefined && renderEntry(account).length > SECTION_ACCOUNTING_MAX_CHARS)
+  )
+    state.accountingMode = "global";
+  while (
+    estimatePromptTokens(renderSection(materializeFullLedgerSectionState(state))) >
+    input.options.maxTokens
+  ) {
+    if (!removeLowestPriorityOrdinaryEntry(state)) break;
+  }
+  if (
+    estimatePromptTokens(renderSection(materializeFullLedgerSectionState(state))) >
+    input.options.maxTokens
+  ) {
+    state.accountingMode = "global";
+    if (state.section.entries.length === 0) state.section.omitted_from_prompt = true;
+  }
+  fitRequiredEntryText([state], input.options.maxTokens, () =>
+    estimatePromptTokens(renderSection(materializeFullLedgerSectionState(state))),
+  );
+  return state;
+}
+
+function capOrdinaryFullLedgerSection(input: {
   section: EvidenceLedgerSection;
   maxEntryTextTokens: number;
   options: FullEvidenceLedgerSectionOptions;
@@ -668,9 +761,11 @@ function capFullLedgerSection(input: {
   }
 
   const entries =
-    retentionPolicy === "tail"
-      ? input.section.entries.slice(-input.options.maxEntries)
-      : input.section.entries.slice(0, input.options.maxEntries);
+    input.options.maxEntries === 0
+      ? []
+      : retentionPolicy === "tail"
+        ? input.section.entries.slice(-input.options.maxEntries)
+        : input.section.entries.slice(0, input.options.maxEntries);
   const entryCountCutEntries =
     retentionPolicy === "tail"
       ? input.section.entries.slice(0, Math.max(0, input.section.entries.length - entries.length))
@@ -801,93 +896,112 @@ function compactFullLedgerSections(
       section,
       maxEntryTextTokens,
       options: fullLedgerSectionOptions(section.id, options),
+      carriedAccounting: ledger.compaction_accounting?.folded_sections[section.id],
     }),
   );
 }
 
-function trimFullLedgerToTarget(
-  ledger: EvidenceLedger,
-  states: FullLedgerSectionState[],
-  targetTokens: number,
-): void {
-  while (totalFullLedgerPromptTokens(ledger, states) > targetTokens) {
-    const sectionId = LOWEST_TRUST_SECTION_ORDER.find((candidate) => {
-      const state = states.find((section) => section.section.id === candidate);
-      return state !== undefined && !state.dropped && state.section.entries.length > 0;
-    });
-
-    if (sectionId === undefined) {
-      break;
-    }
-
-    const state = states.find((section) => section.section.id === sectionId)!;
-    const recentDetailRemoveIndex = state.section.entries.findLastIndex(
-      (entry) => !isRecentLivedExperienceSpineEntry(entry),
-    );
-    const removeIndex =
-      state.retentionPolicy === "tail"
-        ? 0
-        : state.retentionPolicy === "spine"
-          ? recentDetailRemoveIndex >= 0
-            ? recentDetailRemoveIndex
-            : state.section.entries.length - 1
-          : state.section.entries.length - 1;
-    const removedEntries =
-      removeIndex < state.section.entries.length ? [state.section.entries[removeIndex]!] : [];
-
-    state.section = {
-      ...state.section,
-      entries: state.section.entries.filter((_, index) => index !== removeIndex),
-    };
-    state.omittedCount += 1;
-    state.omittedSpan = mergeOmittedSpans(state.omittedSpan, omittedSpanForEntries(removedEntries));
-    state.omittedStates = mergeOmittedStateTallies(
-      state.omittedStates,
-      omittedStateTallyForEntries(state.section.id, removedEntries),
-    );
-  }
+export function removeLowestPriorityOrdinaryEntry(state: FullLedgerSectionState): boolean {
+  const ordinary = state.section.entries.filter(
+    (entry) => !isRequiredLedgerEntry(state.section, entry),
+  );
+  const removed =
+    state.retentionPolicy === "tail"
+      ? ordinary[0]
+      : state.retentionPolicy === "spine"
+        ? (ordinary.findLast((entry) => !isRecentLivedExperienceSpineEntry(entry)) ??
+          ordinary.at(-1))
+        : ordinary.at(-1);
+  if (removed === undefined) return false;
+  state.section = {
+    ...state.section,
+    entries: state.section.entries.filter((entry) => entry !== removed),
+  };
+  state.omittedCount += 1;
+  state.omittedSpan = mergeOmittedSpans(state.omittedSpan, omittedSpanForEntries([removed]));
+  state.omittedStates = mergeOmittedStateTallies(
+    state.omittedStates,
+    omittedStateTallyForEntries(state.section.id, [removed]),
+  );
+  return true;
 }
 
-function dropFullLedgerSectionsToHardCap(
-  ledger: EvidenceLedger,
-  states: FullLedgerSectionState[],
-  hardCapTokens: number,
-): EvidenceLedgerSectionId[] {
-  const droppedSections: EvidenceLedgerSectionId[] = [];
-
-  while (totalFullLedgerPromptTokens(ledger, states) > hardCapTokens) {
-    const sectionId = LOWEST_TRUST_SECTION_ORDER.find((candidate) => {
-      const state = states.find((section) => section.section.id === candidate);
-      return (
-        state !== undefined &&
-        !state.dropped &&
-        (state.section.entries.length > 0 || state.omittedCount > 0)
-      );
-    });
-
-    if (sectionId === undefined) {
-      break;
-    }
-
-    const state = states.find((section) => section.section.id === sectionId)!;
-    state.omittedCount += state.section.entries.length;
-    state.omittedSpan = mergeOmittedSpans(
-      state.omittedSpan,
-      omittedSpanForEntries(state.section.entries),
+/** Required content, global counts, section counts, then ordinary entries. */
+export function fitLedgerAccounting(input: {
+  states: FullLedgerSectionState[];
+  targetTokens: number;
+  hardCapTokens: number;
+  measure: (accounting: EvidenceLedgerGlobalAccounting | undefined) => number;
+  sectionOrder?: readonly EvidenceLedgerSectionId[];
+  dropSectionsAtHardCap?: boolean;
+}): {
+  accounting?: EvidenceLedgerGlobalAccounting;
+  accountingOmittedFromPage: EvidenceLedgerOmissionCountsBySection;
+} {
+  const ordered = (input.sectionOrder ?? LOWEST_TRUST_SECTION_ORDER).flatMap((id) =>
+    input.states.filter((state) => state.section.id === id),
+  );
+  const counts = () =>
+    Object.fromEntries(
+      input.states.flatMap((state) => {
+        const entry = sectionAccountingEntry(state);
+        return entry === undefined ? [] : [[state.section.id, omissionCounts(entry)]];
+      }),
+    ) as EvidenceLedgerOmissionCountsBySection;
+  const global = (): EvidenceLedgerGlobalAccounting | undefined => {
+    const all = counts();
+    const folded = Object.fromEntries(
+      input.states
+        .filter((state) => {
+          const entry = sectionAccountingEntry(state);
+          return (
+            entry !== undefined &&
+            (state.accountingMode === "global" ||
+              renderEntry(entry).length > SECTION_ACCOUNTING_MAX_CHARS)
+          );
+        })
+        .map((state) => [state.section.id, all[state.section.id]!]),
+    ) as EvidenceLedgerOmissionCountsBySection;
+    const budgetEntries = Object.values(all).reduce(
+      (total, count) => total + (count?.budget_entries ?? 0),
+      0,
     );
-    state.omittedStates = mergeOmittedStateTallies(
-      state.omittedStates,
-      omittedStateTallyForEntries(state.section.id, state.section.entries),
+    return budgetEntries === 0 && Object.keys(folded).length === 0
+      ? undefined
+      : { budget_entries: budgetEntries, folded_sections: folded };
+  };
+  const hardDrop = input.dropSectionsAtHardCap && input.measure(global()) > input.hardCapTokens;
+  const limit = hardDrop ? input.hardCapTokens : Math.min(input.targetTokens, input.hardCapTokens);
+  while (input.measure(global()) > limit) {
+    const state = ordered.find((state) =>
+      state.section.entries.some((entry) => !isRequiredLedgerEntry(state.section, entry)),
     );
-    state.section = {
-      ...state.section,
-      entries: [],
-    };
-    state.dropped = true;
-    droppedSections.push(sectionId);
+    if (state === undefined) break;
+    if (hardDrop) {
+      while (removeLowestPriorityOrdinaryEntry(state)) {
+        /* whole section */
+      }
+      state.dropped = true;
+    } else removeLowestPriorityOrdinaryEntry(state);
   }
-
-  return droppedSections;
+  // Empty framing is lower priority than counts and required content too.
+  for (const state of ordered) {
+    if (input.measure(global()) <= input.hardCapTokens) break;
+    state.accountingMode = "global";
+    if (state.section.entries.length === 0) {
+      state.section.omitted_from_prompt = true;
+    }
+  }
+  if (input.measure(global()) <= input.hardCapTokens)
+    return { accounting: global(), accountingOmittedFromPage: {} };
+  // The page carries no omission count here; the trace carries it. Required entries retain
+  // their handles and an explicit truncation stub; irreducible overflow is a budget outcome.
+  for (const state of input.states) {
+    state.accountingMode = "global";
+    if (state.section.entries.length === 0) state.section.omitted_from_prompt = true;
+  }
+  fitRequiredEntryText(input.states, input.hardCapTokens, () => input.measure(undefined));
+  return { accountingOmittedFromPage: counts() };
 }
 
 function dedupeAndCapFullLedger(
@@ -989,20 +1103,38 @@ export function compactEvidenceLedger(
   const { deduped, dedupedLedger, states } = pass;
   const postDedupeTokens = estimateEvidenceLedgerTokens(dedupedLedger);
   const preCapTokens = postDedupeTokens;
-  const postSectionCapTokens = totalFullLedgerPromptTokens(dedupedLedger, states);
-  let droppedSections: EvidenceLedgerSectionId[] = [];
-
-  if (postSectionCapTokens > hardCapTokens) {
-    droppedSections = dropFullLedgerSectionsToHardCap(dedupedLedger, states, hardCapTokens);
-  } else if (postSectionCapTokens > targetTokens) {
-    trimFullLedgerToTarget(dedupedLedger, states, targetTokens);
-  }
+  const postSectionCapTokens = estimateEvidenceLedgerTokens(
+    materializeFullLedgerStates(dedupedLedger, states),
+  );
+  const fitted = fitLedgerAccounting({
+    states,
+    targetTokens,
+    hardCapTokens,
+    dropSectionsAtHardCap: true,
+    measure: (accounting) => {
+      const rendered = reconcileAutobiographicalRecallCapMetadata({
+        factLedger: dedupedLedger,
+        renderedLedger: materializeFullLedgerStates(dedupedLedger, states, accounting),
+      });
+      // Budget the header at the cap's digit width, so the final estimate cannot add tokens.
+      return estimateEvidenceLedgerPromptTokens({ ...rendered, estimatedTokens: hardCapTokens });
+    },
+  });
+  const droppedSections = states
+    .filter((state) => state.dropped)
+    .map((state) => state.section.id)
+    .sort(
+      (left, right) =>
+        LOWEST_TRUST_SECTION_COMPACTION_PRIORITY[left] -
+        LOWEST_TRUST_SECTION_COMPACTION_PRIORITY[right],
+    );
 
   const compactedLedger = reconcileAutobiographicalRecallCapMetadata({
     factLedger: dedupedLedger,
-    renderedLedger: materializeFullLedgerStates(dedupedLedger, states),
+    renderedLedger: materializeFullLedgerStates(dedupedLedger, states, fitted.accounting),
   });
   const postCapTokens = estimateEvidenceLedgerTokens(compactedLedger);
+  const finalLedger = { ...compactedLedger, estimatedTokens: postCapTokens };
   const omittedEntryCountsBySection = emptySectionCountRecord();
 
   for (const state of states) {
@@ -1010,10 +1142,7 @@ export function compactEvidenceLedger(
   }
 
   return {
-    ledger: {
-      ...compactedLedger,
-      estimatedTokens: postCapTokens,
-    },
+    ledger: finalLedger,
     traceSummary: {
       preDedupeTokens,
       postDedupeTokens,
@@ -1023,6 +1152,12 @@ export function compactEvidenceLedger(
       dedupedEntryCount: deduped.dedupedEntryCount,
       omittedEntryCountsBySection,
       droppedSections,
+      accountingOmittedFromPage: fitted.accountingOmittedFromPage,
+      budgetOutcome: ledgerBudgetOutcome(
+        states,
+        estimateEvidenceLedgerPromptTokens(finalLedger),
+        hardCapTokens,
+      ),
       targetTokens,
       hardCapTokens,
     },

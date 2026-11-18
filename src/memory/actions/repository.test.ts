@@ -22,6 +22,7 @@ import {
   createActionRecordsTableSchema,
 } from "./repository.js";
 import type { ActionRecord } from "./types.js";
+import { selectCurrentAudienceSharedStateActionCandidatesForCanonicalization } from "../../cognition/lifecycle/turn-phase/shared-state-phase.js";
 import { actionActivityCutoff, actionActivityTier } from "./activity.js";
 import { listActionCandidatesForCognition } from "../../cognition/evidence-ledger/action-threads.js";
 import {
@@ -128,6 +129,68 @@ describe("ActionRepository", () => {
     return repository;
   }
 
+  it("offers an old row referenced after 85 newer rows in both 80-row recency pools and the actor prefix", async () => {
+    const db = openDatabase(":memory:", { migrations: actionMigrations });
+    cleanup.push(async () => db.close());
+    const repository = new ActionRepository({ db });
+    const audience = createEntityId();
+    const old = makeAction({
+      audience_entity_id: audience,
+      created_at: 1,
+      updated_at: 1,
+      last_referenced_at_ms: 1,
+    });
+    repository.add(old);
+    for (let index = 0; index < 85; index += 1) {
+      repository.add(
+        makeAction({
+          audience_entity_id: audience,
+          created_at: 1,
+          updated_at: 100 + index,
+          last_referenced_at_ms: 100 + index,
+        }),
+      );
+    }
+    repository.applyExtractionDecision({
+      records: [],
+      nowMs: 1_000,
+      turnCounter: 30,
+      audit: {
+        turn_id: "referenced-old",
+        candidate_ids: [old.id],
+        candidate_omitted_count: 85,
+        referenced_action_ids: [old.id],
+        applied_reference_ids: [],
+        ignored_reference_ids: [],
+        decisions: [],
+      },
+    });
+    expect(repository.get(old.id)?.updated_at).toBe(1);
+    const recency = await retrieveActionCandidates({
+      repository,
+      text: "irrelevant similarity query",
+      audienceEntityId: audience,
+      onSearchFailure: (error) => {
+        throw error;
+      },
+    });
+    expect(recency.records).toHaveLength(80);
+    expect(recency.records[0]!.id).toBe(old.id);
+    expect(presentActionCandidates(recency.records, recency.total).shown[0]!.id).toBe(old.id);
+    const shared = selectCurrentAudienceSharedStateActionCandidatesForCanonicalization({
+      actionRepository: repository,
+      audienceEntityId: audience,
+      activeParticipants: undefined,
+    });
+    expect(shared.candidates).toHaveLength(80);
+    expect(shared.candidates![0]!.id).toBe(old.id);
+    expect(shared.omittedCount).toBe(6);
+    // Recency offers apply neither the page's 30-day tiers nor its stale-row cap.
+    expect(
+      repository.list({ rankByActivity: true, recallAllAudiences: true, limit: 80 }),
+    ).toHaveLength(80);
+  });
+
   it("returns the effective stored lifecycle counter when ensuring global turn values", () => {
     const db = openDatabase(":memory:", {
       migrations: actionMigrations,
@@ -165,6 +228,50 @@ describe("ActionRepository", () => {
     } finally {
       db.close();
     }
+  });
+
+  it("preserves the change timestamp in SQL and its refreshed vector mirror after a reference", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-action-reference-"));
+    const store = new LanceDbStore({ uri: join(tempDir, "lancedb") });
+    const table = await store.openTable({
+      name: "action_records",
+      schema: createActionRecordsTableSchema(4),
+    });
+    const db = openDatabase(":memory:", { migrations: actionMigrations });
+    cleanup.push(async () => {
+      db.close();
+      await store.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    });
+    const action = makeAction();
+    const embeddingClient = new MapEmbeddingClient(new Map([[action.description, [1, 0, 0, 0]]]));
+    const repository = new ActionRepository({ db, table, embeddingClient });
+    repository.add(action);
+    await repository.waitForPendingEmbeddings();
+    const before = await table.list();
+    const nowMs = 90 * 86_400_000;
+    const result = repository.applyExtractionDecision({
+      records: [],
+      nowMs,
+      turnCounter: 30,
+      audit: {
+        turn_id: "reference-only",
+        candidate_ids: [action.id],
+        candidate_omitted_count: 0,
+        referenced_action_ids: [action.id],
+        applied_reference_ids: [],
+        ignored_reference_ids: [],
+        decisions: [],
+      },
+    });
+    expect(result.audit.applied_reference_ids).toEqual([action.id]);
+    await repository.waitForPendingEmbeddings();
+    expect(await table.list()).toEqual(before);
+    expect((await repository.findByDescription(action.description, 1))[0]).toMatchObject({
+      updated_at: action.updated_at,
+      last_referenced_at_ms: nowMs,
+    });
+    expect(actionActivityTier(repository.get(action.id)!, nowMs)).toBe(0);
   });
 
   it("orders the page draw by activity before truncation, preserving four open rows per actor without writes", () => {

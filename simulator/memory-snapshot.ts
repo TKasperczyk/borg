@@ -483,7 +483,7 @@ function actionLifecycleRows(input: {
 }
 
 function actionRow(record: RecordLike): string {
-  return `- id=${scalar(record.id)} actor=${scalar(record.actor)} state=${scalar(record.state)} confidence=${scalar(record.confidence)} updated=${ts(record.updated_at)} completed=${ts(record.completed_at)} episodes=${ids(record.provenance_episode_ids)} streams=${ids(record.provenance_stream_entry_ids)} description="${oneLine(record.description)}"`;
+  return `- id=${scalar(record.id)} actor=${scalar(record.actor)} state=${scalar(record.state)} confidence=${scalar(record.confidence)} updated=${ts(record.updated_at)} last_referenced=${ts(record.last_referenced_at_ms)} completed=${ts(record.completed_at)} episodes=${ids(record.provenance_episode_ids)} streams=${ids(record.provenance_stream_entry_ids)} description="${oneLine(record.description)}"`;
 }
 
 function entityRow(record: RecordLike): string {

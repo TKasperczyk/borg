@@ -64,7 +64,8 @@ import {
   isPromptSalientActionSalienceClass,
   listActionCandidatesForCognition,
 } from "./action-threads.js";
-import { renderSection } from "./section-rendering.js";
+import { omissionCounts } from "./omission-accounting.js";
+import { renderEntry, renderSection } from "./section-rendering.js";
 import { summarizeEvidenceLedgerTrace } from "./trace-summary.js";
 import {
   compactEvidenceLedger,
@@ -2833,8 +2834,7 @@ describe("EvidenceLedgerBuilder", () => {
       "evidence_ledger_omitted:open_questions",
     ]);
     expect(entries[0]?.state).toContain("score=0.80");
-    expect(entries[1]?.text).toContain("omitted 1 lower-priority entries");
-    expect(entries[1]?.text).toContain("Omitted by state: open 1.");
+    expect(omissionCounts(entries[1]!)).toEqual({ budget_entries: 1, state_open: 1 });
     expect(compacted.traceSummary.dedupedEntryCount).toBe(2);
     expect(compacted.traceSummary.omittedEntryCountsBySection.open_questions).toBe(1);
   });
@@ -4034,14 +4034,18 @@ describe("EvidenceLedgerBuilder", () => {
 
     // Timestamp-recent open rows win; the completion remains in the omitted population.
     expect(actionEntries.filter((entry) => entry.id.startsWith("action_thread:"))).toHaveLength(1);
-    expect(summary?.text).toContain("threads=2, records=2");
-    expect(summary?.text).toContain(
+    expect(omissionCounts(summary!)).toMatchObject({
+      draw_omitted_threads: 2,
+      draw_omitted_records: 2,
+      salience_dropped_threads: 0,
+    });
+    const samples = actionEntries.find((entry) => entry.id === "action_threads:older_samples")!;
+    expect(samples.omission_accounting).toBeUndefined();
+    expect(samples.text).toContain(
       "audience_scope=global salience_class=participant_pending_recent threads=1 records=1",
     );
-
-    expect(summary?.text).toContain("completed=1");
-    expect(summary?.text).toContain("salience_dropped_threads=0");
-    expect(summary?.text).toContain("Closed long before this turn");
+    expect(samples.text).toContain("completed=1");
+    expect(samples.text).toContain("Closed long before this turn");
   });
 
   it.each([0, 300])(
@@ -4152,12 +4156,10 @@ describe("EvidenceLedgerBuilder", () => {
             .sort(),
         ).toEqual(recentClosed.map((row) => `action_thread:${row.id}`).sort());
         const summary = actionEntries.find((entry) => entry.id === "action_threads:older_summary");
-        expect(summary?.text).toContain(
-          `${9 + extraStale} older open records (no activity for over 30 days) not shown across the store`,
-        );
-        expect(summary?.text).toContain(
-          `records_below_draw_floor=${Math.max(0, 11 + extraStale - STALE_OPEN_DRAW_LIMIT)}`,
-        );
+        expect(omissionCounts(summary!)).toMatchObject({
+          older_open_store_not_shown: 9 + extraStale,
+          records_below_draw_floor: Math.max(0, 11 + extraStale - STALE_OPEN_DRAW_LIMIT),
+        });
         expect(repository.list()).toEqual(before);
       } finally {
         db.close();
@@ -4230,10 +4232,42 @@ describe("EvidenceLedgerBuilder", () => {
       ).toHaveLength(2);
       expect(rendered.filter((entry) => entry.salience_class === "closed_older")).toHaveLength(10);
       const summary = entries.find((entry) => entry.id === "action_threads:older_summary")!;
-      expect(summary.text).toContain(
-        "298 older open records (no activity for over 30 days) not shown across the store",
-      );
-      expect(summary.text).toContain("records_below_draw_floor=284");
+      expect(omissionCounts(summary)).toMatchObject({
+        older_open_store_not_shown: 298,
+        records_below_draw_floor: 284,
+      });
+      for (const maxEntries of [7, 1]) {
+        const compacted = compactEvidenceLedger(ledger, {
+          targetTokens: 100_000,
+          hardCapTokens: 100_000,
+          sectionOptions: { action_states: { maxEntries, maxTokens: 100_000 } },
+        });
+        const finalSection = compacted.ledger.sections.find(
+          (section) => section.id === "action_states",
+        )!;
+        const kept = finalSection.entries.filter((entry) => entry.source_type === "action_record");
+        const cut = 12 - kept.length;
+        expect(kept).toHaveLength(maxEntries - 1);
+        expect(finalSection.entries.some((entry) => entry.id === summary.id)).toBe(true);
+        // One extra ordinary entry carries samples; it can be cut without affecting thread counts.
+        expect(compacted.traceSummary.omittedEntryCountsBySection.action_states).toBe(cut + 1);
+        expect(
+          finalSection.entries.some((entry) => entry.id === "action_threads:older_samples"),
+        ).toBe(false);
+        expect(
+          omissionCounts(
+            finalSection.entries.find((entry) => entry.omission_accounting !== undefined)!,
+          ),
+        ).toMatchObject({
+          threads_built: 36,
+          rendered_threads: kept.length,
+          draw_omitted_threads: 24,
+          salience_dropped_threads: 0,
+          later_cut_threads: cut,
+          budget_entries: cut + 1,
+          older_open_store_not_shown: maxEntries === 1 ? 300 : 298,
+        });
+      }
       expect(repository.list()).toEqual(before);
     } finally {
       db.close();
@@ -4637,7 +4671,8 @@ describe("EvidenceLedgerBuilder", () => {
     const actionEntries =
       ledger.sections.find((section) => section.id === "action_states")?.entries ?? [];
     const summaries = actionEntries.filter((entry) => entry.id === "action_threads:older_summary");
-    const summaryText = summaries[0]?.text ?? "";
+    const summaryText =
+      actionEntries.find((entry) => entry.id === "action_threads:older_samples")?.text ?? "";
     const summaryLines = summaryText.split("\n");
     const aliceLine = summaryLines.find((line) => line.includes(`audience_scope=${alice}`));
     const selfPrivateLine = summaryLines.find(
@@ -4651,7 +4686,11 @@ describe("EvidenceLedgerBuilder", () => {
 
     expect(actionEntries.filter((entry) => entry.id.startsWith("action_thread:"))).toHaveLength(1);
     expect(summaries).toHaveLength(1);
-    expect(summaries[0]?.text).toContain("threads=3, records=3");
+    expect(omissionCounts(summaries[0]!)).toMatchObject({
+      draw_omitted_threads: 3,
+      draw_omitted_records: 3,
+    });
+    expect(summaries[0]!.text).toBeUndefined();
     expect(aliceLine).toContain(`salience_class=borg_current_turn_action threads=1 records=1`);
     expect(aliceLine).toContain("disclosure_label=disclosure_class=relationship_private");
     expect(aliceLine).toContain(`origin_audience=${alice}`);
@@ -4666,10 +4705,11 @@ describe("EvidenceLedgerBuilder", () => {
     const compacted = compactEvidenceLedger(ledger, {
       maxEntryTextTokens: Math.ceil((summaryText.indexOf("Unknown sample") + 60) / 4),
     });
+    const compactedSummary = compacted.ledger.sections
+      .find((section) => section.id === "action_states")
+      ?.entries.find((entry) => entry.id === "action_threads:older_samples");
     const compactedSummaryText =
-      compacted.ledger.sections
-        .find((section) => section.id === "action_states")
-        ?.entries.find((entry) => entry.id === "action_threads:older_summary")?.text ?? "";
+      compactedSummary === undefined ? "" : renderEntry(compactedSummary);
     const disclosureSamples = [
       {
         label: "disclosure_label=disclosure_class=relationship_private",
@@ -4697,11 +4737,19 @@ describe("EvidenceLedgerBuilder", () => {
     }
 
     expect(compactedSummaryText).toContain("Alice-private omitted Borg action");
-    // The uncounted-population bounds sit above the group detail, so truncation never leaves
-    // the omitted counts reading as a complete accounting of what the section withheld.
-    expect(compactedSummaryText).toContain(
-      "Not counted above: salience_dropped_threads=0, records_below_draw_floor=0",
-    );
+    // Counts survive separately from the ordinary, truncatable samples entry.
+    const compactedCounts = compacted.ledger.sections
+      .find((section) => section.id === "action_states")!
+      .entries.find((entry) => entry.omission_accounting !== undefined)!;
+    expect(omissionCounts(compactedCounts)).toMatchObject({
+      salience_dropped_threads: 0,
+      records_below_draw_floor: 0,
+      threads_built: 4,
+      rendered_threads: 1,
+      draw_omitted_threads: 3,
+      render_slots: 1,
+      records_considered: 4,
+    });
     // The label's load-bearing part is the class and the private-to binding; the sentence that
     // used to follow them was fixed boilerplate identical on every label, and now sits once above
     // the group lines instead of once per group. Assert what has to survive per group -- the two
@@ -4709,14 +4757,6 @@ describe("EvidenceLedgerBuilder", () => {
     expect(compactedSummaryText).toContain(
       "disclosure_label=disclosure_class=unknown private-to=unknown recent_samples=",
     );
-    // The thread totals sit with the bounds, above the group detail: truncation may take a
-    // sample, never the identity that says the three thread counts close and that the record
-    // count is a different unit -- nor the slot count that says what `rendered` was measured
-    // against, which is the one term a reader cannot reconstruct from the others.
-    expect(compactedSummaryText).toContain(
-      "threads_built=4 = rendered 1 + omitted 3 + dropped 0; render_slots=1;",
-    );
-    expect(compactedSummaryText).toContain("records_considered=4");
     expect(compactedSummaryText).not.toContain("Unknown sample should be dropped");
     expect(compactedSummaryText).toContain("[evidence ledger entry truncated");
   });
@@ -4989,19 +5029,22 @@ describe("EvidenceLedgerBuilder", () => {
       ledger.sections.find((section) => section.id === "action_states")?.entries ?? [];
     const summary = actionEntries.find((entry) => entry.id === "action_threads:older_summary");
 
-    expect(actionEntries).toHaveLength(3);
-    expect(summary?.text).toContain("threads=4");
-    expect(summary?.text).toContain("records=4");
-    expect(summary?.text).toContain(
+    expect(actionEntries).toHaveLength(4);
+    expect(omissionCounts(summary!)).toMatchObject({
+      draw_omitted_threads: 4,
+      draw_omitted_records: 4,
+    });
+    const samples = actionEntries.find((entry) => entry.id === "action_threads:older_samples")!;
+    expect(samples.text).toContain(
       "audience_scope=global salience_class=completed_recent threads=2 records=2",
     );
-    expect(summary?.text).toContain("committed_to_do=1");
-    expect(summary?.text).toContain("scheduled=1");
-    expect(summary?.text).toContain("completed=2");
-    expect(summary?.text).toContain("completed omitted thread with enough extra context");
-    expect(summary?.text).not.toContain("tail should not appear");
-    expect(summary?.text).toContain("scheduled omitted thread");
-    expect(summary?.text).toContain("committed omitted thread");
+    expect(samples.text).toContain("committed_to_do=1");
+    expect(samples.text).toContain("scheduled=1");
+    expect(samples.text).toContain("completed=2");
+    expect(samples.text).toContain("completed omitted thread with enough extra context");
+    expect(samples.text).not.toContain("tail should not appear");
+    expect(samples.text).toContain("scheduled omitted thread");
+    expect(samples.text).toContain("committed omitted thread");
   });
 
   it("renders relevant resolved open questions from the repository with state metadata", async () => {
@@ -5520,6 +5563,7 @@ describe("EvidenceLedgerBuilder", () => {
           source_type: "system_metadata",
           state: "compacted",
           text: "Earlier observe/suppress transcript markers compacted: entries=2, stream_indexes=1..2.",
+          omission_counts: { transcript_entries: 2 },
         }),
         expect.objectContaining({
           id: `current_session_stream:${suppressedDraftEntry.id}`,
@@ -5529,6 +5573,7 @@ describe("EvidenceLedgerBuilder", () => {
         expect.objectContaining({
           id: `current_session_compacted_current_user:${currentEntry.id}`,
           text: "Current user transcript duplicate compacted; full text is rendered in section 1 as current_user_message.",
+          omission_counts: { duplicate_entries: 1 },
         }),
       ]),
     );

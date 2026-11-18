@@ -14,7 +14,7 @@ import {
   listActionCandidatesForCognition,
   orderActionThreadsBySalience,
   renderActionThreadText,
-  renderOlderActionThreadsSummary,
+  renderOlderActionThreadDetails,
   type OlderActionThreadSummaryGroup,
 } from "../action-threads.js";
 import { clampPositiveIntegerOrFallback } from "../../../util/math.js";
@@ -217,20 +217,45 @@ export async function addActionStatesSection(context: BuilderSectionContext): Pr
     session_scope: "global",
     actor: "system",
     trust_rank: ACTION_TRUST_RANK,
-    text: renderOlderActionThreadsSummary({
-      groups: summaryGroups,
-      renderedThreadCount: renderedThreads.length,
-      renderLimit,
-      threadsBuiltCount: threads.length,
-      consideredRecordCount: actionCandidates.length,
-      sourceRecordLimit,
-      sourceRecordTotal,
-      salienceDroppedThreadCount,
-      staleOpenOmitted,
-      staleOpenCountScope: storeStaleOpenCount === undefined ? "draw" : "store",
-    }),
+    omission_accounting: {
+      action_threads: {
+        assembled_entries: renderedThreads.map((thread) => ({
+          id: `action_thread:${thread.id}`,
+          stale_open: isStaleOpenAction(thread.current, nowMs),
+        })),
+        counts: {
+          omittedThreadCount: olderThreads.length,
+          omittedRecordCount: olderThreads.reduce(
+            (count, thread) => count + thread.records.length,
+            0,
+          ),
+          renderedThreadCount: renderedThreads.length,
+          renderLimit,
+          threadsBuiltCount: threads.length,
+          consideredRecordCount: actionCandidates.length,
+          sourceRecordLimit,
+          sourceRecordTotal,
+          salienceDroppedThreadCount,
+          staleOpenOmitted,
+          staleOpenCountScope: storeStaleOpenCount === undefined ? "draw" : "store",
+        },
+      },
+    },
     value: "older_action_threads",
     state: "omitted",
     taint: "none",
   });
+  if (summaryGroups.length > 0) {
+    addEntry(context.buckets, "action_states", {
+      id: "action_threads:older_samples",
+      source_type: "system_metadata",
+      session_scope: "global",
+      actor: "system",
+      trust_rank: ACTION_TRUST_RANK,
+      text: renderOlderActionThreadDetails(summaryGroups),
+      value: "older_action_thread_samples",
+      state: "omitted_samples",
+      taint: "none",
+    });
+  }
 }

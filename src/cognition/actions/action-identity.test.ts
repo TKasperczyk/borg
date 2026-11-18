@@ -4,6 +4,8 @@ import {
   ActionRepository,
   actionMigrations,
   ACTIVE_ACTION_STATES,
+  actionActivityTier,
+  classifyActionArchiveCandidate,
   type ActionRecord,
 } from "../../memory/actions/index.js";
 import { goalSchema } from "../../memory/self/index.js";
@@ -27,6 +29,7 @@ import {
 import { actionMemoryDisclosureLabel } from "../../memory/common/disclosure-serializers.js";
 import {
   renderActionThreadText,
+  actionThreadStateMetadata,
   ACTION_UPDATE_HISTORY_LIMIT,
   ACTION_UPDATE_HISTORY_MAX_CHARS,
 } from "../evidence-ledger/action-threads.js";
@@ -514,23 +517,55 @@ describe("model-selected action identity", () => {
 
   it("audits reference-only decisions and keeps their counters and timestamps monotonic", async () => {
     const f = fixture();
+    const nowMs = 90 * 86_400_000;
+    const before = f.repository.get(f.action.id)!;
+    expect(actionActivityTier(f.action, nowMs)).toBe(2);
     const unoffered = makeActionRecord();
     f.repository.add(unoffered);
-    for (const [nowMs, turnCounter] of [
-      [3_000, 30],
-      [2_000, 20],
+    for (const [referenceTime, turnCounter] of [
+      [nowMs, 30],
+      [nowMs - 86_400_000, 20],
     ])
       await extract(f, {
         referenceOnly: true,
         references: [f.action.id, unoffered.id],
-        nowMs,
+        nowMs: referenceTime,
         turnCounter,
       });
-    expect(f.repository.get(f.action.id)).toMatchObject({
-      updated_at: 3_000,
-      last_referenced_at_ms: 3_000,
+    const referenced = f.repository.get(f.action.id)!;
+    expect(referenced).toEqual({
+      ...before,
+      updated_at: f.action.updated_at,
+      last_referenced_at_ms: nowMs,
       last_referenced_turn_counter: 30,
       last_referenced_turn_global: 30,
+    });
+    expect(actionActivityTier(referenced, nowMs)).toBe(0);
+    expect(
+      classifyActionArchiveCandidate(referenced, { turnCounter: 31, archiveAfterTurns: 10 }),
+    ).toEqual({
+      status: "skipped",
+      reason: "below_inactive_threshold",
+      inactiveTurns: 1,
+    });
+    expect(presentActionCandidates([referenced], 1).rows[0]).toMatchObject({
+      updated_at: f.action.updated_at,
+      last_referenced_at_ms: nowMs,
+    });
+    expect(
+      actionThreadStateMetadata(
+        {
+          id: referenced.id,
+          records: [referenced],
+          origin: referenced,
+          current: referenced,
+          scope: "global",
+        },
+        undefined,
+      ),
+    ).toMatchObject({
+      current_updated_at: f.action.updated_at,
+      last_referenced_at_ms: nowMs,
     });
     expect(f.repository.get(unoffered.id)).toMatchObject({ updated_at: unoffered.updated_at });
     expect(f.repository.readUpdateHistory(f.action.id, 5).total).toBe(0);

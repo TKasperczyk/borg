@@ -16,11 +16,20 @@ import {
 import { renderTaggedPromptBlock } from "../deliberation/prompt/sections.js";
 import { emptySectionCountRecord } from "./budget.js";
 import { renderSection } from "./section-rendering.js";
+import {
+  capFullLedgerSection,
+  materializeFullLedgerSectionState,
+  fitLedgerAccounting,
+  ledgerBudgetOutcome,
+  type FullLedgerSectionState,
+} from "./compaction.js";
+import { renderGlobalAccounting } from "./omission-accounting.js";
 import type {
   EvidenceLedger,
-  EvidenceLedgerEntry,
-  EvidenceLedgerSection,
   EvidenceLedgerSectionId,
+  EvidenceLedgerGlobalAccounting,
+  EvidenceLedgerOmissionCountsBySection,
+  EvidenceLedgerBudgetOutcome,
 } from "./types.js";
 
 const COMPACT_PLANNER_LEDGER_SECTION_IDS = [
@@ -81,6 +90,8 @@ export type CompactPlannerLedgerTraceSummary = {
   totalEstimatedTokens: number;
   targetTokens: number;
   hardCapTokens: number;
+  accountingOmittedFromPage?: EvidenceLedgerOmissionCountsBySection;
+  budgetOutcome: EvidenceLedgerBudgetOutcome;
 };
 
 export type CompactPlannerLedgerPrompt = {
@@ -116,139 +127,19 @@ export function truncateTextForCompactPlannerLedger(
   return `${value.slice(0, bodyLimit).trimEnd()}${omission}`;
 }
 
-function compactEntry(entry: EvidenceLedgerEntry, maxEntryTextTokens: number): EvidenceLedgerEntry {
-  return {
-    ...entry,
-    text: truncateTextForCompactPlannerLedger(entry.text, maxEntryTextTokens),
-    value: truncateTextForCompactPlannerLedger(entry.value, Math.max(80, maxEntryTextTokens / 4)),
-  };
-}
-
-function omittedEntry(section: EvidenceLedgerSection, omittedCount: number): EvidenceLedgerEntry {
-  return {
-    id: `compact_planner_ledger_omitted:${section.id}`,
-    source_type: "system_metadata",
-    session_scope: "global",
-    actor: "system",
-    trust_rank: 0,
-    state: "omitted",
-    text: `Compact planner ledger omitted ${omittedCount} older entries from ${section.id} to stay within the planner budget.`,
-    taint: "none",
-  };
-}
-
-function renderCompactSection(section: EvidenceLedgerSection, omittedCount: number): string {
-  const entries =
-    omittedCount <= 0 ? section.entries : [...section.entries, omittedEntry(section, omittedCount)];
-
-  return renderSection({
-    ...section,
-    entries,
-  });
-}
-
-function compactSection(input: { section: EvidenceLedgerSection; maxEntryTextTokens: number }): {
-  section: EvidenceLedgerSection;
-  omittedCount: number;
-  estimatedTokens: number;
-} {
-  const options =
-    DEFAULT_COMPACT_SECTION_OPTIONS[
-      input.section.id as keyof typeof DEFAULT_COMPACT_SECTION_OPTIONS
-    ];
-  const maxEntries = options.maxEntries;
-  const maxTokens = options.maxTokens;
-  const entries = input.section.entries
-    .slice(0, maxEntries)
-    .map((entry) => compactEntry(entry, input.maxEntryTextTokens));
-  let includedEntries: EvidenceLedgerEntry[] = [];
-  let omittedCount = Math.max(0, input.section.entries.length - entries.length);
-
-  for (let index = 0; index < entries.length; index += 1) {
-    const entry = entries[index]!;
-    const candidateEntries = [...includedEntries, entry];
-    const candidateSection = {
-      ...input.section,
-      entries: candidateEntries,
-    };
-    const rendered = renderCompactSection(candidateSection, omittedCount);
-
-    if (estimatePromptTokens(rendered) <= maxTokens || includedEntries.length === 0) {
-      includedEntries = candidateEntries;
-      continue;
-    }
-
-    omittedCount += entries.length - index;
-    break;
-  }
-
-  const section = {
-    ...input.section,
-    entries: includedEntries,
-  };
-
-  return {
-    section,
-    omittedCount,
-    estimatedTokens: estimatePromptTokens(renderCompactSection(section, omittedCount)),
-  };
-}
-
-function totalCompactPromptTokens(
-  sections: readonly CompactSectionResult[],
-  sharedState: SharedStateArtifact | null | undefined,
-  sharedStateOptions: SharedStateRenderOptions | undefined,
-): number {
-  return estimatePromptTokens(
-    renderCompactPlannerLedgerPromptSection(
-      renderCompactPlannerLedgerContent(sections, sharedState, sharedStateOptions),
-    ) ?? "",
-  );
-}
-
-type CompactSectionResult = {
-  section: EvidenceLedgerSection;
-  omittedCount: number;
-};
-
-function trimToTokenTarget(
-  sections: CompactSectionResult[],
-  targetTokens: number,
-  sharedState: SharedStateArtifact | null | undefined,
-  sharedStateOptions: SharedStateRenderOptions | undefined,
-): CompactSectionResult[] {
-  while (totalCompactPromptTokens(sections, sharedState, sharedStateOptions) > targetTokens) {
-    const trimIndex = [...sections]
-      .reverse()
-      .findIndex((section) => section.section.entries.length > 0);
-
-    if (trimIndex < 0) {
-      break;
-    }
-
-    const sectionIndex = sections.length - 1 - trimIndex;
-    const section = sections[sectionIndex]!;
-    section.section = {
-      ...section.section,
-      entries: section.section.entries.slice(0, -1),
-    };
-    section.omittedCount += 1;
-  }
-
-  return sections;
-}
-
 function renderCompactPlannerLedgerContent(
-  sections: readonly CompactSectionResult[],
+  sections: readonly FullLedgerSectionState[],
   sharedState: SharedStateArtifact | null | undefined,
   sharedStateOptions: SharedStateRenderOptions | undefined,
+  accounting?: EvidenceLedgerGlobalAccounting,
 ): string {
   return [
     renderSharedStateArtifact(sharedState, sharedStateOptions),
     COMPACT_PLANNER_LEDGER_GUIDANCE,
-    ...sections.map((section) => renderCompactSection(section.section, section.omittedCount)),
+    renderGlobalAccounting(accounting),
+    ...sections.map((section) => renderSection(materializeFullLedgerSectionState(section))),
   ]
-    .filter((part): part is string => part !== null)
+    .filter((part): part is string => part !== null && part.length > 0)
     .join("\n\n");
 }
 
@@ -276,9 +167,9 @@ export function buildCompactPlannerLedgerPrompt(
     options.targetTokens,
     DEFAULT_COMPACT_PLANNER_TARGET_TOKENS,
   );
-  const hardCapTokens = Math.max(
-    targetTokens,
-    coercePositiveIntegerOrFallback(options.hardCapTokens, DEFAULT_COMPACT_PLANNER_HARD_CAP_TOKENS),
+  const hardCapTokens = coercePositiveIntegerOrFallback(
+    options.hardCapTokens,
+    DEFAULT_COMPACT_PLANNER_HARD_CAP_TOKENS,
   );
   const maxEntryTextTokens = coercePositiveIntegerOrFallback(
     options.maxEntryTextTokens,
@@ -286,45 +177,46 @@ export function buildCompactPlannerLedgerPrompt(
   );
   const sectionsById = new Map(ledger.sections.map((section) => [section.id, section]));
   const compactSections = COMPACT_PLANNER_LEDGER_SECTION_IDS.map((sectionId) => {
-    const section = sectionsById.get(sectionId);
-
-    if (section === undefined) {
-      return {
-        section: {
-          id: sectionId,
-          label: sectionId,
-          entries: [],
-        },
-        omittedCount: 0,
-      };
-    }
-
-    const compacted = compactSection({
-      section,
+    const section = sectionsById.get(sectionId) ?? { id: sectionId, label: sectionId, entries: [] };
+    return capFullLedgerSection({
+      section: {
+        ...section,
+        entries: section.entries.map((entry) => ({
+          ...entry,
+          text: truncateTextForCompactPlannerLedger(entry.text, maxEntryTextTokens),
+          value: truncateTextForCompactPlannerLedger(
+            entry.value,
+            Math.max(80, maxEntryTextTokens / 4),
+          ),
+        })),
+      },
       maxEntryTextTokens,
+      options: DEFAULT_COMPACT_SECTION_OPTIONS[sectionId],
+      carriedAccounting: ledger.compaction_accounting?.folded_sections[sectionId],
     });
-
-    return {
-      section: compacted.section,
-      omittedCount: compacted.omittedCount,
-    };
   });
-  const trimmedSections = trimToTokenTarget(
-    compactSections,
+  const fitted = fitLedgerAccounting({
+    states: compactSections,
     targetTokens,
-    ledger.sharedState,
-    options.sharedState,
-  );
-  const hardCappedSections = trimToTokenTarget(
-    trimmedSections,
     hardCapTokens,
-    ledger.sharedState,
-    options.sharedState,
-  );
+    sectionOrder: [...COMPACT_PLANNER_LEDGER_SECTION_IDS].reverse(),
+    measure: (accounting) =>
+      estimatePromptTokens(
+        renderCompactPlannerLedgerPromptSection(
+          renderCompactPlannerLedgerContent(
+            compactSections,
+            ledger.sharedState,
+            options.sharedState,
+            accounting,
+          ),
+        ) ?? "",
+      ),
+  });
   const content = renderCompactPlannerLedgerContent(
-    hardCappedSections,
+    compactSections,
     ledger.sharedState,
     options.sharedState,
+    fitted.accounting,
   );
   const promptSection = renderCompactPlannerLedgerPromptSection(content);
   const entryCountsBySection = emptySectionCountRecord();
@@ -335,11 +227,12 @@ export function buildCompactPlannerLedgerPrompt(
     options.sharedState,
   );
 
-  for (const section of hardCappedSections) {
-    entryCountsBySection[section.section.id] = section.section.entries.length;
+  for (const section of compactSections) {
+    entryCountsBySection[section.section.id] =
+      materializeFullLedgerSectionState(section).entries.length;
     omittedEntryCountsBySection[section.section.id] = section.omittedCount;
     estimatedTokensBySection[section.section.id] = estimatePromptTokens(
-      renderCompactSection(section.section, section.omittedCount),
+      renderSection(materializeFullLedgerSectionState(section)),
     );
   }
 
@@ -348,6 +241,12 @@ export function buildCompactPlannerLedgerPrompt(
     traceSummary: {
       entryCountsBySection,
       omittedEntryCountsBySection,
+      accountingOmittedFromPage: fitted.accountingOmittedFromPage,
+      budgetOutcome: ledgerBudgetOutcome(
+        compactSections,
+        estimatePromptTokens(promptSection ?? ""),
+        hardCapTokens,
+      ),
       estimatedTokensBySection,
       sharedStateEntryCount: sharedStateSummary.renderedEntryCount,
       sharedStateRenderedTokens: sharedStateSummary.estimatedTokens,

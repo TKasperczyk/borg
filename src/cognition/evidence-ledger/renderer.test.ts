@@ -23,7 +23,7 @@ import {
 } from "../shared-state/compiler-prompt.js";
 import { SHARED_STATE_TOOLS } from "../shared-state/schema.js";
 import { SHARED_STATE_PROMPT_WARNING_TOKEN_THRESHOLD } from "../shared-state/constants.js";
-import { LIFECYCLE_OPEN_QUESTION_STATUSES } from "./open-question-handles.js";
+import { omissionCounts } from "./omission-accounting.js";
 import { EVIDENCE_LEDGER_SECTION_DEFINITIONS, type EvidenceLedger } from "./types.js";
 import {
   buildSharedStateArtifactPromptSummary,
@@ -1766,9 +1766,7 @@ describe("compactEvidenceLedger", () => {
       "current_session_stream:strm_transcript_3",
       "current_session_stream:strm_transcript_4",
     ]);
-    expect(rendered).toContain(
-      "Evidence ledger omitted 3 older entries from current_session_transcript",
-    );
+    expect(rendered).toContain('"budget_entries":3');
   });
 
   it("caps oversized sections and trims to the global target with omission trailers", () => {
@@ -1822,8 +1820,12 @@ describe("compactEvidenceLedger", () => {
     expect(compacted.traceSummary.omittedEntryCountsBySection.prior_session_memory).toBeGreaterThan(
       0,
     );
-    expect(rendered).toContain("Evidence ledger omitted");
-    expect(rendered).toContain("lower-priority entries from prior_session_memory");
+    expect(rendered).toContain("Ledger compaction counts:");
+    expect(
+      section(compacted.ledger, "prior_session_memory").entries.some(
+        (entry) => entry.omission_accounting !== undefined,
+      ),
+    ).toBe(true);
     expect(rendered).not.toContain("Omitted by state:");
   });
 
@@ -1866,26 +1868,22 @@ describe("compactEvidenceLedger", () => {
     });
     const rendered = renderEvidenceLedger(compacted.ledger) ?? "";
 
-    expect(rendered).toContain("lower-priority entries from open_questions");
-    expect(rendered).toContain("A status absent from that list had no rows cut here");
-    // The absent status reports on the one admission that could have carried it, not on a draw that
-    // ran and came back empty: the closed statuses never reach this section by the scored draw.
-    expect(rendered).toContain("an absence at admission rather than a budget cut");
-    expect(rendered).not.toContain("is an empty draw");
-
-    const clause = /Omitted by state: ([^.]+)\./.exec(rendered)?.[1] ?? "";
-    const tallied = [...clause.matchAll(/([a-z_]+) (\d+)/g)];
-    const talliedTotal = tallied.reduce((sum, [, , count]) => sum + Number(count), 0);
-
-    // Scored rows lead the section and are retained here, but even when cut they carry no status:
-    // a `key=value` head would otherwise mint one bucket per distinct score.
-    expect(clause).not.toContain("score");
-    expect(tallied.map(([, status]) => status)).toEqual(["abandoned", "open", "resolved"]);
-    expect(talliedTotal).toBe(compacted.traceSummary.omittedEntryCountsBySection.open_questions);
-    expect(talliedTotal).toBe(8);
+    const accounting = section(compacted.ledger, "open_questions").entries.find(
+      (entry) => entry.omission_accounting !== undefined,
+    )!;
+    expect(omissionCounts(accounting)).toEqual({
+      budget_entries: 8,
+      state_open: 2,
+      state_resolved: 4,
+      state_abandoned: 2,
+    });
+    expect(rendered).not.toContain("state_score");
+    expect(omissionCounts(accounting).budget_entries).toBe(
+      compacted.traceSummary.omittedEntryCountsBySection.open_questions,
+    );
   });
 
-  it("names both open questions admissions with the status sets the enums actually carry", () => {
+  it("reports counts only for the actual open question statuses cut", () => {
     const ledger = makeLedger();
     const pressureText = "open question pressure ".repeat(40);
 
@@ -1910,32 +1908,17 @@ describe("compactEvidenceLedger", () => {
       },
     });
     const rendered = renderEvidenceLedger(compacted.ledger) ?? "";
-    const admission =
-      /A status-bearing row reaches this section by one of two admissions[\s\S]*?produced nothing here\./.exec(
-        rendered,
-      )?.[0] ?? "";
-
-    expect(admission).not.toBe("");
-    // The clause no longer ends by calling the store's population unavailable: the section framing
-    // prints it per status, so that sentence would contradict a number two lines above it.
-    expect(rendered).not.toContain("neither admission counts");
-
-    // The two sides of the sentence are derived from the admissions' own status sets rather than
-    // restated, so widening either enum breaks this instead of leaving the sentence quietly false.
-    const handleMatched: readonly string[] = LIFECYCLE_OPEN_QUESTION_STATUSES;
-    const drawn = OPEN_QUESTION_STATUSES.filter((status) => !handleMatched.includes(status));
-
-    expect(handleMatched.length).toBeGreaterThan(0);
-    expect(drawn.length).toBeGreaterThan(0);
-    expect([...handleMatched, ...drawn].sort()).toEqual([...OPEN_QUESTION_STATUSES].sort());
-
-    for (const status of handleMatched) {
-      expect(admission.slice(0, admission.indexOf("only by handle match"))).toContain(status);
+    const accounting = section(compacted.ledger, "open_questions").entries.find(
+      (entry) => entry.omission_accounting !== undefined,
+    )!;
+    const counts = omissionCounts(accounting);
+    const expected: Record<string, number> = { budget_entries: 4 };
+    for (let index = 8; index < 12; index += 1) {
+      const key = `state_${OPEN_QUESTION_STATUSES[index % OPEN_QUESTION_STATUSES.length]!}`;
+      expected[key] = (expected[key] ?? 0) + 1;
     }
-
-    for (const status of drawn) {
-      expect(admission.slice(admission.indexOf("only by handle match"))).toContain(status);
-    }
+    expect(counts).toEqual(expected);
+    expect(rendered).not.toContain("A status-bearing row reaches this section");
   });
 
   it("reports an empty open questions omission composition when no cut row carried a status", () => {
@@ -1965,14 +1948,11 @@ describe("compactEvidenceLedger", () => {
     const rendered = renderEvidenceLedger(compacted.ledger) ?? "";
 
     expect(compacted.traceSummary.omittedEntryCountsBySection.open_questions).toBe(4);
-    expect(rendered).toContain(
-      "none of the omitted entries carried a status, so no status had rows cut here",
-    );
-    // The admission sentence describes the section, not this cut, so an empty tally carries it too:
-    // a reader with zero statuses in the tally is exactly the one about to over-read an absence.
-    expect(rendered).toContain(
-      "A status-bearing row reaches this section by one of two admissions",
-    );
+    const accounting = section(compacted.ledger, "open_questions").entries.find(
+      (entry) => entry.omission_accounting !== undefined,
+    )!;
+    expect(omissionCounts(accounting)).toEqual({ budget_entries: 4 });
+    expect(rendered).not.toContain("state_score");
   });
 
   it("trims recent lived experience before core retrieved evidence sections", () => {
@@ -2106,8 +2086,7 @@ describe("compactEvidenceLedger", () => {
     expect(
       recentEntries.some((entry) => entry.id.startsWith("recent_lived_experience:detail_")),
     ).toBe(false);
-    expect(rendered).toContain("Recent lived experience omitted 30 detail entries from Jun 19");
-    expect(rendered).toContain("omitted detail is summarized in the dated spine above");
+    expect(rendered).toContain('"budget_entries":30');
     expect(
       recentEntries.find((entry) => entry.id === "evidence_ledger_omitted:recent_lived_experience"),
     ).toMatchObject({
@@ -2121,7 +2100,7 @@ describe("compactEvidenceLedger", () => {
     expect(compacted.traceSummary.omittedEntryCountsBySection.recent_lived_experience).toBe(30);
   });
 
-  it("labels recent lived experience dropped-section breadcrumbs as self-private", () => {
+  it("carries recent lived experience counts to trace when no accounting fits", () => {
     const ledger = makeLedger();
 
     section(ledger, "recent_lived_experience").entries = [
@@ -2148,17 +2127,11 @@ describe("compactEvidenceLedger", () => {
         },
       },
     });
-    const dropped = section(compacted.ledger, "recent_lived_experience").entries[0];
-
-    expect(dropped).toMatchObject({
-      id: "evidence_ledger_dropped_section:recent_lived_experience",
-      state: expect.stringContaining("disclosure_class=self_private"),
-      state_metadata: expect.objectContaining({
-        disclosure_label: expect.objectContaining({
-          disclosure_class: "self_private",
-        }),
-      }),
+    expect(section(compacted.ledger, "recent_lived_experience").entries).toEqual([]);
+    expect(compacted.traceSummary.accountingOmittedFromPage?.recent_lived_experience).toEqual({
+      budget_entries: 1,
     });
+    expect(section(compacted.ledger, "current_user_message").entries.length).toBeGreaterThan(0);
   });
 
   it("drops lowest-trust sections when the hard cap is exceeded", () => {
@@ -2205,7 +2178,10 @@ describe("compactEvidenceLedger", () => {
 
     expect(compacted.traceSummary.droppedSections[0]).toBe("prior_session_memory");
     expect(compacted.traceSummary.postCapTokens).toBeLessThanOrEqual(5_000);
-    expect(rendered).toContain("Evidence ledger dropped all entries from prior_session_memory");
+    expect(rendered).toContain("evidence_ledger_dropped_section:prior_session_memory");
+    expect(omissionCounts(section(compacted.ledger, "prior_session_memory").entries[0]!)).toEqual({
+      budget_entries: 12,
+    });
   });
 });
 
@@ -2343,8 +2319,8 @@ describe("renderCompactPlannerLedger", () => {
     expect(estimatePromptTokens(rendered)).toBeLessThanOrEqual(8_000);
     expect(result.traceSummary.totalEstimatedTokens).toBeLessThanOrEqual(8_000);
     expect(result.traceSummary.omittedEntryCountsBySection.action_states).toBeGreaterThan(0);
-    expect(rendered).toContain("Compact planner ledger omitted");
-    expect(rendered).toContain("older entries");
+    expect(rendered).toContain("Ledger compaction counts:");
+    expect(rendered).toContain('"budget_entries":');
     expect(rendered).not.toContain("## 13. Semantic Graph");
   });
 });

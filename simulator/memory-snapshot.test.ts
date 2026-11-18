@@ -365,7 +365,7 @@ describe("simulator memory snapshot", () => {
         canonicalized_by_artifact_entry_id: null,
         session_scope: null,
         session_anchor_id: null,
-        last_referenced_at_ms: clock.now(),
+        last_referenced_at_ms: clock.now() + 1_000,
         last_referenced_turn_counter: null,
       });
       expect(borg.actions.getCreationCountsBySource().api).toBe(1);
@@ -445,6 +445,7 @@ describe("simulator memory snapshot", () => {
       expect(snapshot).toContain("Maya relationship note");
       expect(snapshot).toContain("Keep Maya grounded in memory.");
       expect(snapshot).toContain("Remember Maya as the user's partner");
+      expect(snapshot).toContain(`updated=${clock.now()} last_referenced=${clock.now() + 1_000}`);
       expect(snapshot).toContain("- total_actions=1");
       expect(snapshot).toContain(
         "- state_counts considering=0 committed_to_do=0 scheduled=0 completed=1 not_done=0 declined=0 unknown=0",

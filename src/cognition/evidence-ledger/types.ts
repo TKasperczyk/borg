@@ -35,6 +35,53 @@ export type EvidenceLedgerActionSalienceClass =
   | "completed_recent"
   | "closed_older";
 
+export type ActionThreadOmissionCounts = {
+  omittedThreadCount: number;
+  omittedRecordCount: number;
+  renderedThreadCount: number;
+  renderLimit: number;
+  threadsBuiltCount: number;
+  consideredRecordCount: number;
+  sourceRecordLimit: number;
+  sourceRecordTotal: number | null;
+  salienceDroppedThreadCount: number;
+  staleOpenOmitted?: number;
+  staleOpenCountScope?: "store" | "draw";
+};
+
+export type EvidenceLedgerOmissionCounts = Record<string, number>;
+export type EvidenceLedgerOmissionCountsBySection = Partial<
+  Record<EvidenceLedgerSectionId, EvidenceLedgerOmissionCounts>
+>;
+export type EvidenceLedgerGlobalAccounting = {
+  budget_entries: number;
+  folded_sections: EvidenceLedgerOmissionCountsBySection;
+};
+
+export type EvidenceLedgerBudgetOutcome =
+  | { status: "within_budget" }
+  | {
+      status: "over_budget";
+      reason: "irreducible_framing";
+      violations: Array<{
+        scope: "section" | "page";
+        section_id?: EvidenceLedgerSectionId;
+        cap_tokens: number;
+        rendered_tokens: number;
+        required_entry_ids: string[];
+      }>;
+    };
+
+/** One bounded, counts-only entry per section; lower priority than required content. */
+export type EvidenceLedgerOmissionAccounting = {
+  counts?: EvidenceLedgerOmissionCounts;
+  action_threads?: {
+    counts: ActionThreadOmissionCounts;
+    assembled_entries: Array<{ id: string; stale_open: boolean }>;
+    shown_entry_ids?: string[];
+  };
+};
+
 export type EvidenceLedgerEntry = {
   frame_anomalies?: FrameAnomalyAnnotation[];
   id: string;
@@ -47,6 +94,9 @@ export type EvidenceLedgerEntry = {
   state?: string;
   salience_class?: EvidenceLedgerActionSalienceClass;
   state_metadata?: Record<string, unknown> & { narrative_coverage?: NarrativeCoverage | null };
+  omission_accounting?: EvidenceLedgerOmissionAccounting;
+  /** Ordinary breadcrumbs: fold these counts when the breadcrumb is cut. */
+  omission_counts?: EvidenceLedgerOmissionCounts;
   /** Planner-only presentation metadata for the compact planner digest and its captures. */
   planner_metadata?: {
     decision_outcome_ref?: string;
@@ -179,6 +229,7 @@ export type EvidenceLedgerSection = {
   label: string;
   framing?: EvidenceLedgerSectionFraming;
   entries: EvidenceLedgerEntry[];
+  omitted_from_prompt?: boolean;
 };
 
 export type EvidenceLedgerAudienceStanding = {
@@ -193,6 +244,7 @@ export type EvidenceLedgerTranscriptOmittedReason = "over_budget";
 
 export type EvidenceLedger = {
   sections: EvidenceLedgerSection[];
+  compaction_accounting?: EvidenceLedgerGlobalAccounting;
   audienceStanding?: EvidenceLedgerAudienceStanding;
   sharedState?: SharedStateArtifact | null;
   transcriptIncluded: boolean;

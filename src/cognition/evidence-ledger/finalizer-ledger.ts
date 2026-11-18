@@ -11,6 +11,7 @@ import {
 } from "../prompts/prompt-surface-registry.js";
 import { renderTaggedPromptBlock } from "../deliberation/prompt/sections.js";
 import { renderSection } from "./section-rendering.js";
+import { renderGlobalAccounting } from "./omission-accounting.js";
 import type { EvidenceLedger } from "./types.js";
 
 const HIERARCHY_GUIDANCE = [
@@ -45,10 +46,11 @@ export function renderEvidenceLedger(
     renderImageAttachmentLabels(ledger),
     transcriptStatus,
     `estimated_tokens=${ledger.estimatedTokens}`,
+    renderGlobalAccounting(ledger.compaction_accounting),
     renderSharedStateArtifact(ledger.sharedState, options.sharedState),
     ...ledger.sections.map((section) => renderSection(section)),
   ]
-    .filter((part): part is string => part !== null)
+    .filter((part): part is string => part !== null && part.length > 0)
     .join("\n\n");
 
   const renderContext: PromptSurfaceRenderContext = {

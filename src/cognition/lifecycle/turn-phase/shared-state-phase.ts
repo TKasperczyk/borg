@@ -23,6 +23,7 @@ import {
 } from "../../../memory/common/disclosure-serializers.js";
 import {
   ACTIVE_ACTION_STATES,
+  lastActionActivityAt,
   type ActionRecord,
   type ActionRepository,
 } from "../../../memory/actions/index.js";
@@ -278,6 +279,7 @@ export function selectCurrentAudienceSharedStateActionCandidatesForCanonicalizat
       actions: input.actionRepository.list({
         states: ACTIVE_ACTION_STATES,
         audienceEntityId: input.audienceEntityId,
+        rankByActivity: true,
         limit: SHARED_STATE_ACTION_CANDIDATE_LIMIT,
       }),
       scope: "audience",
@@ -290,6 +292,7 @@ export function selectCurrentAudienceSharedStateActionCandidatesForCanonicalizat
     actions: input.actionRepository.list({
       states: ACTIVE_ACTION_STATES,
       audienceEntityId: null,
+      rankByActivity: true,
       limit: SHARED_STATE_ACTION_CANDIDATE_LIMIT,
     }),
     scope: "global",
@@ -299,7 +302,7 @@ export function selectCurrentAudienceSharedStateActionCandidatesForCanonicalizat
   const selected = [...scoped.values()]
     .sort(
       (left, right) =>
-        right.action.updated_at - left.action.updated_at ||
+        lastActionActivityAt(right.action) - lastActionActivityAt(left.action) ||
         left.action.id.localeCompare(right.action.id),
     )
     .slice(0, SHARED_STATE_ACTION_CANDIDATE_LIMIT);

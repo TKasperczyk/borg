@@ -1326,9 +1326,13 @@ async function buildEvidenceLedgerFinalizerContextInternal(input: {
       omitted_entry_counts: toTraceJsonValue(
         compacted.compacted.traceSummary.omittedEntryCountsBySection,
       ),
+      accounting_omitted_from_page: toTraceJsonValue(
+        compacted.compacted.traceSummary.accountingOmittedFromPage ?? {},
+      ),
       dropped_sections: compacted.compacted.traceSummary.droppedSections,
       target_tokens: compacted.compacted.traceSummary.targetTokens,
       hard_cap_tokens: compacted.compacted.traceSummary.hardCapTokens,
+      budget_outcome: toTraceJsonValue(compacted.compacted.traceSummary.budgetOutcome),
     });
   }
 

@@ -1,7 +1,6 @@
 import {
   ACTION_STATE_METADATA,
   ACTION_STATES,
-  STALE_OPEN_ROW_DAYS,
   actionActivityTier,
   lastActionActivityAt,
   isStaleOpenAction,
@@ -21,6 +20,7 @@ import { actionMemoryDisclosureLabel } from "../../memory/common/disclosure-seri
 import type { ActiveParticipant } from "../participants.js";
 import type { ActionLedgerRepository } from "./builder-types.js";
 import { actionScope, combineScopes, type ScopeResolver } from "./scope-resolver.js";
+import { renderActionThreadOmissionCounts } from "./omission-accounting.js";
 import type { EvidenceLedgerActionSalienceClass, EvidenceLedgerSessionScope } from "./types.js";
 
 export const DEFAULT_ACTION_THREAD_RENDER_LIMIT = 12;
@@ -289,6 +289,7 @@ export function actionThreadStateMetadata(
     origin_state: thread.origin.state,
     current_action_id: thread.current.id,
     current_updated_at: thread.current.updated_at,
+    last_referenced_at_ms: thread.current.last_referenced_at_ms ?? null,
     current_actor: actionActorDisplay(thread.current.actor, entityRepository),
     goal_id: thread.current.goal_id,
     goal_link_basis: thread.current.goal_link_basis ?? "legacy_turn_selected",
@@ -604,16 +605,21 @@ export function renderOlderActionThreadsSummary(input: {
   const { groups } = input;
   const olderThreads = groups.flatMap((group) => group.threads);
   const olderRecordCount = olderThreads.reduce((count, thread) => count + thread.records.length, 0);
-  // Threads now correspond one-to-one to action IDs. Keep the populations and
-  // source-floor count explicit so past similarity-grouped counts are not conflated.
-  const recordsBelowDrawFloor =
-    input.sourceRecordTotal === null
-      ? "unknown_count_source_total_unavailable"
-      : `${Math.max(0, input.sourceRecordTotal - input.consideredRecordCount)}`;
-  const sourceRecordTotalField =
-    input.sourceRecordTotal === null
-      ? "source_record_total=unavailable"
-      : `source_record_total=${input.sourceRecordTotal}; records_below_draw_floor is that total minus records_considered, not a separate count`;
+  return [
+    renderActionThreadOmissionCounts({
+      ...input,
+      omittedThreadCount: olderThreads.length,
+      omittedRecordCount: olderRecordCount,
+    }),
+    renderOlderActionThreadDetails(groups),
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+export function renderOlderActionThreadDetails(
+  groups: readonly OlderActionThreadSummaryGroup[],
+): string {
   // The internal-use sentence for the group lines below, hoisted out of them. It stays a separate
   // line rather than joining the counts: this section truncates from the tail, and a note attached
   // to the counts line would survive at the cost of the group lines it describes.
@@ -622,13 +628,6 @@ export function renderOlderActionThreadsSummary(input: {
     : [];
 
   return [
-    `Action threads omitted from this section: threads=${olderThreads.length}, records=${olderRecordCount}.`,
-    ...(input.staleOpenOmitted === undefined
-      ? []
-      : [
-          `${input.staleOpenOmitted} older open records (no activity for over ${STALE_OPEN_ROW_DAYS} days) not shown${input.staleOpenCountScope === "draw" ? " within this draw; store total unavailable" : " across the store"}. This count overlaps the omitted and below-draw populations.`,
-        ]),
-    `Not counted above: salience_dropped_threads=${input.salienceDroppedThreadCount}, records_below_draw_floor=${recordsBelowDrawFloor} (threads_built=${input.threadsBuiltCount} = rendered ${input.renderedThreadCount} + omitted ${olderThreads.length} + dropped ${input.salienceDroppedThreadCount}; render_slots=${input.renderLimit}; records_considered=${input.consideredRecordCount} records, source_record_limit=${input.sourceRecordLimit}, ${sourceRecordTotalField}).`,
     ...disclosureNote,
     ...groups.map(
       (group) =>

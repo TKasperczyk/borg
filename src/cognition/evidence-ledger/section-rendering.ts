@@ -1,5 +1,6 @@
 import { renderFrameAnomalyAnnotations } from "../../stream/frame-anomaly.js";
 import { renderNarrativeCoverage } from "../../memory/self/narrative-coverage.js";
+import { reconcileOmissionAccounting, renderOmissionAccounting } from "./omission-accounting.js";
 import type {
   EvidenceLedgerEntry,
   EvidenceLedgerSection,
@@ -33,8 +34,13 @@ export function renderEntry(entry: EvidenceLedgerEntry): string {
     entry.state_metadata?.source_kind === "autobiographical_period"
       ? `  ${renderNarrativeCoverage(entry.state_metadata.narrative_coverage)}`
       : null,
-    entry.value === undefined ? null : `  value: ${entry.value}`,
-    entry.text === undefined ? null : `  text:\n${entry.text}`,
+    entry.value === undefined || entry.omission_accounting !== undefined
+      ? null
+      : `  value: ${entry.value}`,
+    entry.omission_accounting === undefined ? null : renderOmissionAccounting(entry),
+    entry.text === undefined || entry.omission_accounting !== undefined
+      ? null
+      : `  text:\n${entry.text}`,
   ].filter((part): part is string => part !== null);
 
   return [`- ${metadata.join(" ")}`, ...body].join("\n");
@@ -74,6 +80,8 @@ function orderedFramingCounts(
 }
 
 export function renderSection(section: EvidenceLedgerSection): string {
+  if (section.omitted_from_prompt) return "";
+  section = reconcileOmissionAccounting(section);
   const framingLines =
     section.framing === undefined
       ? []

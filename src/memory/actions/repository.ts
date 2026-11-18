@@ -263,6 +263,8 @@ export type ActionRecordListFilter = {
   rankAudienceEntityIds?: readonly EntityId[];
   rankActorEntityIds?: readonly EntityId[];
   prioritizeActive?: boolean;
+  /** Offer recency only; no page age tiers or stale-row limit. */
+  rankByActivity?: boolean;
   /** Page draw: live open, recent other states, stale open, then older closed. */
   activityNowMs?: number;
   reserveActors?: readonly ActionActor[];
@@ -702,7 +704,7 @@ export class ActionRepository {
         }
         const next = {
           ...current,
-          updated_at: Math.max(current.updated_at, input.nowMs),
+          // A reference records attention, not a change to the action itself.
           last_referenced_at_ms: monotonic(current.last_referenced_at_ms, input.nowMs),
           last_referenced_turn_counter: monotonic(
             current.last_referenced_turn_counter,
@@ -815,6 +817,7 @@ export class ActionRepository {
       ...("open_question_id" in patch ? {} : { open_question_id: current.open_question_id }),
     });
     const nextState = parsedPatch.state ?? current.state;
+    // This operator/admin bypass stamps the clock; the reference-only guarantee excludes it.
     const nowMs = parsedPatch.updated_at ?? this.clock.now();
     const timestampField = stateTimestampField(nextState);
     const next = actionRecordSchema.parse({
@@ -1054,7 +1057,12 @@ export class ActionRepository {
       }
     }
 
-    const ordering = [...orderBy, "updated_at DESC", "id ASC"].join(", ");
+    const ordering = [
+      ...orderBy,
+      ...(filter.rankByActivity ? [`${ACTION_ACTIVITY_SQL} DESC`] : []),
+      "updated_at DESC",
+      "id ASC",
+    ].join(", ");
     if (options.limitStaleOpen && filter.activityNowMs !== undefined) {
       const stale = `state IN (${ACTIVE_ACTION_STATES.map(() => "?").join(", ")}) AND ${ACTION_ACTIVITY_SQL} < ?`;
       const staleValues = [...ACTIVE_ACTION_STATES, actionActivityCutoff(filter.activityNowMs)];

@@ -241,6 +241,64 @@ function runMinimalRetrievalPhase(options: TurnPhaseCoordinatorOptions, turnId: 
   });
 }
 
+describe("evidence ledger budget outcomes", () => {
+  it("records an irreducible required-entry overflow in the caller's trace without removing its handle", async () => {
+    const db = openDatabase(":memory:", { migrations: creatorDirectiveMigrations });
+    const repository = new CreatorDirectiveRepository({ db, clock: new FixedClock(2_000) });
+    const options = minimalRetrievalPhaseOptions(repository);
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-required-entry-budget-"));
+    options.config = {
+      ...options.config,
+      generation: {
+        ...options.config.generation,
+        evidenceLedger: {
+          ...options.config.generation.evidenceLedger,
+          enabled: true,
+          finalizerHardCapTokens: 1,
+        },
+      },
+    };
+    options.openQuestionsRepository = {
+      ...options.openQuestionsRepository,
+      findByHandles: () => [],
+      get: () => null,
+      resolve: vi.fn(),
+    };
+    options.createStreamReader = (sessionId) => new StreamReader({ dataDir: tempDir, sessionId });
+    const emit = vi.fn();
+    options.tracer = { enabled: true, includePayloads: false, emit };
+    try {
+      const result = await runMinimalRetrievalPhase(options, "turn-required-entry-overflow");
+      const entry = result.evidenceLedgerContext.ledger?.sections.find(
+        (section) => section.id === "current_user_message",
+      )?.entries[0];
+      expect(entry).toMatchObject({
+        id: "current_user_message:turn-required-entry-overflow",
+        text: expect.stringContaining("[truncated]"),
+      });
+      expect(emit).toHaveBeenCalledWith(
+        "evidence_ledger.compaction.completed",
+        expect.objectContaining({
+          budget_outcome: expect.objectContaining({
+            status: "over_budget",
+            reason: "irreducible_framing",
+            violations: expect.arrayContaining([
+              expect.objectContaining({
+                scope: "page",
+                cap_tokens: 1,
+                required_entry_ids: ["current_user_message:turn-required-entry-overflow"],
+              }),
+            ]),
+          }),
+        }),
+      );
+    } finally {
+      db.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("autonomy scheduler mechanism-evidence provider", () => {
   it.each([false, true])(
     "carries attention metadata and keeps scheduler evidence when the index fails=%s",

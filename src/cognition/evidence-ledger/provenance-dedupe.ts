@@ -68,6 +68,7 @@ function evidenceHandles(
   entry: EvidenceLedgerEntry,
 ): Set<string> {
   const handles = new Set<string>();
+  if (entry.omission_accounting !== undefined) return handles;
   const metadata = entry.state_metadata;
   const currentSessionStreamId = suffixAfterPrefix(entry.id, "current_session_stream:");
   const episodeId = suffixAfterPrefix(entry.id, "episode:");
@@ -149,6 +150,7 @@ const RETRIEVED_OBJECT_ID_KEYS = [
 // show the same memory twice, so they fold even inside one section, where rows that merely share
 // evidence stay apart. A row naming no single object has none and folds only by provenance.
 function objectHandle(entry: EvidenceLedgerEntry): string | null {
+  if (entry.omission_accounting !== undefined) return null;
   for (const [prefix, type] of OBJECT_ID_PREFIXES) {
     const value = suffixAfterPrefix(entry.id, prefix);
 

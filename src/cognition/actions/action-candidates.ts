@@ -26,6 +26,7 @@ export function actionCandidateForModel(action: ActionRecord): Record<string, un
     audience_entity_id: action.audience_entity_id,
     created_at: action.created_at,
     updated_at: action.updated_at,
+    last_referenced_at_ms: action.last_referenced_at_ms ?? null,
     session_scope: action.session_scope,
     session_anchor_id: action.session_anchor_id,
     last_referenced_turn_counter: action.last_referenced_turn_counter,
@@ -85,6 +86,7 @@ export async function retrieveActionCandidates(input: {
   const recent = input.repository.list({
     recallAllAudiences: true,
     prioritizeActive: true,
+    rankByActivity: true,
     reserveActors: [
       "borg",
       ...(input.speakerEntityId == null ? [] : [input.speakerEntityId]),
