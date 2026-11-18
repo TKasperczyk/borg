@@ -1963,6 +1963,66 @@ describe("reflector", () => {
     });
   });
 
+  it("keeps a progress note whose goal id names no active goal in the stream instead of dropping it unseen", async () => {
+    const harness = await createExecutiveReflectionHarness(new FixedClock(4_750));
+    cleanup.push(harness.cleanup);
+    const goal = harness.goalsRepository.add({
+      description: "Apollo launch plan",
+      priority: 8,
+      provenance: { kind: "manual" },
+    });
+    // Same four-character handle, different suffix: the id the model wrote is not the goal's.
+    const unknownGoalId = `${goal.id.slice(0, 9)}h0lbpyfuvbx2`;
+    const llm = new FakeLLMClient({
+      responses: [
+        createReflectionResponse([
+          { goal_id: goal.id, evidence: "Die Prüfung der Startbereitschaft hat begonnen." },
+          { goal_id: unknownGoalId, evidence: "準備レビューの記録を更新した。" },
+        ]),
+      ],
+    });
+    const reflector = new Reflector({
+      clock: harness.clock,
+      llmClient: llm,
+      model: "haiku",
+      episodicRepository: harness.episodicRepository,
+      goalsRepository: harness.goalsRepository,
+      traitsRepository: harness.traitsRepository,
+      executiveStepsRepository: harness.executiveStepsRepository,
+    });
+
+    const result = await reflector.reflect(
+      createExecutiveReflectionContext({ origin: "user", goal }),
+      harness.writer,
+    );
+
+    expect(unknownGoalId).not.toBe(goal.id);
+    expect(harness.goalsRepository.get(goal.id)).toMatchObject({
+      progress_notes: "[4750] Die Prüfung der Startbereitschaft hat begonnen.",
+      last_progress_ts: 4_750,
+    });
+    expect(result.effects.updatedGoals.map((updated) => updated.id)).toEqual([goal.id]);
+    const dropped = new StreamReader({ dataDir: harness.tempDir, sessionId: DEFAULT_SESSION_ID })
+      .tail(20)
+      .filter(
+        (entry) =>
+          entry.kind === "internal_event" &&
+          typeof entry.content === "object" &&
+          entry.content !== null &&
+          "hook" in entry.content &&
+          entry.content.hook === "reflector_advanced_goal_dropped",
+      )
+      .map((entry) => entry.content);
+    expect(dropped).toEqual([
+      {
+        hook: "reflector_advanced_goal_dropped",
+        goal_id: unknownGoalId,
+        reason: "goal_handle_not_in_turn",
+        evidence: "準備レビューの記録を更新した。",
+      },
+    ]);
+  });
+
   it("retires goals from autonomous reflection output through the goal status path", async () => {
     const harness = await createExecutiveReflectionHarness(new FixedClock(4_800));
     cleanup.push(harness.cleanup);

@@ -1083,6 +1083,14 @@ export class Reflector {
       const goal = activeGoalsById.get(advancedGoal.goal_id as GoalRecord["id"]);
 
       if (goal === undefined) {
+        // The id names no active goal of this turn, so no goal receives the note. Keep
+        // the note and the id as written in the stream rather than dropping them unseen.
+        await this.appendReflectorInternalEvent(streamWriter, {
+          hook: "reflector_advanced_goal_dropped",
+          goal_id: advancedGoal.goal_id,
+          reason: "goal_handle_not_in_turn",
+          evidence: advancedGoal.evidence,
+        });
         continue;
       }
 
