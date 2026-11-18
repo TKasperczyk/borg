@@ -14,6 +14,11 @@ import { reconcileAutobiographicalRecallCapMetadata } from "./autobiographical-r
 import { estimateEvidenceLedgerPromptTokens } from "./finalizer-ledger.js";
 import { renderEntry, renderSection } from "./section-rendering.js";
 import {
+  ledgerCorrectionCount,
+  ledgerCorrectionRows,
+  withLedgerCorrectionRows,
+} from "./resolution-correction-budget.js";
+import {
   reconcileOmissionAccounting,
   omissionCounts,
   mergeOmissionCounts,
@@ -418,6 +423,21 @@ export function sectionAccountingEntry(
     ...prior.map(omissionCounts),
     ...removedNotes.map((entry) => entry.omission_counts),
   );
+  // A second compaction carries the earlier population total; it must not add it again.
+  const correctionTotal = Math.max(
+    counts.resolution_correction_count ?? 0,
+    (state.sourceEntries ?? []).reduce((sum, entry) => sum + ledgerCorrectionCount(entry), 0),
+  );
+  const correctionOmitted =
+    correctionTotal -
+    state.section.entries.reduce((sum, entry) => sum + ledgerCorrectionRows(entry).length, 0);
+  if (correctionOmitted > 0) {
+    counts.resolution_correction_count = correctionTotal;
+    counts.resolution_corrections_omitted_count = correctionOmitted;
+  } else {
+    delete counts.resolution_correction_count;
+    delete counts.resolution_corrections_omitted_count;
+  }
   if (state.omittedCount === 0 && Object.keys(counts).length === 0) return undefined;
   const entry = fullLedgerOmittedEntry(
     state.section,
@@ -707,7 +727,9 @@ export function capFullLedgerSection(input: {
     ...input,
     section: {
       ...input.section,
-      entries: ordinary.filter((entry) => !isRequiredLedgerEntry(input.section, entry)),
+      entries: ordinary
+        .filter((entry) => !isRequiredLedgerEntry(input.section, entry))
+        .map((entry) => withLedgerCorrectionRows(entry, [])),
     },
     options: {
       ...input.options,
@@ -721,32 +743,78 @@ export function capFullLedgerSection(input: {
   state.sourceAccounting = accounting;
   state.sectionTokenLimit = input.options.maxTokens;
   state.section.entries = [
-    ...required.map((entry) => compactFullLedgerEntry(entry, input.maxEntryTextTokens)),
+    ...required.map((entry) =>
+      withLedgerCorrectionRows(compactFullLedgerEntry(entry, input.maxEntryTextTokens), []),
+    ),
     ...state.section.entries,
   ];
+  admitResolutionCorrections(state);
   const account = sectionAccountingEntry(state);
   if (
     input.section.omitted_from_prompt ||
     (account !== undefined && renderEntry(account).length > SECTION_ACCOUNTING_MAX_CHARS)
   )
     state.accountingMode = "global";
-  while (
-    estimatePromptTokens(renderSection(materializeFullLedgerSectionState(state))) >
-    input.options.maxTokens
-  ) {
+  fitSectionAccounting(state);
+  admitResolutionCorrections(state);
+  return state;
+}
+
+function fitSectionAccounting(state: FullLedgerSectionState): void {
+  const tokens = () =>
+    estimatePromptTokens(renderSection(materializeFullLedgerSectionState(state)));
+  const limit = state.sectionTokenLimit!;
+  while (tokens() > limit) {
+    if (removeLowestPriorityCorrection(state)) continue;
     if (!removeLowestPriorityOrdinaryEntry(state)) break;
   }
-  if (
-    estimatePromptTokens(renderSection(materializeFullLedgerSectionState(state))) >
-    input.options.maxTokens
-  ) {
+  if (tokens() > limit) {
     state.accountingMode = "global";
     if (state.section.entries.length === 0) state.section.omitted_from_prompt = true;
   }
-  fitRequiredEntryText([state], input.options.maxTokens, () =>
-    estimatePromptTokens(renderSection(materializeFullLedgerSectionState(state))),
+  fitRequiredEntryText([state], limit, tokens);
+}
+
+/** Keep note envelopes first; only complete, labelled correction rows use the remaining space. */
+function admitResolutionCorrections(state: FullLedgerSectionState): void {
+  const sources = new Map((state.sourceEntries ?? []).map((entry) => [entry.id, entry]));
+  const rows = state.section.entries.map((entry) =>
+    [...ledgerCorrectionRows(sources.get(entry.id) ?? entry)].sort(
+      (left, right) => right.seq - left.seq,
+    ),
   );
-  return state;
+  if (rows.every((corrections) => corrections.length === 0)) return;
+  const base = state.section.entries.map((entry) => withLedgerCorrectionRows(entry, []));
+  const fits = () =>
+    estimatePromptTokens(renderSection(materializeFullLedgerSectionState(state))) <=
+    state.sectionTokenLimit!;
+  // Showing all rows can be cheaper than adding a separate omission entry for tiny rows.
+  state.section.entries = base.map((entry, index) => withLedgerCorrectionRows(entry, rows[index]!));
+  if (fits()) return;
+  state.section.entries = [...base];
+  for (let index = 0; index < base.length; index++) {
+    for (let count = 1; count <= rows[index]!.length; count++) {
+      const previous = state.section.entries[index]!;
+      state.section.entries[index] = withLedgerCorrectionRows(
+        base[index]!,
+        rows[index]!.slice(0, count),
+      );
+      if (fits()) continue;
+      state.section.entries[index] = previous;
+      break;
+    }
+  }
+}
+
+function removeLowestPriorityCorrection(state: FullLedgerSectionState): boolean {
+  for (let index = state.section.entries.length - 1; index >= 0; index--) {
+    const entry = state.section.entries[index]!;
+    const rows = ledgerCorrectionRows(entry);
+    if (rows.length === 0) continue;
+    state.section.entries[index] = withLedgerCorrectionRows(entry, rows.slice(0, -1));
+    return true;
+  }
+  return false;
 }
 
 function capOrdinaryFullLedgerSection(input: {
@@ -977,6 +1045,12 @@ export function fitLedgerAccounting(input: {
       state.section.entries.some((entry) => !isRequiredLedgerEntry(state.section, entry)),
     );
     if (state === undefined) break;
+    // A global cut can omit a correction without erasing the note or its correction counts.
+    if (removeLowestPriorityCorrection(state)) {
+      // The first omitted correction adds accounting framing, which also has to fit its section.
+      fitSectionAccounting(state);
+      continue;
+    }
     if (hardDrop) {
       while (removeLowestPriorityOrdinaryEntry(state)) {
         /* whole section */

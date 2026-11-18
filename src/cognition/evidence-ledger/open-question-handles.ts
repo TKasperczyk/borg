@@ -1,8 +1,5 @@
 import type { OpenQuestion, OpenQuestionStatus } from "../../memory/self/index.js";
-import {
-  formatResolutionCorrections,
-  RESOLUTION_CORRECTION_PAGE_MAX_CHARS,
-} from "../../memory/self/resolution-corrections.js";
+import { formatResolutionCorrections } from "../../memory/self/resolution-corrections.js";
 import { formatRelativeAge } from "../../util/relative-time.js";
 import type { EvidenceLedgerBuildInput } from "./builder-types.js";
 import type { EpisodeId } from "../../util/ids.js";
@@ -211,10 +208,8 @@ export function openQuestionStateMetadata(
   if (question.status === "resolved") {
     return {
       resolution_note: question.resolution_note,
-      ...formatResolutionCorrections(
-        { resolution_corrections: question.resolution_corrections },
-        { maxChars: RESOLUTION_CORRECTION_PAGE_MAX_CHARS },
-      ),
+      // The ledger compactor budgets these rows against the complete section, newest first.
+      ...formatResolutionCorrections({ resolution_corrections: question.resolution_corrections }),
       resolved_at: question.resolved_at,
       resolution_evidence_episode_ids: question.resolution_evidence_episode_ids,
       resolution_evidence_stream_entry_ids: question.resolution_evidence_stream_entry_ids,

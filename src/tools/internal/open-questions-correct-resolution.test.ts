@@ -1,6 +1,9 @@
 import { openQuestionResolutionIdentity } from "../../memory/self/resolution-corrections.js";
 import { EvidenceLedgerBuilder } from "../../cognition/evidence-ledger/builder.js";
 import { renderEvidenceLedger } from "../../cognition/evidence-ledger/renderer.js";
+import { compactEvidenceLedger } from "../../cognition/evidence-ledger/compaction.js";
+import { renderSection } from "../../cognition/evidence-ledger/section-rendering.js";
+import { estimatePromptTokens } from "../../util/token-estimate.js";
 import { StreamReader } from "../../stream/index.js";
 import { createWorkingMemory } from "../../memory/working/index.js";
 import {
@@ -547,14 +550,16 @@ describe("resolved question corrections", () => {
     expect(boundedWake).toContain('"total": 2');
   });
 
-  it("counts omitted corrections on ledger and identity pages without hiding that a note is corrected", async () => {
+  it("defers ledger correction omissions to compaction while identity pages retain their own allowance", async () => {
     await invoke({ correction_note: "a".repeat(2_000) });
     await invoke({ correction_note: "b".repeat(2_000) });
     const stored = h.openQuestionsRepository.get(question.id)!;
-    expect(openQuestionStateMetadata(stored, clock.now())).toMatchObject({
+    const metadata = openQuestionStateMetadata(stored, clock.now());
+    expect(metadata).toMatchObject({
       resolution_correction_count: 2,
-      resolution_corrections_omitted: { count: 1, total: 2, reason: "budget" },
+      resolution_corrections: [{ seq: 2 }, { seq: 1 }],
     });
+    expect(metadata).not.toHaveProperty("resolution_corrections_omitted");
     const history = createIdentityEventsListForCognitionTool({
       listEvents: () => h.identityEventRepository.list({ recordId: stored.id }),
     });
@@ -623,7 +628,19 @@ describe("resolved question corrections", () => {
         pendingCorrections: [],
         frameAnomaly: null,
       });
-      const renderedLedger = renderEvidenceLedger(ledger)!;
+      // This deliberately long note needs a larger section; corrections share its remaining space.
+      const compacted = compactEvidenceLedger(ledger, {
+        sectionOptions: { open_questions: { maxTokens: 5_000 } },
+      });
+      expect(compacted.traceSummary.budgetOutcome).toEqual({ status: "within_budget" });
+      expect(
+        estimatePromptTokens(
+          renderSection(
+            compacted.ledger.sections.find((section) => section.id === "open_questions")!,
+          ),
+        ),
+      ).toBeLessThanOrEqual(5_000);
+      const renderedLedger = renderEvidenceLedger(compacted.ledger)!;
       const facade = createBorgFacades(h as unknown as BorgDependencies);
       const apiRecord = facade.self.openQuestions.list({ status: "resolved" })[0]!;
       const why = await new CorrectionService(h).why(stored.id);
