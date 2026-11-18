@@ -15,6 +15,7 @@ import {
   TestEmbeddingClient,
   type OfflineTestHarness,
 } from "../test-support.js";
+import { recordTestAnnotation, insertMalformedTestAnnotations } from "../evidence-test-support.js";
 import { ConsolidatorProcess } from "./index.js";
 import { migrationRowText } from "../../../scripts/embedding-migration/inventory.js";
 
@@ -553,6 +554,12 @@ describe("consolidator process", () => {
     await harness.episodicRepository.createEpisode(first);
     await harness.episodicRepository.createEpisode(second);
 
+    insertMalformedTestAnnotations(harness, first.id);
+    recordTestAnnotation(
+      harness.identityEventRepository,
+      first.id,
+      "更正：这是暂定观察。 Korekta audytowana.",
+    );
     const process = createProcess(harness);
     const firstRun = await process.run(harness.createContext(), {
       dryRun: false,
@@ -574,6 +581,16 @@ describe("consolidator process", () => {
     expect(firstRun.changes).toHaveLength(1);
     await harness.episodicRepository.createEpisode(third);
 
+    recordTestAnnotation(
+      harness.identityEventRepository,
+      firstVersionId,
+      "A correction targeting only this version.",
+    );
+    recordTestAnnotation(
+      harness.identityEventRepository,
+      third.id,
+      "A correction targeting the new raw.",
+    );
     const extensionPlan = await process.plan(harness.createContext());
     const prompt = String(llm.requests[1]?.messages[0]?.content ?? "");
 
@@ -589,6 +606,40 @@ describe("consolidator process", () => {
     expect(extensionPlan.items[0]?.source_episode_ids).not.toContain(firstVersionId);
     expect(prompt).toContain("Previous current consolidation context");
     expect(prompt).toContain("Planning raw three");
+    const rows = prompt
+      .split("\n")
+      .filter((line) => line.startsWith("{"))
+      .map((line) => JSON.parse(line));
+    const previous = rows.find((row) => row.id === firstVersionId);
+    expect(previous).toMatchObject({
+      narrative: firstNarrative,
+      annotations: [{ text: "A correction targeting only this version." }],
+      member_annotations: [
+        {
+          record_type: "episode",
+          record_id: first.id,
+          lifecycle: "inactive",
+          annotations: [{ text: "更正：这是暂定观察。 Korekta audytowana." }],
+        },
+      ],
+    });
+    expect(rows.find((row) => row.id === third.id)).toMatchObject({
+      narrative: third.narrative,
+      annotations: [{ text: "A correction targeting the new raw." }],
+    });
+    const initialPrompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+    const initialRows = initialPrompt
+      .split("\n")
+      .filter((line) => line.startsWith("{"))
+      .map((line) => JSON.parse(line));
+    expect(initialRows.find((row) => row.id === first.id)).toMatchObject({
+      narrative: first.narrative,
+      annotations: [{ text: "更正：这是暂定观察。 Korekta audytowana." }],
+    });
+    expect(initialRows.find((row) => row.id === second.id)).not.toHaveProperty("annotations");
+    expect((await harness.episodicRepository.getMany([first.id]))[0]!.narrative).toBe(
+      first.narrative,
+    );
 
     const extensionResult = await process.apply(harness.createContext(), extensionPlan);
     const updatedFamily = harness.episodicRepository.listConsolidationFamilies()[0]!;

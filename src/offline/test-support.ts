@@ -672,6 +672,7 @@ export async function createOfflineTestHarness(
   const identityEventRepository = new IdentityEventRepository({
     db,
     clock,
+    tracer: options.tracer,
   });
   const openQuestionsRepository = new OpenQuestionsRepository({
     identityEventRepository,

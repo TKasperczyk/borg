@@ -1138,6 +1138,7 @@ export function createBorgFacades(deps: BorgDependencies): BorgFacades {
           edgeRepository: deps.semanticEdgeRepository,
           embeddingClient: deps.embeddingClient,
           episodicRepository: deps.episodicRepository,
+          identityEventRepository: deps.identityEventRepository,
           llmClient: deps.llmFactory(),
           model: deps.config.anthropic.models.extraction,
           semanticReviewService: deps.semanticReviewService,

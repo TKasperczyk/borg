@@ -8,7 +8,13 @@ import {
   renderParticipantRoster,
   type ParticipantRosterForRendering,
 } from "../common/participant-roster-rendering.js";
-import { memoryDisclosurePayloadFields } from "../common/disclosure-serializers.js";
+import {
+  episodeEvidencePromptRow,
+  withEpisodeEvidenceContext,
+  EVIDENCE_GUIDANCE,
+  renderEvidencePromptLines,
+} from "../common/episode-evidence.js";
+import type { IdentityEventRepository } from "../identity/repository.js";
 import {
   HEADCOUNT_SET_GROUNDING_PROMPT,
   RELATIONSHIP_LABEL_WRITE_GROUNDING_PROMPT,
@@ -37,7 +43,6 @@ import {
   type StreamEntryId,
 } from "../../util/ids.js";
 import { cosineSimilarity } from "../../retrieval/embedding-similarity.js";
-import { memoryDisclosureLabelFromEpisodeAccess } from "../common/disclosure-label.js";
 import {
   episodeParticipantDisplayNames,
   episodeParticipantEntityIds,
@@ -151,7 +156,8 @@ export type SemanticExtractorOptions = {
   nodeRepository: SemanticNodeRepository;
   edgeRepository: SemanticEdgeRepository;
   embeddingClient: EmbeddingClient;
-  episodicRepository: Pick<EpisodicRepository, "getMany">;
+  episodicRepository: Pick<EpisodicRepository, "getMany" | "getLifecycleMany">;
+  identityEventRepository: Pick<IdentityEventRepository, "listAnnotationsForTargets">;
   llmClient: LLMClient;
   model: string;
   semanticReviewService?: Pick<SemanticReviewService, "queueDuplicateReview">;
@@ -210,8 +216,9 @@ function buildPrompt(input: {
       ? "Known semantic node kinds already in graph: none."
       : `Known semantic node kinds already in graph: ${input.knownNodeKinds.join(", ")}.`;
 
-  return [
+  return renderEvidencePromptLines([
     "Extract semantic knowledge from the provided episodes.",
+    EVIDENCE_GUIDANCE,
     `Emit your result by calling the ${EXTRACT_SEMANTIC_TOOL_NAME} tool exactly once.`,
     "Populate the tool arguments directly with arrays and objects. Do not put JSON, XML tags, or parameter wrappers inside string fields.",
     "Extract all salient semantic nodes and edges that are grounded in the provided episodes.",
@@ -258,12 +265,7 @@ function buildPrompt(input: {
     "Episodes:",
     ...input.episodes.map((episode) => {
       const access = normalizeEpisodeAccess(episode);
-      const disclosureLabel = memoryDisclosureLabelFromEpisodeAccess(episode);
-
-      return JSON.stringify({
-        id: episode.id,
-        title: episode.title,
-        narrative: episode.narrative,
+      return episodeEvidencePromptRow(episode, {
         participants: episodeParticipantDisplayNames(episode.participants),
         participant_entities: episodeParticipantEntityIds(episode.participants).map((entityId) => ({
           entity_id: entityId,
@@ -275,10 +277,9 @@ function buildPrompt(input: {
         shared: access.shared,
         location: episode.location,
         tags: episode.tags,
-        ...memoryDisclosurePayloadFields(disclosureLabel),
       });
     }),
-  ].join("\n");
+  ]);
 }
 
 function parseResponse(input: unknown): {
@@ -1175,6 +1176,7 @@ export class SemanticExtractor {
       };
     }
 
+    const promptEpisodes = await withEpisodeEvidenceContext(this.options, episodes);
     const knownNodeKinds = this.options.nodeRepository.listDistinctKinds();
     const identityAnchors = identityAnchorsForExtraction(this.options);
     let parsed: ReturnType<typeof parseResponse>;
@@ -1193,7 +1195,7 @@ export class SemanticExtractor {
               {
                 role: "user",
                 content: buildPrompt({
-                  episodes,
+                  episodes: promptEpisodes,
                   participantRoster: this.options.participantRoster ?? null,
                   selfEntityId: this.options.selfEntityId ?? null,
                   identityAnchors,

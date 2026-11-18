@@ -10,7 +10,11 @@ import {
 } from "../../llm/index.js";
 import { BudgetExceededError } from "../../util/errors.js";
 import type { EntityId } from "../../util/ids.js";
-import { episodeEvidencePromptRow } from "../evidence-labels.js";
+import {
+  episodeEvidencePromptRow,
+  EVIDENCE_GUIDANCE,
+  renderEvidencePromptJson,
+} from "../evidence-labels.js";
 import { serializableRecordWithFallbackDisclosure } from "../record-serialization.js";
 
 // Thinking shares the output allowance with the structured result.
@@ -107,28 +111,25 @@ const emitBeliefRevisionTool = {
 };
 
 function promptPayload(input: BeliefRevisionLlmInput): string {
-  return JSON.stringify(
-    {
-      task: "I re-examine exactly one local semantic belief revision item from my memory. I do not infer beyond the provided target-local evidence.",
-      review_id: input.review_id,
-      audience_entity_id: input.audience_entity_id,
-      evidence_episode_ids: input.evidence_episode_ids,
-      target: serializableRecordWithFallbackDisclosure(input.target),
-      invalidated_edge: serializableRecordWithFallbackDisclosure(input.invalidated_edge),
-      surviving_supports: serializableRecordWithFallbackDisclosure(input.surviving_supports),
-      evidence_episodes: input.evidence_episodes.map((episode) =>
-        episodeEvidencePromptRow(episode, {
-          tags: episode.tags,
-          source_stream_ids: episode.source_stream_ids,
-          start_time: episode.start_time,
-          end_time: episode.end_time,
-        }),
-      ),
-      allowed_verdicts: ["keep", "weaken", "archive_node", "invalidate_edge", "manual_review"],
-    },
-    null,
-    2,
-  );
+  return renderEvidencePromptJson({
+    task: "I re-examine exactly one local semantic belief revision item from my memory. I do not infer beyond the provided target-local evidence.",
+    evidence_guidance: EVIDENCE_GUIDANCE,
+    review_id: input.review_id,
+    audience_entity_id: input.audience_entity_id,
+    evidence_episode_ids: input.evidence_episode_ids,
+    target: serializableRecordWithFallbackDisclosure(input.target),
+    invalidated_edge: serializableRecordWithFallbackDisclosure(input.invalidated_edge),
+    surviving_supports: serializableRecordWithFallbackDisclosure(input.surviving_supports),
+    evidence_episodes: input.evidence_episodes.map((episode) =>
+      episodeEvidencePromptRow(episode, {
+        tags: episode.tags,
+        source_stream_ids: episode.source_stream_ids,
+        start_time: episode.start_time,
+        end_time: episode.end_time,
+      }),
+    ),
+    allowed_verdicts: ["keep", "weaken", "archive_node", "invalidate_edge", "manual_review"],
+  });
 }
 
 function tokensUsed(usage: StructuredToolCallUsage): number {

@@ -24,6 +24,7 @@ export {
   type IdentityUpdateResult,
 } from "./service.js";
 export { IdentityEventRepository, type IdentityEventRepositoryOptions } from "./repository.js";
+export type { AnnotationTarget, AuditedAnnotation, TargetAnnotations } from "./annotations.js";
 export {
   IDENTITY_EVENT_COGNITION_CHANGE_EXCERPT_MAX_CHARS,
   IDENTITY_RECORD_TYPES,

@@ -22,6 +22,10 @@ import { BudgetExceededError, StorageError } from "../../util/errors.js";
 import type { ReverserRegistry } from "../audit-log.js";
 import { getBudgetErrorTokens, withBudget } from "../budget.js";
 import { extractedEpisodeIds } from "../extracted-episodes.js";
+import {
+  withEpisodeEvidenceContext,
+  type EpisodeWithEvidenceContext,
+} from "../../memory/common/episode-evidence.js";
 import { offlineProcessError } from "../process-errors.js";
 import type {
   OfflineChange,
@@ -193,12 +197,15 @@ function compareEpisodesOldestFirst(left: Episode, right: Episode): number {
   );
 }
 
-function estimateEpisodeInputTokens(episode: Episode): number {
+function estimateEpisodeInputTokens(episode: EpisodeWithEvidenceContext): number {
   const narrativeCharLength = Array.from(episode.narrative).length;
+  const envelopeCharLength =
+    episode.evidence_context === undefined ? 0 : JSON.stringify(episode.evidence_context).length;
 
   return (
-    Math.ceil(narrativeCharLength * ESTIMATED_INPUT_TOKENS_PER_NARRATIVE_CHAR) +
-    ESTIMATED_INPUT_TOKENS_PER_EPISODE_OVERHEAD
+    Math.ceil(
+      (narrativeCharLength + envelopeCharLength) * ESTIMATED_INPUT_TOKENS_PER_NARRATIVE_CHAR,
+    ) + ESTIMATED_INPUT_TOKENS_PER_EPISODE_OVERHEAD
   );
 }
 
@@ -214,9 +221,9 @@ async function selectEpisodesForExtraction(
   const maxEpisodesPerRun = ctx.config.offline.semanticExtractor.maxEpisodesPerRun;
   const maxInputTokensPerRun = ctx.config.offline.semanticExtractor.maxInputTokensPerRun;
   const processed = await processedEpisodeIds(ctx);
-  const episodes = (await ctx.episodicRepository.listEffectivelyVisible()).sort(
-    compareEpisodesOldestFirst,
-  );
+  const episodes = (
+    await withEpisodeEvidenceContext(ctx, await ctx.episodicRepository.listEffectivelyVisible())
+  ).sort(compareEpisodesOldestFirst);
   const selected: Episode[] = [];
   let selectedInputTokens = 0;
   let eligibleCount = 0;
@@ -470,6 +477,7 @@ export class SemanticExtractorProcess implements OfflineProcess<SemanticExtracto
           edgeRepository: ctx.semanticEdgeRepository,
           embeddingClient: ctx.embeddingClient,
           episodicRepository: ctx.episodicRepository,
+          identityEventRepository: ctx.identityEventRepository,
           llmClient: wrapClient(ctx.llm.extraction),
           model: ctx.config.anthropic.models.extraction,
           participantRoster: buildParticipantRosterFromRepositories({

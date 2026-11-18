@@ -12,7 +12,7 @@ import type { ActionRepository } from "../memory/actions/index.js";
 import type { CommitmentRepository, EntityRepository } from "../memory/commitments/index.js";
 import type { CreatorDirectiveRepository } from "../memory/creator-directives/index.js";
 import type { EpisodicRepository } from "../memory/episodic/index.js";
-import type { IdentityService } from "../memory/identity/index.js";
+import type { IdentityService, IdentityEventRepository } from "../memory/identity/index.js";
 import type { ProceduralEvidenceRepository, SkillRepository } from "../memory/procedural/index.js";
 import type {
   AutobiographicalRepository,
@@ -107,6 +107,7 @@ export type OfflineContext = {
   semanticReviewService?: SemanticReviewService;
   reviewQueueRepository: ReviewQueueRepository;
   identityService: IdentityService;
+  identityEventRepository: IdentityEventRepository;
   valuesRepository: ValuesRepository;
   goalsRepository: GoalsRepository;
   traitsRepository: TraitsRepository;

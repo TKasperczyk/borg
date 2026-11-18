@@ -17,7 +17,7 @@ import type { ActionRepository } from "../memory/actions/index.js";
 import type { CommitmentRepository, EntityRepository } from "../memory/commitments/index.js";
 import type { CreatorDirectiveRepository } from "../memory/creator-directives/index.js";
 import type { EpisodicRepository } from "../memory/episodic/index.js";
-import type { IdentityService } from "../memory/identity/index.js";
+import type { IdentityService, IdentityEventRepository } from "../memory/identity/index.js";
 import type { ProceduralEvidenceRepository, SkillRepository } from "../memory/procedural/index.js";
 import type { RelationalSlotRepository } from "../memory/relational-slots/index.js";
 import type { SelfDecisionRepository } from "../memory/self-decisions/index.js";
@@ -89,6 +89,7 @@ export type BuildOfflineSetupOptions = {
   semanticReviewService?: SemanticReviewService;
   reviewQueueRepository: ReviewQueueRepository;
   identityService: IdentityService;
+  identityEventRepository: IdentityEventRepository;
   valuesRepository: ValuesRepository;
   goalsRepository: GoalsRepository;
   traitsRepository: TraitsRepository;
@@ -240,6 +241,7 @@ export function buildOfflineSetup(options: BuildOfflineSetupOptions): BorgOfflin
       semanticReviewService: options.semanticReviewService,
       reviewQueueRepository: options.reviewQueueRepository,
       identityService: options.identityService,
+      identityEventRepository: options.identityEventRepository,
       valuesRepository: options.valuesRepository,
       goalsRepository: options.goalsRepository,
       traitsRepository: options.traitsRepository,

@@ -1,0 +1,81 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`stage-one prompt equivalence to dev b480dee9 > belief review: ordinary bytes are identical; added context is measured against dev 1`] = `
+{
+  "after": 3171,
+  "before": 2627,
+  "delta": 544,
+}
+`;
+
+exports[`stage-one prompt equivalence to dev b480dee9 > extractor: ordinary bytes are identical; added context is measured against dev 1`] = `
+{
+  "after": 6884,
+  "before": 6630,
+  "delta": 254,
+}
+`;
+
+exports[`stage-one prompt equivalence to dev b480dee9 > generic node review: ordinary bytes are identical; added context is measured against dev 1`] = `
+{
+  "after": 4134,
+  "before": 3785,
+  "delta": 349,
+}
+`;
+
+exports[`stage-one prompt equivalence to dev b480dee9 > incremental merge: ordinary bytes are identical; added context is measured against dev 1`] = `
+{
+  "after": 3594,
+  "before": 3257,
+  "delta": 337,
+}
+`;
+
+exports[`stage-one prompt equivalence to dev b480dee9 > initial merge: ordinary bytes are identical; added context is measured against dev 1`] = `
+{
+  "after": 3350,
+  "before": 3096,
+  "delta": 254,
+}
+`;
+
+exports[`stage-one prompt equivalence to dev b480dee9 > new-insight review: ordinary bytes are identical; added context is measured against dev 1`] = `
+{
+  "after": 5269,
+  "before": 4739,
+  "delta": 530,
+}
+`;
+
+exports[`stage-one prompt equivalence to dev b480dee9 > procedural split: ordinary bytes are identical; added context is measured against dev 1`] = `
+{
+  "after": 1836,
+  "before": 1582,
+  "delta": 254,
+}
+`;
+
+exports[`stage-one prompt equivalence to dev b480dee9 > procedural synthesis: ordinary bytes are identical; added context is measured against dev 1`] = `
+{
+  "after": 1545,
+  "before": 1291,
+  "delta": 254,
+}
+`;
+
+exports[`stage-one prompt equivalence to dev b480dee9 > semantic-pair review: ordinary bytes are identical; added context is measured against dev 1`] = `
+{
+  "after": 6681,
+  "before": 6109,
+  "delta": 572,
+}
+`;
+
+exports[`stage-one prompt equivalence to dev b480dee9 > vector-duplicate review: ordinary bytes are identical; added context is measured against dev 1`] = `
+{
+  "after": 3710,
+  "before": 3361,
+  "delta": 349,
+}
+`;

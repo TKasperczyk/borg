@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { TurnTracer } from "../../tracing/tracer.js";
 
 import { SqliteDatabase } from "../../storage/sqlite/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
@@ -16,6 +17,14 @@ import {
   type IdentityEvent,
   type IdentityRecordType,
 } from "./types.js";
+import {
+  annotationTargetKey,
+  auditedAnnotationPayloadSchema,
+  type AnnotationTarget,
+  type TargetAnnotations,
+} from "./annotations.js";
+
+const ANNOTATION_TARGET_QUERY_BATCH_SIZE = 400;
 
 function parseJsonValue(value: unknown, label: string): JsonValue | null {
   if (value === null || value === undefined) {
@@ -75,6 +84,7 @@ export function mapRow(row: Record<string, unknown>): IdentityEvent {
 export type IdentityEventRepositoryOptions = {
   db: SqliteDatabase;
   clock?: Clock;
+  tracer?: TurnTracer;
 };
 
 export class IdentityEventRepository {
@@ -184,6 +194,121 @@ export class IdentityEventRepository {
       .all(...values, limit) as Record<string, unknown>[];
 
     return rows.map((row) => mapRow(row));
+  }
+
+  /** All audited annotations for exact typed targets, with named retractions applied. */
+  listAnnotationsForTargets(targets: readonly AnnotationTarget[]): TargetAnnotations[] {
+    const uniqueTargets = [
+      ...new Map(targets.map((target) => [annotationTargetKey(target), target])).values(),
+    ];
+    const results = new Map(
+      uniqueTargets.map((target) => [
+        annotationTargetKey(target),
+        { ...target, annotations: [] } as TargetAnnotations,
+      ]),
+    );
+
+    const skipped: Record<string, number> = {};
+    const skip = (reason: string) => {
+      skipped[reason] = (skipped[reason] ?? 0) + 1;
+    };
+    for (
+      let offset = 0;
+      offset < uniqueTargets.length;
+      offset += ANNOTATION_TARGET_QUERY_BATCH_SIZE
+    ) {
+      const batch = uniqueTargets.slice(offset, offset + ANNOTATION_TARGET_QUERY_BATCH_SIZE);
+      // The typed target join uses idx_identity_events_record_ts. No global history window
+      // or action-name filter can discard an older annotation or its later retraction.
+      const rows = this.db
+        .prepare(
+          `
+        WITH targets(record_type, record_id) AS (VALUES ${batch.map(() => "(?, ?)").join(", ")})
+        SELECT e.record_type, e.record_id, e.new_value_json,
+          CASE WHEN typeof(e.ts) IN ('integer', 'real') THEN CAST(e.ts AS REAL) END AS ts
+        FROM targets t JOIN identity_events e
+          ON e.record_type = t.record_type AND e.record_id = t.record_id
+        WHERE CASE
+          WHEN e.new_value_json IS NULL THEN 0
+          WHEN json_valid(e.new_value_json) = 0 THEN 1
+          ELSE json_type(e.new_value_json, '$.annotation') IS NOT NULL
+        END
+        ORDER BY e.ts DESC, e.id DESC
+      `,
+        )
+        .all(...batch.flatMap((target) => [target.record_type, target.record_id]));
+      const retracted = new Map<string, Set<string>>();
+      const seen = new Map<string, Set<string>>();
+      for (const row of rows) {
+        const recordType = identityRecordTypeSchema.safeParse(row.record_type);
+        if (!recordType.success || typeof row.record_id !== "string") {
+          skip("invalid_target");
+          continue;
+        }
+        const target = { record_type: recordType.data, record_id: row.record_id };
+        const key = annotationTargetKey(target);
+        let payload: unknown;
+        try {
+          payload = JSON.parse(String(row.new_value_json));
+        } catch {
+          skip("invalid_json");
+          continue;
+        }
+        const parsed = auditedAnnotationPayloadSchema.safeParse(payload);
+        if (!parsed.success) {
+          skip("invalid_payload");
+          continue;
+        }
+        const { stream_entry_id, annotation } = parsed.data;
+        const namesTarget =
+          annotation.target_ids?.includes(target.record_id) ??
+          (annotation.event === "episode_annotation" &&
+            target.record_type === "episode" &&
+            annotation.episode_id === target.record_id);
+        if (!namesTarget) {
+          skip("target_mismatch");
+          continue;
+        }
+        if (annotation.event === "episode_annotation_retracted") {
+          const ids = retracted.get(key) ?? new Set<string>();
+          ids.add(annotation.reverses_stream_entry_id);
+          retracted.set(key, ids);
+          continue;
+        }
+        const text = annotation.correction ?? annotation.note;
+        if (text === undefined) {
+          skip("missing_text");
+          continue;
+        }
+        const ids = seen.get(key) ?? new Set<string>();
+        if (ids.has(stream_entry_id)) continue;
+        ids.add(stream_entry_id);
+        seen.set(key, ids);
+        const timestamp = typeof row.ts === "number" ? row.ts : NaN;
+        const writtenAt = Number.isFinite(new Date(timestamp).getTime()) ? timestamp : undefined;
+        if (writtenAt === undefined) skip("invalid_timestamp");
+        results.get(key)!.annotations.push({
+          stream_entry_id,
+          text,
+          ...(writtenAt === undefined ? {} : { written_at: writtenAt }),
+          authority: annotation.authority ?? null,
+        });
+      }
+      for (const target of batch) {
+        const key = annotationTargetKey(target);
+        const result = results.get(key)!;
+        result.annotations = result.annotations.filter(
+          (annotation) => !retracted.get(key)?.has(annotation.stream_entry_id),
+        );
+      }
+    }
+    if (Object.keys(skipped).length > 0 && this.options.tracer?.enabled === true) {
+      this.options.tracer.emit("memory.annotations.skipped", {
+        turnId: "memory-annotation-read",
+        counts_by_reason: skipped,
+      });
+    }
+    return [...results.values()];
   }
 
   /** Historical goal transitions, independent of the goal's current state or audience. */

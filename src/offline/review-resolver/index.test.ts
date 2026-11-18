@@ -25,6 +25,7 @@ import {
   createSemanticNodeFixture,
 } from "../test-support.js";
 import { REVIEW_RESOLVER_REASON_SENTINEL, ReviewResolverProcess } from "./index.js";
+import { createRetiredEvidenceFixture, recordTestAnnotation } from "../evidence-test-support.js";
 
 const REVIEW_RESOLVER_TOOL_NAME = "EmitReviewResolverDecision";
 const NEW_INSIGHT_REVIEW_RESOLVER_TOOL_NAME = "EmitNewInsightVerdict";
@@ -628,6 +629,12 @@ describe("review resolver process", () => {
         source_episode_ids: [source.episode.id],
       }),
     );
+    recordTestAnnotation(
+      harness.identityEventRepository,
+      winner.id,
+      "Node-only correction. 节点更正。",
+      { recordType: "semantic_node" },
+    );
     const item = harness.reviewQueueRepository.enqueue({
       kind: "duplicate",
       reason: "Vector-only semantic merge candidate with similarity 0.920",
@@ -665,6 +672,21 @@ describe("review resolver process", () => {
     };
 
     expect(result.errors).toEqual([]);
+    const candidate = JSON.parse(prompt).candidates.find(
+      (node: { id: string }) => node.id === winner.id,
+    );
+    expect(candidate).toMatchObject({
+      description: winner.description,
+      annotations: [{ text: "Node-only correction. 节点更正。" }],
+      status: "active",
+    });
+    expect(candidate).not.toHaveProperty("lifecycle");
+    expect(
+      harness.identityEventRepository.listAnnotationsForTargets([
+        { record_type: "episode", record_id: source.episode.id },
+      ])[0]!.annotations,
+    ).toEqual([]);
+
     expect(result.candidate_stats).toMatchObject({
       accepted: 1,
       rejected: 0,
@@ -1097,6 +1119,12 @@ describe("review resolver process", () => {
         source_episode_ids: [source.episode.id],
       }),
     );
+    recordTestAnnotation(
+      harness.identityEventRepository,
+      winner.id,
+      "Node-only correction. 节点更正。",
+      { recordType: "semantic_node" },
+    );
     const item = harness.reviewQueueRepository.enqueue({
       kind: "contradiction",
       reason: "Direct contradiction edge recorded for review",
@@ -1126,6 +1154,21 @@ describe("review resolver process", () => {
     };
 
     expect(result.errors).toEqual([]);
+    const candidate = JSON.parse(prompt).candidates.find(
+      (node: { id: string }) => node.id === winner.id,
+    );
+    expect(candidate).toMatchObject({
+      description: winner.description,
+      annotations: [{ text: "Node-only correction. 节点更正。" }],
+      status: "active",
+    });
+    expect(candidate).not.toHaveProperty("lifecycle");
+    expect(
+      harness.identityEventRepository.listAnnotationsForTargets([
+        { record_type: "episode", record_id: source.episode.id },
+      ])[0]!.annotations,
+    ).toEqual([]);
+
     expect(resolved).toMatchObject({
       resolved_at: expect.any(Number),
       resolution: "supersede",
@@ -1154,6 +1197,53 @@ describe("review resolver process", () => {
     expect(llm.requests[0]?.tools?.[0]?.inputSchema.properties?.reason).toMatchObject({
       description: expect.stringContaining("audit rationale"),
     });
+  });
+
+  it("keeps a retired semantic-pair citation with corrections and visible lineage", async () => {
+    const llm = new FakeLLMClient({
+      responses: [semanticPairResolverResponse({ verdict: "keep_both", confidence: "high" })],
+    });
+    const harness = await createOfflineTestHarness({
+      llmClient: llm,
+      reviewOpenQuestionExtractor: null,
+    });
+    cleanup.push(harness.cleanup);
+    const { source, lineage } = await createRetiredEvidenceFixture(harness);
+    const nodes = [];
+    for (const label of ["Synthetic first proposition", "Synthetic second proposition"])
+      nodes.push(
+        await harness.semanticNodeRepository.insert(
+          createSemanticNodeFixture({ label, source_episode_ids: [source.id] }),
+        ),
+      );
+    harness.reviewQueueRepository.enqueue({
+      kind: "contradiction",
+      reason: "Synthetic comparison",
+      refs: {
+        node_ids: nodes.map((node) => node.id),
+        node_labels: nodes.map((node) => node.label),
+      },
+    });
+    const result = await runResolver(harness);
+    expect(result.errors).toEqual([]);
+    const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+    const payload = JSON.parse(prompt);
+    for (const entry of payload.evidence_by_node)
+      expect(entry.episodes).toMatchObject([
+        {
+          id: source.id,
+          narrative: source.narrative,
+          lifecycle: "archived",
+          annotations: [{ text: "Synthetic audited correction: the observation was provisional." }],
+          visible_lineage: [
+            {
+              id: lineage.id,
+              excerpt: lineage.narrative,
+              annotations: [{ text: "原始记录的独立更正。 تصحيح مستقل." }],
+            },
+          ],
+        },
+      ]);
   });
 
   it("keeps invalid semantic-pair winners out of the handler and marks needs_manual", async () => {
@@ -1499,6 +1589,12 @@ describe("review resolver process", () => {
       shared: true,
     });
     const nodeId = createSemanticNodeId();
+    recordTestAnnotation(
+      harness.identityEventRepository,
+      nodeId,
+      "Synthetic proposed-node correction.",
+      { recordType: "semantic_node" },
+    );
     const item = harness.reviewQueueRepository.enqueue({
       kind: "new_insight",
       reason: "New low-confidence insight extracted from cluster:persisted-private",
@@ -1539,6 +1635,9 @@ describe("review resolver process", () => {
     };
 
     expect(result.errors).toEqual([]);
+    expect(
+      JSON.parse(String(llm.requests[0]?.messages[0]?.content)).proposed_insight.annotations,
+    ).toMatchObject([{ text: "Synthetic proposed-node correction." }]);
     expect(promptPayload.review?.disclosure_label).toMatchObject({
       disclosure_class: "relationship_private",
       private_to_entity_ids: [persistedAudienceId],
@@ -1577,6 +1676,12 @@ describe("review resolver process", () => {
         description: "I prefer Atlas deployment rollback planning.",
         source_episode_ids: [currentSource.episode.id],
       }),
+    );
+    recordTestAnnotation(
+      harness.identityEventRepository,
+      node.id,
+      "Synthetic update-target correction.",
+      { recordType: "semantic_node" },
     );
     const item = harness.reviewQueueRepository.enqueue({
       kind: "new_insight",
@@ -1628,6 +1733,10 @@ describe("review resolver process", () => {
     };
 
     expect(result.errors).toEqual([]);
+    const proposed = JSON.parse(String(llm.requests[0]?.messages[0]?.content)).proposed_insight;
+    expect(proposed.annotations).toMatchObject([{ text: "Synthetic update-target correction." }]);
+    expect(proposed.current_node.annotations).toEqual(proposed.annotations);
+
     expect(promptPayload.proposed_insight).toMatchObject({
       description: "I strongly prefer rollback planning before Atlas deployments.",
       disclosure_label: {
@@ -2028,6 +2137,12 @@ describe("review resolver process", () => {
     const { item, nodeId, sourceEntryId } = await enqueueSemanticMisattribution(harness, {
       aliasesPatch: ["deployment script author"],
     });
+    recordTestAnnotation(
+      harness.identityEventRepository,
+      nodeId,
+      "Synthetic generic-target correction.",
+      { recordType: "semantic_node" },
+    );
     llm.pushResponse(
       resolverResponse({
         verdict: "accept_repair",
@@ -2037,6 +2152,9 @@ describe("review resolver process", () => {
     );
 
     await runResolver(harness);
+    expect(
+      JSON.parse(String(llm.requests[0]?.messages[0]?.content)).target.content.annotations,
+    ).toMatchObject([{ text: "Synthetic generic-target correction." }]);
     const resolved = harness.reviewQueueRepository.get(item.id);
     const node = await harness.semanticNodeRepository.get(nodeId);
 

@@ -111,10 +111,18 @@ function buildEpisode(id: Episode["id"], title: string, overrides: Partial<Episo
   };
 }
 
+const emptyAnnotationRepository: SemanticExtractorOptions["identityEventRepository"] = {
+  listAnnotationsForTargets: (targets) => targets.map((target) => ({ ...target, annotations: [] })),
+};
+
 function createEpisodeLookup(episodes: readonly Episode[]) {
   const episodeById = new Map(episodes.map((episode) => [episode.id, episode]));
 
   return {
+    getLifecycleMany: (ids: readonly Episode["id"][]) =>
+      new Map(
+        ids.map((id) => [id, episodeById.has(id) ? ("active" as const) : ("unknown" as const)]),
+      ),
     getMany: async (ids: readonly Episode["id"][]) =>
       ids
         .map((id) => episodeById.get(id))
@@ -222,6 +230,7 @@ async function runIdentityGuardExtraction(input: {
     ],
   });
   const extractor = new SemanticExtractor({
+    identityEventRepository: emptyAnnotationRepository,
     ...repositories,
     episodicRepository: createEpisodeLookup([episode]),
     embeddingClient: new SemanticEmbeddingClient(),
@@ -748,6 +757,7 @@ describe("semantic extractor", () => {
       ],
     });
     const extractor = new SemanticExtractor({
+      identityEventRepository: emptyAnnotationRepository,
       nodeRepository: {
         listDistinctKinds: () => ["process_explanation"],
       } as unknown as SemanticNodeRepository,
@@ -817,6 +827,7 @@ describe("semantic extractor", () => {
       responses: [createSemanticToolResponse({ nodes: [], edges: [] })],
     });
     const extractor = new SemanticExtractor({
+      identityEventRepository: emptyAnnotationRepository,
       nodeRepository: {
         listDistinctKinds: () => [],
       } as unknown as SemanticNodeRepository,
@@ -846,6 +857,7 @@ describe("semantic extractor", () => {
       emit: vi.fn(),
     };
     const extractor = new SemanticExtractor({
+      identityEventRepository: emptyAnnotationRepository,
       nodeRepository: {
         listDistinctKinds: () => [],
         findByExactLabelOrAlias: async () => [],
@@ -913,6 +925,7 @@ describe("semantic extractor", () => {
     const contestedSlotId = createRelationalSlotId();
     const reviewEnqueue = vi.fn();
     const extractor = new SemanticExtractor({
+      identityEventRepository: emptyAnnotationRepository,
       nodeRepository: {
         listDistinctKinds: () => [],
         findByExactLabelOrAlias: async () => [],
@@ -978,6 +991,7 @@ describe("semantic extractor", () => {
     });
     const reviewEnqueue = vi.fn();
     const extractor = new SemanticExtractor({
+      identityEventRepository: emptyAnnotationRepository,
       nodeRepository,
       edgeRepository,
       embeddingClient: new SemanticEmbeddingClient(),
@@ -1044,6 +1058,7 @@ describe("semantic extractor", () => {
     });
     const reviewEnqueue = vi.fn();
     const extractor = new SemanticExtractor({
+      identityEventRepository: emptyAnnotationRepository,
       nodeRepository,
       edgeRepository,
       embeddingClient: new SemanticEmbeddingClient(),
@@ -1098,6 +1113,7 @@ describe("semantic extractor", () => {
     });
     const reviewEnqueue = vi.fn();
     const extractor = new SemanticExtractor({
+      identityEventRepository: emptyAnnotationRepository,
       nodeRepository,
       edgeRepository,
       embeddingClient: new SemanticEmbeddingClient(),
@@ -1155,6 +1171,7 @@ describe("semantic extractor", () => {
       allowed: true,
     }));
     const extractor = new SemanticExtractor({
+      identityEventRepository: emptyAnnotationRepository,
       nodeRepository,
       edgeRepository,
       embeddingClient: new SemanticEmbeddingClient(),
@@ -1202,6 +1219,7 @@ describe("semantic extractor", () => {
     const episode = buildEpisode("ep_aaaaaaaaaaaaaaaa" as Episode["id"], "Appointment logistics");
     const reviewEnqueue = vi.fn();
     const extractor = new SemanticExtractor({
+      identityEventRepository: emptyAnnotationRepository,
       nodeRepository,
       edgeRepository,
       embeddingClient: new SemanticEmbeddingClient(),
@@ -1323,6 +1341,7 @@ describe("semantic extractor", () => {
       queueDuplicateReview: vi.fn(),
     };
     const extractor = new SemanticExtractor({
+      identityEventRepository: emptyAnnotationRepository,
       nodeRepository,
       edgeRepository,
       embeddingClient: new SemanticEmbeddingClient(),
@@ -1370,6 +1389,7 @@ describe("semantic extractor", () => {
     );
 
     const hallucinatingExtractor = new SemanticExtractor({
+      identityEventRepository: emptyAnnotationRepository,
       nodeRepository,
       edgeRepository,
       embeddingClient: new SemanticEmbeddingClient(),
@@ -1467,6 +1487,7 @@ describe("semantic extractor", () => {
       superseded_by: null,
     });
     const extractor = new SemanticExtractor({
+      identityEventRepository: emptyAnnotationRepository,
       nodeRepository,
       edgeRepository,
       embeddingClient: new SemanticEmbeddingClient(),
@@ -1550,6 +1571,7 @@ describe("semantic extractor", () => {
     });
     const reviewEnqueue = vi.fn();
     const extractor = new SemanticExtractor({
+      identityEventRepository: emptyAnnotationRepository,
       nodeRepository,
       edgeRepository,
       embeddingClient: new SemanticEmbeddingClient(),
@@ -1656,6 +1678,7 @@ describe("semantic extractor", () => {
           }),
         extract: async (edges: unknown[] = [], options: Partial<SemanticExtractorOptions> = {}) =>
           new SemanticExtractor({
+            identityEventRepository: emptyAnnotationRepository,
             ...repositories,
             embeddingClient: new SemanticEmbeddingClient(),
             episodicRepository: createEpisodeLookup([episode]),
@@ -2501,6 +2524,7 @@ describe("semantic extractor", () => {
     });
 
     const extractor = new SemanticExtractor({
+      identityEventRepository: emptyAnnotationRepository,
       nodeRepository,
       edgeRepository,
       embeddingClient: new SemanticEmbeddingClient(),
@@ -2581,6 +2605,7 @@ describe("semantic extractor", () => {
       emit: vi.fn(),
     };
     const extractor = new SemanticExtractor({
+      identityEventRepository: emptyAnnotationRepository,
       ...repositories,
       embeddingClient: new SemanticEmbeddingClient(),
       episodicRepository: createEpisodeLookup([episode]),
@@ -2651,6 +2676,7 @@ describe("semantic extractor", () => {
       source_episode_ids: [episode.id],
     }));
     const extractor = new SemanticExtractor({
+      identityEventRepository: emptyAnnotationRepository,
       ...repositories,
       episodicRepository: createEpisodeLookup([episode]),
       embeddingClient: new SemanticEmbeddingClient(),
@@ -2726,6 +2752,7 @@ describe("semantic extractor", () => {
       source_episode_ids: [episode.id],
     }));
     const extractor = new SemanticExtractor({
+      identityEventRepository: emptyAnnotationRepository,
       ...repositories,
       episodicRepository: createEpisodeLookup([episode]),
       embeddingClient: new SemanticEmbeddingClient(),
@@ -2893,6 +2920,7 @@ describe("semantic extractor", () => {
     });
 
     const extractor = new SemanticExtractor({
+      identityEventRepository: emptyAnnotationRepository,
       nodeRepository,
       edgeRepository,
       embeddingClient: new SemanticEmbeddingClient(),
@@ -2957,6 +2985,7 @@ describe("semantic extractor", () => {
     });
 
     const extractor = new SemanticExtractor({
+      identityEventRepository: emptyAnnotationRepository,
       nodeRepository,
       edgeRepository,
       embeddingClient: new SemanticEmbeddingClient(),
@@ -3050,6 +3079,7 @@ describe("semantic extractor", () => {
     });
 
     const extractor = new SemanticExtractor({
+      identityEventRepository: emptyAnnotationRepository,
       nodeRepository,
       edgeRepository,
       embeddingClient: new SemanticEmbeddingClient(),
@@ -3166,6 +3196,7 @@ describe("semantic extractor", () => {
       superseded_by: null,
     });
     const extractor = new SemanticExtractor({
+      identityEventRepository: emptyAnnotationRepository,
       nodeRepository,
       edgeRepository,
       embeddingClient: new SemanticEmbeddingClient(),
@@ -3267,6 +3298,7 @@ describe("semantic extractor", () => {
       superseded_by: null,
     });
     const extractor = new SemanticExtractor({
+      identityEventRepository: emptyAnnotationRepository,
       nodeRepository,
       edgeRepository,
       embeddingClient: new SemanticEmbeddingClient(),
@@ -3355,6 +3387,7 @@ describe("semantic extractor", () => {
       superseded_by: null,
     });
     const extractor = new SemanticExtractor({
+      identityEventRepository: emptyAnnotationRepository,
       nodeRepository,
       edgeRepository,
       embeddingClient: new SemanticEmbeddingClient(),
@@ -3439,6 +3472,7 @@ describe("semantic extractor", () => {
       embedBatch: async (texts) => Promise.all(texts.map((text) => embed(text))),
     };
     const extractor = new SemanticExtractor({
+      identityEventRepository: emptyAnnotationRepository,
       nodeRepository,
       edgeRepository,
       embeddingClient,
@@ -3529,6 +3563,7 @@ describe("semantic extractor", () => {
       responses: [invalidResponse, invalidResponse],
     });
     const extractor = new SemanticExtractor({
+      identityEventRepository: emptyAnnotationRepository,
       nodeRepository,
       edgeRepository,
       embeddingClient: new SemanticEmbeddingClient(),
@@ -3621,6 +3656,7 @@ describe("semantic extractor", () => {
       ],
     });
     const extractor = new SemanticExtractor({
+      identityEventRepository: emptyAnnotationRepository,
       nodeRepository,
       edgeRepository,
       embeddingClient: new SemanticEmbeddingClient(),
@@ -3711,6 +3747,7 @@ describe("semantic extractor", () => {
       ],
     });
     const extractor = new SemanticExtractor({
+      identityEventRepository: emptyAnnotationRepository,
       nodeRepository,
       edgeRepository,
       embeddingClient: new SemanticEmbeddingClient(),
@@ -3796,6 +3833,7 @@ describe("semantic extractor", () => {
       narrative: "The note discussed artisanal craft details.",
     });
     const extractor = new SemanticExtractor({
+      identityEventRepository: emptyAnnotationRepository,
       nodeRepository,
       edgeRepository,
       embeddingClient: new SemanticEmbeddingClient(),
@@ -3925,6 +3963,7 @@ describe("semantic extractor", () => {
       ],
     });
     const extractor = new SemanticExtractor({
+      identityEventRepository: emptyAnnotationRepository,
       nodeRepository,
       edgeRepository,
       embeddingClient: new SemanticEmbeddingClient(),

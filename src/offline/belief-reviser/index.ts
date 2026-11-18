@@ -38,6 +38,11 @@ import {
 } from "../../memory/common/disclosure-label.js";
 
 import { getBudgetErrorTokens, withBudget } from "../budget.js";
+import {
+  withEpisodeEvidenceContext,
+  withSemanticNodeEvidenceContext,
+  evidencePromptFields,
+} from "../evidence-labels.js";
 import { offlineProcessError } from "../process-errors.js";
 import type {
   OfflineChange,
@@ -1220,7 +1225,11 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
       const evidenceEpisodeIds = [
         ...collectEpisodeIds({ target, invalidatedEdge, survivingSupports, evidenceEpisodes }),
       ];
-      const targetLocalEvidenceEpisodes = await episodesForIds(ctx, evidenceEpisodeIds);
+      const targetLocalEvidenceEpisodes = await withEpisodeEvidenceContext(
+        ctx,
+        await episodesForIds(ctx, evidenceEpisodeIds),
+        { includeVisibleLineage: true },
+      );
       const labelsByEpisodeId = await resolveDisclosureLabelsByEpisodeId(
         evidenceEpisodeIds,
         async () => targetLocalEvidenceEpisodes,
@@ -1232,7 +1241,12 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
         evidence_episode_ids: evidenceEpisodeIds,
         target: {
           target_type: "semantic_node",
-          record: semanticNodeLlmRecord(target, labelsByEpisodeId),
+          record: {
+            ...semanticNodeLlmRecord(target, labelsByEpisodeId),
+            ...evidencePromptFields(
+              withSemanticNodeEvidenceContext(ctx, [target])[0]!.evidence_context,
+            ),
+          },
         },
         invalidated_edge: nullableSemanticEdgeLlmRecord(invalidatedEdge, labelsByEpisodeId),
         surviving_supports: survivingSupports.map((edge) =>
@@ -1250,7 +1264,11 @@ export class BeliefReviserProcess implements OfflineProcess<BeliefReviserPlan> {
     const evidenceEpisodeIds = [
       ...collectEpisodeIds({ target, invalidatedEdge, survivingSupports, evidenceEpisodes }),
     ];
-    const targetLocalEvidenceEpisodes = await episodesForIds(ctx, evidenceEpisodeIds);
+    const targetLocalEvidenceEpisodes = await withEpisodeEvidenceContext(
+      ctx,
+      await episodesForIds(ctx, evidenceEpisodeIds),
+      { includeVisibleLineage: true },
+    );
     const labelsByEpisodeId = await resolveDisclosureLabelsByEpisodeId(
       evidenceEpisodeIds,
       async () => targetLocalEvidenceEpisodes,

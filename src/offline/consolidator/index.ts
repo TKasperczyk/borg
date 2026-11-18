@@ -53,7 +53,14 @@ import {
 
 import type { ReverserRegistry } from "../audit-log.js";
 import { getBudgetErrorTokens, withBudget } from "../budget.js";
-import { episodeEvidencePromptRow } from "../evidence-labels.js";
+import {
+  episodeEvidencePromptRow,
+  withEpisodeEvidenceContext,
+  EVIDENCE_GUIDANCE,
+  renderEvidencePromptLines,
+  evidencePromptFields,
+} from "../evidence-labels.js";
+import type { EpisodeWithEvidenceContext } from "../../memory/common/episode-evidence.js";
 import { offlineProcessError } from "../process-errors.js";
 import type {
   OfflineChange,
@@ -172,8 +179,8 @@ type ConsolidationCandidate = {
   familyId: ConsolidationFamilyId;
   previousCurrentVersionEpisodeId: EpisodeId | null;
   previousCurrentVersion: Episode | null;
-  rawEpisodes: Episode[];
-  newRawEpisodes: Episode[];
+  rawEpisodes: EpisodeWithEvidenceContext[];
+  newRawEpisodes: EpisodeWithEvidenceContext[];
   stats: EpisodeStats[];
   coverageHash: string;
 };
@@ -333,25 +340,35 @@ function buildMergePrompt(
     selfEntity === null
       ? GENERIC_SELF_ENTITY_VOICE_ANCHOR
       : `I am ${selfEntity.canonical_name} (${selfEntity.id}); content grounded in my own agent-authored source messages is self-owned. I use first person only for my own actions, statements, and decisions; I keep every other participant named and world facts in third person.`;
+  const memberAnnotations = candidate.rawEpisodes
+    .filter((member) => candidate.previousCurrentVersion?.lineage.derived_from.includes(member.id))
+    .filter((member) => (member.evidence_context?.annotations?.length ?? 0) > 0)
+    .map((member) => ({
+      record_type: "episode",
+      record_id: member.id,
+      ...evidencePromptFields(member.evidence_context),
+    }));
   const previousContext =
     candidate.previousCurrentVersion === null
       ? []
       : [
           "Previous current consolidation context:",
-          JSON.stringify(
-            episodeEvidencePromptRow(candidate.previousCurrentVersion, {
+          episodeEvidencePromptRow(
+            candidate.previousCurrentVersion,
+            {
               participants: candidate.previousCurrentVersion.participants,
               location: candidate.previousCurrentVersion.location,
               start_time: candidate.previousCurrentVersion.start_time,
               end_time: candidate.previousCurrentVersion.end_time,
               tags: candidate.previousCurrentVersion.tags,
               source_stream_ids: candidate.previousCurrentVersion.source_stream_ids,
-            }),
+            },
+            memberAnnotations.length === 0 ? {} : { member_annotations: memberAnnotations },
           ),
           "I use the previous consolidation as context only. The new version lineage and coverage remain grounded in raw leaf episodes.",
         ];
 
-  return [
+  return renderEvidencePromptLines([
     "I merge the redundant raw episodes into one grounded consolidation version for my autobiographical memory.",
     `I emit my result by calling the ${MERGE_TOOL_NAME} tool exactly once.`,
     "I preserve facts from all raw inputs. I keep the narrative to 2-5 sentences.",
@@ -360,21 +377,20 @@ function buildMergePrompt(
     "I treat first-person references inside another participant's message as referring to that participant. When I retell what they said about themselves, I name that participant and preserve who did or experienced what. I preserve the subject of every source statement when merging episodes.",
     `${SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE} I apply this to the merged narrative. I keep the title topic-neutral and scannable rather than first-person narration.`,
     MEMORY_SOURCE_LANGUAGE_GUIDANCE,
+    EVIDENCE_GUIDANCE,
     ...previousContext,
     "New raw evidence:",
     ...candidate.newRawEpisodes.map((episode) =>
-      JSON.stringify(
-        episodeEvidencePromptRow(episode, {
-          participants: episode.participants,
-          location: episode.location,
-          start_time: episode.start_time,
-          end_time: episode.end_time,
-          tags: episode.tags,
-          source_stream_ids: episode.source_stream_ids,
-        }),
-      ),
+      episodeEvidencePromptRow(episode, {
+        participants: episode.participants,
+        location: episode.location,
+        start_time: episode.start_time,
+        end_time: episode.end_time,
+        tags: episode.tags,
+        source_stream_ids: episode.source_stream_ids,
+      }),
     ),
-  ].join("\n");
+  ]);
 }
 
 function buildCompleteLinkClusters(
@@ -706,6 +722,20 @@ async function buildMergedEpisode(
   candidate: ConsolidationCandidate,
 ): Promise<{ episode: Episode; inheritedTier: EpisodeTier }> {
   const selfEntity = ctx.entityRepository.getSelf();
+  const promptEpisodes = await withEpisodeEvidenceContext(ctx, [
+    ...candidate.rawEpisodes,
+    ...(candidate.previousCurrentVersion === null ? [] : [candidate.previousCurrentVersion]),
+  ]);
+  const promptEpisodesById = new Map(promptEpisodes.map((episode) => [episode.id, episode]));
+  const promptCandidate: ConsolidationCandidate = {
+    ...candidate,
+    rawEpisodes: candidate.rawEpisodes.map((episode) => promptEpisodesById.get(episode.id)!),
+    newRawEpisodes: candidate.newRawEpisodes.map((episode) => promptEpisodesById.get(episode.id)!),
+    previousCurrentVersion:
+      candidate.previousCurrentVersion === null
+        ? null
+        : promptEpisodesById.get(candidate.previousCurrentVersion.id)!,
+  };
   let merged: z.infer<typeof mergeResponseSchema>;
 
   try {
@@ -719,7 +749,7 @@ async function buildMergedEpisode(
           messages: [
             {
               role: "user",
-              content: buildMergePrompt(candidate, selfEntity),
+              content: buildMergePrompt(promptCandidate, selfEntity),
             },
           ],
           tools: [MERGE_TOOL],

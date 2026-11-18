@@ -28,6 +28,7 @@ import {
 } from "../test-support.js";
 
 import { ProceduralSynthesizerProcess } from "./index.js";
+import { createRetiredEvidenceFixture, recordTestAnnotation } from "../evidence-test-support.js";
 import { createSkillSplitReviewHandler } from "./skill-split-review.js";
 
 const TYPESCRIPT_DEBUG_CONTEXT_KEY = deriveProceduralContextKey({
@@ -449,6 +450,33 @@ describe("ProceduralSynthesizerProcess", () => {
     const expectedEpisodeIds = evidenceRows.flatMap((evidence) => evidence.resolved_episode_ids);
     expect(lookedUpEpisodeIds).toHaveLength(evidenceCount + 1);
     expect(new Set(lookedUpEpisodeIds)).toEqual(new Set(expectedEpisodeIds));
+  });
+
+  it("retains already-cited retired sources with annotations and visible lineage", async () => {
+    const llm = new FakeLLMClient({
+      responses: [createSkillCandidateResponse({ applies_when: "synthetic evidence comparison" })],
+    });
+    harness = await createOfflineTestHarness({
+      configOverrides: proceduralConfig({ minSupport: 2 }),
+      llmClient: llm,
+    });
+    const { source, lineage } = await createRetiredEvidenceFixture(harness);
+    for (let i = 0; i < 2; i++)
+      await addSuccessEvidence(harness, { additionalResolvedEpisodeIds: [source.id] });
+    const plan = await createProcess(harness).plan(harness.createContext());
+    expect(plan.items).toHaveLength(1);
+    expect(plan.items[0]!.source_episode_ids).toContain(source.id);
+    const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+    const rows = prompt
+      .split("\n")
+      .filter((line) => line.startsWith("{"))
+      .map((line) => JSON.parse(line));
+    expect(rows.find((row) => row.id === source.id)).toMatchObject({
+      narrative: source.narrative,
+      lifecycle: "archived",
+      annotations: [{ text: "Synthetic audited correction: the observation was provisional." }],
+      visible_lineage: [{ id: lineage.id, excerpt: lineage.narrative }],
+    });
   });
 
   it("records one synthesized posterior outcome per supporting evidence row", async () => {
@@ -1613,6 +1641,14 @@ describe("ProceduralSynthesizerProcess", () => {
         shared: false,
       }),
     );
+    recordTestAnnotation(
+      harness.identityEventRepository,
+      episodeB.id,
+      "Synthetic correction on the retired split source.",
+    );
+    harness.db
+      .prepare("UPDATE episode_stats SET archived = 1 WHERE episode_id = ?")
+      .run(episodeB.id);
     const skill = await harness.skillRepository.add({
       applies_when: "reuse the comparison approach across private work",
       approach: "Compare the current failed state with the last known-good state.",
@@ -1665,6 +1701,15 @@ describe("ProceduralSynthesizerProcess", () => {
     expect(prompt).toContain("relationship_private");
     expect(prompt).toContain(audienceA);
     expect(prompt).toContain(audienceB);
+    const sourceRows = prompt
+      .split("\n")
+      .filter((line) => line.startsWith("{"))
+      .map((line) => JSON.parse(line));
+    expect(sourceRows.find((row) => row.id === episodeB.id)).toMatchObject({
+      narrative: episodeB.narrative,
+      lifecycle: "archived",
+      annotations: [{ text: "Synthetic correction on the retired split source." }],
+    });
     expect(review?.refs).toEqual(
       expect.objectContaining({
         evidence_summary: expect.objectContaining({

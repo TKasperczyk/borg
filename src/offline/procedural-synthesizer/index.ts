@@ -40,7 +40,13 @@ import { type EpisodeId } from "../../util/ids.js";
 
 import type { ReverserRegistry } from "../audit-log.js";
 import { getBudgetErrorTokens, withBudget } from "../budget.js";
-import { disclosureLabelForEpisodeIds, episodeEvidencePromptRow } from "../evidence-labels.js";
+import {
+  disclosureLabelForEpisodeIds,
+  episodeEvidencePromptRow,
+  withEpisodeEvidenceContext,
+  EVIDENCE_GUIDANCE,
+  renderEvidencePromptLines,
+} from "../evidence-labels.js";
 import { offlineProcessError } from "../process-errors.js";
 import type {
   OfflineChange,
@@ -266,7 +272,11 @@ async function collectEvidenceClusters(
     const sourceEpisodeIds = uniqueEpisodeIds(
       resolvedEvidenceRows.flatMap((evidenceRow) => evidenceRow.sourceEpisodeIds),
     );
-    const sourceEpisodes = await ctx.episodicRepository.getMany(sourceEpisodeIds);
+    const sourceEpisodes = await withEpisodeEvidenceContext(
+      ctx,
+      await ctx.episodicRepository.getMany(sourceEpisodeIds),
+      { includeVisibleLineage: true },
+    );
     const labelsByEpisodeId = new Map(
       sourceEpisodes.map((episode) => [
         episode.id,
@@ -304,8 +314,9 @@ async function collectEvidenceClusters(
 }
 
 function buildPrompt(cluster: EvidenceCluster): string {
-  return [
+  return renderEvidencePromptLines([
     "I synthesize one reusable procedural skill from repeated successful problem-solving attempts.",
+    EVIDENCE_GUIDANCE,
     `I emit my result by calling the ${SYNTHESIZER_TOOL_NAME} tool exactly once.`,
     "The skill I emit describes a reusable problem class and concrete checks or moves.",
     "I mark abstraction_fit as too_narrow when the skill is tied to a specific named project, person, or incident.",
@@ -325,8 +336,8 @@ function buildPrompt(cluster: EvidenceCluster): string {
       }),
     ),
     "Source episodes:",
-    ...cluster.sourceEpisodes.map((episode) => JSON.stringify(episodeEvidencePromptRow(episode))),
-  ].join("\n");
+    ...cluster.sourceEpisodes.map((episode) => episodeEvidencePromptRow(episode)),
+  ]);
 }
 
 function parseSkillCandidate(input: unknown) {
@@ -383,8 +394,9 @@ function sketchContextStats(stats: SkillContextStatsRecord): string {
 }
 
 function buildSplitPrompt(candidate: LabeledSkillSplitCandidate): string {
-  return [
+  return renderEvidencePromptLines([
     "One of my procedural skills has divergent outcomes across context buckets.",
+    EVIDENCE_GUIDANCE,
     `I emit my result by calling the ${SKILL_SPLIT_TOOL_NAME} tool exactly once.`,
     "I prefer no_split when the evidence does not clearly imply distinct reusable procedures.",
     "I use refine_in_place only when one narrower skill text would cover the divergence without creating child skills.",
@@ -404,7 +416,7 @@ function buildSplitPrompt(candidate: LabeledSkillSplitCandidate): string {
       ...memoryDisclosurePayloadFields(candidate.sourceDisclosureLabel),
     }),
     "Source episodes:",
-    ...candidate.sourceEpisodes.map((episode) => JSON.stringify(episodeEvidencePromptRow(episode))),
+    ...candidate.sourceEpisodes.map((episode) => episodeEvidencePromptRow(episode)),
     "Divergent context buckets:",
     ...candidate.buckets.map((bucket) =>
       JSON.stringify({
@@ -425,7 +437,7 @@ function buildSplitPrompt(candidate: LabeledSkillSplitCandidate): string {
       min_posterior_mean: Number(candidate.min_posterior_mean.toFixed(3)),
       max_posterior_mean: Number(candidate.max_posterior_mean.toFixed(3)),
     }),
-  ].join("\n");
+  ]);
 }
 
 async function labeledSplitCandidate(
@@ -443,7 +455,9 @@ async function labeledSplitCandidate(
 
   return {
     ...candidate,
-    sourceEpisodes: episodes,
+    sourceEpisodes: await withEpisodeEvidenceContext(ctx, episodes, {
+      includeVisibleLineage: true,
+    }),
     sourceDisclosureLabel,
     skill: {
       ...candidate.skill,

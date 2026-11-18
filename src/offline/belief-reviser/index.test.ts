@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { summarizeSemanticContext } from "../../cognition/deliberation/prompt/retrieval.js";
 import { type LLMCompleteOptions, type LLMCompleteResult } from "../../llm/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
+import { createRetiredEvidenceFixture, recordTestAnnotation } from "../evidence-test-support.js";
 import { SemanticGraph, type SemanticEdge } from "../../memory/semantic/index.js";
 import { CONTRADICTION_RETIREMENT_ACTION } from "../../memory/semantic/contradiction-retirement.js";
 import { type ReviewQueueItem } from "../../memory/review-queue/index.js";
@@ -1223,6 +1224,12 @@ describe("belief reviser process", () => {
       await harness.episodicRepository.createEpisode(privateB);
       const target = await insertNode(harness, "Audience target", [0, 1, 0, 0], [privateA.id]);
 
+      recordTestAnnotation(
+        harness.identityEventRepository,
+        target.id,
+        "Synthetic node-only belief correction.",
+        { recordType: "semantic_node" },
+      );
       enqueueNodeBeliefRevision(harness, target, {
         evidence_episode_ids: [privateB.id],
       });
@@ -1231,6 +1238,15 @@ describe("belief reviser process", () => {
 
       const prompt = llmClient.requests[0]?.messages[0]?.content ?? "";
 
+      const packet = JSON.parse(String(prompt));
+      expect(packet.target.record).toMatchObject({
+        description: target.description,
+        annotations: [{ text: "Synthetic node-only belief correction." }],
+        status: "active",
+      });
+      expect(packet.target.record).not.toHaveProperty("lifecycle");
+      for (const episode of packet.evidence_episodes)
+        expect(episode).not.toHaveProperty("annotations");
       expect(prompt).toContain("Private A episode");
       expect(prompt).toContain("Audience A private narrative should be labeled, not hidden.");
       expect(prompt).toContain("Private B episode");
@@ -1238,6 +1254,34 @@ describe("belief reviser process", () => {
       expect(prompt).toContain("relationship_private");
       expect(prompt).toContain(audienceA);
       expect(prompt).toContain(audienceB);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("keeps retired cited belief evidence with its own corrections and visible lineage", async () => {
+    const llmClient = new FakeLLMClient({
+      responses: [
+        beliefRevisionResponse({ verdict: "keep", rationale: "Synthetic evidence considered." }),
+      ],
+    });
+    const harness = await createOfflineTestHarness({ llmClient });
+    try {
+      const { source, lineage } = await createRetiredEvidenceFixture(harness);
+      const target = await insertNode(harness, "Synthetic target", [0, 1, 0, 0], [source.id]);
+      enqueueNodeBeliefRevision(harness, target);
+      await runBeliefReviser(harness, { regradeBatchSize: 1 });
+      const prompt = String(llmClient.requests[0]?.messages[0]?.content ?? "");
+      const payload = JSON.parse(prompt);
+      expect(payload.evidence_episodes).toMatchObject([
+        {
+          id: source.id,
+          narrative: source.narrative,
+          lifecycle: "archived",
+          annotations: [{ text: "Synthetic audited correction: the observation was provisional." }],
+          visible_lineage: [{ id: lineage.id, excerpt: lineage.narrative }],
+        },
+      ]);
     } finally {
       await harness.cleanup();
     }

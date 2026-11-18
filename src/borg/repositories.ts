@@ -256,6 +256,7 @@ export async function buildBorgRepositories(
   const identityEventRepository = new IdentityEventRepository({
     db: sqlite,
     clock,
+    tracer: options.tracer,
   });
   const openQuestionsRepository = new OpenQuestionsRepository({
     identityEventRepository,

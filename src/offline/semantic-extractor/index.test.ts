@@ -20,6 +20,7 @@ import type {
   OfflineProcessPlan,
   OfflineResult,
 } from "../types.js";
+import { recordTestAnnotation, insertMalformedTestAnnotations } from "../evidence-test-support.js";
 import { SemanticExtractorProcess } from "./index.js";
 import type { SemanticReviewQueueOptions } from "../../memory/semantic/review-service.js";
 
@@ -702,6 +703,14 @@ describe("semantic extractor process", () => {
     );
     expect(tokenBoundedPlan.pending_episode_count).toBe(2);
     expect(tokenBoundedPlan.run_capped).toBe(true);
+    recordTestAnnotation(
+      tokenBoundedHarness.identityEventRepository,
+      tokenBoundedEpisodes[0]!.id,
+      "界".repeat(2000),
+    );
+    const annotatedPlan = await tokenBoundedProcess.plan(tokenBoundedHarness.createContext());
+    expect(annotatedPlan.episode_ids).toEqual([tokenBoundedEpisodes[0]!.id]);
+    expect(annotatedPlan.pending_episode_count).toBe(3);
 
     const oversizedHarness = await createOfflineTestHarness({
       configOverrides: {
@@ -736,6 +745,42 @@ describe("semantic extractor process", () => {
     expect(oversizedPlan.episode_ids).toEqual([oversizedEpisode.id]);
     expect(oversizedPlan.pending_episode_count).toBe(1);
     expect(oversizedPlan.run_capped).toBe(true);
+  });
+
+  it("shows audited corrections beside unchanged extractor input text", async () => {
+    const llm = new FakeLLMClient({
+      responses: [createSemanticToolResponse({ nodes: [], edges: [] })],
+    });
+    const harness = await createOfflineTestHarness({ llmClient: llm });
+    cleanup.push(harness.cleanup);
+    const episode = await harness.episodicRepository.createEpisode(
+      createEpisodeFixture({ narrative: "Original account. 原文不变。" }),
+    );
+    const correction = "更正：尚未确认。\nZażółć. تصحيح 🧭";
+    insertMalformedTestAnnotations(harness, episode.id);
+    recordTestAnnotation(harness.identityEventRepository, episode.id, correction);
+    const process = createProcess(harness);
+    const plan = await process.plan(harness.createContext());
+    const result = await process.apply(harness.createContext(), plan);
+    expect(result.errors).toEqual([]);
+    const prompt = String(llm.requests[0]?.messages[0]?.content ?? "");
+    const rows = prompt
+      .split("\n")
+      .filter((line) => line.startsWith("{"))
+      .map((line) => JSON.parse(line));
+    const row = rows.find((entry) => entry.id === episode.id);
+    expect(row).toMatchObject({
+      narrative: episode.narrative,
+      annotations: [
+        {
+          text: correction,
+          authority: "Synthetic operator",
+          written_at: new Date(1000).toISOString(),
+        },
+      ],
+    });
+    expect(row).not.toHaveProperty("lifecycle");
+    expect((await harness.episodicRepository.get(episode.id))!.narrative).toBe(episode.narrative);
   });
 
   it("skips invalid edges while keeping valid batch candidates", async () => {

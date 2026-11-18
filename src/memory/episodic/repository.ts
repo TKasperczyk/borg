@@ -755,6 +755,8 @@ export type EpisodeGetOptions = {
   includeArchived?: boolean;
 };
 
+export type EpisodeLifecycle = "active" | "archived" | "inactive" | "unknown";
+
 export class EpisodicRepository {
   private readonly clock: Clock;
 
@@ -1694,6 +1696,31 @@ export class EpisodicRepository {
         return [stats.episode_id, stats] as const;
       }),
     );
+  }
+
+  /** Lifecycle labels only; this read never decides which cited bodies can be loaded. */
+  getLifecycleMany(ids: readonly EpisodeId[]): Map<EpisodeId, EpisodeLifecycle> {
+    const uniqueIds = [...new Set(ids)];
+    if (uniqueIds.length === 0) return new Map();
+    const rows = this.db
+      .prepare(
+        `
+      WITH requested(episode_id) AS (SELECT value FROM json_each(?))
+      SELECT requested.episode_id,
+        CASE WHEN ei.archived = 1 OR es.archived = 1 THEN 'archived'
+          WHEN ei.episode_id IS NULL OR es.episode_id IS NULL THEN 'unknown'
+          WHEN ${this.buildEffectiveVisibilityWhereClause("ei")} THEN 'active'
+          ELSE 'inactive' END AS lifecycle
+      FROM requested
+      LEFT JOIN episode_index ei ON ei.episode_id = requested.episode_id
+      LEFT JOIN episode_stats es ON es.episode_id = requested.episode_id
+    `,
+      )
+      .all(JSON.stringify(uniqueIds)) as Array<{
+      episode_id: EpisodeId;
+      lifecycle: EpisodeLifecycle;
+    }>;
+    return new Map(rows.map((row) => [row.episode_id, row.lifecycle]));
   }
 
   private validateLifecycleAuditInput(
