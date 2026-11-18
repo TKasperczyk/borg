@@ -2172,13 +2172,24 @@ export class EpisodicRepository {
       params.push(range.start);
     }
 
+    let timeOrder = "";
+    if (Number.isFinite(range.start) && Number.isFinite(range.end)) {
+      // Rank by interval IoU before applying the cap. Give point spans/windows one millisecond
+      // from their start, while keeping the original inclusive overlap eligibility above.
+      const windowEnd = Math.max(range.end, range.start + 1);
+      const overlap = "MAX(0, MIN(MAX(ei.end_time, ei.start_time + 1), ?) - MAX(ei.start_time, ?))";
+      timeOrder = `${overlap} * 1.0 / (MAX(1, ei.end_time - ei.start_time) + ? - ${overlap}) DESC,`;
+      params.push(windowEnd, range.start, windowEnd - range.start, windowEnd, range.start);
+    }
+    // An unbounded window has infinite union with every finite episode, so all IoUs tie at zero.
+
     const rows = this.db
       .prepare(
         `
           SELECT ei.episode_id
           FROM episode_index AS ei INDEXED BY idx_episode_index_time_start
           WHERE ${clauses.join(" AND ")}
-          ORDER BY ei.updated_at DESC, ei.episode_id DESC
+          ORDER BY ${timeOrder} ei.updated_at DESC, ei.episode_id DESC
           LIMIT ?
         `,
       )

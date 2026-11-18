@@ -689,6 +689,14 @@ describe("episodic repository", () => {
     expect((await harness.repo.listEffectivelyVisible()).map((episode) => episode.id)).toEqual([
       currentVersion.id,
     ]);
+    expect(
+      (
+        await harness.repo.recallByTimeRangeForCognition({
+          start: nowMs,
+          end: nowMs + 3_000,
+        })
+      ).map((candidate) => candidate.episode.id),
+    ).toEqual([currentVersion.id]);
 
     expect(() =>
       harness.repo.archiveEpisode(currentVersion.id, {
@@ -1537,6 +1545,207 @@ describe("episodic repository", () => {
       limit: 10,
     });
     expect(cognition.map((candidate) => candidate.episode.id)).toEqual([singleVenue.id]);
+  });
+
+  it("orders time candidates by interval IoU, then update time and descending id", async () => {
+    const harness = await createHarness();
+    closers.push(harness.close);
+    const now = harness.clock.now();
+    const spans = [
+      ["ep_aaaaaaaaaaaaaaaa", 0, 1_000, 1],
+      ["ep_bbbbbbbbbbbbbbbb", 0, 1_000, 2],
+      ["ep_cccccccccccccccc", 0, 1_000, 2],
+      ["ep_dddddddddddddddd", 100, 900, 3],
+      ["ep_eeeeeeeeeeeeeeee", 250, 1_250, 4],
+      ["ep_ffffffffffffffff", -1_000, 2_000, 5],
+      ["ep_gggggggggggggggg", 1_000, 1_500, 6],
+    ] as const;
+    for (const [id, start, end, updated] of spans) {
+      await harness.repo.createEpisode(
+        createEpisode(id, now, {
+          start_time: now + start,
+          end_time: now + end,
+          updated_at: now + updated,
+          source_stream_ids: [createStreamEntryId()],
+        }),
+      );
+    }
+
+    const candidates = await harness.repo.recallByTimeRangeForCognition(
+      { start: now, end: now + 1_000 },
+      { limit: 10 },
+    );
+    expect(candidates.map((candidate) => candidate.episode.id)).toEqual([
+      spans[2][0],
+      spans[1][0],
+      spans[0][0],
+      spans[3][0],
+      spans[4][0],
+      spans[5][0],
+      spans[6][0],
+    ]);
+  });
+
+  it("prefers a contained raw exchange for a narrow window and a covering consolidation for a week", async () => {
+    const harness = await createHarness();
+    closers.push(harness.close);
+    const now = harness.clock.now();
+    const day = 86_400_000;
+    const raw = createEpisode(createEpisodeId(), now, {
+      end_time: now + 60_000,
+      audience_entity_id: createEntityId(),
+      shared: false,
+      source_stream_ids: [createStreamEntryId()],
+    });
+    const summary = createEpisode(createEpisodeId(), now, {
+      start_time: now - 3 * day,
+      end_time: now + 4 * day,
+      updated_at: now + day,
+      episode_kind: "consolidation_version",
+      consolidation_family_id: createConsolidationFamilyId(),
+      consolidation_coverage_hash: buildConsolidationCoverageHash([createStreamEntryId()]),
+      source_stream_ids: [createStreamEntryId()],
+    });
+    await harness.repo.createEpisode(raw);
+    await harness.repo.createEpisode(summary);
+    harness.repo.createConsolidationFamily({
+      familyId: summary.consolidation_family_id!,
+      currentVersionEpisodeId: summary.id,
+      coverageHash: summary.consolidation_coverage_hash!,
+      policyVersion: 1,
+      members: [],
+    });
+
+    const narrow = await harness.repo.recallByTimeRangeForCognition(
+      { start: now - 10_000, end: now + 70_000 },
+      { limit: 1 },
+    );
+    const week = await harness.repo.recallByTimeRangeForCognition(
+      { start: now - 3 * day, end: now + 4 * day },
+      { limit: 1 },
+    );
+    expect(narrow.map((candidate) => candidate.episode.id)).toEqual([raw.id]);
+    expect(week.map((candidate) => candidate.episode.id)).toEqual([summary.id]);
+  });
+
+  it("floors point spans and windows at one millisecond without widening eligibility", async () => {
+    const harness = await createHarness();
+    closers.push(harness.close);
+    const now = harness.clock.now();
+    const point = createEpisode(createEpisodeId(), now, {
+      end_time: now,
+      source_stream_ids: [createStreamEntryId()],
+    });
+    const short = createEpisode(createEpisodeId(), now, {
+      end_time: now + 5,
+      updated_at: now + 1,
+      source_stream_ids: [createStreamEntryId()],
+    });
+    const touching = createEpisode(createEpisodeId(), now, {
+      start_time: now - 100,
+      end_time: now,
+      updated_at: now + 2,
+      source_stream_ids: [createStreamEntryId()],
+    });
+    const outside = createEpisode(createEpisodeId(), now + 500, {
+      source_stream_ids: [createStreamEntryId()],
+    });
+    for (const episode of [point, short, touching, outside]) {
+      await harness.repo.createEpisode(episode);
+    }
+
+    const instant = await harness.repo.recallByTimeRangeForCognition({ start: now, end: now });
+    const interval = await harness.repo.recallByTimeRangeForCognition({
+      start: now,
+      end: now + 10,
+    });
+    expect(instant.map((candidate) => candidate.episode.id)).toEqual([
+      point.id,
+      short.id,
+      touching.id,
+    ]);
+    expect(interval.map((candidate) => candidate.episode.id)).toEqual([
+      short.id,
+      point.id,
+      touching.id,
+    ]);
+  });
+
+  it("applies the time lane cap after IoU ordering and hydrates only that slice", async () => {
+    const harness = await createHarness();
+    closers.push(harness.close);
+    const now = harness.clock.now();
+    const episodes = Array.from({ length: 15 }, (_, index) =>
+      createEpisode(createEpisodeId(), now, {
+        end_time: now + index + 1,
+        updated_at: now + 15 - index,
+        source_stream_ids: [createStreamEntryId()],
+      }),
+    );
+    for (const episode of episodes) await harness.repo.createEpisode(episode);
+    const getMany = vi.spyOn(harness.repo, "getMany");
+
+    const candidates = await harness.repo.recallByTimeRangeForCognition(
+      { start: now, end: now + 100 },
+      { limit: 12 },
+    );
+    const expected = episodes
+      .slice(3)
+      .reverse()
+      .map((episode) => episode.id);
+    expect(candidates.map((candidate) => candidate.episode.id)).toEqual(expected);
+    expect(getMany).toHaveBeenCalledExactlyOnceWith(expected);
+  });
+
+  it("keeps both archive predicates in time recall even when the hidden rows match exactly", async () => {
+    const harness = await createHarness();
+    closers.push(harness.close);
+    const now = harness.clock.now();
+    const episodes = Array.from({ length: 3 }, () =>
+      createEpisode(createEpisodeId(), now, { source_stream_ids: [createStreamEntryId()] }),
+    );
+    for (const episode of episodes) await harness.repo.createEpisode(episode);
+    // Finish startup reconciliation before introducing inconsistent archive flags.
+    await harness.repo.recallByTimeRangeForCognition({ start: now, end: now + 1_000 });
+    harness.db
+      .prepare("UPDATE episode_index SET archived = 1 WHERE episode_id = ?")
+      .run(episodes[1]!.id);
+    harness.db
+      .prepare("UPDATE episode_stats SET archived = 1 WHERE episode_id = ?")
+      .run(episodes[2]!.id);
+
+    const candidates = await harness.repo.recallByTimeRangeForCognition({
+      start: now,
+      end: now + 1_000,
+    });
+    expect(candidates.map((candidate) => candidate.episode.id)).toEqual([episodes[0]!.id]);
+  });
+
+  it.each([
+    { start: Number.NEGATIVE_INFINITY, end: 1_000 },
+    { start: 0, end: Number.POSITIVE_INFINITY },
+    { start: Number.NEGATIVE_INFINITY, end: Number.POSITIVE_INFINITY },
+  ])("retains update ordering for unbounded time windows: %j", async (range) => {
+    const harness = await createHarness();
+    closers.push(harness.close);
+    const now = harness.clock.now();
+    const exact = createEpisode(createEpisodeId(), now, {
+      end_time: now + 1_000,
+      source_stream_ids: [createStreamEntryId()],
+    });
+    const newer = createEpisode(createEpisodeId(), now, {
+      end_time: now + 2_000,
+      updated_at: now + 1,
+      source_stream_ids: [createStreamEntryId()],
+    });
+    await harness.repo.createEpisode(exact);
+    await harness.repo.createEpisode(newer);
+
+    const candidates = await harness.repo.recallByTimeRangeForCognition({
+      start: now + range.start,
+      end: now + range.end,
+    });
+    expect(candidates.map((candidate) => candidate.episode.id)).toEqual([newer.id, exact.id]);
   });
 
   it("fails closed for unknown-origin records across indexed disclosure lanes", async () => {
