@@ -117,7 +117,7 @@ describe("migration name reconciliation", () => {
     expect(reopenedDb.prepare("SELECT total_changes() AS count").get()).toEqual({ count: 0 });
   });
 
-  it("opens the 73-row Sol demo ledger without moves and applies only fifteen pending migrations", () => {
+  it("opens the 73-row Sol demo ledger without moves and applies only sixteen pending migrations", () => {
     const [header, ...rows] = readFileSync(
       new URL("../fixtures/sol-demo-bank-migrations.txt", import.meta.url),
       "utf8",
@@ -154,11 +154,12 @@ describe("migration name reconciliation", () => {
     const appliedAt = 1_900_000_000_000;
     runMigrations(legacyDb, trackedMigrations, appliedAt);
     expect(appliedIds).toEqual([
-      1_000_012, 1_000_013, 1_000_014, 1_000_015, 1_000_016, 12_000_002, 12_000_003, 14_000_011,
-      15_000_003, 16_000_006, 16_000_007, 16_000_008, 16_000_009, 28_000_001, 28_000_002,
+      1_000_012, 1_000_013, 1_000_014, 1_000_015, 1_000_016, 1_000_017, 12_000_002, 12_000_003,
+      14_000_011, 15_000_003, 16_000_006, 16_000_007, 16_000_008, 16_000_009, 28_000_001,
+      28_000_002,
     ]);
     const after = legacyDb.listAppliedMigrations();
-    expect(after).toHaveLength(88);
+    expect(after).toHaveLength(89);
     expect(legacyDb.pragma("table_info(open_questions)")).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -177,11 +178,11 @@ describe("migration name reconciliation", () => {
     );
     expect(after.filter((row) => !appliedIds.includes(row.id))).toEqual(liveLedger);
     expect(after.filter((row) => appliedIds.includes(row.id)).map((row) => row.applied_at)).toEqual(
-      Array.from({ length: 15 }, () => appliedAt),
+      Array.from({ length: 16 }, () => appliedAt),
     );
     const changes = legacyDb.prepare("SELECT total_changes() AS count").get();
     runMigrations(legacyDb, trackedMigrations, appliedAt + 1000);
-    expect(appliedIds).toHaveLength(15);
+    expect(appliedIds).toHaveLength(16);
     expect(legacyDb.listAppliedMigrations()).toEqual(after);
     expect(legacyDb.prepare("SELECT total_changes() AS count").get()).toEqual(changes);
   });

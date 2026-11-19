@@ -27,11 +27,7 @@ export type OpenQuestionReview = z.infer<typeof openQuestionReviewSchema>;
 type ReviewCarrier = { review_id?: number | null; review?: OpenQuestionReview };
 
 export function openQuestionReviewFields(question: ReviewCarrier): { review?: OpenQuestionReview } {
-  if (question.review !== undefined) return { review: question.review };
-  if (question.review_id == null) return {};
-  return {
-    review: { id: question.review_id, kind: null, status: "unavailable" },
-  };
+  return question.review === undefined ? {} : { review: question.review };
 }
 
 export function renderOpenQuestionReview(question: ReviewCarrier): string {

@@ -62,6 +62,45 @@ describe("Borg", () => {
     }
   });
 
+  it("wires fresh review lifecycle labels into the production question repository", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-review-lookup-"));
+    tempDirs.push(tempDir);
+    const borg = await Borg.open({
+      config: createTestConfig({ dataDir: tempDir }),
+      embeddingDimensions: 4,
+      embeddingClient: new ScriptedEmbeddingClient(),
+      llmClient: new FakeLLMClient(),
+    });
+    try {
+      const { deps } = borgInternals<{ deps: BorgDependencies }>(borg);
+      const inserted = deps.sqlite
+        .prepare("INSERT INTO review_queue (kind, refs, reason, created_at) VALUES (?, ?, ?, ?)")
+        .run("contradiction", "{}", "Synthetic persisted review", 1_000);
+      const reviewId = Number(inserted.lastInsertRowid);
+      const question = deps.openQuestionsRepository.add({
+        question: "Synthetic persisted uncertainty?",
+        urgency: 0.5,
+        source: "contradiction",
+        provenance: { kind: "manual" },
+        review_id: reviewId,
+      });
+      expect(question.review).toEqual({ id: reviewId, kind: "contradiction", status: "open" });
+      const resolvedAt = Date.UTC(2026, 8, 2);
+      deps.sqlite
+        .prepare("UPDATE review_queue SET resolved_at = ?, resolution = ? WHERE id = ?")
+        .run(resolvedAt, "dismiss", reviewId);
+      expect(deps.openQuestionsRepository.get(question.id)?.review).toEqual({
+        id: reviewId,
+        kind: "contradiction",
+        status: "resolved",
+        resolution: "dismiss",
+        resolved_at: new Date(resolvedAt).toISOString(),
+      });
+    } finally {
+      await borg.close();
+    }
+  });
+
   it.each([
     ["review", "synchronous"],
     ["review", "asynchronous"],

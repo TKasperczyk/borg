@@ -1,3 +1,4 @@
+export { createReviewLookup, type ReviewLookup, type ReviewLookupRow } from "./review-lookup.js";
 export {
   ReviewQueueRepository,
   REVIEW_KINDS,

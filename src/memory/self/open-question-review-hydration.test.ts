@@ -4,6 +4,7 @@ import { openDatabase, SqliteStatement } from "../../storage/sqlite/index.js";
 import { createGoalId, createSemanticNodeId } from "../../util/ids.js";
 import { REVIEW_QUEUE_BASELINE_SQL } from "../review-queue/migrations.js";
 import { ReviewQueueRepository } from "../review-queue/review-queue.js";
+import { createReviewLookup } from "../review-queue/review-lookup.js";
 import { selfMigrations } from "./migrations.js";
 import { OpenQuestionsRepository } from "./open-questions.js";
 
@@ -18,7 +19,7 @@ function fixture(linked = true) {
       reason: "Synthetic review",
     }),
   );
-  const repository = new OpenQuestionsRepository({ db });
+  const repository = new OpenQuestionsRepository({ db, reviewLookup: createReviewLookup(db) });
   const goalId = createGoalId();
   const nodeId = createSemanticNodeId();
   const questions = Array.from({ length: 25 }, (_, index) =>
@@ -37,6 +38,38 @@ function fixture(linked = true) {
 afterEach(() => vi.restoreAllMocks());
 
 describe("batched open-question review hydration", () => {
+  it("uses an injected batch reader without requiring a local review table", () => {
+    const db = openDatabase(":memory:", { migrations: selfMigrations });
+    try {
+      const lookup = {
+        getByIds: vi.fn((ids: readonly number[]) =>
+          ids.map((id) => ({
+            id,
+            kind: "contradiction" as const,
+            status: "open" as const,
+          })),
+        ),
+      };
+      const repository = new OpenQuestionsRepository({ db, reviewLookup: lookup });
+      for (let index = 0; index < 25; index += 1)
+        repository.add({
+          question: `Synthetic external review question ${index}?`,
+          urgency: 0.5,
+          source: "contradiction",
+          provenance: { kind: "manual" },
+          review_id: 101 + (index % 2),
+        });
+      lookup.getByIds.mockClear();
+      const questions = repository.list();
+      expect(lookup.getByIds).toHaveBeenCalledTimes(1);
+      expect([...lookup.getByIds.mock.calls[0]![0]].sort()).toEqual([101, 102]);
+      expect(questions).toHaveLength(25);
+      expect(questions.every((question) => question.review?.status === "open")).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
   it.each(["list", "listAllOpen", "listByGoal", "findByHandles"] as const)(
     "%s reads 25 questions and their distinct reviews in two queries",
     (method) => {
@@ -74,6 +107,7 @@ describe("batched open-question review hydration", () => {
       const vectorRows = [...questions].reverse().map((q) => ({ id: q.id, _distance: 0.1 }));
       const repository = new OpenQuestionsRepository({
         db,
+        reviewLookup: createReviewLookup(db),
         table: { search: async () => vectorRows } as unknown as LanceDbTable,
       });
       const reads = vi.spyOn(SqliteStatement.prototype, "all");

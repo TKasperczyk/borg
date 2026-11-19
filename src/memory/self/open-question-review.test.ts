@@ -4,6 +4,7 @@ import { openDatabase } from "../../storage/sqlite/index.js";
 import { parseOpenQuestionId } from "../../util/ids.js";
 import { REVIEW_QUEUE_BASELINE_SQL } from "../review-queue/migrations.js";
 import { ReviewQueueRepository } from "../review-queue/review-queue.js";
+import { createReviewLookup } from "../review-queue/review-lookup.js";
 import { selfMigrations } from "./migrations.js";
 import { OpenQuestionsRepository } from "./open-questions.js";
 import { openQuestionSchema } from "./types.js";
@@ -33,6 +34,7 @@ describe("review lifecycle labels", () => {
         });
         const repository = new OpenQuestionsRepository({
           db,
+          reviewLookup: createReviewLookup(db),
           clock: { now: () => REVIEW_TEST_NOW - 99_000 },
         });
         const added = repository.add({
@@ -93,7 +95,7 @@ describe("review lifecycle labels", () => {
     const db = openDatabase(":memory:", { migrations: selfMigrations });
     db.exec(REVIEW_QUEUE_BASELINE_SQL);
     try {
-      const repository = new OpenQuestionsRepository({ db });
+      const repository = new OpenQuestionsRepository({ db, reviewLookup: createReviewLookup(db) });
       const row = repository.add({
         question: "Synthetic missing review?",
         urgency: 0.5,
@@ -106,7 +108,35 @@ describe("review lifecycle labels", () => {
     } finally {
       db.close();
     }
-    expect(renderOpenQuestionReview({ review_id: 42 })).toContain("unavailable");
+    expect(renderOpenQuestionReview({ review_id: 42 })).toBe("");
+  });
+
+  it("keeps review-linked questions usable and unlabeled without an injected lookup or queue table", async () => {
+    const db = openDatabase(":memory:", { migrations: selfMigrations });
+    try {
+      const repository = new OpenQuestionsRepository({ db });
+      const added = repository.add({
+        id: question.id,
+        question: question.question,
+        urgency: 0.5,
+        source: "contradiction",
+        provenance: { kind: "manual" },
+        review_id: 42,
+      });
+      const current = repository.get(added.id)!;
+      for (const row of [added, current, ...repository.list(), ...repository.listAllOpen()]) {
+        expect(row.review_id).toBe(42);
+        expect(row).not.toHaveProperty("review");
+        expect(openQuestionReviewFields(row)).toEqual({});
+        expect(renderOpenQuestionReview(row)).toBe("");
+      }
+      const { review_id: _, ...unlinked } = current;
+      expect(await renderQuestionSurfaces(root, [current])).toEqual(
+        await renderQuestionSurfaces(root, [unlinked]),
+      );
+    } finally {
+      db.close();
+    }
   });
 
   it("keeps dormant and planner row caps and complete bounded labels with long questions", async () => {

@@ -7,6 +7,7 @@ import { openDatabase } from "../../storage/sqlite/index.js";
 import { createSemanticNodeId, createSemanticEdgeId } from "../../util/ids.js";
 import { REVIEW_QUEUE_BASELINE_SQL } from "../review-queue/migrations.js";
 import { ReviewQueueRepository } from "../review-queue/review-queue.js";
+import { createReviewLookup } from "../review-queue/review-lookup.js";
 import { OpenQuestionsRepository } from "./open-questions.js";
 import { selfMigrations } from "./migrations.js";
 import {
@@ -26,7 +27,7 @@ it.each([
     const db = openDatabase(":memory:", { migrations: selfMigrations });
     db.exec(REVIEW_QUEUE_BASELINE_SQL);
     try {
-      const repository = new OpenQuestionsRepository({ db });
+      const repository = new OpenQuestionsRepository({ db, reviewLookup: createReviewLookup(db) });
       const nodes = [createSemanticNodeId(), createSemanticNodeId()];
       const review = new ReviewQueueRepository({ db }).enqueue({
         kind,

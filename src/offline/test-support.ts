@@ -87,6 +87,7 @@ import {
 } from "../memory/semantic/index.js";
 import {
   ReviewQueueRepository,
+  createReviewLookup,
   createCorrectionReviewHandler,
   createSkillSplitReviewQueueHandler,
   registerBuiltinReviewQueueHandlers,
@@ -677,6 +678,7 @@ export async function createOfflineTestHarness(
   const openQuestionsRepository = new OpenQuestionsRepository({
     identityEventRepository,
     db,
+    reviewLookup: createReviewLookup(db),
     table: openQuestionsTable,
     embeddingClient,
     clock,

@@ -65,6 +65,7 @@ import {
 import {
   ReviewQueueRepository,
   ReviewQueueHandlerRegistry,
+  createReviewLookup,
   createCorrectionReviewHandler,
   registerBuiltinReviewQueueHandlers,
   type ReviewQueueItem,
@@ -261,6 +262,7 @@ export async function buildBorgRepositories(
   const openQuestionsRepository = new OpenQuestionsRepository({
     identityEventRepository,
     db: sqlite,
+    reviewLookup: createReviewLookup(sqlite),
     table: options.openQuestionsTable,
     embeddingClient,
     clock,

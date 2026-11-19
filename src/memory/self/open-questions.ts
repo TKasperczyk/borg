@@ -1,4 +1,5 @@
 import { openQuestionReviewSchema } from "./open-question-review.js";
+import type { ReviewLookup } from "../review-queue/review-lookup.js";
 import { FailureReportTracker } from "../../util/failure-reports.js";
 import {
   MAX_RESOLUTION_CORRECTIONS,
@@ -236,6 +237,7 @@ export type OpenQuestionReversalOptions = IdentityCasOptions & {
 
 export type OpenQuestionsRepositoryOptions = {
   identityEventRepository?: IdentityEventRepository;
+  reviewLookup?: ReviewLookup;
   db: SqliteDatabase;
   table?: LanceDbTable;
   embeddingClient?: EmbeddingClient;
@@ -1013,36 +1015,25 @@ export class OpenQuestionsRepository {
   }
 
   private withReviews(questions: OpenQuestion[]): OpenQuestion[] {
+    const lookup = this.options.reviewLookup;
+    if (lookup === undefined) return questions;
     const ids = [
       ...new Set(
         questions.flatMap((question) => (question.review_id == null ? [] : [question.review_id])),
       ),
     ];
     if (ids.length === 0) return questions;
-    // Only scalar lifecycle facts, fetched by primary key. Global cognition;
-    // review status neither closes the question nor changes its eligibility.
-    // A JSON IN list also handles unbounded listAllOpen reads without a bind-variable cap.
-    const rows = this.db
-      .prepare(
-        "SELECT id, kind, resolved_at, resolution FROM review_queue WHERE id IN (SELECT value FROM json_each(?))",
-      )
-      .all(JSON.stringify(ids));
-    const reviews = new Map(rows.map((row) => [Number(row.id), row]));
+    // The injected reader owns review storage. These are labels only; review
+    // status neither closes the question nor changes its eligibility.
+    const reviews = new Map(lookup.getByIds(ids).map((review) => [review.id, review]));
     return questions.map((question) => {
       if (question.review_id == null) return question;
-      const row = reviews.get(question.review_id);
       const review = openQuestionReviewSchema.parse(
-        row === undefined
-          ? { id: question.review_id, kind: null, status: "missing" }
-          : row.resolved_at == null
-            ? { id: row.id, kind: row.kind, status: "open" }
-            : {
-                id: row.id,
-                kind: row.kind,
-                status: "resolved",
-                resolution: row.resolution,
-                resolved_at: new Date(Number(row.resolved_at)).toISOString(),
-              },
+        reviews.get(question.review_id) ?? {
+          id: question.review_id,
+          kind: null,
+          status: "missing",
+        },
       );
       return { ...question, review };
     });
