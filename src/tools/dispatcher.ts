@@ -2,7 +2,6 @@ import { z } from "zod";
 import type { RecordIdResolver } from "./record-id-resolver.js";
 import {
   resolveToolRecordIds,
-  missingToolIdOutput,
   type RecordIdInput,
   type ToolIdResolution,
 } from "./record-id-inputs.js";
@@ -313,18 +312,7 @@ export class ToolDispatcher {
       }
       const parsedInput = tool.inputSchema.safeParse(resolvedInput.input);
 
-      // A missing prefix has valid ID structure but intentionally cannot pass
-      // a full-ID refinement. Other input errors still win over a missing result.
-      const remainingIssues = parsedInput.success
-        ? []
-        : parsedInput.error.issues.filter(
-            (issue) =>
-              !resolvedInput.missing.some((missing) => issue.path.join(".") === missing.field),
-          );
-      if (
-        !parsedInput.success &&
-        (resolvedInput.missing.length === 0 || remainingIssues.length > 0)
-      ) {
+      if (!parsedInput.success) {
         return await this.appendErrorResult(
           writer,
           callId,
@@ -358,12 +346,12 @@ export class ToolDispatcher {
         // a timed-out write can still commit after the model sees failure.
         // Write tools must keep their own execution bounded internally.
         try {
-          const missing = resolvedInput.missing.find((item) => item.spec.notFound !== "invoke");
-          if (missing !== undefined)
-            return { kind: "resolved", value: missingToolIdOutput(missing) };
-          // Only read filters use 'invoke' for a missing prefix. Their original
-          // implementation owns the empty-range semantics (including unfiltered lanes).
-          const input = parsedInput.success ? parsedInput.data : resolvedInput.input;
+          // Reference-only create inputs have no native existence check. Apply
+          // the same constraint to unknown full IDs and unmatched handles.
+          const missing = resolvedInput.missing.find((item) => item.spec.requireExisting);
+          if (missing?.spec.requireExisting)
+            throw missing.spec.requireExisting.error(missing.input);
+          const input = parsedInput.data;
           return {
             kind: "resolved",
             value:

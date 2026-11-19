@@ -85,6 +85,25 @@ describe("stored record ID resolution", () => {
   });
 
   it.each(Object.keys(RECORD_ID_STORES) as RecordIdKind[])(
+    "passes an unmatched %s prefix as a valid absent full ID, without claiming a match",
+    (kind) => {
+      insert(kind, "test000000000001");
+      const resolver = createRecordIdResolver(db);
+      const { helper, table, column } = RECORD_ID_STORES[kind];
+      for (const suffix of ["none", "none12345678"]) {
+        const prefix = helper.prefix + suffix;
+        const result = resolver.resolve(prefix, [kind]);
+        expect(result.status).toBe("not_found");
+        expect(helper.is(result.id)).toBe(true);
+        expect(result.id.startsWith(prefix)).toBe(true);
+        expect(
+          db.prepare(`SELECT 1 FROM "${table}" WHERE "${column}" = ?`).get(result.id),
+        ).toBeUndefined();
+      }
+    },
+  );
+
+  it.each(Object.keys(RECORD_ID_STORES) as RecordIdKind[])(
     "%s ambiguity includes only IDs and available UTC timestamps via indexed point reads",
     (kind) => {
       const first = insert(kind, "same100000000000");
@@ -147,7 +166,7 @@ describe("stored record ID resolution", () => {
     const resolver = createRecordIdResolver(db);
     expect(resolver.resolve("goal_none", ["goal"])).toEqual({
       status: "not_found",
-      id: "goal_none",
+      id: "goal_none000000000000",
     });
     expect(resolver.resolve("goal_test000000000099", ["goal"])).toEqual({
       status: "unchanged",

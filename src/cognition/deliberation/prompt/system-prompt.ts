@@ -2012,7 +2012,7 @@ export function summarizeAutonomySchedulerState(
       "Wakes in current window by trigger_name:",
       ...budget.wakes_in_current_window_by_trigger.map(
         (group) =>
-          `- trigger_name=${group.trigger_name} wake_count=${group.wake_count} in_flight=${group.in_flight}${formatInFlightStamps(group.in_flight_started_at)} outcome_counts(headway=${group.outcome_counts.headway} silent=${group.outcome_counts.silent} error=${group.outcome_counts.error} busy=${group.outcome_counts.busy} interrupted=${group.outcome_counts.interrupted})`,
+          `- trigger_name=${group.trigger_name} wake_count=${group.wake_count} in_flight=${group.in_flight}${formatInFlightStamps(group.in_flight_started_at)} outcome_counts(headway=${group.outcome_counts.headway} silent=${group.outcome_counts.silent} error=${group.outcome_counts.error} busy=${group.outcome_counts.busy} interrupted=${group.outcome_counts.interrupted}${group.outcome_counts.not_run ? ` not_run=${group.outcome_counts.not_run}` : ""})`,
       ),
       // These groups are keyed on the wakes table's trigger_name column, whose
       // domain is every source name, conditions included -- the type lives in a
@@ -2036,7 +2036,7 @@ export function summarizeAutonomySchedulerState(
       // in_flight is 0 everywhere: a rule that appeared only alongside a
       // non-zero count would make the zero read as "no such state exists"
       // rather than as "none right now".
-      "in_flight counts rows written when the wake fired whose terminal outcome has not yet been recorded, stamped with when each fired. A normal completion records headway, silent, error, or busy; a post-turn bookkeeping failure records interrupted, and a later start records NULL rows over an hour old as interrupted, not younger ones. A non-zero in_flight count can therefore be a healthy turn currently running. It is taken over the rolling window named above, so a live row can also leave this display by ageing past the lower edge before it closes. The stamps support cross-read identity: one repeating across two reads is one row still open, one that changes is a different wake, and one that disappears either closed or left the window.",
+      "in_flight counts rows written when the wake fired whose terminal outcome has not yet been recorded, stamped with when each fired. A normal completion records headway, silent, error, or busy; a shutdown drain before turn start records not_run. A post-turn bookkeeping failure records interrupted, and a later start records every pre-start NULL row as interrupted regardless of age. A non-zero in_flight count can therefore be a healthy turn currently running. It is taken over the rolling window named above, so a live row can also leave this display by ageing past the lower edge before it closes. The stamps support cross-read identity: one repeating across two reads is one row still open, one that changes is a different wake, and one that disappears either closed or left the window.",
     );
   }
 
@@ -2308,6 +2308,11 @@ export function summarizeAutonomySchedulerState(
   // silent=N and carries the structural class that selected that disposition.
   lines.push(...renderWakeSilentReasonLines(brake.window_silent_reasons));
   lines.push(...renderWakeInterruptedReasonLines(brake.window_interrupted_reasons));
+  if (brake.window_outcomes.not_run > 0) {
+    lines.push(
+      `Additionally, not_run=${brake.window_outcomes.not_run} wakes were abandoned before turn start by shutdown drain. No turn ran; like busy wakes they retain their admitted budget slots without changing error or empty streaks or consuming freshness bypasses.`,
+    );
+  }
   // The only prospective field the scheduler produces, and the last one that
   // stopped at the evidence boundary. Everything above is retrospective or about
   // the loop's own health: what has fired, what the window has spent, how far
@@ -2577,7 +2582,7 @@ const NO_OUTPUT_DIAGNOSTIC_PROVENANCE = `no_output_categories: model-supplied ($
 const FINALIZER_INVALID_TOOL_TEXT_PROVENANCE = `A finalizer_invalid_tool diagnostic reading tool_name=none means that attempt made no terminal emission tool call; it does not by itself say whether the attempt produced anything. text_chars on the same diagnostic is that count, and it is a length of my own output, not a judgement of it. text_chars=0 means the attempt halted before writing a character; above 0 means I wrote and omitted the call. A non-empty draft is captured as undelivered_draft and surfaces in my recency window until it ages out, so its absence there dates the draft rather than denying it. A diagnostic with no text_chars at all predates the field: unrecorded, which is not zero. Without this count the two endings read alike, and I do not describe a turn that wrote nothing as one whose reasoning survived and whose delivery failed.`;
 
 const WAKE_INTERRUPTED_PROVENANCE =
-  "interrupted provenance: scheduler = turn completed, bookkeeping failed; startup reconciliation = outcome was NULL and wake ts was older than the startup grace window. The reconciliation stamp dates the sweep; whether that turn ran is unknown.";
+  "interrupted provenance: scheduler = turn completed, bookkeeping failed; startup reconciliation = outcome was NULL and wake ts preceded this process start. The reconciliation stamp dates the sweep; whether that turn ran is unknown.";
 
 function renderWakeInterruptedReasonLines(
   tally: AutonomySchedulerFleetBrakeDescription["window_interrupted_reasons"],

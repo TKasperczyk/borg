@@ -148,7 +148,7 @@ describe("internal tools", () => {
     }
   });
 
-  it("matches unmatched handles to full-ID outcomes through all 14 real tool/repository paths", async () => {
+  it("matches unmatched handles to full-ID outcomes and compound-failure order through all 14 real paths", async () => {
     const harness = await createOfflineTestHarness();
     try {
       const dispatcher = createHarnessToolDispatcher(harness);
@@ -173,6 +173,12 @@ describe("internal tools", () => {
         resolution_note: "Synthetic resolution",
         resolution_evidence_episode_ids: [episode.id],
       });
+      const unresolved = harness.openQuestionsRepository.add({
+        question: "Synthetic unresolved correction target",
+        urgency: 0.5,
+        source: "reflection",
+        provenance: { kind: "manual" },
+      });
       const goal = harness.goalsRepository.add({
         description: "Synthetic active goal",
         priority: 5,
@@ -190,7 +196,7 @@ describe("internal tools", () => {
           origin: "autonomous",
           input: {
             goal_id: retired.id,
-            disposition: "abandoned",
+            disposition: "done",
             reason: "Synthetic disposition",
           },
         }),
@@ -228,6 +234,8 @@ describe("internal tools", () => {
         prefix: string;
         input: (id: string) => unknown;
         errorCode?: string;
+        compound?: string;
+        context?: Partial<ToolDispatchCall>;
       }> = [
         { name: "episodic.get", prefix: "ep_", input: (id) => ({ episode_id: id }) },
         { name: "stream.get", prefix: "strm_", input: (id) => ({ stream_entry_id: id }) },
@@ -332,10 +340,125 @@ describe("internal tools", () => {
           input: (id) => ({ target_session_id: id, instruction: "Synthetic outbound" }),
           errorCode: "OUTBOUND_POST_TARGET_NOT_FOUND",
         },
+        // These targets are valid IDs in incompatible states. The native tools
+        // order state/existence checks differently; neither field order nor the
+        // representation of a missing reference may decide which error wins.
+        ...["goal", "entity"].map((kind) => ({
+          name: "goals.block",
+          prefix: kind === "goal" ? "goal_" : "ent_",
+          input: (id: string) => ({
+            ...block,
+            goal_id: retired.id,
+            blocker: { kind, [kind === "goal" ? "goal_id" : "entity_id"]: id },
+          }),
+          compound: "done target + missing blocker",
+          errorCode: "GOAL_NOT_ACTIVE",
+        })),
+        ...(
+          [
+            ["oq_", "resolved_open_question"],
+            ["swake_", "scheduled_wake"],
+            ["exstep_", "executive_step_outcome"],
+            ["strm_", "stream_entry"],
+          ] as const
+        ).flatMap(([prefix, kind]) => [
+          {
+            name: "goals.block",
+            prefix,
+            input: (id: string) => ({
+              ...block,
+              goal_id: retired.id,
+              attempt_evidence: { kind, id },
+            }),
+            compound: "done target + missing evidence",
+            errorCode: "GOAL_NOT_ACTIVE",
+          },
+          {
+            name: "goals.block",
+            prefix,
+            input: (id: string) => ({
+              ...block,
+              blocker: { kind: "goal", goal_id: "goal_none000000000000" },
+              attempt_evidence: { kind, id },
+            }),
+            compound: "missing blocker + missing evidence",
+            errorCode: "GOAL_BLOCKER_INVALID",
+          },
+        ]),
+        ...["ep_", "strm_"].map((prefix) => ({
+          name: "openQuestions.correctResolution",
+          prefix,
+          input: (id: string) => ({
+            ...correct,
+            open_question_id: unresolved.id,
+            evidence: [{ id, basis: "own_read" }],
+          }),
+          compound: "unresolved target + missing evidence",
+          errorCode: "OPEN_QUESTION_CORRECTION_NOT_RESOLVED",
+        })),
+        ...["ep_", "strm_"].flatMap((prefix) => [
+          {
+            name: "openQuestions.resolve",
+            prefix,
+            input: (id: string) => ({
+              ...resolve,
+              open_question_id: resolved.id,
+              [prefix === "ep_"
+                ? "resolution_evidence_episode_ids"
+                : "resolution_evidence_stream_entry_ids"]: [id],
+            }),
+            compound: "resolved target + missing evidence",
+            errorCode: "OPEN_QUESTION_CITATION_NOT_FOUND",
+          },
+          {
+            name: "openQuestions.resolve",
+            prefix: "oq_",
+            input: (id: string) => ({
+              ...resolve,
+              open_question_id: id,
+              [prefix === "ep_"
+                ? "resolution_evidence_episode_ids"
+                : "resolution_evidence_stream_entry_ids"]: [prefix + "none000000000000"],
+            }),
+            compound: "missing target + missing evidence (evidence checked first)",
+            errorCode: "OPEN_QUESTION_CITATION_NOT_FOUND",
+          },
+          {
+            name: "openQuestions.correctResolution",
+            prefix,
+            input: (id: string) => ({
+              ...correct,
+              open_question_id: "oq_none000000000000",
+              evidence: [{ id, basis: "own_read" }],
+            }),
+            compound: "missing target + missing evidence (target checked first)",
+            errorCode: "OPEN_QUESTION_NOT_FOUND",
+          },
+        ]),
+        {
+          name: "openQuestions.create",
+          prefix: "semn_",
+          input: (id) => ({
+            question: "Synthetic missing references",
+            related_episode_ids: ["ep_none000000000000"],
+            related_semantic_node_ids: [id],
+          }),
+          compound: "both reference collections missing",
+          errorCode: "TOOL_INPUT_INVALID",
+        },
+        {
+          name: "outbound.post",
+          prefix: "sess_",
+          input: (id) => ({ target_session_id: id, instruction: "Synthetic outbound" }),
+          context: { sessionId: "sess_none000000000000" as SessionId },
+          compound: "current session + missing target (current checked first)",
+          errorCode: "OUTBOUND_POST_TARGET_IS_CURRENT_SESSION",
+        },
       ];
       expect(new Set(cases.map((test) => test.name)).size).toBe(14);
       const questionCount = harness.db.prepare("SELECT COUNT(*) AS n FROM open_questions").get()!.n;
       for (const test of cases) {
+        const label = `${test.name}: ${test.compound ?? "single failure"}`;
         const handle = test.prefix + "none";
         const fullId = handle + "000000000000";
         const results = [];
@@ -344,8 +467,9 @@ describe("internal tools", () => {
             toolName: `tool.${test.name}`,
             input: test.input(id),
             origin: "autonomous",
+            ...test.context,
           });
-          expect(result, `${test.name}: ${id}`).toMatchObject(
+          expect(result, `${label}: ${id}`).toMatchObject(
             test.errorCode === undefined ? { ok: true } : { ok: false, errorCode: test.errorCode },
           );
           results.push(
@@ -354,10 +478,7 @@ describe("internal tools", () => {
               : { ok: false, errorCode: result.errorCode, error: result.error },
           );
         }
-        // The echoed missing address is the only intentional textual difference.
-        expect(results[1], test.name).toEqual(
-          JSON.parse(JSON.stringify(results[0]).replaceAll(fullId, handle)),
-        );
+        expect(results[1], label).toEqual(results[0]);
         if (test.name === "openQuestions.ruminations")
           expect(results[0]).toEqual({ ok: true, output: { ruminations: [], has_more: false } });
         if (test.name === "ownRecords.list")
@@ -368,6 +489,7 @@ describe("internal tools", () => {
       }
       expect(postOutbound).not.toHaveBeenCalled();
       expect(harness.openQuestionsRepository.get(question.id)).toEqual(resolved);
+      expect(harness.openQuestionsRepository.get(unresolved.id)).toEqual(unresolved);
       expect(harness.goalsRepository.get(goal.id)).toEqual(goalBefore);
       expect(harness.db.prepare("SELECT COUNT(*) AS n FROM open_questions").get()!.n).toBe(
         questionCount,

@@ -38,6 +38,7 @@ export type { BorgEnqueueMessageInput, BorgEnqueueMessageResult } from "./cognit
  */
 export class Borg {
   private admissionClosed = false;
+  private receiptAdmissionClosed = false;
   private drainPromise: Promise<void> | null = null;
   private drainCompleted = false;
   private readonly admittedOperations = new Set<Promise<unknown>>();
@@ -129,11 +130,15 @@ export class Borg {
   enqueueMessage(input: BorgEnqueueMessageInput): Promise<BorgEnqueueMessageResult> {
     return this.runAdmittedOperation(
       async () => await this.deps.messageEnqueuer.enqueueMessage(input),
+      "receipt",
     );
   }
 
-  private async runAdmittedOperation<T>(run: () => Promise<T>): Promise<T> {
-    if (this.admissionClosed) {
+  private async runAdmittedOperation<T>(
+    run: () => Promise<T>,
+    kind: "turn" | "receipt" = "turn",
+  ): Promise<T> {
+    if (kind === "receipt" ? this.receiptAdmissionClosed : this.admissionClosed) {
       throw new CognitionError("Borg is shutting down", { code: "BORG_SHUTTING_DOWN" });
     }
     const operation = run();
@@ -145,14 +150,17 @@ export class Borg {
     }
   }
 
-  /** Hosts call this before awaiting their own request/connector leases. */
+  /** Fence turns before host drain; receipts stay open until producers have stopped. */
   closeAdmission(): void {
     this.admissionClosed = true;
+    this.deps.turnOrchestrator.closeAdmission();
+    this.deps.autonomyScheduler.closeAdmission();
   }
 
-  /** Close admission, then drain accepted work and its tails after host leases have settled. */
+  /** After host producers stop, seal receipts and drain accepted work and its tails. */
   beginShutdown(): Promise<void> {
     this.closeAdmission();
+    this.receiptAdmissionClosed = true;
     this.drainPromise ??= (async () => {
       await drainBorgDependencies(this.deps, [...this.admittedOperations]);
       this.drainCompleted = true;
@@ -212,7 +220,8 @@ export class Borg {
    * Hosts must retainBankLease on any host drain failure/timeout, even if Borg drained.
    */
   async close(options: { drain?: boolean; retainBankLease?: boolean } = {}): Promise<void> {
-    this.admissionClosed = true;
+    this.closeAdmission();
+    this.receiptAdmissionClosed = true;
     await closeBorgDependencies(this.deps, {
       drain: options.drain === false && !this.drainCompleted ? false : () => this.beginShutdown(),
       retainBankLease: options.retainBankLease,

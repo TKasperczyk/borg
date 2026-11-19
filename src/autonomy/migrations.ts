@@ -221,4 +221,64 @@ export const autonomyMigrations = [
       `);
     },
   },
+  {
+    id: 11,
+    name: "autonomy_wakes_not_run_outcome",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE autonomy_wakes__next (
+          id TEXT PRIMARY KEY,
+          ts INTEGER NOT NULL,
+          trigger_name TEXT NOT NULL CHECK (
+            trigger_name IN (
+              'commitment_expiring', 'open_question_dormant', 'scheduled_reflection',
+              'scheduled_wake', 'goal_followup_due', 'executive_focus_due',
+              'commitment_revoked', 'mood_valence_drop', 'open_question_urgency_bump'
+            )
+          ),
+          condition_name TEXT CHECK (
+            condition_name IS NULL OR condition_name IN (
+              'commitment_revoked', 'mood_valence_drop', 'open_question_urgency_bump'
+            )
+          ),
+          session_id TEXT,
+          wake_source_type TEXT NOT NULL CHECK (wake_source_type IN ('trigger', 'condition')),
+          source_category TEXT NOT NULL DEFAULT 'operational' CHECK (
+            source_category IN ('contemplative', 'operational')
+          ),
+          outcome TEXT CHECK (
+            outcome IS NULL OR outcome IN ('headway', 'silent', 'error', 'busy', 'interrupted', 'not_run')
+          ),
+          outcome_detail TEXT,
+          selected_goal_id TEXT,
+          headway_bases_json TEXT,
+          finalizer_rounds INTEGER CHECK (
+            finalizer_rounds IS NULL OR (
+              typeof(finalizer_rounds) = 'integer' AND finalizer_rounds >= 0
+            )
+          ),
+          stall_retries INTEGER CHECK (
+            stall_retries IS NULL OR (
+              typeof(stall_retries) = 'integer' AND stall_retries >= 0
+            )
+          ),
+          preparation_failed INTEGER NOT NULL DEFAULT 0 CHECK (preparation_failed IN (0, 1)),
+          turn_provider_failed INTEGER NOT NULL DEFAULT 0 CHECK (turn_provider_failed IN (0, 1))
+        );
+        INSERT INTO autonomy_wakes__next (
+          id, ts, trigger_name, condition_name, session_id, wake_source_type, source_category,
+          outcome, outcome_detail, selected_goal_id, headway_bases_json,
+          finalizer_rounds, stall_retries, preparation_failed, turn_provider_failed
+        )
+        SELECT
+          id, ts, trigger_name, condition_name, session_id, wake_source_type, source_category,
+          outcome, outcome_detail, selected_goal_id, headway_bases_json,
+          finalizer_rounds, stall_retries, preparation_failed, turn_provider_failed
+        FROM autonomy_wakes;
+        DROP TABLE autonomy_wakes;
+        ALTER TABLE autonomy_wakes__next RENAME TO autonomy_wakes;
+        CREATE INDEX idx_autonomy_wakes_ts ON autonomy_wakes (ts);
+      `);
+    },
+  },
 ] as const satisfies readonly Migration[];

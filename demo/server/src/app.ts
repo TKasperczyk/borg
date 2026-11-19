@@ -3064,8 +3064,10 @@ export class BorgRequestGate {
     return this.drainPromise;
   }
 
-  acquire(): BorgRequestGateLease {
-    if (this.shuttingDown) throw new HTTPException(503, { message: "Borg is shutting down" });
+  acquire(options: { receiptOnly?: boolean } = {}): BorgRequestGateLease {
+    if (this.shuttingDown && !options.receiptOnly) {
+      throw new HTTPException(503, { message: "Borg is shutting down" });
+    }
     if (this.resetting) {
       throw new HTTPException(503, { message: "Borg reset in progress" });
     }
@@ -3180,7 +3182,11 @@ export function createDemoServerApp(args: DemoServerAppInput) {
     const lease =
       pathname === "/api/admin/reset"
         ? input.requestGate.beginReset()
-        : input.requestGate.acquire();
+        : input.requestGate.acquire({
+            // /api/turn only commits a receipt. The server-close barrier keeps
+            // its lease alive until enqueue finishes; cognition stays fenced.
+            receiptOnly: c.req.method === "POST" && pathname === "/api/turn",
+          });
     try {
       await next();
     } finally {

@@ -1137,6 +1137,84 @@ describe("TurnOrchestrator session lock mode", () => {
     }
   });
 
+  it("refuses turns waiting for a session lock when shutdown drain begins without writing a turn", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-drain-lock-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_299_100);
+    const llm = new FakeLLMClient({ responses: simpleSuccessfulTurnResponses("unused") });
+    const borg = await openTestBorg(tempDir, llm, clock);
+    const { deps } = borg as unknown as { deps: BorgDependencies };
+    const sessionId = createSessionId();
+    const sessionLock = getSessionLock(borg);
+    const lease = await sessionLock.acquire(sessionId);
+    const acquire = vi.spyOn(sessionLock, "acquire");
+    const phase = vi.spyOn(TurnPhaseCoordinator.prototype, "run");
+    const counter = vi.spyOn(deps.actionRepository, "nextLifecycleTurnGlobal");
+    const append = vi.spyOn(StreamWriter.prototype, "append");
+    const pending = borg.turn({ sessionId, userMessage: "Synthetic waiting turn" });
+    const rejected = expect(pending).rejects.toMatchObject({ code: "BORG_SHUTTING_DOWN" });
+    try {
+      expect(acquire).toHaveBeenCalledOnce();
+      borg.closeAdmission();
+      await lease!.release();
+      await rejected;
+      await expect(
+        runInternalTurn(borg, { sessionId, userMessage: "Synthetic late turn" }),
+      ).rejects.toMatchObject({ code: "BORG_SHUTTING_DOWN" });
+      expect(phase).not.toHaveBeenCalled();
+      expect(counter).not.toHaveBeenCalled();
+      expect(append).not.toHaveBeenCalled();
+      expect(llm.requests).toHaveLength(0);
+      expect(sessionLock.isHeld(sessionId)).toBe(false);
+    } finally {
+      await lease!.release();
+      await rejected;
+      acquire.mockRestore();
+      phase.mockRestore();
+      counter.mockRestore();
+      append.mockRestore();
+      await borg.close();
+    }
+  });
+
+  it("lets an already running turn finish after shutdown admission closes", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-drain-running-"));
+    tempDirs.push(tempDir);
+    const clock = new ManualClock(1_800_000_299_150);
+    const llm = new FakeLLMClient({
+      responses: simpleSuccessfulTurnResponses("Finished during drain."),
+    });
+    const borg = await openTestBorg(tempDir, llm, clock);
+    const runPhase = TurnPhaseCoordinator.prototype.run;
+    let finishPhase!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      finishPhase = resolve;
+    });
+    const phase = vi
+      .spyOn(TurnPhaseCoordinator.prototype, "run")
+      .mockImplementation(async function (this: TurnPhaseCoordinator, input) {
+        await gate;
+        return await runPhase.call(this, input);
+      });
+    const pending = borg.turn({
+      sessionId: createSessionId(),
+      userMessage: "Synthetic running turn",
+    });
+    try {
+      await vi.waitFor(() => expect(phase).toHaveBeenCalledOnce());
+      const drain = borg.beginShutdown();
+      finishPhase();
+      expect((await pending).response).toBe("Finished during drain.");
+      await drain;
+      expect(phase).toHaveBeenCalledOnce();
+    } finally {
+      finishPhase();
+      await pending;
+      phase.mockRestore();
+      await borg.close();
+    }
+  });
+
   it("uses try acquisition for autonomous turns without lockMode", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-autonomous-try-lock-"));
     tempDirs.push(tempDir);

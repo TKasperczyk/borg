@@ -74,8 +74,9 @@ export function createDemoRuntimeShutdownHandler(options: {
   return createDemoShutdownHandler({
     beginDrain: async (signal) => {
       options.onShutdownRequested();
-      // No await before BOTH gates close. Facade-using HTTP handlers are covered
-      // by their host leases; connector-held turn/enqueue handles close here too.
+      // No await before turn admission closes. Keep receipt-only enqueue open
+      // until HTTP and connector producers have settled: a refusal can exhaust
+      // a connector's bounded handoff retries before its stop hook runs.
       const httpDrain = options.beginHttpDrain();
       options.borgHandle.current.closeAdmission();
       const results = await Promise.allSettled([

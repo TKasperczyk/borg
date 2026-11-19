@@ -60,16 +60,14 @@ export function createOpenQuestionsCreateTool(
       {
         path: "related_episode_ids.*",
         kinds: ["episode"],
-        requireExisting: true,
-        notFound: {
+        requireExisting: {
           error: (id) => new ToolError(`Unknown episode id: ${id}`, { code: "TOOL_INPUT_INVALID" }),
         },
       },
       {
         path: "related_semantic_node_ids.*",
         kinds: ["semantic_node"],
-        requireExisting: true,
-        notFound: {
+        requireExisting: {
           error: (id) =>
             new ToolError(`Unknown semantic node id: ${id}`, { code: "TOOL_INPUT_INVALID" }),
         },

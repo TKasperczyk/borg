@@ -142,7 +142,6 @@ export function createOpenQuestionsRuminationsTool(
       {
         path: "open_question_id",
         kinds: ["open_question"],
-        notFound: { output: () => ({ ruminations: [], has_more: false }) },
       },
     ],
     outputSchema: openQuestionsRuminationsOutputSchema,

@@ -74,6 +74,7 @@ export async function openBorgDependencies(
   options: BorgOpenOptions = {},
 ): Promise<BorgDependencies> {
   const clock = options.clock ?? new SystemClock();
+  const startedAt = clock.now();
   let sqlite: SqliteDatabase | undefined;
   let lance: LanceDbStore | undefined;
   let releaseEmbeddingBankAccess: (() => Promise<void>) | undefined;
@@ -167,6 +168,7 @@ export async function openBorgDependencies(
       }
     };
     const repositories = await buildBorgRepositories({
+      startedAt,
       failureReports,
       pendingStartupTasks,
       config,

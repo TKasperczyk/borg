@@ -35,6 +35,8 @@ export const AUTONOMY_WAKE_OUTCOMES = [
   "error",
   "busy",
   "interrupted",
+  // Admission was withdrawn before the turn started (for example, shutdown).
+  "not_run",
 ] as const;
 export type AutonomyWakeOutcome = (typeof AUTONOMY_WAKE_OUTCOMES)[number];
 
@@ -456,6 +458,7 @@ export type AutonomyTickEventResult = {
     | "error_circuit_skipped"
     | "maintenance_skipped"
     | "busy_skipped"
+    | "not_run"
     | "bookkeeping_error"
     | "error";
   payload: Record<string, unknown>;

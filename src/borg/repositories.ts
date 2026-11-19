@@ -160,6 +160,7 @@ export type BuildBorgRepositoriesOptions = {
   embeddingClient: EmbeddingClient;
   llmClient: LLMClient;
   clock: Clock;
+  startedAt: number;
   tracer?: TurnTracer;
   attachmentRepository: AttachmentRepository;
   entryIndex?: StreamEntryIndexRepository;
@@ -175,10 +176,9 @@ export async function buildBorgRepositories(
     db: sqlite,
     clock,
   });
-  // Borg permits only one writer per data directory. At composition time, a
-  // NULL wake older than the repository grace window therefore cannot belong
-  // to another live process and is safe to reconcile as interrupted.
-  autonomyWakesRepository.interruptOrphanedWakesAtStartup();
+  // Borg.open holds the data-directory lease before opening storage. Any NULL
+  // wake admitted before this start belongs to a previous owner, regardless of age.
+  autonomyWakesRepository.interruptOrphanedWakesAtStartup(options.startedAt);
   const scheduledWakesRepository = new ScheduledWakesRepository({
     db: sqlite,
     clock,

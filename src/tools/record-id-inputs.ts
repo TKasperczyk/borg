@@ -7,9 +7,7 @@ export type RecordIdInput = {
   path: string;
   kinds: readonly RecordIdKind[];
   /** Reference-only create inputs need existence checks for full IDs as well. */
-  requireExisting?: boolean;
-  /** Missing prefixes use the tool's normal absent-record result. */
-  notFound: { error: (id: string) => Error } | { output: (id: string) => unknown } | "invoke";
+  requireExisting?: { error: (id: string) => Error };
 };
 
 export type ToolIdResolution = { field: string; input: string; resolved_id: string };
@@ -28,9 +26,9 @@ export function resolveToolRecordIds(
     const visit = (value: unknown, path: string[], field: string[]): unknown => {
       if (path.length === 0) {
         if (typeof value !== "string") return value;
-        const result = resolver.resolve(value, spec.kinds, spec.requireExisting);
+        const result = resolver.resolve(value, spec.kinds, spec.requireExisting !== undefined);
         if (result.status === "not_found")
-          missing.push({ field: field.join("."), input: value, spec });
+          missing.push({ field: field.join("."), input: result.id, spec });
         if (result.status === "resolved")
           resolutions.push({ field: field.join("."), input: value, resolved_id: result.id });
         return result.id;
@@ -46,11 +44,4 @@ export function resolveToolRecordIds(
     resolved = visit(resolved, spec.path.split("."), []);
   }
   return { input: resolved, missing };
-}
-
-export function missingToolIdOutput(missing: MissingToolId): unknown {
-  const outcome = missing.spec.notFound;
-  if (outcome === "invoke") throw new Error("Missing record must be handled by the tool");
-  if ("output" in outcome) return outcome.output(missing.input);
-  throw outcome.error(missing.input);
 }

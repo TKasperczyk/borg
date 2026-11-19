@@ -44,6 +44,7 @@ export function wireAutonomySchedulerObserver(
           status === "fired" ||
           status === "error" ||
           status === "bookkeeping_error" ||
+          status === "not_run" ||
           status === "busy_skipped",
       ).length;
       const sourceBudgetSkips = result.events.flatMap(({ sourceBudget }) =>

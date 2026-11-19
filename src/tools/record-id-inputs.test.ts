@@ -7,6 +7,7 @@ import { buildToolDispatcher, type BuildToolDispatcherOptions } from "../borg/to
 import { openDatabase, type SqliteDatabase } from "../storage/sqlite/index.js";
 import { StreamWriter } from "../stream/index.js";
 import { ManualClock } from "../util/clock.js";
+import { ToolError } from "../util/errors.js";
 import { DEFAULT_SESSION_ID, type EntityId, type SessionId } from "../util/ids.js";
 import { toToolInputSchema } from "../llm/index.js";
 import { createOutboundPostTool } from "./internal/outbound-post.js";
@@ -246,24 +247,28 @@ describe("internal tool record ID boundary", () => {
     );
   });
 
-  it.each([
-    ["episodic.get", { episode_id: "ep_none" }, { episode: null }],
-    ["stream.get", { stream_entry_id: "strm_none" }, { entry: null }],
-    ["semantic.walk", { node_id: "semn_none", relation: "supports" }, { steps: [] }],
-    ["scheduledWakes.cancel", { scheduled_wake_id: "swake_none" }, { scheduledWake: null }],
-    [
-      "goals.retire",
-      { goal_id: "goal_none", disposition: "done", reason: "synthetic" },
-      { status: "no_op", reason: "missing", goal: { id: "goal_none", status: "absent" } },
-    ],
-  ])("%s preserves its absent-record result for an unknown handle", async (name, input, output) => {
-    const result = await dispatcher.dispatch({
-      toolName: `tool.${name}`,
-      input,
-      origin: "autonomous",
-    });
-    expect(result).toMatchObject({ ok: true, output });
-  });
+  it.each(cases.filter(([name]) => name !== "openQuestions.create"))(
+    "%s passes unknown handles through its schema and native checks (%#)",
+    async (name, fullInput) => {
+      const tool = dispatcher.getDefinition(`tool.${name}`)!;
+      const invoke = vi.fn(async () => ({ accepted: true }));
+      tool.invoke = invoke;
+      tool.outputSchema = z.object({ accepted: z.boolean() });
+      const input = JSON.parse(JSON.stringify(shorten(fullInput)).replaceAll("_test", "_none"));
+      const absent = JSON.parse(
+        JSON.stringify(fullInput).replaceAll("test000000000001", "none000000000000"),
+      );
+      const result = await dispatcher.dispatch({
+        toolName: tool.name,
+        input,
+        origin: "autonomous",
+      });
+      expect(result).toMatchObject({ ok: true, output: { accepted: true } });
+      expect(invoke).toHaveBeenCalledWith(tool.inputSchema.parse(absent), expect.any(Object));
+      // A known-absent address is not a successful resolution to a stored record.
+      expect(result.ok && result.output).not.toHaveProperty("id_resolutions");
+    },
+  );
 
   it("does not invoke a write on ambiguous or too-short handles and retains resolution echoes on errors", async () => {
     db.prepare("INSERT INTO open_questions (id) VALUES (?)").run("oq_test000000000002");
@@ -293,6 +298,11 @@ describe("internal tool record ID boundary", () => {
       }),
     ).toMatchObject({ ok: false, errorCode: "invalid_id_prefix" });
     expect(invoke).not.toHaveBeenCalled();
+    invoke.mockRejectedValueOnce(
+      new ToolError("native citation check", {
+        code: "OPEN_QUESTION_CITATION_NOT_FOUND",
+      }),
+    );
     const missingCitation = await dispatcher.dispatch({
       toolName: tool.name,
       input: {
@@ -306,6 +316,10 @@ describe("internal tool record ID boundary", () => {
       ok: false,
       errorCode: "OPEN_QUESTION_CITATION_NOT_FOUND",
     });
+    expect(invoke).toHaveBeenCalledWith(
+      expect.objectContaining({ evidence: [{ id: "ep_none000000000000", basis: "own_read" }] }),
+      expect.any(Object),
+    );
     const resolvedThenFailed = await dispatcher.dispatch({
       toolName: tool.name,
       input: {
@@ -316,7 +330,7 @@ describe("internal tool record ID boundary", () => {
       origin: "deliberator",
     });
     expect(resolvedThenFailed).toMatchObject({ ok: false }); // origin guard remains first
-    expect(invoke).not.toHaveBeenCalled();
+    expect(invoke).toHaveBeenCalledOnce();
     const ep = dispatcher.getDefinition("tool.episodic.get")!;
     ep.invoke = async () => {
       throw new Error("synthetic failure after resolution");

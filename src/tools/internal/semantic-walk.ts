@@ -147,9 +147,7 @@ export function createSemanticWalkTool(
     // default (observed live: seven consecutive ~5s timeouts across two days).
     timeoutClass: "search",
     inputSchema: semanticWalkInputSchema,
-    recordIdInputs: [
-      { path: "node_id", kinds: ["semantic_node"], notFound: { output: () => ({ steps: [] }) } },
-    ],
+    recordIdInputs: [{ path: "node_id", kinds: ["semantic_node"] }],
     outputSchema: semanticWalkOutputSchema,
     async invoke(input, context) {
       const steps = await options.walkGraph(

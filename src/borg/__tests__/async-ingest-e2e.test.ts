@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AttachmentBlobStore, type AttachmentService } from "../../attachments/index.js";
+import type { SessionLock } from "../../cognition/session-lock.js";
 import type { MessageConnector } from "../../outbound/index.js";
 import {
   ABORTED_TURN_EVENT,
@@ -63,6 +64,7 @@ type HarnessBorgInternals = {
       }): Promise<unknown>;
     };
     turnOrchestrator: {
+      sessionLock: SessionLock;
       options: {
         createStreamWriter(sessionId: SessionId): StreamWriter;
       };
@@ -355,6 +357,80 @@ describe("async ingest Borg E2E crash and duplicate matrix", () => {
       rmSync(tempDirs.pop() as string, { recursive: true, force: true });
     }
   });
+
+  it.each(["receipt during drain", "response waiting for lock"])(
+    "answers an unanswered %s after restart",
+    async (scenario) => {
+      const tempDir = mkdtempSync(join(tmpdir(), "borg-async-drain-restart-"));
+      tempDirs.push(tempDir);
+      const clock = new ManualClock(1_900_000_000_000);
+      const session = createConversationHarness({ externalId: "drain-restart-queue" });
+      const llm = new FakeLLMClient();
+      let borg = await openHarness({ tempDir, clock, llm });
+      const releaseLock = deferred();
+
+      try {
+        const senderEntityId = borg.entities.resolve("Drain sender");
+        const internal = borgInternals<HarnessBorgInternals>(borg);
+        if (scenario === "receipt during drain") {
+          borg.closeAdmission();
+        }
+        await enqueueOne({ borg, clock, session, senderEntityId });
+        const users = userEntries(borg, session.session_id);
+
+        const lockEntered = deferred();
+        const lock = internal.deps.turnOrchestrator.sessionLock;
+        const tryAcquire = lock.tryAcquire.bind(lock);
+        const acquire = vi.spyOn(lock, "tryAcquire").mockImplementation(async (sessionId) => {
+          const lease = await tryAcquire(sessionId);
+          lockEntered.resolve();
+          await releaseLock.promise;
+          return lease;
+        });
+        const response = borg.inbox.catchUp.tick(session.session_id);
+        if (scenario === "response waiting for lock") {
+          await lockEntered.promise;
+          borg.closeAdmission();
+        }
+        releaseLock.resolve();
+        await expect(response).resolves.toMatchObject({
+          status: "error",
+          drained: 0,
+          hasMore: true,
+          error: "CognitionError: Borg is shutting down",
+        });
+        acquire.mockRestore();
+        expect(users).toHaveLength(1);
+        expect(users[0]?.turn_id).toBeUndefined();
+        expect(borg.stream.tail(200, { session: session.session_id })).toEqual(users);
+        expect(
+          internal.deps.chatResponseWatermarkCoordinator.getWatermark(session.session_id),
+        ).toBeNull();
+        expect(llm.requests).toHaveLength(0);
+        await borg.close();
+
+        const replayLlm = new FakeLLMClient({
+          responses: [
+            createEmitAnswerResponse("answer after drain restart"),
+            createEmptyReflectionResponse(),
+          ],
+        });
+        borg = await openHarness({ tempDir, clock, llm: replayLlm });
+        borg.inbox.catchUp.start();
+        await waitForTerminalCount({ borg, sessionId: session.session_id, count: 1 });
+        expect(userEntries(borg, session.session_id)).toEqual(users);
+        expect(terminalEntries(borg, session.session_id)).toEqual([
+          expect.objectContaining({
+            content: "answer after drain restart",
+            response_to: responseToFor(users),
+          }),
+        ]);
+      } finally {
+        releaseLock.resolve();
+        await borg.close().catch(() => undefined);
+      }
+    },
+  );
 
   it("drains an enqueued message after closing and reopening before the first tick", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-async-e2e-reopen-"));

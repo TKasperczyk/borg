@@ -59,9 +59,7 @@ export function createEpisodicGetTool(options: {
     allowedOrigins: ["autonomous", "deliberator"],
     writeScope: "read",
     inputSchema,
-    recordIdInputs: [
-      { path: "episode_id", kinds: ["episode"], notFound: { output: () => ({ episode: null }) } },
-    ],
+    recordIdInputs: [{ path: "episode_id", kinds: ["episode"] }],
     outputSchema,
     async invoke(input) {
       const episode = await options.episodicRepository.get(input.episode_id, {

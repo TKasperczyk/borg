@@ -50,7 +50,6 @@ export function createScheduledWakesCancelTool(
       {
         path: "scheduled_wake_id",
         kinds: ["scheduled_wake"],
-        notFound: { output: () => ({ scheduledWake: null }) },
       },
     ],
     outputSchema: scheduledWakesCancelOutputSchema,

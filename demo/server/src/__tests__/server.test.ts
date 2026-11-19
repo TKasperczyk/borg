@@ -728,7 +728,7 @@ describe("demo server", () => {
     }
   });
 
-  it("closes HTTP turn and reset admission while waiting for accepted requests", async () => {
+  it("keeps receipt-only admission open while draining HTTP and refusing other work", async () => {
     const gate = new BorgRequestGate();
     const lease = gate.acquire();
     let drained = false;
@@ -738,8 +738,12 @@ describe("demo server", () => {
     })();
     expect(() => gate.acquire()).toThrow("Borg is shutting down");
     expect(() => gate.beginReset()).toThrow("Borg is shutting down");
+    const receipt = gate.acquire({ receiptOnly: true });
     expect(drained).toBe(false);
     lease.release();
+    await Promise.resolve();
+    expect(drained).toBe(false);
+    receipt.release();
     await pending;
     expect(drained).toBe(true);
   });
@@ -806,7 +810,7 @@ describe("demo server", () => {
     const closing = shutdown("SIGTERM");
     try {
       expect(() => requestGate.acquire()).toThrow("Borg is shutting down");
-      await expect(borg.enqueueMessage({} as never)).rejects.toMatchObject({
+      await expect(borg.turn({} as never)).rejects.toMatchObject({
         code: "BORG_SHUTTING_DOWN",
       });
       expect((await requestJson(app, "/api/admin/reset", "POST", {})).status).toBe(503);
@@ -837,6 +841,92 @@ describe("demo server", () => {
       runtimeDrain.mockRestore();
       sqliteClose.mockRestore();
       lanceClose.mockRestore();
+    }
+  });
+
+  it("persists operator POSTs across the drain boundary and answers them after restart", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-http-drain-receipts-"));
+    tempDirs.push(tempDir);
+    const harness = await openHarness({ tempDir });
+    let borg = harness.borg;
+    const { deps } = borg as unknown as { deps: BorgDependencies };
+    const borgHandle: BorgHandle = { current: borg };
+    const { app, beginShutdown } = createDemoServerApp({ borgHandle, live: harness.live });
+    const body = createDeferred<void>();
+    const parsing = createDeferred<void>();
+    const hostStopped = createDeferred<void>();
+    const request = Promise.resolve(
+      app.fetch(
+        new Request("http://localhost/api/turn", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          duplex: "half",
+          body: new ReadableStream({
+            async start(controller) {
+              parsing.resolve();
+              await body.promise;
+              controller.enqueue(
+                new TextEncoder().encode(
+                  JSON.stringify({
+                    message: "received before drain, parsed during drain",
+                    external_message_id: "drain-post-before",
+                    audience: "Drain operator",
+                  }),
+                ),
+              );
+              controller.close();
+            },
+          }),
+        } as RequestInit),
+      ),
+    );
+    await parsing.promise;
+    const exit = vi.fn();
+    const shutdown = createDemoRuntimeShutdownHandler({
+      borgHandle,
+      onShutdownRequested: vi.fn(),
+      beginHttpDrain: beginShutdown,
+      stopHost: [async () => await hostStopped.promise],
+      stopConnector: vi.fn(async () => {}),
+      forceCloseConnections: vi.fn(),
+      exit,
+      logger: { log: vi.fn(), error: vi.fn() },
+    });
+    const closing = shutdown("SIGTERM");
+    try {
+      body.resolve();
+      expect(await (await request).json()).toMatchObject({ ok: true, status: "enqueued" });
+      await enqueueTextTurn(app, {
+        message: "received during drain",
+        external_message_id: "drain-post-during",
+        audience: "Drain operator",
+      });
+      const receipts = borg.stream.tail(20).filter((entry) => entry.kind === "user_msg");
+      expect(receipts).toHaveLength(2);
+      expect(receipts.every((entry) => entry.turn_id === undefined)).toBe(true);
+      expect(deps.chatResponseWatermarkCoordinator.getWatermark(DEFAULT_SESSION_ID)).toBeNull();
+      expect(borg.stream.tail(20)).toEqual(receipts);
+      hostStopped.resolve();
+      await closing;
+      expect(exit).toHaveBeenCalledWith(0);
+
+      const replayLlm = new FakeLLMClient({
+        responses: [createFakeEmitAnswerResponse("both received"), createEmptyReflectionResponse()],
+      });
+      borg = (await openHarness({ tempDir, llmClient: replayLlm })).borg;
+      borg.inbox.catchUp.start();
+      await waitFor(() => borg.stream.tail(20).some((entry) => entry.kind === "agent_msg"));
+      const answer = borg.stream.tail(20).find((entry) => entry.kind === "agent_msg");
+      expect(answer).toMatchObject({
+        content: "both received",
+        response_to: { count: 2, source_entry_ids: receipts.map((entry) => entry.id) },
+      });
+    } finally {
+      body.resolve();
+      hostStopped.resolve();
+      await request;
+      await closing;
+      if (borg !== harness.borg) await borg.close();
     }
   });
 

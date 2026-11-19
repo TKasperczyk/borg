@@ -177,13 +177,14 @@ describe("demo autonomy observer", () => {
       "error",
       "bookkeeping_error",
       "busy_skipped",
+      "not_run",
       "budget_skipped",
       "fleet_cooldown_skipped",
       "error_circuit_skipped",
     ];
     await observer.onTick?.(
       tick({
-        dueEvents: 7,
+        dueEvents: statuses.length,
         firedEvents: 2,
         budgetSkipped: 1,
         fleetCooldownSkipped: 1,
@@ -195,8 +196,8 @@ describe("demo autonomy observer", () => {
       }),
     );
     const summary = {
-      dueEvents: 7,
-      admittedEvents: 4,
+      dueEvents: statuses.length,
+      admittedEvents: 5,
       firedEvents: 2,
       budgetSkipped: 1,
       fleetCooldownSkipped: 1,

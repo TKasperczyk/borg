@@ -103,10 +103,9 @@ const autonomyWakeRowSchema = z.object({
  * display is never clipped mid-basis.
  */
 export const AUTONOMY_WAKE_OUTCOME_DETAIL_MAX_LENGTH = 300;
-export const AUTONOMY_WAKE_STARTUP_INTERRUPTED_GRACE_MS = 60 * 60 * 1_000;
 /**
  * What the sweep's predicate establishes, and nothing beyond it. `outcome IS
- * NULL AND ts < now - grace` has no lower bound, so it stamps every row any
+ * NULL AND ts < startedAt` has no lower bound, so it stamps every row any
  * earlier process left unrecorded, not only a run that was live when this one
  * started. Two things follow that the old wording asserted away. The stamp dates
  * the start that noticed the row, not the failure that orphaned it -- those can
@@ -383,8 +382,7 @@ export class AutonomyWakesRepository {
       );
   }
 
-  interruptOrphanedWakesAtStartup(): number {
-    const orphanedBefore = this.clock.now() - AUTONOMY_WAKE_STARTUP_INTERRUPTED_GRACE_MS;
+  interruptOrphanedWakesAtStartup(startedAt: number): number {
     const result = this.db
       .prepare(
         `
@@ -393,7 +391,7 @@ export class AutonomyWakesRepository {
           WHERE outcome IS NULL AND ts < ?
         `,
       )
-      .run(AUTONOMY_WAKE_STARTUP_INTERRUPTED_DETAIL, orphanedBefore);
+      .run(AUTONOMY_WAKE_STARTUP_INTERRUPTED_DETAIL, startedAt);
 
     return result.changes;
   }

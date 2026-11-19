@@ -27,7 +27,6 @@ import { EMBEDDING_ACCESS_FILE } from "../../embeddings/bank-profile.js";
 import { DemoMessageConnector } from "../../outbound/index.js";
 import {
   AUTONOMY_WAKE_STARTUP_INTERRUPTED_DETAIL,
-  AUTONOMY_WAKE_STARTUP_INTERRUPTED_GRACE_MS,
   type AutonomyWakesRepository,
 } from "../../autonomy/index.js";
 import { createEpisodeFixture, createSemanticNodeFixture } from "../../offline/test-support.js";
@@ -191,7 +190,7 @@ describe("Borg", () => {
     expect(config.autonomy.executiveFocus).toEqual(DEFAULT_CONFIG.autonomy.executiveFocus);
   });
 
-  it("closes direct connector admission and drains accepted turn tails and enqueues before stores", async () => {
+  it("fences turns immediately, accepts host-drain receipts, then seals and drains enqueues before stores", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-drain-"));
     tempDirs.push(tempDir);
     const borg = await Borg.open({
@@ -212,8 +211,16 @@ describe("Borg", () => {
     vi.spyOn(deps.turnOrchestrator, "run").mockReturnValue(turnTail);
     vi.spyOn(deps.messageEnqueuer, "enqueueMessage").mockReturnValue(enqueueTail);
     const sqliteClose = vi.spyOn(deps.sqlite, "close");
+    const closeWakeAdmission = vi.spyOn(deps.autonomyScheduler, "closeAdmission");
+    const closeTurnAdmission = vi.spyOn(deps.turnOrchestrator, "closeAdmission");
     const turn = borg.turn({ audience: "self", userMessage: "accepted", stakes: "low" });
     const enqueue = borg.enqueueMessage({} as never);
+    // The host closes admission before it can await its own HTTP/connector leases.
+    borg.closeAdmission();
+    expect(closeWakeAdmission).toHaveBeenCalledOnce();
+    expect(closeTurnAdmission).toHaveBeenCalledOnce();
+    const hostDrainReceipt = borg.enqueueMessage({} as never);
+    expect(deps.messageEnqueuer.enqueueMessage).toHaveBeenCalledTimes(2);
     let drained = false;
     const drain = (async () => {
       await borg.beginShutdown();
@@ -232,6 +239,7 @@ describe("Borg", () => {
     expect(drained).toBe(false);
     finishEnqueue();
     await enqueue;
+    await hostDrainReceipt;
     await drain;
     await borg.close({ drain: false });
     expect(sqliteClose).toHaveBeenCalledOnce();
@@ -1442,7 +1450,7 @@ describe("Borg", () => {
     }
   });
 
-  it("reconciles only an aged orphaned autonomy wake when composing repositories", async () => {
+  it("reconciles a recent orphaned autonomy wake on the very next start", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
     tempDirs.push(tempDir);
     const clock = new ManualClock(1_000);
@@ -1461,7 +1469,7 @@ describe("Borg", () => {
       source_category: "contemplative",
     });
     await borg.close();
-
+    clock.advance(1);
     const immediateReopen = await Borg.open(openOptions);
 
     try {
@@ -1470,30 +1478,13 @@ describe("Borg", () => {
       expect(immediateWakes.listSince(0, 10)).toContainEqual(
         expect.objectContaining({
           id: orphan.id,
-          outcome: null,
-          outcome_detail: null,
-        }),
-      );
-    } finally {
-      await immediateReopen.close();
-    }
-
-    clock.advance(AUTONOMY_WAKE_STARTUP_INTERRUPTED_GRACE_MS + 1);
-    const agedReopen = await Borg.open(openOptions);
-
-    try {
-      const reopenedWakes =
-        borgInternals<AutonomyWakeInternals>(agedReopen).deps.autonomyWakesRepository;
-      expect(reopenedWakes.listSince(0, 10)).toContainEqual(
-        expect.objectContaining({
-          id: orphan.id,
           outcome: "interrupted",
           outcome_detail: AUTONOMY_WAKE_STARTUP_INTERRUPTED_DETAIL,
         }),
       );
-      expect(reopenedWakes.interruptOrphanedWakesAtStartup()).toBe(0);
+      expect(immediateWakes.interruptOrphanedWakesAtStartup(clock.now())).toBe(0);
     } finally {
-      await agedReopen.close();
+      await immediateReopen.close();
     }
   });
 

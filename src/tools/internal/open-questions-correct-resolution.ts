@@ -15,7 +15,6 @@ import {
   openQuestionResolutionCorrectionInputSchema,
 } from "../../memory/self/types.js";
 import type { ToolDefinition } from "../dispatcher.js";
-import { StorageError, ToolError } from "../../util/errors.js";
 
 const outputSchema = z.object({
   openQuestion: openQuestionSchema.extend(resolutionCorrectionPresentationSchema.shape).extend({
@@ -45,23 +44,10 @@ export function createOpenQuestionsCorrectResolutionTool(
       {
         path: "open_question_id",
         kinds: ["open_question"],
-        notFound: {
-          error: (id) =>
-            new StorageError(`Unknown open question id: ${id}`, {
-              code: "OPEN_QUESTION_NOT_FOUND",
-            }),
-        },
       },
       {
         path: "evidence.*.id",
         kinds: ["episode", "stream_entry"],
-        notFound: {
-          error: (id) =>
-            new ToolError(
-              `Citation ids do not name stored records: ${id}. Re-cite or remove these citations.`,
-              { code: "OPEN_QUESTION_CITATION_NOT_FOUND" },
-            ),
-        },
       },
     ],
     outputSchema,

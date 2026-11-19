@@ -78,18 +78,6 @@ export function createGoalsRetireTool(
       {
         path: "goal_id",
         kinds: ["goal"],
-        notFound: {
-          output: (id) => ({
-            status: "no_op",
-            reason: "missing",
-            goal: {
-              id,
-              description: null,
-              status: "absent",
-              ...memoryDisclosurePayloadFields(unknownMemoryDisclosureLabel()),
-            },
-          }),
-        },
       },
     ],
     outputSchema: goalsRetireOutputSchema,

@@ -2,11 +2,12 @@ import { FailureReportTracker } from "../util/failure-reports.js";
 import { runWithDeadline } from "../util/deadline.js";
 import { TimeoutBudgetExceeded } from "../util/timeout-policy.js";
 import type { GoalPresentation } from "../executive/goal-presentation.js";
-import { StreamWatermarkRepository, StreamWriter } from "../stream/index.js";
+import { StreamWatermarkRepository, StreamWriter, type StreamEntry } from "../stream/index.js";
 import { SystemClock, type Clock } from "../util/clock.js";
 import {
   AuthError,
   AutonomyError,
+  CognitionError,
   LLMError,
   SessionBusyError,
   describeErrorWithCauses,
@@ -661,6 +662,8 @@ export class AutonomyScheduler {
   private activeTick: Promise<TickResult> | null = null;
   private readonly failureReports = new FailureReportTracker("autonomy observer failure");
   private stopping = false;
+  private admissionClosed = false;
+  private abandonPreparingWake: (() => void) | null = null;
   private observer: AutonomySchedulerObserver | null = null;
   private intervalStartedTs: number | null = null;
   private lastTickTs: number | null = null;
@@ -892,7 +895,7 @@ export class AutonomyScheduler {
   }
 
   start(): void {
-    if (!this.options.enabled || this.intervalHandle !== null) {
+    if (!this.options.enabled || this.admissionClosed || this.intervalHandle !== null) {
       return;
     }
 
@@ -914,7 +917,13 @@ export class AutonomyScheduler {
     }, this.options.intervalMs);
   }
 
-  async stop(options: AutonomySchedulerStopOptions = {}): Promise<void> {
+  /** Hosts fence admission before awaiting HTTP/connector drain leases. */
+  closeAdmission(): void {
+    this.admissionClosed = true;
+    this.stopScheduling();
+  }
+
+  private stopScheduling(): void {
     this.stopping = true;
     if (this.intervalHandle !== null) {
       this.clearIntervalFn(this.intervalHandle);
@@ -925,7 +934,12 @@ export class AutonomyScheduler {
     this.lastRefusedFireTs = null;
     this.droppedIntervalFires = 0;
     this.droppedIntervalFiresForActiveTick = 0;
+    // Record before waiting: preparation may outlive the host's drain deadline.
+    this.abandonPreparingWake?.();
+  }
 
+  async stop(options: AutonomySchedulerStopOptions = {}): Promise<void> {
+    this.stopScheduling();
     if (options.graceful === false) {
       return;
     }
@@ -1074,6 +1088,7 @@ export class AutonomyScheduler {
             error: 0,
             busy: 0,
             interrupted: 0,
+            not_run: 0,
           },
         };
         wakeGroups.set(wake.trigger_name, group);
@@ -1181,6 +1196,7 @@ export class AutonomyScheduler {
           interrupted: this.options.wakeRepository.countSince(budgetCutoff, {
             outcome: "interrupted",
           }),
+          not_run: this.options.wakeRepository.countSince(budgetCutoff, { outcome: "not_run" }),
         },
         // Same rows as window_outcomes.headway, one level down. Each detail is
         // the ordered structural basis recorded when the turn completed.
@@ -1433,17 +1449,8 @@ export class AutonomyScheduler {
             continue;
           }
 
-          const autonomousWakeEntry = await writer.append({
-            kind: "internal_event",
-            content: {
-              kind: "autonomous_wake",
-              trigger_type: dueEvent.sourceType,
-              source_name: dueEvent.sourceName,
-              source_category: sourceCategory,
-              payload: dueEvent.payload,
-              ts: this.clock.now(),
-            },
-          });
+          // Admission is synchronous: shutdown cannot begin between the gate
+          // above and recording the budget slot.
           const wakeRecord = this.options.wakeRepository.record({
             trigger_name: dueEvent.sourceName,
             condition_name:
@@ -1455,12 +1462,57 @@ export class AutonomyScheduler {
             source_category: sourceCategory,
             selected_goal_id: selectedGoalIdForWake(dueEvent),
           });
-
+          let abandoned = false;
+          const abandonForDrain = () => {
+            if (abandoned) return;
+            const outcomeSummary =
+              "Autonomous turn did not run: shutdown drain began before turn start.";
+            // Like a busy wake, retain the admitted budget slot but leave error
+            // circuits, freshness bypasses and source watermarks untouched.
+            this.options.wakeRepository.recordOutcome(
+              wakeRecord.id,
+              "not_run",
+              outcomeSummary,
+              null,
+              ZERO_TURN_EXECUTION_COUNTS,
+            );
+            abandoned = true;
+            eventResults.push(
+              ...this.eventResultsForBatch(wakeBatch, {
+                status: "not_run",
+                outcomeSummary,
+                turnResultId: null,
+              }),
+            );
+          };
+          this.abandonPreparingWake = abandonForDrain;
+          let autonomousWakeEntry: StreamEntry | undefined;
           let preparedEvent: { source: AutonomyWakeSource; event: DueEvent };
           let turnInput;
 
           try {
+            autonomousWakeEntry = await writer.append({
+              kind: "internal_event",
+              content: {
+                kind: "autonomous_wake",
+                trigger_type: dueEvent.sourceType,
+                source_name: dueEvent.sourceName,
+                source_category: sourceCategory,
+                payload: dueEvent.payload,
+                ts: this.clock.now(),
+              },
+            });
+            if (this.stopping || abandoned) {
+              abandonForDrain();
+              break;
+            }
+
             const preparation = await this.prepareEvent(dueEvent);
+
+            if (this.stopping || abandoned) {
+              abandonForDrain();
+              break;
+            }
 
             if ("toolError" in preparation) {
               throw new AutonomySourcePreparationError(dueEvent.sourceName, preparation.toolError);
@@ -1469,6 +1521,14 @@ export class AutonomyScheduler {
             preparedEvent = preparation;
             turnInput = preparedEvent.source.buildTurn(preparedEvent.event);
           } catch (error) {
+            if (this.stopping || abandoned) {
+              abandonForDrain();
+              // A failed audit append still propagates even when the drain has
+              // already recorded not_run. Preserve that terminal outcome.
+              if (autonomousWakeEntry === undefined) throw error;
+              break;
+            }
+            this.abandonPreparingWake = null;
             // Install retry state before any outcome, fleet, or stream write:
             // bookkeeping failures must not turn a source error into a hot loop.
             this.scheduleSourceRetryBackoff(
@@ -1495,6 +1555,10 @@ export class AutonomyScheduler {
               ZERO_TURN_EXECUTION_COUNTS,
               { preparationFailed: true },
             );
+            // Admission precedes this fallible append. Finalize the row and
+            // install preparation retry spacing before propagating its failure;
+            // attempting another stream write here could obscure the cause.
+            if (autonomousWakeEntry === undefined) throw error;
             // No turn opened, so the admitted freshness bypass remains available.
             await writer.append({
               kind: "internal_event",
@@ -1520,6 +1584,7 @@ export class AutonomyScheduler {
           }
 
           this.sourceRetryBackoff.delete(dueEvent.sourceName);
+          this.abandonPreparingWake = null;
 
           let turnResult: TurnResult;
 
@@ -1532,6 +1597,12 @@ export class AutonomyScheduler {
               origin: "autonomous",
             });
           } catch (error) {
+            // Drain may begin while run() is acquiring its session lock. The
+            // orchestrator rejects before opening a turn in that case.
+            if (error instanceof CognitionError && error.code === "BORG_SHUTTING_DOWN") {
+              abandonForDrain();
+              break;
+            }
             const busy = error instanceof SessionBusyError;
             this.scheduleBatchRetryBackoff(wakeBatch);
             if (!busy) {
@@ -1827,6 +1898,7 @@ export class AutonomyScheduler {
           events: eventResults,
         };
       } finally {
+        this.abandonPreparingWake = null;
         writer.close();
       }
     } finally {

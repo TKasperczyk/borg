@@ -17,7 +17,6 @@ import {
 import {
   AUTONOMY_WAKE_OUTCOME_DETAIL_MAX_LENGTH,
   AUTONOMY_WAKE_STARTUP_INTERRUPTED_DETAIL,
-  AUTONOMY_WAKE_STARTUP_INTERRUPTED_GRACE_MS,
   AutonomyWakesRepository,
 } from "./wakes-repository.js";
 
@@ -122,7 +121,7 @@ describe("AutonomyWakesRepository", () => {
     }
   });
 
-  it("reconciles only old orphaned wakes and never overwrites a terminal outcome", () => {
+  it("reconciles every pre-start orphan, preserves current-process rows and terminal outcomes", () => {
     const clock = new ManualClock(1_000);
     const db = openDatabase(":memory:", { migrations: autonomyMigrations });
     const repository = new AutonomyWakesRepository({ db, clock });
@@ -133,13 +132,15 @@ describe("AutonomyWakesRepository", () => {
         session_id: DEFAULT_SESSION_ID,
         wake_source_type: "trigger",
       });
+      clock.advance(60 * 60 * 1_000);
       const secondOrphan = repository.record({
         trigger_name: "scheduled_reflection",
         session_id: DEFAULT_SESSION_ID,
         wake_source_type: "trigger",
         source_category: "contemplative",
       });
-      clock.advance(AUTONOMY_WAKE_STARTUP_INTERRUPTED_GRACE_MS + 1);
+      clock.advance(1);
+      const startedAt = clock.now();
       const recentInFlight = repository.record({
         trigger_name: "goal_followup_due",
         session_id: DEFAULT_SESSION_ID,
@@ -153,8 +154,9 @@ describe("AutonomyWakesRepository", () => {
       });
       repository.recordOutcome(completed.id, "headway");
 
-      expect(repository.interruptOrphanedWakesAtStartup()).toBe(2);
-      expect(repository.interruptOrphanedWakesAtStartup()).toBe(0);
+      clock.advance(1_000);
+      expect(repository.interruptOrphanedWakesAtStartup(startedAt)).toBe(2);
+      expect(repository.interruptOrphanedWakesAtStartup(startedAt)).toBe(0);
       repository.recordOutcome(completed.id, "interrupted", "must not replace headway");
       repository.recordOutcome(completed.id, "error", "must not waive budget", null, undefined, {
         preparationFailed: true,
@@ -194,7 +196,7 @@ describe("AutonomyWakesRepository", () => {
     }
   });
 
-  // The sweep's predicate is bounded above by the grace window and not bounded
+  // The sweep's predicate is bounded above by process startup and not bounded
   // below at all, so it reaches rows no run of this process ever touched. That
   // is deliberate -- one writer per data directory means an old unrecorded row
   // cannot belong to anyone -- but it is also the reason the stored detail must
@@ -213,7 +215,7 @@ describe("AutonomyWakesRepository", () => {
       });
       clock.advance(30 * 24 * 60 * 60_000);
 
-      expect(repository.interruptOrphanedWakesAtStartup()).toBe(1);
+      expect(repository.interruptOrphanedWakesAtStartup(clock.now())).toBe(1);
       expect(
         repository.listSince(0, 10).find((wake) => wake.id === ancientOrphan.id),
       ).toMatchObject({
@@ -405,13 +407,14 @@ describe("AutonomyWakesRepository", () => {
         { id: 8, name: "autonomy_wakes_execution_counts" },
         { id: 9, name: "autonomy_wakes_preparation_failed" },
         { id: 10, name: "autonomy_wakes_turn_provider_failed" },
+        { id: 11, name: "autonomy_wakes_not_run_outcome" },
       ]);
 
       const table = db
         .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'autonomy_wakes'")
         .get() as { sql: string };
       expect(table.sql).toContain(
-        "outcome IN ('headway', 'silent', 'error', 'busy', 'interrupted')",
+        "outcome IN ('headway', 'silent', 'error', 'busy', 'interrupted', 'not_run')",
       );
 
       const columns = db.prepare("PRAGMA table_info(autonomy_wakes)").all() as Array<{
@@ -751,6 +754,63 @@ describe("AutonomyWakesRepository", () => {
         outcome: "interrupted",
         outcome_detail: "bookkeeping failed",
       });
+    } finally {
+      db.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("adds not_run while preserving every stored wake column and its budget charge", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-autonomy-not-run-migration-"));
+    const dbPath = join(tempDir, "borg.db");
+    let db = openDatabase(dbPath, { migrations: autonomyMigrations.slice(0, 10) });
+    const clock = new ManualClock(1_000);
+    try {
+      const before = new AutonomyWakesRepository({ db, clock });
+      for (const outcome of [null, "headway", "error", "busy", "interrupted"] as const) {
+        const wake = before.record({
+          trigger_name: "goal_followup_due",
+          session_id: DEFAULT_SESSION_ID,
+          wake_source_type: "trigger",
+          selected_goal_id: parseGoalId("goal_aaaaaaaaaaaaaaaa"),
+        });
+        if (outcome !== null) {
+          before.recordOutcome(
+            wake.id,
+            outcome,
+            "Synthetic outcome detail",
+            outcome === "headway" ? ["ok write: synthetic"] : null,
+            { finalizer_rounds: 2, stall_retries: 1 },
+            { preparationFailed: outcome === "error", turnProviderFailed: outcome === "error" },
+          );
+        }
+        clock.advance(1);
+      }
+      const stored = before.listSince(0, 100);
+      db.close();
+      db = openDatabase(dbPath, { migrations: autonomyMigrations });
+      const after = new AutonomyWakesRepository({ db, clock });
+      expect(after.listSince(0, 100)).toEqual(stored);
+      const wake = after.record({
+        trigger_name: "open_question_dormant",
+        wake_source_type: "trigger",
+      });
+      after.recordOutcome(wake.id, "not_run", "Shutdown drain", null, {
+        finalizer_rounds: 0,
+        stall_retries: 0,
+      });
+      expect(after.listSince(0, 1)[0]).toMatchObject({
+        outcome: "not_run",
+        outcome_detail: "Shutdown drain",
+      });
+      expect(
+        after.countSince(0, {
+          outcome: "not_run",
+          excludePreparationFailures: true,
+          excludeTurnProviderFailures: true,
+        }),
+      ).toBe(1);
+      expect(db.prepare("PRAGMA integrity_check").get()).toEqual({ integrity_check: "ok" });
     } finally {
       db.close();
       rmSync(tempDir, { recursive: true, force: true });

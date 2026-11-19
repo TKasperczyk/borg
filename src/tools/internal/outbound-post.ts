@@ -423,12 +423,6 @@ export function createOutboundPostTool(
       {
         path: "target_session_id",
         kinds: ["session"],
-        notFound: {
-          error: () =>
-            new ToolError("tool.outbound.post target_session_id was not found", {
-              code: "OUTBOUND_POST_TARGET_NOT_FOUND",
-            }),
-        },
       },
     ],
     outputSchema: outboundPostOutputSchema,

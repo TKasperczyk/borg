@@ -76,7 +76,6 @@ export function createStreamGetTool(options: {
       {
         path: "stream_entry_id",
         kinds: ["stream_entry"],
-        notFound: { output: () => ({ entry: null }) },
       },
     ],
     outputSchema,

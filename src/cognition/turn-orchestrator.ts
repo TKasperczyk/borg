@@ -56,7 +56,7 @@ import {
 } from "../stream/index.js";
 import type { ToolDispatcher } from "../tools/dispatcher.js";
 import { SystemClock, type Clock } from "../util/clock.js";
-import { SessionBusyError } from "../util/errors.js";
+import { CognitionError, SessionBusyError } from "../util/errors.js";
 import { DEFAULT_SESSION_ID, type EntityId, type GoalId, type SessionId } from "../util/ids.js";
 import type { ToolLoopCallRecord } from "./turn-action/index.js";
 import { TurnActionCoordinator } from "./turn-action/turn-action-coordinator.js";
@@ -216,6 +216,7 @@ function stripTurnLockMode(input: TurnOrchestratorInput): TurnPhaseCoordinatorIn
 }
 
 export class TurnOrchestrator {
+  private admissionClosed = false;
   readonly postGenerationGuardRunner: TurnPostGenerationGuardRunner;
   private readonly clock: Clock;
   private readonly sessionLock: SessionLock;
@@ -544,7 +545,15 @@ export class TurnOrchestrator {
     });
   }
 
+  /** Fence new turns without interrupting a turn that already owns its session. */
+  closeAdmission(): void {
+    this.admissionClosed = true;
+  }
+
   async run(input: TurnOrchestratorInput): Promise<TurnResult> {
+    if (this.admissionClosed) {
+      throw new CognitionError("Borg is shutting down", { code: "BORG_SHUTTING_DOWN" });
+    }
     input = this.options.entityRepository.resolveReferences(input);
     const sessionId = input.sessionId ?? DEFAULT_SESSION_ID;
     this.options.attachmentService.validateAttachments(input.attachments ?? []);
@@ -557,6 +566,13 @@ export class TurnOrchestrator {
           ? await this.sessionLock.acquire(sessionId)
           : await this.sessionLock.acquire(sessionId, { timeoutMs: effectiveLockMode.timeoutMs });
     const phaseInput = stripTurnLockMode(input);
+
+    // A user turn can have waited behind another turn before shutdown began.
+    // Check after the asynchronous lock acquisition, before any turn writes.
+    if (this.admissionClosed) {
+      await lease?.release();
+      throw new CognitionError("Borg is shutting down", { code: "BORG_SHUTTING_DOWN" });
+    }
 
     if (lease === null) {
       throw new SessionBusyError(`Session ${sessionId} is busy`, {

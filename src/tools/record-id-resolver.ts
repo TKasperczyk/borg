@@ -149,7 +149,15 @@ export function createRecordIdResolver(db: SqliteDatabase): RecordIdResolver {
             .map((row) => row.id as string);
           // Exact stored IDs win even in stores containing legacy shorter IDs.
           if (candidates[0] === input) return { status: "unchanged", id: input };
-          if (candidates.length === 0) return { status: "not_found", id: input };
+          if (candidates.length === 0) {
+            // No stored ID begins with this prefix, so its zero-padded full ID
+            // is absent too. Pass a valid unknown address through the tool's
+            // own schema and checks; field-local errors would reorder them.
+            return {
+              status: "not_found",
+              id: input.padEnd(store.helper.prefix.length + ids.ID_LENGTH, "0"),
+            };
+          }
           if (candidates.length === 1) return { status: "resolved", id: candidates[0]! };
           const total =
             candidates.length <= MAX_ID_PREFIX_CANDIDATES

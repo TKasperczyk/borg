@@ -284,7 +284,7 @@ export function createIdentityEventsListForCognitionTool(
     allowedOrigins: ["autonomous", "deliberator"],
     writeScope: "read",
     inputSchema: identityEventsListInputSchema,
-    recordIdInputs: [{ path: "recordId", kinds: IDENTITY_RECORD_TYPES, notFound: "invoke" }],
+    recordIdInputs: [{ path: "recordId", kinds: IDENTITY_RECORD_TYPES }],
     outputSchema: identityEventsListForCognitionOutputSchema,
     async invoke(input, context) {
       const events = await options.listEvents(
