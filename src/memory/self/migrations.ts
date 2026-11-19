@@ -526,4 +526,11 @@ export const selfMigrations = [
       db.exec("ALTER TABLE open_questions ADD COLUMN resolution_version INTEGER NULL");
     },
   },
+  {
+    id: 17,
+    name: "open_question_review_id",
+    up: (db) => {
+      db.exec("ALTER TABLE open_questions ADD COLUMN review_id INTEGER NULL");
+    },
+  },
 ] as const satisfies readonly Migration[];

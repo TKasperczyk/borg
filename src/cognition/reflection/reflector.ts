@@ -1,3 +1,4 @@
+import { openQuestionReviewFields } from "../../memory/self/open-question-review.js";
 import { isPlainRecord } from "../../util/guards.js";
 import { withRetrievedRecordEvidence } from "../record-evidence.js";
 import {
@@ -535,6 +536,7 @@ function resolvedQuestionsForReflection(questions: readonly OpenQuestion[]) {
     return {
       id: question.id,
       question: question.question,
+      ...openQuestionReviewFields(question),
       ...(excerpt.exact
         ? { resolution_note: question.resolution_note }
         : {
@@ -2552,6 +2554,7 @@ export class Reflector {
                     active_open_questions: activeOpenQuestions.map((question) => ({
                       id: question.id,
                       question: question.question,
+                      ...openQuestionReviewFields(question),
                       source: question.source,
                       urgency: question.urgency,
                       related_episode_ids: question.related_episode_ids,

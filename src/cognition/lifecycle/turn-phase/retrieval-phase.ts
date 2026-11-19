@@ -1,3 +1,4 @@
+import { openQuestionReviewFields } from "../../../memory/self/open-question-review.js";
 import type { FrameAnomalyDisposition } from "./perception-phase.js";
 import { similarityThresholds } from "../../../config/similarity.js";
 import {
@@ -2251,6 +2252,7 @@ async function compileSharedStateArtifactForEvidenceLedgerResultInternal(input: 
     openQuestions: activeOpenQuestions.map((question) => ({
       id: question.id,
       text: compactSharedStateArtifactCandidateText(question.question),
+      ...openQuestionReviewFields(question),
       ...memoryDisclosurePayloadFields(openQuestionMemoryDisclosureLabel(question)),
     })),
   };

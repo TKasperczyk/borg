@@ -1,3 +1,4 @@
+import { openQuestionReviewFields } from "../../memory/self/open-question-review.js";
 import type { OpenQuestion, OpenQuestionsRepository } from "../../memory/self/index.js";
 import {
   memoryDisclosurePayloadFields,
@@ -15,7 +16,8 @@ export type OpenQuestionUrgencyBumpPayload = {
   open_question_id: OpenQuestion["id"];
   question: string;
   urgency: number;
-} & ReturnType<typeof memoryDisclosurePayloadFields>;
+} & ReturnType<typeof memoryDisclosurePayloadFields> &
+  ReturnType<typeof openQuestionReviewFields>;
 
 export type OpenQuestionUrgencyBumpConditionOptions = {
   openQuestionsRepository: OpenQuestionsRepository;
@@ -63,6 +65,7 @@ export function createOpenQuestionUrgencyBumpCondition(
             payload: {
               open_question_id: question.id,
               question: question.question,
+              ...openQuestionReviewFields(question),
               urgency: question.urgency,
               ...memoryDisclosurePayloadFields(openQuestionMemoryDisclosureLabel(question)),
             },

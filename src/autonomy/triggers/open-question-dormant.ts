@@ -1,3 +1,4 @@
+import { openQuestionReviewFields } from "../../memory/self/open-question-review.js";
 import type { OpenQuestion, OpenQuestionsRepository } from "../../memory/self/index.js";
 import {
   memoryDisclosurePayloadFields,
@@ -25,7 +26,8 @@ type DormantQuestion = {
   unresolved_rumination_ticks: number;
   last_ruminated_at: number | null;
   related_episodes?: EpisodicSearchHit[];
-} & ReturnType<typeof memoryDisclosurePayloadFields>;
+} & ReturnType<typeof memoryDisclosurePayloadFields> &
+  ReturnType<typeof openQuestionReviewFields>;
 
 export type OpenQuestionDormantPayload = DormantQuestion & {
   additional_questions?: DormantQuestion[];
@@ -77,6 +79,7 @@ export function createOpenQuestionDormantTrigger(
             payload: {
               open_question_id: question.id,
               question: question.question,
+              ...openQuestionReviewFields(question),
               urgency: question.urgency,
               last_touched: question.last_touched,
               unresolved_rumination_ticks: question.unresolved_rumination_ticks,

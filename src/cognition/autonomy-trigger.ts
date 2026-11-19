@@ -170,6 +170,7 @@ function keepsWhole(
     key === "annotations" ||
     key === "annotations_omitted" ||
     key === "lifecycle" ||
+    (key === "review" && typeof record.open_question_id === "string") ||
     (key === "open_question_id" && typeof record.open_question_id === "string") ||
     (keepQuestionText && key === "question" && typeof record.open_question_id === "string")
   );
@@ -257,6 +258,7 @@ const QUESTION_FIELDS_THAT_LEAVE_WITH_ITS_TEXT = new Set([
   "disclosure",
   "disclosure_label",
   "related_episodes",
+  "review",
 ]);
 
 function questionIdOnly(question: unknown): { kept: unknown; omittedFields: number } {

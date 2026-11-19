@@ -1,3 +1,4 @@
+import { openQuestionReviewFields } from "../../../memory/self/open-question-review.js";
 import type { DeliberationRoutingOverride } from "../../deliberation/types.js";
 import type { EvidenceLedger } from "../../evidence-ledger/index.js";
 import type { FrameAnomalyConversationContext } from "../../frame-anomaly/index.js";
@@ -42,9 +43,7 @@ export function buildContradictionRoutingOverride(
     .map((id) => input.openQuestionsRepository.get(id as OpenQuestion["id"]))
     .filter(
       (question): question is OpenQuestion =>
-        question !== null &&
-        question.status === "open" &&
-        question.source === "contradiction",
+        question !== null && question.status === "open" && question.source === "contradiction",
     );
 
   if (openQuestions.length === 0) {
@@ -60,6 +59,7 @@ export function buildContradictionRoutingOverride(
     openQuestions: openQuestions.map((question, index) => ({
       id: question.id,
       question: question.question,
+      ...openQuestionReviewFields(question),
       source: question.source,
       localHandle: `contradiction_${index + 1}`,
     })),

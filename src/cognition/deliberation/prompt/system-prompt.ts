@@ -1,3 +1,4 @@
+import { renderOpenQuestionReview } from "../../../memory/self/open-question-review.js";
 import { renderNarrativeCoverage } from "../../../memory/self/narrative-coverage.js";
 import { goalBlockStateAttribute } from "../../../memory/self/goal-blocks.js";
 import { renderAnsweredWindowEvidence } from "../../../stream/answered-window.js";
@@ -3157,7 +3158,7 @@ function summarizeOpenQuestions(openQuestions: readonly OpenQuestion[]): string 
       const disclosure = renderMemoryDisclosureLabelForModel(
         openQuestionMemoryDisclosureLabel(question),
       );
-      return `- ${question.question} (urgency=${question.urgency.toFixed(2)}, source=${question.source}, ${disclosure})${
+      return `- ${question.question}${renderOpenQuestionReview(question)} (urgency=${question.urgency.toFixed(2)}, source=${question.source}, ${disclosure})${
         question.provenance === null
           ? renderEpisodeDerivedProvenance(question.related_episode_ids)
           : renderOptionalProvenance(question.provenance)

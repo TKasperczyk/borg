@@ -445,6 +445,42 @@ async function compileSharedStateArtifactForEvidenceLedgerForTest(
 }
 
 describe("buildContradictionRoutingOverride", () => {
+  it("carries a resolved review label without changing contradiction routing or cooldown handles", () => {
+    const question = {
+      id: "oq_aaaaaaaaaaaaaaaa",
+      question: "Synthetic question?",
+      source: "contradiction",
+      status: "open",
+      audience_entity_id: null,
+    };
+    const input = {
+      isUserTurn: true,
+      perception: { isOperational: true },
+      audienceEntityId: null,
+      evidenceLedger: ledgerWithOpenQuestionIds([question.id]),
+    };
+    const before = buildContradictionRoutingOverride({
+      ...input,
+      openQuestionsRepository: openQuestionsById([question]),
+    });
+    const review = {
+      id: 37,
+      kind: "contradiction",
+      status: "resolved",
+      resolution: "dismiss",
+      resolved_at: "2026-09-02T12:00:00.000Z",
+    };
+    const linkedQuestion = { ...question, review_id: 37, review };
+    const after = buildContradictionRoutingOverride({
+      ...input,
+      openQuestionsRepository: openQuestionsById([linkedQuestion]),
+    });
+    expect(after).toEqual({
+      ...before,
+      openQuestions: before!.openQuestions!.map((row) => ({ ...row, review })),
+    });
+  });
+
   it("forces S2 for operational user turns with ledger-surfaced unresolved contradiction OQs", () => {
     const audienceEntityId = createEntityId();
     const override = buildContradictionRoutingOverride({

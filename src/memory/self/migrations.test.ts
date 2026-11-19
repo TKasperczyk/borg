@@ -1,10 +1,10 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { identityMigrations, IdentityEventRepository } from "../identity/index.js";
 import { GoalsRepository } from "./goals-repository.js";
 import { goalSchedulingTimes, currentGoalBlock } from "./goal-blocks.js";
-import { createGoalId, createStreamEntryId } from "../../util/ids.js";
+import { createGoalId, createStreamEntryId, parseOpenQuestionId } from "../../util/ids.js";
 import { ManualClock } from "../../util/clock.js";
 import { composeMigrations } from "../../storage/sqlite/index.js";
 import { describe, expect, it } from "vitest";
@@ -15,18 +15,72 @@ import { OpenQuestionsRepository } from "./open-questions.js";
 import { executiveMigrations, ExecutiveStepsRepository } from "../../executive/index.js";
 
 describe("self migrations", () => {
+  it("adds only a nullable integer review id to an in-memory reconstruction of the live table", () => {
+    const db = openDatabase(":memory:", { migrations: [] });
+    try {
+      db.exec(
+        readFileSync(
+          new URL("./__fixtures__/open-questions-pre-review-id.sql", import.meta.url),
+          "utf8",
+        ),
+      );
+      for (const [index, status] of ["open", "resolved", "abandoned"].entries()) {
+        db.prepare(
+          `INSERT INTO open_questions
+          (id, question, urgency, status, related_episode_ids, related_semantic_node_ids,
+           source, created_at, last_touched, dedupe_key, record_version)
+          VALUES (?, ?, 0.5, ?, '[]', '[]', 'contradiction', 1000, 2000, ?, 7)`,
+        ).run(
+          `oq_${String(index).repeat(16)}`,
+          `Synthetic question ${index}`,
+          status,
+          `synthetic-${index}`,
+        );
+      }
+      const before = db.prepare("SELECT * FROM open_questions ORDER BY id").all();
+      const objects = () =>
+        db
+          .prepare(
+            "SELECT name, sql FROM sqlite_master WHERE tbl_name='open_questions' AND type IN ('index','trigger') ORDER BY name",
+          )
+          .all();
+      const indexes = objects();
+      selfMigrations.find((m) => m.name === "open_question_review_id")!.up(db);
+      expect(db.prepare("SELECT q.* FROM open_questions AS q ORDER BY id").all()).toEqual(
+        before.map((row) => ({ ...row, review_id: null })),
+      );
+      expect(objects()).toEqual(indexes);
+      expect(db.pragma("table_info(open_questions)")).toContainEqual(
+        expect.objectContaining({ name: "review_id", type: "INTEGER", notnull: 0 }),
+      );
+      db.prepare("UPDATE open_questions SET review_id = 37 WHERE status = 'open'").run();
+      expect(
+        db
+          .prepare(
+            "SELECT review_id, typeof(review_id) AS storage_type FROM open_questions WHERE status = 'open'",
+          )
+          .get(),
+      ).toEqual({ review_id: 37, storage_type: "integer" });
+      expect(db.pragma("integrity_check", { simple: true })).toBe("ok");
+    } finally {
+      db.close();
+    }
+  });
+
   it("adds correction and nullable generation columns without rewriting legacy resolutions", () => {
     const dir = mkdtempSync(join(tmpdir(), "borg-correction-migration-"));
     const path = join(dir, "legacy.db");
     try {
       const old = openDatabase(path, { migrations: selfMigrations.filter((m) => m.id < 16) });
-      const repository = new OpenQuestionsRepository({ db: old, clock: new ManualClock(1_000) });
-      const question = repository.add({
-        question: "何が分かった？",
-        urgency: 0.5,
-        source: "reflection",
-        provenance: { kind: "manual" },
-      });
+      const question = { id: parseOpenQuestionId("oq_aaaaaaaaaaaaaaaa") };
+      old
+        .prepare(
+          `INSERT INTO open_questions
+        (id, question, urgency, status, related_episode_ids, related_semantic_node_ids,
+         source, created_at, last_touched, provenance_kind)
+        VALUES (?, '何が分かった？', 0.5, 'open', '[]', '[]', 'reflection', 1000, 1000, 'manual')`,
+        )
+        .run(question.id);
       old
         .prepare(
           `UPDATE open_questions SET status = 'resolved', resolution_note = ?,
@@ -41,6 +95,7 @@ describe("self migrations", () => {
           ...before,
           resolution_corrections: "[]",
           resolution_version: null,
+          review_id: null,
         });
         expect(new OpenQuestionsRepository({ db }).get(question.id)).toMatchObject({
           resolution_corrections: [],
@@ -184,7 +239,7 @@ describe("self migrations", () => {
     try {
       const migrationNames = selfMigrations.map((migration) => migration.name);
       expect(new Set(migrationNames).size).toBe(migrationNames.length);
-      expect(migrationNames.slice(-8)).toEqual([
+      expect(migrationNames.slice(-9)).toEqual([
         "goal_counterparty_entity_id",
         "goal_named_block_history",
         "goal_deadline_assignment_basis",
@@ -193,6 +248,7 @@ describe("self migrations", () => {
         "autobiographical_narrative_coverage",
         "goal_last_interaction_at",
         "open_question_resolution_corrections",
+        "open_question_review_id",
       ]);
       expect(db.listAppliedMigrations().map((migration) => migration.name)).toEqual(migrationNames);
       expect(

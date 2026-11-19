@@ -269,6 +269,7 @@ export async function enqueueOpenQuestionForReview(
     ...relatedIds,
     provenance,
     source: sourceForReviewItem(item),
+    review_id: item.id,
   };
   const presentedIds = new Set(
     (context.open_question_duplicate_candidates?.rows ?? []).map((candidate) => candidate.id),

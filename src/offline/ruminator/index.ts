@@ -1,3 +1,4 @@
+import { openQuestionReviewFields } from "../../memory/self/open-question-review.js";
 import { formatResolutionCorrections } from "../../memory/self/resolution-corrections.js";
 import { similarityThresholds } from "../../config/similarity.js";
 import { z } from "zod";
@@ -588,6 +589,7 @@ function renderConnectedOpenQuestionCandidates(candidates: readonly OpenQuestion
       JSON.stringify({
         id: candidate.id,
         question: candidate.question,
+        ...openQuestionReviewFields(candidate),
         urgency: candidate.urgency,
         last_touched: candidate.last_touched,
         source: candidate.source,
@@ -622,6 +624,7 @@ function buildResolutionPrompt(
   const questionRow = {
     id: question.id,
     question: question.question,
+    ...openQuestionReviewFields(question),
     source: question.source,
     unresolved_rumination_ticks: question.unresolved_rumination_ticks,
     recorded_rumination_notes: recordedRuminationNotes,

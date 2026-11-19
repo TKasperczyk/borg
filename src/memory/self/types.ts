@@ -1,3 +1,4 @@
+import { openQuestionReviewSchema } from "./open-question-review.js";
 import { z } from "zod";
 import { narrativeCoverageSchema } from "./narrative-coverage.js";
 import {
@@ -309,6 +310,9 @@ export const openQuestionSchema = z.object({
   question: z.string().min(1),
   urgency: z.number().min(0).max(1),
   status: openQuestionStatusSchema,
+  // Absent on older snapshots; persisted as NULL for questions not opened by a review.
+  review_id: z.number().int().positive().nullable().optional(),
+  review: openQuestionReviewSchema.optional(),
   goal_id: goalIdSchema.nullable().default(null),
   audience_entity_id: openQuestionAudienceEntityIdSchema.nullable().default(null),
   related_episode_ids: z.array(episodeIdSchema),

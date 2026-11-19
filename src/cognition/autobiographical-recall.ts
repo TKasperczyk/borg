@@ -1,3 +1,4 @@
+import { renderOpenQuestionReview } from "../memory/self/open-question-review.js";
 import { goalBlockStateFields } from "../memory/self/goal-blocks.js";
 import {
   actionMemoryDisclosureLabel,
@@ -1126,7 +1127,7 @@ export class AutobiographicalRecallService {
           `status=${question.status}`,
           `source=${question.source}`,
           `urgency=${question.urgency.toFixed(2)}`,
-          `question=${sanitizePromptText(question.question)}`,
+          `question=${sanitizePromptText(question.question)}${renderOpenQuestionReview(question)}`,
         ].join(" "),
         disclosureLabel: openQuestionMemoryDisclosureLabel(question),
         sourceStreamEntryIds: [

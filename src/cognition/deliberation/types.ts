@@ -187,7 +187,7 @@ export type DeliberationRoutingOverride = {
   reason: DeliberationRoutingForcedBy;
   forcedBy: DeliberationRoutingForcedBy;
   oqIds: readonly string[];
-  openQuestions?: readonly (Pick<OpenQuestion, "id" | "question" | "source"> & {
+  openQuestions?: readonly (Pick<OpenQuestion, "id" | "question" | "source" | "review"> & {
     localHandle?: string;
   })[];
   contradictionFingerprints?: readonly string[];

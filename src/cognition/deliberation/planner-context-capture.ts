@@ -1,3 +1,4 @@
+import { openQuestionReviewFields } from "../../memory/self/open-question-review.js";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { z } from "zod";
@@ -725,6 +726,7 @@ export function captureCompactPlannerContext(context: DeliberationContext) {
     openQuestionsContext: context.openQuestionsContext?.map((question) => ({
       id: question.id,
       question: question.question,
+      ...openQuestionReviewFields(question),
       status: question.status,
       urgency: question.urgency,
       audience_entity_id: question.audience_entity_id,

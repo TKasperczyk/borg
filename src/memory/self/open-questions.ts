@@ -1,3 +1,4 @@
+import { openQuestionReviewSchema } from "./open-question-review.js";
 import { FailureReportTracker } from "../../util/failure-reports.js";
 import {
   MAX_RESOLUTION_CORRECTIONS,
@@ -372,6 +373,7 @@ export function mapOpenQuestionRow(row: Record<string, unknown>): OpenQuestion {
     question: row.question,
     urgency: Number(row.urgency),
     status: row.status,
+    ...(row.review_id == null ? {} : { review_id: Number(row.review_id) }),
     goal_id: row.goal_id === null || row.goal_id === undefined ? null : row.goal_id,
     audience_entity_id:
       row.audience_entity_id === null || row.audience_entity_id === undefined
@@ -905,7 +907,7 @@ export class OpenQuestionsRepository {
 
     for (const row of rows) {
       if (normalizeQuestionForDedupe(String(row.question ?? "")) === normalizedQuestion) {
-        return { question: mapOpenQuestionRow(row), similarity: 1 };
+        return { question: this.mapRow(row), similarity: 1 };
       }
     }
 
@@ -954,7 +956,7 @@ export class OpenQuestionsRepository {
       string,
       unknown
     >[];
-    const questions = rows.map((row) => mapOpenQuestionRow(row));
+    const questions = rows.map((row) => this.mapRow(row));
     const existingIds = await this.getEmbeddedQuestionIds(questions.map((question) => question.id));
 
     for (const question of questions) {
@@ -989,11 +991,39 @@ export class OpenQuestionsRepository {
       .prepare("SELECT * FROM open_questions WHERE dedupe_key = ? LIMIT 1")
       .get(key) as Record<string, unknown> | undefined;
 
-    return row === undefined ? null : mapOpenQuestionRow(row);
+    return row === undefined ? null : this.mapRow(row);
+  }
+
+  private mapRow(row: Record<string, unknown>): OpenQuestion {
+    return this.withReview(mapOpenQuestionRow(row));
+  }
+
+  private withReview(question: OpenQuestion): OpenQuestion {
+    if (question.review_id == null) return question;
+    // Only scalar lifecycle facts, fetched by primary key. Global cognition;
+    // review status neither closes the question nor changes its eligibility.
+    const row = this.db
+      .prepare("SELECT id, kind, resolved_at, resolution FROM review_queue WHERE id = ?")
+      .get(question.review_id);
+    const review = openQuestionReviewSchema.parse(
+      row === undefined
+        ? { id: question.review_id, kind: null, status: "missing" }
+        : row.resolved_at == null
+          ? { id: row.id, kind: row.kind, status: "open" }
+          : {
+              id: row.id,
+              kind: row.kind,
+              status: "resolved",
+              resolution: row.resolution,
+              resolved_at: new Date(Number(row.resolved_at)).toISOString(),
+            },
+    );
+    return { ...question, review };
   }
 
   add(input: {
     id?: OpenQuestionId;
+    review_id?: number | null;
     question: string;
     urgency: number;
     related_episode_ids?: readonly z.infer<typeof episodeIdSchema>[];
@@ -1024,6 +1054,7 @@ export class OpenQuestionsRepository {
       question: input.question,
       urgency: input.urgency,
       status: "open",
+      ...(input.review_id == null ? {} : { review_id: input.review_id }),
       goal_id: input.goal_id ?? null,
       audience_entity_id: input.audience_entity_id ?? null,
       related_episode_ids: relatedEpisodeIds,
@@ -1069,8 +1100,8 @@ export class OpenQuestionsRepository {
             provenance_episode_ids, provenance_process, source, disclosure_label, created_at, last_touched,
             resolution_evidence_episode_ids, resolution_evidence_stream_entry_ids,
             resolution_disclosure_label, resolution_note, resolved_at, abandoned_reason, abandoned_at,
-            resolved_by_artifact_entry_id, unresolved_rumination_ticks, last_ruminated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            resolved_by_artifact_entry_id, unresolved_rumination_ticks, last_ruminated_at, review_id
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
       )
       .run(
@@ -1102,13 +1133,14 @@ export class OpenQuestionsRepository {
         question.resolved_by_artifact_entry_id,
         question.unresolved_rumination_ticks,
         question.last_ruminated_at,
+        question.review_id ?? null,
       );
 
     this.scheduleQuestionVectorUpsert(question, "insert", {
       forceEmbed: true,
     });
 
-    return question;
+    return this.withReview(question);
   }
 
   findByHandles(options: OpenQuestionHandleLookupOptions): OpenQuestion[] {
@@ -1210,7 +1242,7 @@ export class OpenQuestionsRepository {
         ...(options.limit === undefined ? [] : [Math.max(1, options.limit)]),
       ) as Record<string, unknown>[];
 
-    return rows.map((row) => mapOpenQuestionRow(row));
+    return rows.map((row) => this.mapRow(row));
   }
 
   listByGoal(options: OpenQuestionGoalLookupOptions): OpenQuestion[] {
@@ -1243,7 +1275,7 @@ export class OpenQuestionsRepository {
       )
       .all(...values, limit) as Record<string, unknown>[];
 
-    return rows.map((row) => mapOpenQuestionRow(row));
+    return rows.map((row) => this.mapRow(row));
   }
 
   list(options: OpenQuestionListOptions = {}): OpenQuestion[] {
@@ -1290,7 +1322,7 @@ export class OpenQuestionsRepository {
       )
       .all(...values, limit) as Record<string, unknown>[];
 
-    return rows.map((row) => mapOpenQuestionRow(row));
+    return rows.map((row) => this.mapRow(row));
   }
 
   listAllOpen(): OpenQuestion[] {
@@ -1305,7 +1337,7 @@ export class OpenQuestionsRepository {
       )
       .all() as Record<string, unknown>[];
 
-    return rows.map((row) => mapOpenQuestionRow(row));
+    return rows.map((row) => this.mapRow(row));
   }
 
   // The population of the register, which every reader of it so far has had to infer from a draw.
@@ -1340,7 +1372,7 @@ export class OpenQuestionsRepository {
       | Record<string, unknown>
       | undefined;
 
-    return row === undefined ? null : mapOpenQuestionRow(row);
+    return row === undefined ? null : this.mapRow(row);
   }
 
   recordRumination(input: OpenQuestionRuminationInput): OpenQuestionRumination {

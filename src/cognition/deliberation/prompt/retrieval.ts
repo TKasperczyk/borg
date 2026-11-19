@@ -1,4 +1,8 @@
 import {
+  renderOpenQuestionReview,
+  type OpenQuestionReview,
+} from "../../../memory/self/open-question-review.js";
+import {
   frameAnomalyAnnotationFields,
   renderFrameAnomalyAnnotations,
 } from "../../../stream/frame-anomaly.js";
@@ -98,6 +102,7 @@ export type RetrievedEvidenceSummaryInput = {
   openQuestions?: readonly {
     id: string;
     question: string;
+    review?: OpenQuestionReview;
     urgency: number;
     audience_entity_id?: EntityId | null;
     disclosure_label?: MemoryDisclosureLabel | null;
@@ -566,6 +571,7 @@ function verificationFallbackCandidates(
         source: question.source,
         audience_entity_id: question.audience_entity_id,
         goal_id: question.goal_id,
+        ...(question.review === undefined ? {} : { review: JSON.stringify(question.review) }),
       },
       payload: {
         question: question.question,
@@ -980,6 +986,7 @@ function summarizeOpenQuestionEvidence(
   openQuestions: readonly {
     id: string;
     question: string;
+    review?: OpenQuestionReview;
     urgency: number;
     audience_entity_id?: EntityId | null;
     disclosure_label?: MemoryDisclosureLabel | null;
@@ -1000,7 +1007,7 @@ function summarizeOpenQuestionEvidence(
         // row as self-private with no origin. Origin audience is what the
         // entity reads to tell recall from common ground, so dropping it here
         // silently understates who the question was already shared with.
-        `- ${question.question} [open_question=${question.id} urgency=${question.urgency.toFixed(2)} ${renderMemoryDisclosureLabelForModel(
+        `- ${question.question}${renderOpenQuestionReview(question)} [open_question=${question.id} urgency=${question.urgency.toFixed(2)} ${renderMemoryDisclosureLabelForModel(
           openQuestionMemoryDisclosureLabel({
             audience_entity_id: question.audience_entity_id ?? null,
             disclosure_label: question.disclosure_label ?? null,

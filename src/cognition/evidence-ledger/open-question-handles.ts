@@ -1,3 +1,4 @@
+import { openQuestionReviewFields } from "../../memory/self/open-question-review.js";
 import type { OpenQuestion, OpenQuestionStatus } from "../../memory/self/index.js";
 import { formatResolutionCorrections } from "../../memory/self/resolution-corrections.js";
 import { formatRelativeAge } from "../../util/relative-time.js";
@@ -173,6 +174,7 @@ export function openQuestionStateMetadata(
     const silentOnRumination =
       ticks === 0 && question.last_ruminated_at === null && recordedRuminationNotes === 0;
     return {
+      ...openQuestionReviewFields(question),
       created_at: new Date(question.created_at).toISOString(),
       last_touched: new Date(question.last_touched).toISOString(),
       ...(nowMs === undefined
@@ -207,6 +209,7 @@ export function openQuestionStateMetadata(
 
   if (question.status === "resolved") {
     return {
+      ...openQuestionReviewFields(question),
       resolution_note: question.resolution_note,
       // The ledger compactor budgets these rows against the complete section, newest first.
       ...formatResolutionCorrections({ resolution_corrections: question.resolution_corrections }),
@@ -220,6 +223,7 @@ export function openQuestionStateMetadata(
 
   if (question.status === "abandoned") {
     return {
+      ...openQuestionReviewFields(question),
       abandoned_reason: question.abandoned_reason,
       abandoned_at: question.abandoned_at,
       unresolved_rumination_ticks: question.unresolved_rumination_ticks,

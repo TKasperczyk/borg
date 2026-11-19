@@ -1,3 +1,4 @@
+import { renderOpenQuestionReview } from "../../memory/self/open-question-review.js";
 import { executivePresentationGoalIds } from "../autonomy-trigger.js";
 import { recordShownGoalPresentations } from "../turn-execution-metrics.js";
 // Thin deliberation orchestrator: selects S1/S2, calls planner/finalizer, and assembles results.
@@ -146,7 +147,7 @@ function renderForcedContradictionOpenQuestionsPrompt(context: DeliberationConte
       (question, index) =>
         `${index + 1}. ${question.localHandle ?? `contradiction_${index + 1}`} [source=${
           question.source
-        }]: ${truncateTextForCompactPlannerLedger(question.question, 75) ?? ""}`,
+        }]: ${truncateTextForCompactPlannerLedger(question.question, 75) ?? ""}${renderOpenQuestionReview(question)}`,
     );
 
   return [

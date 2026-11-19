@@ -1,3 +1,7 @@
+import {
+  openQuestionReviewFields,
+  openQuestionReviewSchema,
+} from "../../memory/self/open-question-review.js";
 import { z } from "zod";
 
 import { DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET } from "../../cognition/deliberation/constants.js";
@@ -48,6 +52,7 @@ const ruminationForCognitionSchema = z
     handle: z.string().min(1),
     open_question_id: openQuestionIdSchema,
     question: z.string().nullable(),
+    review: openQuestionReviewSchema.optional(),
     question_status: z.string().nullable(),
     question_unresolved_rumination_ticks: z.number().int().nonnegative().nullable(),
     // How many notes this note's question holds in the store, not how many of them this page
@@ -191,6 +196,7 @@ export function createOpenQuestionsRuminationsTool(
           handle: `rumination:${candidate.id}`,
           open_question_id: candidate.open_question_id,
           question: question?.question ?? null,
+          ...openQuestionReviewFields(question ?? {}),
           question_status: question?.status ?? null,
           question_unresolved_rumination_ticks: question?.unresolved_rumination_ticks ?? null,
           question_recorded_rumination_notes: recordedRuminationNotes,

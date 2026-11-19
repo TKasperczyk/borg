@@ -1,3 +1,4 @@
+import { openQuestionReviewFields } from "./open-question-review.js";
 import { similarityThresholds } from "../../config/similarity.js";
 import { openQuestionMemoryDisclosureLabel } from "../common/disclosure-serializers.js";
 import {
@@ -12,7 +13,7 @@ import type { OpenQuestion, OpenQuestionPatch, OpenQuestionSearchCandidate } fro
 export const OPEN_QUESTION_DUPLICATE_PRESENTATION_LIMIT = 150;
 const OPEN_QUESTION_DUPLICATE_TEXT_EXCERPT_CHARS = 240;
 
-export type OpenQuestionDuplicatePresentationRow = {
+export type OpenQuestionDuplicatePresentationRow = ReturnType<typeof openQuestionReviewFields> & {
   id: OpenQuestion["id"];
   text_excerpt: string;
   urgency: number;
@@ -46,6 +47,7 @@ export function openQuestionDuplicatePresentationRow(
   return {
     id: question.id,
     text_excerpt: compactOpenQuestionText(question.question),
+    ...openQuestionReviewFields(question),
     urgency: question.urgency,
     source: question.source,
     disclosure_label: openQuestionMemoryDisclosureLabel(question),

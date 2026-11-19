@@ -1,3 +1,7 @@
+import {
+  openQuestionReviewFields,
+  renderOpenQuestionReview,
+} from "../../../memory/self/open-question-review.js";
 import { renderNarrativeCoverage } from "../../../memory/self/narrative-coverage.js";
 import { goalBlockStateFields } from "../../../memory/self/goal-blocks.js";
 import {
@@ -1146,7 +1150,7 @@ function livedDerivationOrder(entries: readonly EvidenceLedgerEntry[]): string {
     .join("|");
 }
 
-type LivedOpenLoop = {
+type LivedOpenLoop = ReturnType<typeof openQuestionReviewFields> & {
   structuralKey: string;
   id: string;
   kind: "open_question" | "outbound_attempt" | "action" | "working_intent";
@@ -1202,6 +1206,7 @@ function currentOpenQuestionLoops(context: DeliberationContext): LivedOpenLoop[]
       outcome: "pending",
       occurredAt: question.last_touched,
       text: question.question,
+      ...openQuestionReviewFields(question),
       disclosure: openQuestionMemoryDisclosureLabel(question),
       sourceStreamIndex: null,
     });
@@ -1446,7 +1451,7 @@ export function renderLivedExperienceDigest(context: DeliberationContext): Rende
       loop.completingAction === undefined
         ? ""
         : ` completing_action_id="${escapeXmlAttribute(loop.completingAction.action_id)}" completion_turn_id="${escapeXmlAttribute(loop.completingAction.turn_id)}"`;
-    return `<open_loop_row id="${escapeXmlAttribute(loop.id)}" kind="${loop.kind}"${loop.originSessionId === undefined ? "" : ` session_id="${escapeXmlAttribute(loop.originSessionId)}" pending_action_id="${escapeXmlAttribute(loop.pendingActionId ?? "none")}"`}${rollbackAttributes}${completionAttributes} status="${escapeXmlAttribute(loop.status)}" outcome="${escapeXmlAttribute(loop.outcome)}" occurred_at="${loop.occurredAt === 0 ? "unknown" : new Date(loop.occurredAt).toISOString()}" stream_index="${loop.sourceStreamIndex ?? "none"}" disclosure="${escapeXmlAttribute(renderedDisclosure(loop.disclosure))}" text_exact="${!text.truncated}" text_included_chars="${text.renderedChars}" text_total_chars="${text.totalChars}">${escapeXmlText(text.text)}</open_loop_row>`;
+    return `<open_loop_row id="${escapeXmlAttribute(loop.id)}" kind="${loop.kind}"${loop.originSessionId === undefined ? "" : ` session_id="${escapeXmlAttribute(loop.originSessionId)}" pending_action_id="${escapeXmlAttribute(loop.pendingActionId ?? "none")}"`}${rollbackAttributes}${completionAttributes} status="${escapeXmlAttribute(loop.status)}" outcome="${escapeXmlAttribute(loop.outcome)}" occurred_at="${loop.occurredAt === 0 ? "unknown" : new Date(loop.occurredAt).toISOString()}" stream_index="${loop.sourceStreamIndex ?? "none"}" disclosure="${escapeXmlAttribute(renderedDisclosure(loop.disclosure))}" text_exact="${!text.truncated}" text_included_chars="${text.renderedChars}" text_total_chars="${text.totalChars}">${escapeXmlText(text.text)}${escapeXmlText(renderOpenQuestionReview(loop))}</open_loop_row>`;
   });
   const decisionOmitted = Math.max(0, allDecisionGroups.length - decisionRows.length);
   const activityOmitted = Math.max(0, activityEntries.length - activityRows.length);
