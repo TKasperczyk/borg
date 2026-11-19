@@ -30,25 +30,35 @@ function excerpt(text: string, limit: number): string {
 
 export function annotationPromptFields(
   annotations: readonly AuditedAnnotation[],
+  options: { maxAnnotations?: number; maxChars?: number; wholeTextOnly?: boolean } = {},
 ): AnnotationPromptFields {
   if (annotations.length === 0) return {};
+  const maxAnnotations = options.maxAnnotations ?? MAX_EVIDENCE_ANNOTATIONS_PER_RECORD;
+  const maxChars = options.maxChars ?? MAX_EVIDENCE_ANNOTATION_CHARS;
+  const selected = annotations
+    .filter((annotation) => options.wholeTextOnly !== true || annotation.text.length <= maxChars)
+    .slice(0, maxAnnotations);
   return {
-    annotations: annotations.slice(0, MAX_EVIDENCE_ANNOTATIONS_PER_RECORD).map((annotation) => {
-      const date =
-        annotation.written_at === undefined ? undefined : new Date(annotation.written_at);
-      return {
-        text: excerpt(annotation.text, MAX_EVIDENCE_ANNOTATION_CHARS),
-        ...(date === undefined || !Number.isFinite(date.getTime())
-          ? {}
-          : { written_at: date.toISOString() }),
-        authority:
-          annotation.authority === null
-            ? null
-            : excerpt(annotation.authority, MAX_EVIDENCE_AUTHORITY_CHARS),
-      };
-    }),
-    ...(annotations.length > MAX_EVIDENCE_ANNOTATIONS_PER_RECORD
-      ? { annotations_omitted: annotations.length - MAX_EVIDENCE_ANNOTATIONS_PER_RECORD }
+    ...(selected.length === 0
+      ? {}
+      : {
+          annotations: selected.map((annotation) => {
+            const date =
+              annotation.written_at === undefined ? undefined : new Date(annotation.written_at);
+            return {
+              text: excerpt(annotation.text, maxChars),
+              ...(date === undefined || !Number.isFinite(date.getTime())
+                ? {}
+                : { written_at: date.toISOString() }),
+              authority:
+                annotation.authority === null
+                  ? null
+                  : excerpt(annotation.authority, MAX_EVIDENCE_AUTHORITY_CHARS),
+            };
+          }),
+        }),
+    ...(annotations.length > selected.length
+      ? { annotations_omitted: annotations.length - selected.length }
       : {}),
   };
 }

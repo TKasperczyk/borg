@@ -209,6 +209,10 @@ export async function openBorgDependencies(
     });
     const toolDispatcher = buildToolDispatcher({
       db: sqlite,
+      recordEvidenceReader: {
+        episodicRepository: repositories.episodicRepository,
+        identityEventRepository: repositories.identityEventRepository,
+      },
       toolTimeouts: config.tools,
       budgetTracer: tracer,
       loadSignals: (call) => {
@@ -420,6 +424,10 @@ export async function openBorgDependencies(
       current: ReturnType<typeof buildAutonomyScheduler> | null;
     } = { current: null };
     const turnOrchestrator = buildTurnOrchestrator({
+      recordEvidenceReader: {
+        episodicRepository: repositories.episodicRepository,
+        identityEventRepository: repositories.identityEventRepository,
+      },
       config,
       retrievalPipeline: repositories.retrievalPipeline,
       embeddingClient,

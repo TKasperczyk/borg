@@ -2,6 +2,7 @@ import { frameAnomalyAnnotationFields } from "../../stream/frame-anomaly.js";
 import { cloneLedgerWithSections } from "./ledger-copy.js";
 import type { EvidenceLedger, EvidenceLedgerEntry, EvidenceLedgerSectionId } from "./types.js";
 import { DisjointSet } from "../../util/disjoint-set.js";
+import { ledgerAnnotationCount, ledgerAnnotations } from "./record-annotations.js";
 
 const CANONICAL_SECTION_PRIORITY = {
   current_user_message: 110,
@@ -629,6 +630,38 @@ export function dedupeEvidenceLedgerByProvenance(
 
       return [canonicalByRef.get(ref) ?? entry];
     });
+
+    const droppedAnnotations = refs
+      .filter((ref) => ref.sectionIndex === sectionIndex && droppedRefs.has(ref))
+      .reduce((sum, ref) => sum + ledgerAnnotationCount(ref.entry), 0);
+    if (droppedAnnotations > 0) {
+      const index = entries.findIndex((entry) => entry.omission_accounting !== undefined);
+      const previous = index < 0 ? undefined : entries[index];
+      const total = Math.max(
+        previous?.omission_accounting?.counts?.annotations_count ?? 0,
+        section.entries.reduce((sum, entry) => sum + ledgerAnnotationCount(entry), 0),
+      );
+      const accounting: EvidenceLedgerEntry = {
+        ...(previous ?? {
+          id: `annotation_omissions:${section.id}`,
+          source_type: "system_metadata",
+          session_scope: "global",
+          actor: "system",
+          trust_rank: 0,
+        }),
+        omission_accounting: {
+          ...previous?.omission_accounting,
+          counts: {
+            ...previous?.omission_accounting?.counts,
+            annotations_count: total,
+            annotations_omitted:
+              total - entries.reduce((sum, entry) => sum + ledgerAnnotations(entry).length, 0),
+          },
+        },
+      };
+      if (index < 0) entries.push(accounting);
+      else entries[index] = accounting;
+    }
 
     if (section.framing?.counts === undefined) {
       return { ...section, entries };

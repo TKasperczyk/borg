@@ -1,5 +1,7 @@
 import { frameAnomalyAnnotationFields } from "../../../stream/frame-anomaly.js";
 import type { BuilderSectionContext } from "../builder-context.js";
+import { ledgerRecordEvidenceFields } from "../record-annotations.js";
+import { evidenceItemAnnotationTarget } from "../../record-evidence.js";
 import {
   actorForStreamEntry,
   appendMemoryDisclosureState,
@@ -126,6 +128,7 @@ export function addRetrievedStructuredEvidenceSection(context: BuilderSectionCon
             ? IMAGE_PERCEPTION_TRUST_RANK
             : RAW_STREAM_TRUST_RANK,
       text: item.text,
+      ...ledgerRecordEvidenceFields(context, evidenceItemAnnotationTarget(item)),
       ...frameAnomalyAnnotationFields(item.frame_anomalies),
       value: item.source,
       state: evidenceItemState(item),

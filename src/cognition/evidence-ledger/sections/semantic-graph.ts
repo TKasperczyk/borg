@@ -1,4 +1,5 @@
 import type { BuilderSectionContext } from "../builder-context.js";
+import { ledgerRecordEvidenceFields } from "../record-annotations.js";
 import type { MemoryDisclosureLabel } from "../../../retrieval/index.js";
 import {
   appendMemoryDisclosureState,
@@ -91,6 +92,10 @@ export function addSemanticGraphSection(context: BuilderSectionContext): void {
         actor: "memory",
         trust_rank: SEMANTIC_TRUST_RANK,
         text: `${semanticNodeStatusAnnotation(node)}${node.description}`,
+        ...ledgerRecordEvidenceFields(context, {
+          record_type: "semantic_node",
+          record_id: node.id,
+        }),
         value: node.label,
         state: `${semanticNodeState(node)}${semanticDisclosureState(node.disclosureLabel)}`,
         state_metadata: {
@@ -152,6 +157,10 @@ export function addSemanticGraphSection(context: BuilderSectionContext): void {
         actor: "memory",
         trust_rank: SEMANTIC_TRUST_RANK,
         text: `${semanticNodeStatusAnnotation(hit.node)}${hit.node.description}`,
+        ...ledgerRecordEvidenceFields(context, {
+          record_type: "semantic_node",
+          record_id: hit.node.id,
+        }),
         value: hit.node.label,
         state: `${semanticNodeState(hit.node)}${semanticDisclosureState(hit.node.disclosureLabel)}`,
         state_metadata: {
@@ -164,10 +173,7 @@ export function addSemanticGraphSection(context: BuilderSectionContext): void {
                 ...(context.nowMs === undefined
                   ? {}
                   : {
-                      recorded_relative_age: formatRelativeAge(
-                        hit.node.created_at,
-                        context.nowMs,
-                      ),
+                      recorded_relative_age: formatRelativeAge(hit.node.created_at, context.nowMs),
                     }),
               }
             : {

@@ -13,6 +13,7 @@ import { renderTaggedPromptBlock } from "../deliberation/prompt/sections.js";
 import { renderSection } from "./section-rendering.js";
 import { renderGlobalAccounting } from "./omission-accounting.js";
 import type { EvidenceLedger } from "./types.js";
+import { ledgerAnnotationGuidance } from "./record-annotations.js";
 
 const HIERARCHY_GUIDANCE = [
   "Current-session transcript is authoritative for what happened in this conversation.",
@@ -43,6 +44,7 @@ export function renderEvidenceLedger(
   const content = [
     "EvidenceLedger: prioritized evidence substrate for the final response.",
     HIERARCHY_GUIDANCE,
+    ledgerAnnotationGuidance(ledger.sections),
     renderImageAttachmentLabels(ledger),
     transcriptStatus,
     `estimated_tokens=${ledger.estimatedTokens}`,

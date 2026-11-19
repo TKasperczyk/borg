@@ -29,6 +29,11 @@ export function renderEntry(entry: EvidenceLedgerEntry): string {
     entry.via_retrieval === true ? "via_retrieval=true" : null,
   ].filter((part): part is string => part !== null);
   const body = [
+    ...(entry.evidence_context === undefined
+      ? []
+      : Object.entries(entry.evidence_context).map(
+          ([key, value]) => `  ${key}: ${JSON.stringify(value)}`,
+        )),
     renderFrameAnomalyAnnotations(entry.frame_anomalies) || null,
     // Render after compaction from structural metadata, outside every prose cap.
     entry.state_metadata?.source_kind === "autobiographical_period"

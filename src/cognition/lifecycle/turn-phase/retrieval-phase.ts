@@ -1383,6 +1383,7 @@ export async function buildCompactedEvidenceLedgerWithoutSharedState(input: {
 }): Promise<CompactedEvidenceLedgerWithoutSharedStateResult> {
   const config = input.options.config.generation.evidenceLedger;
   const builder = new EvidenceLedgerBuilder({
+    recordEvidenceReader: input.options.recordEvidenceReader,
     createStreamReader: input.options.createStreamReader,
     relationalSlotRepository: input.options.relationalSlotRepository,
     actionRepository: input.options.actionRepository,

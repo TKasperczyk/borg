@@ -2,6 +2,7 @@ import { executivePresentationGoalIds } from "../autonomy-trigger.js";
 import { recordShownGoalPresentations } from "../turn-execution-metrics.js";
 // Thin deliberation orchestrator: selects S1/S2, calls planner/finalizer, and assembles results.
 import { computeRetrievalConfidence, type RetrievedEpisode } from "../../retrieval/index.js";
+import { withRetrievedRecordEvidence } from "../record-evidence.js";
 import type { StreamWriter } from "../../stream/index.js";
 import { SystemClock, type Clock } from "../../util/clock.js";
 import { escapeXmlText } from "../../util/prompt-tags.js";
@@ -887,6 +888,17 @@ export class Deliberator {
     context: DeliberationContext,
     streamWriter?: StreamWriter,
   ): Promise<DeliberationResult> {
+    const records = withRetrievedRecordEvidence(this.options.recordEvidenceReader, {
+      episodes: context.retrievalResult,
+      semantic: context.retrievedSemantic,
+      evidence: context.retrievedEvidence,
+    });
+    context = {
+      ...context,
+      retrievalResult: records.episodes,
+      retrievedSemantic: records.semantic,
+      retrievedEvidence: records.evidence,
+    };
     const stakes = context.options?.stakes ?? "low";
     const cognitionThinkingEnabled = this.options.cognitionThinking?.enabled === true;
     const planningMaxTokens =
@@ -1315,7 +1327,10 @@ export class Deliberator {
     const verificationQuery = plan === null ? "" : plan.verification_steps.join("; ").trim();
     const secondaryRetrieval =
       verificationQuery.length > 0 && context.reRetrieve !== undefined
-        ? await context.reRetrieve(verificationQuery, { limit: 3 })
+        ? withRetrievedRecordEvidence(
+            this.options.recordEvidenceReader,
+            await context.reRetrieve(verificationQuery, { limit: 3 }),
+          )
         : null;
     const secondaryRetrievalReadAtMs = secondaryRetrieval?.retrieval_read_at_ms ?? null;
     const liveFinalizerSurfaceVariant = resolveFinalizerSurfaceVariant(

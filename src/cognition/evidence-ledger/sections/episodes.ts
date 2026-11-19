@@ -1,4 +1,5 @@
 import type { BuilderSectionContext } from "../builder-context.js";
+import { ledgerRecordEvidenceFields } from "../record-annotations.js";
 import {
   appendMemoryDisclosureState,
   appendMemoryDisclosureStateMetadata,
@@ -25,6 +26,10 @@ export function addEpisodesSection(context: BuilderSectionContext): void {
         actor: "memory",
         trust_rank: EPISODE_TRUST_RANK,
         text: result.episode.narrative,
+        ...ledgerRecordEvidenceFields(context, {
+          record_type: "episode",
+          record_id: result.episode.id,
+        }),
         value: result.episode.title,
         state: appendMemoryDisclosureState({
           state: `confidence=${result.episode.confidence.toFixed(2)} score=${result.score.toFixed(2)}`,

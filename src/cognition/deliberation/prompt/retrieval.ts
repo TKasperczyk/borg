@@ -41,6 +41,13 @@ import {
 } from "../constants.js";
 import type { ContradictionRoutingTier } from "../types.js";
 import { retrievalStatus, type RetrievalDegradation } from "../../../retrieval/degradation.js";
+import type { EpisodeEvidenceContext } from "../../../memory/common/evidence-prompt.js";
+import { RECORD_ANNOTATION_GUIDANCE } from "../../../memory/common/record-evidence.js";
+
+type AnnotationPresentation = { guidanceShown: boolean };
+function recordEvidenceText(context: EpisodeEvidenceContext | undefined): string {
+  return context === undefined ? "" : `\n  ${JSON.stringify(context)}`;
+}
 
 export function summarizeRetrievalStatus(
   degradations?: readonly RetrievalDegradation[],
@@ -268,6 +275,7 @@ export function summarizeRetrievedEpisodes(
   label: string,
   retrievedEpisodes: readonly RetrievedEpisode[],
   maxTokens = DEFAULT_RETRIEVAL_CONTEXT_TOKEN_BUDGET,
+  presentation: AnnotationPresentation = { guidanceShown: false },
 ): string | null {
   if (retrievedEpisodes.length === 0) {
     return "No episodes retrieved for this turn.";
@@ -288,11 +296,15 @@ export function summarizeRetrievedEpisodes(
       `- ${result.episode.title} [score=${result.score.toFixed(2)} sim=${result.scoreBreakdown.similarity.toFixed(2)} salience=${result.scoreBreakdown.decayedSalience.toFixed(2)}]`,
       `  disclosure: ${renderMemoryDisclosureLabelForModel(result.disclosureLabel ?? memoryDisclosureLabelFromEpisodeAccess(result.episode))}`,
       `  narrative: ${narrative}`,
+      ...(result.episode.evidence_context === undefined
+        ? []
+        : [recordEvidenceText(result.episode.evidence_context).slice(1)]),
       `  participants: ${result.episode.participants.join(", ") || "none"}`,
       `  tags: ${result.episode.tags.join(", ") || "none"}`,
       summarizeCitationChain(result),
     ].filter((line): line is string => line !== null);
-    const block = blockLines.join("\n");
+    const guide = result.episode.evidence_context !== undefined && !presentation.guidanceShown;
+    const block = [...(guide ? [RECORD_ANNOTATION_GUIDANCE] : []), ...blockLines].join("\n");
     const blockTokens = estimatePromptTokens(block);
 
     if (usedTokens + blockTokens > maxTokens) {
@@ -301,6 +313,7 @@ export function summarizeRetrievedEpisodes(
     }
 
     lines.push(block);
+    if (guide) presentation.guidanceShown = true;
     usedTokens += blockTokens;
   }
 
@@ -318,9 +331,15 @@ export function summarizeRetrievedEvidence(
     return summarizeEvidenceItems(label, evidence, maxTokens);
   }
 
+  const presentation = { guidanceShown: false };
   const fallbackSections = [
-    summarizeRetrievedEpisodes(label, input.episodes ?? [], maxTokens),
-    summarizeSemanticContext(input.semantic, Math.max(500, Math.floor(maxTokens / 2))),
+    summarizeRetrievedEpisodes(label, input.episodes ?? [], maxTokens, presentation),
+    summarizeSemanticContext(
+      input.semantic,
+      Math.max(500, Math.floor(maxTokens / 2)),
+      Date.now(),
+      presentation,
+    ),
     summarizeOpenQuestionEvidence(input.openQuestions ?? []),
   ].filter((section): section is string => section !== null && section.length > 0);
 
@@ -332,6 +351,7 @@ export function summarizeRetrievedEvidence(
 }
 
 type VerificationRetrievalCandidate = {
+  evidenceContext?: EpisodeEvidenceContext;
   handle: string;
   sourceClass: "evidence" | "episode" | "semantic_node" | "semantic_edge" | "open_question";
   disclosureLabel: MemoryDisclosureLabel;
@@ -386,6 +406,7 @@ function verificationEvidenceCandidates(
     const disclosureLabel = item.disclosureLabel ?? unknownMemoryDisclosureLabel();
     return {
       handle: item.id,
+      evidenceContext: item.evidence_context,
       sourceClass: "evidence",
       disclosureLabel,
       structuralFields: {
@@ -431,9 +452,7 @@ function verificationEvidenceCandidates(
         // and when it was written, in front of the text rather than after a
         // payload the reader may never reach the end of. Labels, not a gate:
         // nothing branches on them.
-        ...(item.streamEntryKind === undefined
-          ? {}
-          : { stream_entry_kind: item.streamEntryKind }),
+        ...(item.streamEntryKind === undefined ? {} : { stream_entry_kind: item.streamEntryKind }),
         ...(item.streamEntryAtMs === undefined
           ? {}
           : { stream_entry_at: new Date(item.streamEntryAtMs).toISOString() }),
@@ -456,6 +475,7 @@ function verificationFallbackCandidates(
       result.disclosureLabel ?? memoryDisclosureLabelFromEpisodeAccess(result.episode);
     return {
       handle: result.episode.id,
+      evidenceContext: result.episode.evidence_context,
       sourceClass: "episode",
       disclosureLabel,
       structuralFields: {
@@ -494,6 +514,7 @@ function verificationFallbackCandidates(
     const disclosureLabel = node.disclosureLabel ?? unknownMemoryDisclosureLabel();
     return {
       handle: node.id,
+      evidenceContext: node.evidence_context,
       sourceClass: "semantic_node",
       disclosureLabel,
       structuralFields: {
@@ -557,7 +578,13 @@ function verificationFallbackCandidates(
 }
 
 function verificationPayloadJson(candidate: VerificationRetrievalCandidate): string {
-  return JSON.stringify(candidate.payload) ?? "null";
+  return (
+    JSON.stringify(
+      candidate.evidenceContext === undefined
+        ? candidate.payload
+        : { ...(candidate.payload as Record<string, unknown>), ...candidate.evidenceContext },
+    ) ?? "null"
+  );
 }
 
 // payload_total_chars is the serialized cost of the row, not the size of what the row
@@ -596,6 +623,22 @@ function renderVerificationRetrievalCandidate(
     `source_class="${candidate.sourceClass}"`,
     `disclosure="${verificationXmlAttribute(verificationDisclosure(candidate.disclosureLabel))}"`,
     structural,
+    ...(candidate.evidenceContext === undefined || includePayload
+      ? []
+      : Object.entries({
+          ...(candidate.evidenceContext.lifecycle === undefined
+            ? {}
+            : { lifecycle: candidate.evidenceContext.lifecycle }),
+          ...((candidate.evidenceContext.annotations?.length ?? 0) +
+            (candidate.evidenceContext.annotations_omitted ?? 0) ===
+          0
+            ? {}
+            : {
+                annotations_omitted:
+                  (candidate.evidenceContext.annotations?.length ?? 0) +
+                  (candidate.evidenceContext.annotations_omitted ?? 0),
+              }),
+        }).map(([key, value]) => `${key}="${verificationXmlAttribute(String(value))}"`)),
     ...corrections,
     `payload_status="${includePayload ? "exact" : "check_not_completed_budget"}"`,
     `payload_included_chars="${includePayload ? payloadJson.length : 0}"`,
@@ -687,6 +730,9 @@ function renderVerificationRetrievalRows(
   return [
     `<plan_requested_verification_retrieval complete_membership="${membershipNotEnumeratedCount === 0}" rows_total="${rowsTotal}" ${PLAN_REQUESTED_VERIFICATION_ROWS_TOTAL_AS_OF_ATTRIBUTE}="${rowsTotalAsOf}" ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ORDER_ATTRIBUTE}="${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ORDER}" ${PLAN_REQUESTED_VERIFICATION_PAYLOAD_ORDER_ATTRIBUTE}="${PLAN_REQUESTED_VERIFICATION_PAYLOAD_ORDER}" payload_target_tokens="${maxTokens}" payload_tokens_included="${payloadTokens}" membership_target_tokens="${membershipMaxTokens}" membership_tokens="${membershipTokens}" ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_ROWS_ATTRIBUTE}="${carveOutRowsTotal}"${membershipBudgetMarkerAttribute} check_not_completed_count="${incompleteCount}">`,
     `  <interpretation>This retrieval was requested by the advisory plan. Read at ${rowsTotalAsOf}${relativeReadTime}: rows_total is exact as of that read, not as of now. Membership rows are priced against membership_target_tokens alone. ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ORDER_ATTRIBUTE}=${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ORDER} means commitment rows with ${VERIFICATION_COMMITMENT_ENFORCEMENT_CLASS_FIELD}=critical or a structural ${VERIFICATION_COMMITMENT_CRITICAL_DOMAIN_FIELD} are emitted first. The protected critical-commitment partition and then all ordinary rows preserve the existing retrieval-pipeline candidate order: ranked unified evidence, projected episodes, semantic nodes and edges in projected first-seen order, then projected open questions. Disclosure labels do not affect membership admission or ordering. The renderer performs no content-based selection or new ranking. complete_membership=true means every one of rows_total handles and its structural fields is enumerated. When complete_membership=false, ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER}=N and its same-named marker's ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_REMAINDER_TOTAL_ATTRIBUTE}=N carry the exact un-enumerated remainder; the child ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_DISCLOSURE_REMAINDER_MARKER} has one attribute per ${VERIFICATION_DISCLOSURE_CLASS_FIELD} present among omitted rows, with exact counts whose sum is N. Omitted membership is never silent. If the critical-commitment carve-out alone exceeds membership_target_tokens, ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ERROR_ATTRIBUTE}=${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_OVERFLOW_ERROR} replaces a partial list with an explicit failed-check state. A payload_status=exact row carries its complete payload with no excerpt; payload_status=check_not_completed_budget carries an enumerated handle and structural fields but zero payload, so that requested check is explicitly incomplete rather than silently truncated. Payloads are priced against payload_target_tokens alone and never consume the membership budget, and membership never consumes the payload budget. ${PLAN_REQUESTED_VERIFICATION_PAYLOAD_ORDER_ATTRIBUTE}=${PLAN_REQUESTED_VERIFICATION_PAYLOAD_ORDER} means payload admission walks these enumerated rows in the order they are rendered here, so the critical-commitment carve-out is priced first on this axis too and rows that are not enumerated never consume payload budget. Admission does not stop at the first refusal: a later small payload can still fit after a larger one is refused. A check_not_completed_budget row therefore means that row's payload did not fit in the budget still free when its turn came, which depends on the payloads of the rows above it, not on that row's size alone; payload_total_chars states what was withheld. payload_tokens_included is the admitted total that gated, summed per row exactly as the gate summed it.</interpretation>`,
+    ...(candidates.some(({ candidate }) => candidate.evidenceContext !== undefined)
+      ? [`  ${RECORD_ANNOTATION_GUIDANCE}`]
+      : []),
     ...rows.map((row) => `  ${row}`),
     ...membershipBudgetMarker,
     `  <omitted_count>${membershipNotEnumeratedCount}</omitted_count>`,
@@ -786,7 +832,12 @@ export function renderPlanRequestedVerificationRetrieval(
   for (const indexedCandidate of ordinaryCandidates) {
     const { candidate } = indexedCandidate;
     const rowLength = renderVerificationRetrievalCandidate(candidate, false).length;
-    const nextMembershipCharacters = membershipCharacters + rowLength;
+    const guideChars =
+      candidate.evidenceContext !== undefined &&
+      !enumeratedCandidates.some(({ candidate }) => candidate.evidenceContext !== undefined)
+        ? RECORD_ANNOTATION_GUIDANCE.length + 3
+        : 0;
+    const nextMembershipCharacters = membershipCharacters + rowLength + guideChars;
     if (estimateVerificationMembershipTokens(nextMembershipCharacters) > membershipMaxTokens) {
       break;
     }
@@ -850,9 +901,11 @@ function summarizeEvidenceItems(
 ): string {
   const lines = [`${label}:`];
   let usedTokens = estimatePromptTokens(lines[0] ?? label);
+  let guidanceShown = false;
 
   for (const item of evidence) {
-    const block = summarizeEvidenceItem(item);
+    const guide = item.evidence_context !== undefined && !guidanceShown;
+    const block = `${guide ? `${RECORD_ANNOTATION_GUIDANCE}\n` : ""}${summarizeEvidenceItem(item)}`;
     const blockTokens = estimatePromptTokens(block);
 
     if (usedTokens + blockTokens > maxTokens) {
@@ -861,6 +914,7 @@ function summarizeEvidenceItems(
     }
 
     lines.push(block);
+    if (guide) guidanceShown = true;
     usedTokens += blockTokens;
   }
 
@@ -878,6 +932,9 @@ function summarizeEvidenceItem(item: EvidenceItem): string {
   return [
     `- ${item.source} [score=${item.score.toFixed(2)} intent=${item.recallIntentId}${terms}${sourceVisibility}${disclosure}]${provenance}`,
     `  ${text}`,
+    ...(item.evidence_context === undefined
+      ? []
+      : [recordEvidenceText(item.evidence_context).slice(1)]),
     ...(item.frame_anomalies === undefined
       ? []
       : [renderFrameAnomalyAnnotations(item.frame_anomalies)]),
@@ -934,24 +991,22 @@ function summarizeOpenQuestionEvidence(
 
   return [
     "Open questions:",
-    ...openQuestions
-      .slice(0, 4)
-      .map(
-        (question) =>
-          // Pass the stored label through, not just the audience column. A row
-          // whose label was written at creation commonly carries an origin
-          // audience and a private-to binding while `audience_entity_id` is
-          // null; deriving from that column alone discards both and renders the
-          // row as self-private with no origin. Origin audience is what the
-          // entity reads to tell recall from common ground, so dropping it here
-          // silently understates who the question was already shared with.
-          `- ${question.question} [open_question=${question.id} urgency=${question.urgency.toFixed(2)} ${renderMemoryDisclosureLabelForModel(
-            openQuestionMemoryDisclosureLabel({
-              audience_entity_id: question.audience_entity_id ?? null,
-              disclosure_label: question.disclosure_label ?? null,
-            }),
-          )}]`,
-      ),
+    ...openQuestions.slice(0, 4).map(
+      (question) =>
+        // Pass the stored label through, not just the audience column. A row
+        // whose label was written at creation commonly carries an origin
+        // audience and a private-to binding while `audience_entity_id` is
+        // null; deriving from that column alone discards both and renders the
+        // row as self-private with no origin. Origin audience is what the
+        // entity reads to tell recall from common ground, so dropping it here
+        // silently understates who the question was already shared with.
+        `- ${question.question} [open_question=${question.id} urgency=${question.urgency.toFixed(2)} ${renderMemoryDisclosureLabelForModel(
+          openQuestionMemoryDisclosureLabel({
+            audience_entity_id: question.audience_entity_id ?? null,
+            disclosure_label: question.disclosure_label ?? null,
+          }),
+        )}]`,
+    ),
   ].join("\n");
 }
 
@@ -1059,12 +1114,13 @@ function summarizeSemanticDisclosureTag(input: {
 
 function summarizeSemanticNode(
   node: SemanticNode & {
+    evidence_context?: EpisodeEvidenceContext;
     partial_source_visibility?: RetrievedSemanticNode["partial_source_visibility"];
     under_review?: RetrievedSemanticNode["under_review"];
     disclosureLabel?: RetrievedSemanticNode["disclosureLabel"];
   },
 ): string {
-  return `${summarizeSemanticNodePrefixes(node)}${node.label} - ${summarizeSemanticNodeDescription(node)} (conf ${node.confidence.toFixed(2)}${summarizePartialSourceTag(node)}${summarizeSemanticDisclosureTag(node)})`;
+  return `${summarizeSemanticNodePrefixes(node)}${node.label} - ${summarizeSemanticNodeDescription(node)} (conf ${node.confidence.toFixed(2)}${summarizePartialSourceTag(node)}${summarizeSemanticDisclosureTag(node)})${recordEvidenceText(node.evidence_context)}`;
 }
 
 function summarizeSemanticNodeWithSources(
@@ -1075,7 +1131,7 @@ function summarizeSemanticNodeWithSources(
     node.historical === true ? " [historical]" : "",
   ].join("");
 
-  return `${label} - ${summarizeSemanticNodeDescription(node)} (conf ${node.confidence.toFixed(2)}, sources ${summarizeEpisodeIds(node.source_episode_ids)}${summarizePartialSourceTag(node)}${summarizeSemanticDisclosureTag(node)})`;
+  return `${label} - ${summarizeSemanticNodeDescription(node)} (conf ${node.confidence.toFixed(2)}, sources ${summarizeEpisodeIds(node.source_episode_ids)}${summarizePartialSourceTag(node)}${summarizeSemanticDisclosureTag(node)})${recordEvidenceText(node.evidence_context)}`;
 }
 
 function summarizeSemanticHit(
@@ -1109,26 +1165,30 @@ function summarizeSemanticHit(
     pathParts.push("...");
   }
 
-  return `${summarizeSemanticNodePrefixes(hit.node)}${hit.node.label} - ${summarizeSemanticNodeDescription(hit.node)} (node conf ${hit.node.confidence.toFixed(2)}, sources ${summarizeEpisodeIds(hit.node.source_episode_ids)}${summarizePartialSourceTag(hit.node)}${summarizeSemanticDisclosureTag(hit.node)}; path ${pathParts.join(" ")})`;
+  return `${summarizeSemanticNodePrefixes(hit.node)}${hit.node.label} - ${summarizeSemanticNodeDescription(hit.node)} (node conf ${hit.node.confidence.toFixed(2)}, sources ${summarizeEpisodeIds(hit.node.source_episode_ids)}${summarizePartialSourceTag(hit.node)}${summarizeSemanticDisclosureTag(hit.node)}; path ${pathParts.join(" ")})${recordEvidenceText(hit.node.evidence_context)}`;
 }
 
 function summarizeSemanticBucket(
   label: string,
   nodes: readonly (SemanticNode & {
+    evidence_context?: EpisodeEvidenceContext;
     partial_source_visibility?: RetrievedSemanticNode["partial_source_visibility"];
     under_review?: RetrievedSemanticNode["under_review"];
     disclosureLabel?: RetrievedSemanticNode["disclosureLabel"];
   })[],
   limit = 3,
-): string | null {
+): { text: string; hasEnvelope: boolean } | null {
   if (nodes.length === 0) {
     return null;
   }
 
-  return `${label}: ${nodes
-    .slice(0, limit)
-    .map((node) => summarizeSemanticNode(node))
-    .join("; ")}`;
+  return {
+    hasEnvelope: nodes.slice(0, limit).some((node) => node.evidence_context !== undefined),
+    text: `${label}: ${nodes
+      .slice(0, limit)
+      .map((node) => summarizeSemanticNode(node))
+      .join("; ")}`,
+  };
 }
 
 function summarizeSemanticHitBucket(
@@ -1137,14 +1197,17 @@ function summarizeSemanticHitBucket(
   rootNodesById: ReadonlyMap<string, SemanticNode>,
   options: { tagClosedEdges: boolean },
   limit = 3,
-): string[] {
+): Array<{ text: string; hasEnvelope: boolean }> {
   if (hits.length === 0) {
     return [];
   }
 
   return [
-    `${label}:`,
-    ...hits.slice(0, limit).map((hit) => `- ${summarizeSemanticHit(hit, rootNodesById, options)}`),
+    { text: `${label}:`, hasEnvelope: false },
+    ...hits.slice(0, limit).map((hit) => ({
+      text: `- ${summarizeSemanticHit(hit, rootNodesById, options)}`,
+      hasEnvelope: hit.node.evidence_context !== undefined,
+    })),
   ];
 }
 
@@ -1152,6 +1215,7 @@ export function summarizeSemanticContext(
   retrievedSemantic: RetrievedSemantic | null | undefined,
   maxContextTokens: number,
   nowMs = Date.now(),
+  presentation: AnnotationPresentation = { guidanceShown: false },
 ): string | null {
   if (retrievedSemantic === null || retrievedSemantic === undefined) {
     return null;
@@ -1209,10 +1273,11 @@ export function summarizeSemanticContext(
     matchedNodes.length === 0
       ? []
       : [
-          "Directly matched:",
-          ...matchedNodes
-            .slice(0, bucketLimit)
-            .map((node) => `- ${summarizeSemanticNodeWithSources(node)}`),
+          { text: "Directly matched:", hasEnvelope: false },
+          ...matchedNodes.slice(0, bucketLimit).map((node) => ({
+            text: `- ${summarizeSemanticNodeWithSources(node)}`,
+            hasEnvelope: node.evidence_context !== undefined,
+          })),
         ];
 
   const bucketLines = [
@@ -1228,7 +1293,7 @@ export function summarizeSemanticContext(
           bucketLimit,
         )
       : [summarizeSemanticBucket("supports", supports, bucketLimit)].filter(
-          (value): value is string => value !== null,
+          (value) => value !== null,
         )),
     ...summarizeSemanticHitBucket(
       "causal",
@@ -1250,7 +1315,7 @@ export function summarizeSemanticContext(
           bucketLimit,
         )
       : [summarizeSemanticBucket("contradicts", contradicts, bucketLimit)].filter(
-          (value): value is string => value !== null,
+          (value) => value !== null,
         )),
     ...(categoryHits.length > 0
       ? summarizeSemanticHitBucket(
@@ -1263,18 +1328,21 @@ export function summarizeSemanticContext(
           bucketLimit,
         )
       : [summarizeSemanticBucket("categories", categories, bucketLimit)].filter(
-          (value): value is string => value !== null,
+          (value) => value !== null,
         )),
   ];
 
   for (const line of bucketLines) {
-    if (totalChars + line.length > maxChars) {
+    const guide = line.hasEnvelope && !presentation.guidanceShown;
+    const text = `${guide ? `${RECORD_ANNOTATION_GUIDANCE}\n` : ""}${line.text}`;
+    if (totalChars + text.length > maxChars) {
       sections.push("... truncated");
       break;
     }
 
-    sections.push(line);
-    totalChars += line.length;
+    sections.push(text);
+    if (guide) presentation.guidanceShown = true;
+    totalChars += text.length;
   }
 
   return sections.join("\n");

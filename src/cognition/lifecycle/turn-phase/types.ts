@@ -116,6 +116,7 @@ export type TurnPhaseResult = {
 };
 
 export type TurnPhaseCoordinatorOptions = {
+  recordEvidenceReader?: import("../../../memory/common/record-evidence.js").RecordEvidenceReader;
   config: Config;
   embeddingClient: EmbeddingClient;
   episodicRepository?: Pick<EpisodicRepository, "getMany"> &

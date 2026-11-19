@@ -4,6 +4,13 @@ import { headTailTextExcerpt } from "../util/text-excerpt.js";
 import { epochMsToIso } from "../util/iso-instant.js";
 import { goalIdHelpers, type GoalId } from "../util/ids.js";
 import {
+  EVIDENCE_GUIDANCE,
+  evidencePromptFields,
+  renderEvidencePromptJson,
+  type EpisodeEvidenceContext,
+} from "../memory/common/evidence-prompt.js";
+import { RECORD_ANNOTATION_GUIDANCE } from "../memory/common/record-evidence.js";
+import {
   formatResolutionCorrections,
   resolutionCorrectionPresentationSchema,
 } from "../memory/self/resolution-corrections.js";
@@ -160,6 +167,9 @@ function keepsWhole(
   return (
     key === "disclosure" ||
     key === "disclosure_label" ||
+    key === "annotations" ||
+    key === "annotations_omitted" ||
+    key === "lifecycle" ||
     (key === "open_question_id" && typeof record.open_question_id === "string") ||
     (keepQuestionText && key === "question" && typeof record.open_question_id === "string")
   );
@@ -522,13 +532,52 @@ function carriesOpenQuestionDormancy(payload: Record<string, unknown>): boolean 
   return typeof payload.open_question_id === "string" && typeof payload.last_touched === "number";
 }
 
+function deferredWakeEvidence(payload: Record<string, unknown>): Record<string, unknown> {
+  return {
+    ...payload,
+    ...(Array.isArray(payload.related_episodes)
+      ? {
+          related_episodes: payload.related_episodes.map((episode) => {
+            if (episode === null || typeof episode !== "object") return episode;
+            const { annotations, annotations_omitted, lifecycle, ...record } = episode;
+            const envelope: EpisodeEvidenceContext = {
+              ...(annotations === undefined ? {} : { annotations }),
+              ...(annotations_omitted === undefined ? {} : { annotations_omitted }),
+              ...(lifecycle === undefined ? {} : { lifecycle }),
+            };
+            return { ...record, ...evidencePromptFields(envelope) };
+          }),
+        }
+      : {}),
+    ...(Array.isArray(payload.additional_questions)
+      ? {
+          additional_questions: payload.additional_questions.map((question) =>
+            question !== null && typeof question === "object"
+              ? deferredWakeEvidence(question)
+              : question,
+          ),
+        }
+      : {}),
+  };
+}
+
 function renderAutonomyTriggerContext(context: AutonomyTriggerContext): string {
   const secondaryDueGoals = context.payload.secondary_due_goals;
   const hasGoalBatch = Array.isArray(secondaryDueGoals) && secondaryDueGoals.length > 0;
   const { secondary_due_goals: _secondaryDueGoals, ...primaryPayload } = context.payload;
-  const payload =
-    JSON.stringify(annotateEpochFields(hasGoalBatch ? primaryPayload : context.payload), null, 2) ??
-    "{}";
+  const packet = JSON.parse(
+    renderEvidencePromptJson(
+      {
+        evidence_guidance: EVIDENCE_GUIDANCE,
+        payload: annotateEpochFields(
+          deferredWakeEvidence(hasGoalBatch ? primaryPayload : context.payload),
+        ),
+        ...(hasGoalBatch ? { secondary_due_goals: annotateEpochFields(secondaryDueGoals) } : {}),
+      },
+      { guidance: RECORD_ANNOTATION_GUIDANCE },
+    ),
+  );
+  const payload = JSON.stringify(packet.payload, null, 2) ?? "{}";
   const sortTs = Number.isFinite(context.sort_ts)
     ? new Date(context.sort_ts).toISOString()
     : String(context.sort_ts);
@@ -539,12 +588,13 @@ function renderAutonomyTriggerContext(context: AutonomyTriggerContext): string {
     `source_type: ${context.source_type}`,
     `event_id: ${context.event_id}`,
     `sort_ts: ${sortTs}`,
+    packet.evidence_guidance ?? null,
     hasGoalBatch ? "primary_focus_payload:" : "payload:",
     payload,
     carriesRecentIdentityEvents(context.payload) ? RECENT_IDENTITY_EVENTS_DOMAIN_NOTE : null,
     carriesOpenQuestionDormancy(context.payload) ? OPEN_QUESTION_DORMANCY_DOMAIN_NOTE : null,
     hasGoalBatch ? "secondary_due_goals:" : null,
-    hasGoalBatch ? (JSON.stringify(annotateEpochFields(secondaryDueGoals), null, 2) ?? "[]") : null,
+    hasGoalBatch ? (JSON.stringify(packet.secondary_due_goals, null, 2) ?? "[]") : null,
   ]
     .filter((line): line is string => line !== null)
     .join("\n");

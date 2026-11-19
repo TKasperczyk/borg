@@ -1,6 +1,7 @@
 import type { AutobiographicalRecallEvidenceItem } from "../../autobiographical-recall.js";
 import { autobiographicalRecallCapStateMetadata } from "../autobiographical-recall-cap-metadata.js";
 import type { BuilderSectionContext } from "../builder-context.js";
+import { ledgerRecordEvidenceFields } from "../record-annotations.js";
 import {
   appendMemoryDisclosureState,
   appendMemoryDisclosureStateMetadata,
@@ -103,6 +104,12 @@ export function addAutobiographicalRecallSection(context: BuilderSectionContext)
       actor: "memory",
       trust_rank: AUTOBIOGRAPHICAL_RECALL_TRUST_RANK,
       text: item.text,
+      ...ledgerRecordEvidenceFields(
+        context,
+        item.kind === "episode" && typeof item.metadata.episode_id === "string"
+          ? { record_type: "episode", record_id: item.metadata.episode_id }
+          : undefined,
+      ),
       value: `${item.groupId}/${item.kind}`,
       state: appendMemoryDisclosureState({
         state: `score=${item.score.toFixed(2)} group=${item.groupId}`,

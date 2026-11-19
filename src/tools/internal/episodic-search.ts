@@ -1,5 +1,13 @@
 import { z } from "zod";
 import {
+  readRecordEvidenceContexts,
+  recordEvidenceContext,
+  recordEvidenceShape,
+  renderRecordEvidenceObject,
+  type RecordEvidenceReader,
+} from "../../memory/common/record-evidence.js";
+import { EVIDENCE_GUIDANCE, evidencePromptFields } from "../../memory/common/evidence-prompt.js";
+import {
   frameAnomalyAnnotationFields,
   frameAnomalyAnnotationSchema,
 } from "../../stream/frame-anomaly.js";
@@ -33,9 +41,11 @@ const episodicSearchInputSchema = z.object({
 });
 
 const episodicSearchOutputSchema = z.object({
+  evidence_guidance: z.string().optional(),
   retrieval_status: retrievalStatusSchema.optional(),
   episodes: z.array(
     z.object({
+      ...recordEvidenceShape,
       id: z.string().min(1),
       title: z.string().min(1),
       narrative: z.string(),
@@ -78,6 +88,7 @@ const episodicSearchOutputSchema = z.object({
 });
 
 export type EpisodicSearchToolOptions = {
+  recordEvidenceReader?: RecordEvidenceReader;
   searchEpisodes: (
     query: string,
     limit: number | undefined,
@@ -134,14 +145,25 @@ export function createEpisodicSearchTool(
       );
       const results = Array.isArray(found) ? found : found.episodes;
       const status = Array.isArray(found) ? undefined : retrievalStatus(found.degradations);
+      const contexts = readRecordEvidenceContexts(
+        options.recordEvidenceReader,
+        results.map(({ episode }) => ({ record_type: "episode", record_id: episode.id })),
+      );
 
-      return {
+      return renderRecordEvidenceObject({
+        evidence_guidance: EVIDENCE_GUIDANCE,
         ...(status === undefined ? {} : { retrieval_status: status }),
         episodes: results.map((result) => {
           const disclosureLabel =
             result.disclosureLabel ?? memoryDisclosureLabelFromEpisodeAccess(result.episode);
 
           return {
+            ...evidencePromptFields(
+              recordEvidenceContext(contexts, {
+                record_type: "episode",
+                record_id: result.episode.id,
+              }),
+            ),
             id: result.episode.id,
             title: result.episode.title,
             narrative: truncateText(result.episode.narrative, MAX_NARRATIVE_CHARS),
@@ -170,7 +192,7 @@ export function createEpisodicSearchTool(
               })),
           };
         }),
-      };
+      });
     },
   };
 }

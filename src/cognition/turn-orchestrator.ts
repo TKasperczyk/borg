@@ -134,6 +134,7 @@ export type TurnResult = {
 };
 
 export type TurnOrchestratorOptions = {
+  recordEvidenceReader?: import("../memory/common/record-evidence.js").RecordEvidenceReader;
   config: Config;
   retrievalPipeline: RetrievalPipeline;
   embeddingClient: EmbeddingClient;
@@ -397,6 +398,7 @@ export class TurnOrchestrator {
       tracer: this.tracer,
     });
     this.turnPhaseCoordinator = new TurnPhaseCoordinator({
+      recordEvidenceReader: options.recordEvidenceReader,
       sessionLock: this.sessionLock,
       config: options.config,
       embeddingClient: options.embeddingClient,

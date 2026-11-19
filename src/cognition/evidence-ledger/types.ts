@@ -1,6 +1,7 @@
 import type { NarrativeCoverage } from "../../memory/self/narrative-coverage.js";
 import type { FrameAnomalyAnnotation } from "../../stream/frame-anomaly.js";
 import { z } from "zod";
+import type { EpisodeEvidenceContext } from "../../memory/common/evidence-prompt.js";
 
 import type { SharedStateArtifact } from "../../memory/shared-state/types.js";
 import type { StreamEntryPersistenceClass } from "../../stream/index.js";
@@ -83,6 +84,7 @@ export type EvidenceLedgerOmissionAccounting = {
 };
 
 export type EvidenceLedgerEntry = {
+  evidence_context?: EpisodeEvidenceContext;
   frame_anomalies?: FrameAnomalyAnnotation[];
   id: string;
   source_type: EvidenceLedgerSourceType;

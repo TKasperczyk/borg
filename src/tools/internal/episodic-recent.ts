@@ -1,4 +1,12 @@
 import { z } from "zod";
+import {
+  readRecordEvidenceContexts,
+  recordEvidenceContext,
+  recordEvidenceShape,
+  renderRecordEvidenceObject,
+  type RecordEvidenceReader,
+} from "../../memory/common/record-evidence.js";
+import { EVIDENCE_GUIDANCE, evidencePromptFields } from "../../memory/common/evidence-prompt.js";
 
 import { memoryDisclosurePayloadFields } from "../../memory/common/disclosure-serializers.js";
 import { memoryDisclosureLabelMetadataSchema } from "../../memory/common/disclosure-label.js";
@@ -20,8 +28,10 @@ const episodicRecentInputSchema = z
   .strict();
 
 const episodicRecentOutputSchema = z.object({
+  evidence_guidance: z.string().optional(),
   episodes: z.array(
     z.object({
+      ...recordEvidenceShape,
       id: z.string().min(1),
       title: z.string().min(1),
       narrative: z.string(),
@@ -41,6 +51,7 @@ const episodicRecentOutputSchema = z.object({
 });
 
 export type EpisodicRecentToolOptions = {
+  recordEvidenceReader?: RecordEvidenceReader;
   listRecentEpisodes: (
     limit: number,
     context: ToolInvocationContext,
@@ -63,7 +74,10 @@ function truncateText(text: string, maxChars: number): string {
 
 export function createEpisodicRecentTool(
   options: EpisodicRecentToolOptions,
-): ToolDefinition<z.infer<typeof episodicRecentInputSchema>, z.infer<typeof episodicRecentOutputSchema>> {
+): ToolDefinition<
+  z.infer<typeof episodicRecentInputSchema>,
+  z.infer<typeof episodicRecentOutputSchema>
+> {
   return {
     name: "tool.episodic.recent",
     description:
@@ -79,8 +93,19 @@ export function createEpisodicRecentTool(
         context,
       );
 
-      return {
+      const contexts = readRecordEvidenceContexts(
+        options.recordEvidenceReader,
+        results.map(({ episode }) => ({ record_type: "episode", record_id: episode.id })),
+      );
+      return renderRecordEvidenceObject({
+        evidence_guidance: EVIDENCE_GUIDANCE,
         episodes: results.map((result) => ({
+          ...evidencePromptFields(
+            recordEvidenceContext(contexts, {
+              record_type: "episode",
+              record_id: result.episode.id,
+            }),
+          ),
           id: result.episode.id,
           title: result.episode.title,
           narrative: truncateText(result.episode.narrative, MAX_NARRATIVE_CHARS),
@@ -93,7 +118,7 @@ export function createEpisodicRecentTool(
           updated_at: result.episode.updated_at,
           ...memoryDisclosurePayloadFields(memoryDisclosureLabelFromEpisodeAccess(result.episode)),
         })),
-      };
+      });
     },
   };
 }

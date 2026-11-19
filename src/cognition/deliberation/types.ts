@@ -386,6 +386,7 @@ export type DeliberationResult = {
 };
 
 export type DeliberatorOptions = {
+  recordEvidenceReader?: import("../../memory/common/record-evidence.js").RecordEvidenceReader;
   goalPresentation?: import("../../executive/goal-presentation.js").GoalPresentationStore;
   llmClient: LLMClient;
   toolDispatcher: ToolDispatcher;

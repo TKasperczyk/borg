@@ -49,7 +49,11 @@ const ENVELOPE_FIELDS = [
 ] as const;
 
 /** Allocate only added context. Cited text is never changed, and actual serialized growth is counted. */
-function renderEvidencePrompt(payload: unknown, format: "json" | "lines"): string {
+function renderEvidencePrompt(
+  payload: unknown,
+  format: "json" | "compact_json" | "lines",
+  guidanceText = MEMORY_EVIDENCE_GUIDANCE,
+): string {
   const slots: Slot[] = [];
   const clone = (value: unknown, parent?: Slot, depth = 0): unknown => {
     if (Array.isArray(value)) return value.map((entry) => clone(entry, parent, depth + 1));
@@ -75,14 +79,14 @@ function renderEvidencePrompt(payload: unknown, format: "json" | "lines"): strin
   const packet = clone(payload);
   const serialize = (guidance: boolean): string => {
     const replacer = (_key: string, value: unknown) =>
-      value === EVIDENCE_GUIDANCE ? (guidance ? MEMORY_EVIDENCE_GUIDANCE : undefined) : value;
-    return format === "json"
-      ? JSON.stringify(packet, replacer, 2)
+      value === EVIDENCE_GUIDANCE ? (guidance ? guidanceText : undefined) : value;
+    return format !== "lines"
+      ? JSON.stringify(packet, replacer, format === "json" ? 2 : undefined)
       : (packet as unknown[])
           .flatMap((part) =>
             part === EVIDENCE_GUIDANCE
               ? guidance
-                ? [MEMORY_EVIDENCE_GUIDANCE]
+                ? [guidanceText]
                 : []
               : [typeof part === "string" ? part : JSON.stringify(part)],
           )
@@ -157,9 +161,12 @@ function renderEvidencePrompt(payload: unknown, format: "json" | "lines"): strin
   return serialize(true);
 }
 
-export function renderEvidencePromptJson(payload: Record<string, unknown>): string {
-  return renderEvidencePrompt(payload, "json");
+export function renderEvidencePromptJson(
+  payload: Record<string, unknown>,
+  options: { compact?: boolean; guidance?: string } = {},
+): string {
+  return renderEvidencePrompt(payload, options.compact ? "compact_json" : "json", options.guidance);
 }
-export function renderEvidencePromptLines(parts: readonly unknown[]): string {
-  return renderEvidencePrompt(parts, "lines");
+export function renderEvidencePromptLines(parts: readonly unknown[], guidance?: string): string {
+  return renderEvidencePrompt(parts, "lines", guidance);
 }

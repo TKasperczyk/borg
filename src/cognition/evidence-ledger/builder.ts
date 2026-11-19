@@ -5,6 +5,7 @@ import {
   type StreamReverseScanResult,
 } from "../../stream/index.js";
 import type { BuilderSectionContext } from "./builder-context.js";
+import { readLedgerRecordEvidence } from "./record-annotations.js";
 import type { EvidenceLedgerBuildInput, EvidenceLedgerBuilderOptions } from "./builder-types.js";
 import { createSectionBuckets, finalSections } from "./section-buckets.js";
 import { buildAudienceStandingLedgerContext } from "./audience-standing.js";
@@ -197,6 +198,7 @@ export class EvidenceLedgerBuilder {
     const retrievedEvidence = applyImageBudgetAnnotations(input.retrievedEvidence, imageBudget);
     const sections = createSectionBuckets();
     const context: BuilderSectionContext = {
+      recordEvidence: readLedgerRecordEvidence(this.options.recordEvidenceReader, input),
       input: {
         ...input,
         applicableCommitments,

@@ -3,8 +3,10 @@ import type { EvidenceLedgerBuildInput, EvidenceLedgerBuilderOptions } from "./b
 import type { SectionBuckets } from "./section-buckets.js";
 import type { ScopeResolver } from "./scope-resolver.js";
 import type { TranscriptCompactionResult } from "./transcript-compaction.js";
+import type { EpisodeEvidenceContext } from "../../memory/common/evidence-prompt.js";
 
 export type BuilderSectionContext = {
+  recordEvidence?: ReadonlyMap<string, EpisodeEvidenceContext>;
   input: EvidenceLedgerBuildInput;
   nowMs?: number;
   resolver: ScopeResolver;

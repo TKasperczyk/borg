@@ -63,6 +63,7 @@ import type { StreamEntryIndexRepository } from "../stream/index.js";
 import type { AutonomySchedulerDescription } from "../autonomy/index.js";
 
 export type BuildTurnOrchestratorOptions = {
+  recordEvidenceReader?: import("../memory/common/record-evidence.js").RecordEvidenceReader;
   config: Config;
   retrievalPipeline: RetrievalPipeline;
   embeddingClient: EmbeddingClient;
@@ -119,6 +120,7 @@ export type BuildTurnOrchestratorOptions = {
 
 export function buildTurnOrchestrator(options: BuildTurnOrchestratorOptions): TurnOrchestrator {
   return new TurnOrchestrator({
+    recordEvidenceReader: options.recordEvidenceReader,
     config: options.config,
     retrievalPipeline: options.retrievalPipeline,
     embeddingClient: options.embeddingClient,
@@ -152,6 +154,7 @@ export function buildTurnOrchestrator(options: BuildTurnOrchestratorOptions): Tu
     llmFactory: options.llmFactory,
     createReflector: (llmClient) =>
       new Reflector({
+        recordEvidenceReader: options.recordEvidenceReader,
         workingMemoryStore: options.workingMemoryStore,
         sessionLock: options.sessionLock,
         clock: options.clock,

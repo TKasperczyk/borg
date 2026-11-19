@@ -1,4 +1,12 @@
 import { z } from "zod";
+import {
+  readRecordEvidenceContexts,
+  recordEvidenceContext,
+  recordEvidenceShape,
+  renderRecordEvidenceObject,
+  type RecordEvidenceReader,
+} from "../../memory/common/record-evidence.js";
+import { EVIDENCE_GUIDANCE, evidencePromptFields } from "../../memory/common/evidence-prompt.js";
 
 import {
   semanticEdgeSchema,
@@ -29,6 +37,8 @@ const semanticWalkNodeOutputSchema = semanticNodeSchema
     embedding: true,
   })
   .extend({
+    annotations: recordEvidenceShape.annotations,
+    annotations_omitted: recordEvidenceShape.annotations_omitted,
     partial_source_visibility: z.boolean().optional(),
     source_visibility_fraction: z.number().min(0).max(1).optional(),
     disclosure_label: memoryDisclosureLabelMetadataSchema,
@@ -38,6 +48,7 @@ const semanticWalkEdgeOutputSchema = semanticEdgeSchema.extend({
 });
 
 const semanticWalkOutputSchema = z.object({
+  evidence_guidance: z.string().optional(),
   steps: z.array(
     z.object({
       node: semanticWalkNodeOutputSchema,
@@ -111,6 +122,7 @@ function toSemanticWalkEdgeOutput(
 }
 
 export type SemanticWalkToolOptions = {
+  recordEvidenceReader?: RecordEvidenceReader;
   walkGraph: (
     fromId: z.infer<typeof semanticWalkInputSchema>["node_id"],
     options?: SemanticWalkOptions,
@@ -151,14 +163,27 @@ export function createSemanticWalkTool(
         context,
       );
 
-      return {
+      const contexts = readRecordEvidenceContexts(
+        options.recordEvidenceReader,
+        steps.map(({ node }) => ({ record_type: "semantic_node", record_id: node.id })),
+      );
+      return renderRecordEvidenceObject({
+        evidence_guidance: EVIDENCE_GUIDANCE,
         steps: steps.map((step) => {
           return {
-            node: toSemanticWalkNodeOutput(step.node),
+            node: {
+              ...toSemanticWalkNodeOutput(step.node),
+              ...evidencePromptFields(
+                recordEvidenceContext(contexts, {
+                  record_type: "semantic_node",
+                  record_id: step.node.id,
+                }),
+              ),
+            },
             edgePath: step.edgePath.map(toSemanticWalkEdgeOutput),
           };
         }),
-      };
+      });
     },
   };
 }

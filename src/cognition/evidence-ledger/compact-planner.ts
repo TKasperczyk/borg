@@ -16,6 +16,7 @@ import {
 import { renderTaggedPromptBlock } from "../deliberation/prompt/sections.js";
 import { emptySectionCountRecord } from "./budget.js";
 import { renderSection } from "./section-rendering.js";
+import { ledgerAnnotationGuidance } from "./record-annotations.js";
 import {
   capFullLedgerSection,
   materializeFullLedgerSectionState,
@@ -136,6 +137,7 @@ function renderCompactPlannerLedgerContent(
   return [
     renderSharedStateArtifact(sharedState, sharedStateOptions),
     COMPACT_PLANNER_LEDGER_GUIDANCE,
+    ledgerAnnotationGuidance(sections.map(materializeFullLedgerSectionState)),
     renderGlobalAccounting(accounting),
     ...sections.map((section) => renderSection(materializeFullLedgerSectionState(section))),
   ]

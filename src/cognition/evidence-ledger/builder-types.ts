@@ -27,6 +27,7 @@ import type { ActualFrameAnomalyClassification } from "../frame-anomaly/index.js
 import type { ActiveParticipant } from "../participants.js";
 import type { TurnTracer } from "../../tracing/tracer.js";
 import type { AutobiographicalRecallResult } from "../autobiographical-recall.js";
+import type { RecordEvidenceReader } from "../../memory/common/record-evidence.js";
 
 export type ActionLedgerRepository = Pick<ActionRepository, "list"> &
   Partial<
@@ -39,6 +40,7 @@ export type CommitmentLedgerRepository = Pick<CommitmentRepository, "list">;
 export type GoalLedgerRepository = Pick<GoalsRepository, "list">;
 
 export type EvidenceLedgerBuilderOptions = {
+  recordEvidenceReader?: RecordEvidenceReader;
   createStreamReader: (sessionId: SessionId) => StreamReader;
   relationalSlotRepository: Pick<RelationalSlotRepository, "list">;
   actionRepository: ActionLedgerRepository;

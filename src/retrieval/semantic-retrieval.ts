@@ -84,6 +84,7 @@ export type RetrievedSemanticUnderReview = {
 };
 
 export type RetrievedSemanticNode = SemanticNode & {
+  evidence_context?: import("../memory/common/evidence-prompt.js").AnnotationPromptFields;
   historical?: boolean;
   base_retrieval_score?: number;
   retrieval_score?: number;

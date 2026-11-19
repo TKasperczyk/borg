@@ -1,4 +1,11 @@
 import { isPlainRecord } from "../../util/guards.js";
+import { withRetrievedRecordEvidence } from "../record-evidence.js";
+import {
+  EVIDENCE_GUIDANCE,
+  evidencePromptFields,
+  renderEvidencePromptJson,
+} from "../../memory/common/evidence-prompt.js";
+import { RECORD_ANNOTATION_GUIDANCE } from "../../memory/common/record-evidence.js";
 import {
   artifactReferenceSchema,
   deliveredOutboundPostArtifactOutputSchema,
@@ -900,6 +907,7 @@ function currentTraitVocabularyForReflection(
 }
 
 export type ReflectorOptions = {
+  recordEvidenceReader?: import("../../memory/common/record-evidence.js").RecordEvidenceReader;
   clock?: Clock;
   llmClient?: LLMClient;
   model?: string;
@@ -2513,62 +2521,70 @@ export class Reflector {
             messages: [
               {
                 role: "user",
-                content: JSON.stringify({
-                  user_message: context.userMessage,
-                  agent_response: context.actionResult.response,
-                  retrieval_confidence: context.retrievalConfidence,
-                  active_goals: context.selfSnapshot.goals.map((goal) => ({
-                    goal_id: goal.id,
-                    description: goal.description,
-                    status: goal.status,
-                    ...goalBlockStateFields(goal),
-                    terminal_condition: goal.terminal_condition ?? null,
-                    progress_notes: renderGoalProgressNotesForReflection(goal.progress_notes),
-                    audience_entity_id: goal.audience_entity_id,
-                    owner_entity_id: goal.owner_entity_id ?? null,
-                    counterparty_entity_id: goal.counterparty_entity_id ?? null,
-                    ...memoryDisclosurePayloadFields(goalMemoryDisclosureLabel(goal)),
-                  })),
-                  executive_focus: executiveFocusForReflection,
-                  origin: context.origin ?? "user",
-                  pending_procedural_attempts: pendingProceduralAttempts,
-                  pending_actions: pendingActions,
-                  pending_actions_degraded: context.pendingActionProjection?.degraded ?? [],
-                  completed_pending_cleanup:
-                    context.pendingActionProjection?.completed_pending_cleanup ?? [],
-                  current_trait_vocabulary: currentTraitVocabularyForReflection(
-                    context.selfSnapshot.traits,
-                  ),
-                  active_open_questions: activeOpenQuestions.map((question) => ({
-                    id: question.id,
-                    question: question.question,
-                    source: question.source,
-                    urgency: question.urgency,
-                    related_episode_ids: question.related_episode_ids,
-                    related_semantic_node_ids: question.related_semantic_node_ids,
-                    audience_entity_id: question.audience_entity_id,
-                    ...memoryDisclosurePayloadFields(openQuestionMemoryDisclosureLabel(question)),
-                  })),
-                  ...resolvedQuestionBlock.fields,
-                  current_turn_stream_entry_ids: context.currentTurnStreamEntryIds ?? [],
-                  current_turn_inbound_stream_entry_ids:
-                    context.currentTurnInboundStreamEntryIds ?? [],
-                  current_turn_artifact_references: currentTurnArtifactReferences(context),
-                  current_turn_tool_calls: await Promise.all(
-                    context.actionResult.tool_calls.map((call) =>
-                      reflectionToolCall(call, this.options.episodicRepository),
+                content: renderEvidencePromptJson(
+                  {
+                    evidence_guidance: EVIDENCE_GUIDANCE,
+                    user_message: context.userMessage,
+                    agent_response: context.actionResult.response,
+                    retrieval_confidence: context.retrievalConfidence,
+                    active_goals: context.selfSnapshot.goals.map((goal) => ({
+                      goal_id: goal.id,
+                      description: goal.description,
+                      status: goal.status,
+                      ...goalBlockStateFields(goal),
+                      terminal_condition: goal.terminal_condition ?? null,
+                      progress_notes: renderGoalProgressNotesForReflection(goal.progress_notes),
+                      audience_entity_id: goal.audience_entity_id,
+                      owner_entity_id: goal.owner_entity_id ?? null,
+                      counterparty_entity_id: goal.counterparty_entity_id ?? null,
+                      ...memoryDisclosurePayloadFields(goalMemoryDisclosureLabel(goal)),
+                    })),
+                    executive_focus: executiveFocusForReflection,
+                    origin: context.origin ?? "user",
+                    pending_procedural_attempts: pendingProceduralAttempts,
+                    pending_actions: pendingActions,
+                    pending_actions_degraded: context.pendingActionProjection?.degraded ?? [],
+                    completed_pending_cleanup:
+                      context.pendingActionProjection?.completed_pending_cleanup ?? [],
+                    current_trait_vocabulary: currentTraitVocabularyForReflection(
+                      context.selfSnapshot.traits,
                     ),
-                  ),
-                  available_evidence_episodes: context.retrievedEpisodes.map((result) => ({
-                    id: result.episode.id,
-                    title: result.episode.title,
-                    narrative: result.episode.narrative,
-                    ...memoryDisclosurePayloadFields(
-                      result.disclosureLabel ??
-                        memoryDisclosureLabelFromEpisodeAccess(result.episode),
+                    active_open_questions: activeOpenQuestions.map((question) => ({
+                      id: question.id,
+                      question: question.question,
+                      source: question.source,
+                      urgency: question.urgency,
+                      related_episode_ids: question.related_episode_ids,
+                      related_semantic_node_ids: question.related_semantic_node_ids,
+                      audience_entity_id: question.audience_entity_id,
+                      ...memoryDisclosurePayloadFields(openQuestionMemoryDisclosureLabel(question)),
+                    })),
+                    ...resolvedQuestionBlock.fields,
+                    current_turn_stream_entry_ids: context.currentTurnStreamEntryIds ?? [],
+                    current_turn_inbound_stream_entry_ids:
+                      context.currentTurnInboundStreamEntryIds ?? [],
+                    current_turn_artifact_references: currentTurnArtifactReferences(context),
+                    current_turn_tool_calls: await Promise.all(
+                      context.actionResult.tool_calls.map((call) =>
+                        reflectionToolCall(call, this.options.episodicRepository),
+                      ),
                     ),
-                  })),
-                }),
+                    available_evidence_episodes: withRetrievedRecordEvidence(
+                      this.options.recordEvidenceReader,
+                      { episodes: context.retrievedEpisodes },
+                    ).episodes.map((result) => ({
+                      id: result.episode.id,
+                      title: result.episode.title,
+                      narrative: result.episode.narrative,
+                      ...evidencePromptFields(result.episode.evidence_context),
+                      ...memoryDisclosurePayloadFields(
+                        result.disclosureLabel ??
+                          memoryDisclosureLabelFromEpisodeAccess(result.episode),
+                      ),
+                    })),
+                  },
+                  { compact: true, guidance: RECORD_ANNOTATION_GUIDANCE },
+                ),
               },
             ],
             tools: [REFLECTION_TOOL],

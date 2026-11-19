@@ -55,7 +55,9 @@ const SOCIAL_RELEVANCE_DEFAULT_SCORE = 0.2;
 export type RetrievalMoodState = Pick<MoodState, "valence" | "arousal">;
 
 export type RetrievedEpisode = {
-  episode: Episode;
+  episode: Episode & {
+    evidence_context?: import("../memory/common/evidence-prompt.js").EpisodeEvidenceContext;
+  };
   disclosureLabel?: MemoryDisclosureLabel;
   score: number;
   // Pre-clamp fused score (formula + intent boosts, un-clamped). This is the

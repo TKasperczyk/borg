@@ -79,6 +79,7 @@ import type { BorgStreamWriterFactory } from "./types.js";
 
 export type BuildToolDispatcherOptions = {
   db: SqliteDatabase;
+  recordEvidenceReader?: import("../memory/common/record-evidence.js").RecordEvidenceReader;
   dataDir: string;
   entryIndex: StreamEntryIndexRepository;
   sourceStreamAudienceDisclosureResolver: SourceStreamAudienceDisclosureResolver;
@@ -193,7 +194,12 @@ export function buildToolDispatcher(options: BuildToolDispatcherOptions): ToolDi
   });
 
   toolDispatcher
-    .register(createEpisodicGetTool({ episodicRepository: options.episodicRepository }))
+    .register(
+      createEpisodicGetTool({
+        episodicRepository: options.episodicRepository,
+        recordEvidenceReader: options.recordEvidenceReader,
+      }),
+    )
     .register(
       createStreamGetTool({
         readEntry: async (id) => {
@@ -218,6 +224,7 @@ export function buildToolDispatcher(options: BuildToolDispatcherOptions): ToolDi
     )
     .register(
       createEpisodicSearchTool({
+        recordEvidenceReader: options.recordEvidenceReader,
         searchEpisodes: async (query, limit, context) => {
           const degradations: import("../retrieval/degradation.js").RetrievalDegradation[] = [];
           const currentAudienceEntityId = context.audienceEntityId ?? null;
@@ -246,6 +253,7 @@ export function buildToolDispatcher(options: BuildToolDispatcherOptions): ToolDi
     )
     .register(
       createEpisodicRecentTool({
+        recordEvidenceReader: options.recordEvidenceReader,
         listRecentEpisodes: (limit) => options.episodicRepository.listRecentForCognition({ limit }),
       }),
     )
@@ -283,6 +291,7 @@ export function buildToolDispatcher(options: BuildToolDispatcherOptions): ToolDi
     )
     .register(
       createSemanticWalkTool({
+        recordEvidenceReader: options.recordEvidenceReader,
         walkGraph: async (fromId, walkOptions) => {
           const root = await options.semanticNodeRepository.get(fromId);
 

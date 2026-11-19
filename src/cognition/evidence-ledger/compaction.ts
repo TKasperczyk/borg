@@ -14,6 +14,11 @@ import { reconcileAutobiographicalRecallCapMetadata } from "./autobiographical-r
 import { estimateEvidenceLedgerPromptTokens } from "./finalizer-ledger.js";
 import { renderEntry, renderSection } from "./section-rendering.js";
 import {
+  ledgerAnnotationCount,
+  ledgerAnnotations,
+  withLedgerAnnotations,
+} from "./record-annotations.js";
+import {
   ledgerCorrectionCount,
   ledgerCorrectionRows,
   withLedgerCorrectionRows,
@@ -423,6 +428,20 @@ export function sectionAccountingEntry(
     ...prior.map(omissionCounts),
     ...removedNotes.map((entry) => entry.omission_counts),
   );
+  const annotationTotal = Math.max(
+    counts.annotations_count ?? 0,
+    (state.sourceEntries ?? []).reduce((sum, entry) => sum + ledgerAnnotationCount(entry), 0),
+  );
+  const annotationsOmitted =
+    annotationTotal -
+    state.section.entries.reduce((sum, entry) => sum + ledgerAnnotations(entry).length, 0);
+  if (annotationsOmitted > 0) {
+    counts.annotations_count = annotationTotal;
+    counts.annotations_omitted = annotationsOmitted;
+  } else {
+    delete counts.annotations_count;
+    delete counts.annotations_omitted;
+  }
   // A second compaction carries the earlier population total; it must not add it again.
   const correctionTotal = Math.max(
     counts.resolution_correction_count ?? 0,
@@ -729,7 +748,7 @@ export function capFullLedgerSection(input: {
       ...input.section,
       entries: ordinary
         .filter((entry) => !isRequiredLedgerEntry(input.section, entry))
-        .map((entry) => withLedgerCorrectionRows(entry, [])),
+        .map((entry) => withLedgerAnnotations(withLedgerCorrectionRows(entry, []), [])),
     },
     options: {
       ...input.options,
@@ -744,7 +763,10 @@ export function capFullLedgerSection(input: {
   state.sectionTokenLimit = input.options.maxTokens;
   state.section.entries = [
     ...required.map((entry) =>
-      withLedgerCorrectionRows(compactFullLedgerEntry(entry, input.maxEntryTextTokens), []),
+      withLedgerAnnotations(
+        withLedgerCorrectionRows(compactFullLedgerEntry(entry, input.maxEntryTextTokens), []),
+        [],
+      ),
     ),
     ...state.section.entries,
   ];
@@ -757,6 +779,7 @@ export function capFullLedgerSection(input: {
     state.accountingMode = "global";
   fitSectionAccounting(state);
   admitResolutionCorrections(state);
+  admitRecordAnnotations(state);
   return state;
 }
 
@@ -765,6 +788,7 @@ function fitSectionAccounting(state: FullLedgerSectionState): void {
     estimatePromptTokens(renderSection(materializeFullLedgerSectionState(state)));
   const limit = state.sectionTokenLimit!;
   while (tokens() > limit) {
+    if (removeLowestPriorityAnnotation(state)) continue;
     if (removeLowestPriorityCorrection(state)) continue;
     if (!removeLowestPriorityOrdinaryEntry(state)) break;
   }
@@ -773,6 +797,45 @@ function fitSectionAccounting(state: FullLedgerSectionState): void {
     if (state.section.entries.length === 0) state.section.omitted_from_prompt = true;
   }
   fitRequiredEntryText([state], limit, tokens);
+}
+
+/** Annotation text is atomic; spend only the room left after the existing record compaction. */
+function admitRecordAnnotations(state: FullLedgerSectionState): void {
+  const sources = new Map((state.sourceEntries ?? []).map((entry) => [entry.id, entry]));
+  const rows = state.section.entries.map((entry) =>
+    ledgerAnnotations(sources.get(entry.id) ?? entry),
+  );
+  if (rows.every((annotations) => annotations.length === 0)) return;
+  const base = state.section.entries.map((entry) => withLedgerAnnotations(entry, []));
+  const fits = () =>
+    estimatePromptTokens(renderSection(materializeFullLedgerSectionState(state))) <=
+    state.sectionTokenLimit!;
+  state.section.entries = base.map((entry, index) => withLedgerAnnotations(entry, rows[index]!));
+  if (fits()) return;
+  state.section.entries = [...base];
+  for (let index = 0; index < base.length; index++) {
+    for (let count = 1; count <= rows[index]!.length; count++) {
+      const previous = state.section.entries[index]!;
+      state.section.entries[index] = withLedgerAnnotations(
+        base[index]!,
+        rows[index]!.slice(0, count),
+      );
+      if (fits()) continue;
+      state.section.entries[index] = previous;
+      break;
+    }
+  }
+}
+
+function removeLowestPriorityAnnotation(state: FullLedgerSectionState): boolean {
+  for (let index = state.section.entries.length - 1; index >= 0; index--) {
+    const entry = state.section.entries[index]!;
+    const rows = ledgerAnnotations(entry);
+    if (rows.length === 0) continue;
+    state.section.entries[index] = withLedgerAnnotations(entry, rows.slice(0, -1));
+    return true;
+  }
+  return false;
 }
 
 /** Keep note envelopes first; only complete, labelled correction rows use the remaining space. */
@@ -1046,7 +1109,7 @@ export function fitLedgerAccounting(input: {
     );
     if (state === undefined) break;
     // A global cut can omit a correction without erasing the note or its correction counts.
-    if (removeLowestPriorityCorrection(state)) {
+    if (removeLowestPriorityAnnotation(state) || removeLowestPriorityCorrection(state)) {
       // The first omitted correction adds accounting framing, which also has to fit its section.
       fitSectionAccounting(state);
       continue;

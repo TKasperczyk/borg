@@ -77,3 +77,31 @@ export function insertMalformedTestAnnotations(
       .run(recordId, payload);
   }
 }
+
+/** Valid correction surrounded by malformed rows, including an invalid attempted retraction. */
+export function recordTestAnnotationWithMalformedHistory(
+  harness: Pick<OfflineTestHarness, "db" | "identityEventRepository">,
+  recordId: string,
+) {
+  const text = "Valid correction survives. 更正。 تصحيح. 🧭";
+  const valid = recordTestAnnotation(harness.identityEventRepository, recordId, text);
+  insertMalformedTestAnnotations(harness, recordId);
+  harness.db
+    .prepare(
+      `INSERT INTO identity_events (record_type, record_id, action, new_value_json, provenance_kind, ts) VALUES ('episode', ?, 'synthetic_audit', ?, 'manual', 2)`,
+    )
+    .run(
+      recordId,
+      JSON.stringify({
+        stream_entry_id: null,
+        annotation: {
+          event: "episode_annotation_retracted",
+          target_ids: [recordId],
+          reverses_stream_entry_id: (valid.new_value as { stream_entry_id: string })
+            .stream_entry_id,
+        },
+      }),
+    );
+  harness.db.prepare("UPDATE identity_events SET ts = ? WHERE id = ?").run(1e100, valid.id);
+  return text;
+}

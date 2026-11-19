@@ -10,11 +10,21 @@ import {
 } from "../../memory/common/disclosure-label.js";
 import { memoryDisclosurePayloadFields } from "../../memory/common/disclosure-serializers.js";
 import type { ToolDefinition } from "../dispatcher.js";
+import {
+  readRecordEvidenceContexts,
+  recordEvidenceContext,
+  recordEvidenceShape,
+  renderRecordEvidenceObject,
+  type RecordEvidenceReader,
+} from "../../memory/common/record-evidence.js";
+import { EVIDENCE_GUIDANCE, evidencePromptFields } from "../../memory/common/evidence-prompt.js";
 
 const inputSchema = z.object({ episode_id: episodeIdSchema }).strict();
 const outputSchema = z.object({
+  evidence_guidance: z.string().optional(),
   episode: z
     .object({
+      ...recordEvidenceShape,
       id: episodeIdSchema,
       title: z.string(),
       narrative: z.string(),
@@ -39,7 +49,8 @@ const outputSchema = z.object({
 });
 
 export function createEpisodicGetTool(options: {
-  episodicRepository: Pick<EpisodicRepository, "get" | "getStats" | "isEpisodeEffectivelyVisible">;
+  recordEvidenceReader?: RecordEvidenceReader;
+  episodicRepository: Pick<EpisodicRepository, "get" | "getStats" | "getLifecycleMany">;
 }): ToolDefinition<z.infer<typeof inputSchema>, z.infer<typeof outputSchema>> {
   return {
     name: "tool.episodic.get",
@@ -58,8 +69,22 @@ export function createEpisodicGetTool(options: {
       });
       if (episode === null) return { episode: null };
       const stats = options.episodicRepository.getStats(episode.id);
-      return {
+      const lifecycle =
+        options.episodicRepository.getLifecycleMany([episode.id]).get(episode.id) ?? "unknown";
+      const target = { record_type: "episode" as const, record_id: episode.id };
+      const contexts = readRecordEvidenceContexts(
+        options.recordEvidenceReader === undefined
+          ? undefined
+          : { identityEventRepository: options.recordEvidenceReader.identityEventRepository },
+        [target],
+      );
+      return renderRecordEvidenceObject({
+        evidence_guidance: EVIDENCE_GUIDANCE,
         episode: {
+          ...evidencePromptFields({
+            ...recordEvidenceContext(contexts, target),
+            ...(lifecycle === "active" ? {} : { lifecycle }),
+          }),
           id: episode.id,
           title: episode.title,
           narrative: episode.narrative,
@@ -74,17 +99,12 @@ export function createEpisodicGetTool(options: {
           lineage: episode.lineage,
           episode_kind: episode.episode_kind ?? "raw",
           consolidation_family_id: episode.consolidation_family_id ?? null,
-          archived: stats?.archived ?? false,
-          lifecycle_status:
-            stats?.archived === true
-              ? "archived"
-              : options.episodicRepository.isEpisodeEffectivelyVisible(episode.id)
-                ? "active"
-                : "inactive",
+          archived: lifecycle === "archived",
+          lifecycle_status: lifecycle === "unknown" ? ("inactive" as const) : lifecycle,
           tier: stats?.tier ?? null,
           ...memoryDisclosurePayloadFields(memoryDisclosureLabelFromEpisodeAccess(episode)),
         },
-      };
+      });
     },
   };
 }

@@ -1,4 +1,6 @@
 import { ToolDispatcher } from "../../tools/dispatcher.js";
+import { recordTestAnnotation } from "../../offline/evidence-test-support.js";
+import { RECORD_ANNOTATION_GUIDANCE } from "../../memory/common/record-evidence.js";
 import { createOpenQuestionsCorrectResolutionTool } from "../../tools/internal/open-questions-correct-resolution.js";
 import { TURN_REFLECTION_SYSTEM_PROMPT } from "../prompts/reflector.js";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -557,6 +559,35 @@ function createExecutiveReflectionContext(input: {
 
 describe("reflector", () => {
   const cleanup: Array<() => Promise<void>> = [];
+
+  it("shows an exact audited correction beside the unchanged retrieved narrative in online reflection", async () => {
+    const llm = new FakeLLMClient({ responses: [createReflectionResponse()] });
+    const harness = await createOfflineTestHarness({ llmClient: llm });
+    cleanup.push(harness.cleanup);
+    const episode = await harness.episodicRepository.createEpisode(
+      createEpisodeFixture({ narrative: "Original observation.\n原文。" }),
+    );
+    const correction = "更正。 Zażółć. تصحيح. 🧭\nSecond line.";
+    recordTestAnnotation(harness.identityEventRepository, episode.id, correction);
+    const reflector = createHarnessReflector(harness, {
+      clock: harness.clock,
+      llmClient: llm,
+      model: "synthetic-model",
+      recordEvidenceReader: harness,
+    });
+    await reflector.reflect(
+      createOpenQuestionReflectionContext({ retrievedEpisodes: [createRetrievedEpisode(episode)] }),
+      harness.streamWriter,
+    );
+    const payload = JSON.parse(String(llm.requests[0]!.messages[0]!.content));
+    expect(payload.available_evidence_episodes[0]).toMatchObject({
+      id: episode.id,
+      narrative: episode.narrative,
+      annotations: [{ text: correction }],
+    });
+    expect(payload.evidence_guidance).toBe(RECORD_ANNOTATION_GUIDANCE);
+    expect(payload.available_evidence_episodes[0]).not.toHaveProperty("lifecycle");
+  });
 
   afterEach(async () => {
     while (cleanup.length > 0) {

@@ -96,6 +96,7 @@ export type EvidenceScoreBreakdown = {
 };
 
 export type EvidenceItem = {
+  evidence_context?: import("../memory/common/evidence-prompt.js").EpisodeEvidenceContext;
   frame_anomalies?: FrameAnomalyAnnotation[];
   id: string;
   source: EvidenceSource;
