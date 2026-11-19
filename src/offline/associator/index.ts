@@ -35,7 +35,13 @@ import { clamp } from "../../util/math.js";
 
 import type { ReverserRegistry } from "../audit-log.js";
 import { getBudgetErrorTokens, withBudget } from "../budget.js";
-import { disclosureLabelForEpisodeIds, episodeEvidencePromptRow } from "../evidence-labels.js";
+import {
+  disclosureLabelForEpisodeIds,
+  episodeEvidencePromptRow,
+  withEpisodeEvidenceContext,
+  renderEvidencePromptLines,
+  EVIDENCE_GUIDANCE,
+} from "../evidence-labels.js";
 import { offlineProcessError } from "../process-errors.js";
 import type {
   OfflineChange,
@@ -537,24 +543,23 @@ function renderSamplePrompt(
   statsById: ReadonlyMap<Episode["id"], EpisodeStats>,
   duplicatePresentation: OpenQuestionDuplicatePresentation,
 ): string {
-  return [
+  return renderEvidencePromptLines([
+    EVIDENCE_GUIDANCE,
     ASSOCIATOR_PROMPT,
     `Sample id: ${sample.sampleId}`,
     `Sampling seed: ${sample.seed}`,
     "Episodes:",
     ...sample.episodes.map((episode) =>
-      JSON.stringify(
-        episodeEvidencePromptRow(episode, {
-          start_time: episode.start_time,
-          end_time: episode.end_time,
-          significance: episode.significance,
-          confidence: episode.confidence,
-          tags: episode.tags,
-          participants: episode.participants,
-          episode_kind: episode.episode_kind ?? "raw",
-          stats: statsById.get(episode.id) ?? null,
-        }),
-      ),
+      episodeEvidencePromptRow(episode, {
+        start_time: episode.start_time,
+        end_time: episode.end_time,
+        significance: episode.significance,
+        confidence: episode.confidence,
+        tags: episode.tags,
+        participants: episode.participants,
+        episode_kind: episode.episode_kind ?? "raw",
+        stats: statsById.get(episode.id) ?? null,
+      }),
     ),
     "Open-question duplicate candidate set:",
     JSON.stringify({
@@ -564,7 +569,7 @@ function renderSamplePrompt(
       omitted_count: duplicatePresentation.omitted_count,
     }),
     ...duplicatePresentation.rows.map((row) => JSON.stringify(row)),
-  ].join("\n");
+  ]);
 }
 
 function invalidAssociationResponse(error: unknown): unknown {
@@ -755,7 +760,14 @@ async function buildSampleFindings(input: {
           messages: [
             {
               role: "user",
-              content: renderSamplePrompt(input.sample, statsById, duplicatePresentation),
+              content: renderSamplePrompt(
+                {
+                  ...input.sample,
+                  episodes: await withEpisodeEvidenceContext(input.ctx, input.sample.episodes),
+                },
+                statsById,
+                duplicatePresentation,
+              ),
             },
           ],
           tools: [ASSOCIATOR_TOOL],

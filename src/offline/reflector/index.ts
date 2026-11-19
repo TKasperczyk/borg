@@ -42,8 +42,14 @@ import type {
   OfflineProcessError,
   OfflineResult,
 } from "../types.js";
-import { estimatePromptTokens } from "../../util/token-estimate.js";
-import { disclosureLabelForEpisodeIds, episodeEvidencePromptRow } from "../evidence-labels.js";
+import {
+  disclosureLabelForEpisodeIds,
+  episodeEvidencePromptRow,
+  withEpisodeEvidenceContext,
+  renderEvidencePromptLines,
+  EVIDENCE_GUIDANCE,
+  renderEvidenceRows,
+} from "../evidence-labels.js";
 import { SELF_REFERENTIAL_MEMORY_VOICE_GUIDANCE } from "../../util/self-memory-voice.js";
 
 // Thinking shares the output allowance with the structured result.
@@ -207,13 +213,11 @@ function renderActiveGoalPromptRow(goal: GoalRecord): string {
   });
 }
 
-function reflectionEpisodePromptRow(episode: Episode): string {
-  return JSON.stringify(
-    episodeEvidencePromptRow(episode, {
-      tags: episode.tags,
-      participants: episode.participants,
-    }),
-  );
+function reflectionEpisodePromptRow(episode: Episode): Record<string, unknown> {
+  return episodeEvidencePromptRow(episode, {
+    tags: episode.tags,
+    participants: episode.participants,
+  });
 }
 
 // Clusters arrive newest-first, so truncation keeps the most recent evidence.
@@ -226,21 +230,21 @@ function boundClusterEpisodes(
   maxInputTokens: number,
 ): { episodes: Episode[]; omittedEpisodeCount: number } {
   const kept: Episode[] = [];
-  let inputTokens = 0;
 
   for (const episode of episodesNewestFirst) {
     if (kept.length >= Math.max(minSupport, maxEpisodes)) {
       break;
     }
 
-    const rowTokens = estimatePromptTokens(reflectionEpisodePromptRow(episode));
+    const nextInputTokens = renderEvidenceRows(
+      [...kept, episode].map(reflectionEpisodePromptRow),
+    ).tokens;
 
-    if (kept.length >= minSupport && inputTokens + rowTokens > maxInputTokens) {
+    if (kept.length >= minSupport && nextInputTokens > maxInputTokens) {
       break;
     }
 
     kept.push(episode);
-    inputTokens += rowTokens;
   }
 
   return { episodes: kept, omittedEpisodeCount: episodesNewestFirst.length - kept.length };
@@ -249,7 +253,8 @@ function boundClusterEpisodes(
 function buildPrompt(cluster: ReflectionCluster, activeGoals: readonly GoalRecord[]): string {
   const goals = activeGoals.map((goal) => renderActiveGoalPromptRow(goal)).join(" | ") || "none";
 
-  return [
+  return renderEvidencePromptLines([
+    EVIDENCE_GUIDANCE,
     OFFLINE_REFLECTOR_PROMPT_PREAMBLE,
     `Cluster key: ${cluster.key}`,
     `Unfinished goals (including blocked): ${goals}`,
@@ -260,7 +265,7 @@ function buildPrompt(cluster: ReflectionCluster, activeGoals: readonly GoalRecor
       : []),
     "Episodes:",
     ...cluster.episodes.map(reflectionEpisodePromptRow),
-  ].join("\n");
+  ]);
 }
 
 function invalidInsight(error: unknown): unknown {
@@ -636,7 +641,10 @@ export class ReflectorProcess implements OfflineProcess {
     const errors: OfflineProcessError[] = [];
     const items: ReflectorPlan["items"] = [];
     const budget = opts.budget ?? ctx.config.offline.reflector.budget;
-    const episodes = await ctx.episodicRepository.listEffectivelyVisible();
+    const episodes = await withEpisodeEvidenceContext(
+      ctx,
+      await ctx.episodicRepository.listEffectivelyVisible(),
+    );
     const rawActiveGoals = ctx.goalsRepository.list({ statuses: ["active", "blocked"] });
     const activeGoals =
       ctx.sourceStreamAudienceDisclosureResolver?.resolve({ goalTrees: rawActiveGoals })

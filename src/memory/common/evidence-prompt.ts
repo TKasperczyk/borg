@@ -12,6 +12,7 @@ export const MEMORY_EVIDENCE_GUIDANCE =
 // A structural slot, not text matching: ordinary prompts omit it altogether.
 export const EVIDENCE_GUIDANCE = Symbol("evidence guidance");
 const CONTEXT_FIELD = "__borg_evidence_context";
+const TEXT_FIELD = "__borg_evidence_text";
 
 export type AnnotationPromptFields = {
   annotations?: Array<{ text: string; written_at?: string; authority: string | null }>;
@@ -31,6 +32,23 @@ export function evidencePromptFields(
   return context === undefined || Object.keys(context).length === 0
     ? {}
     : { [CONTEXT_FIELD]: context };
+}
+
+/** Preserve a legacy text row verbatim, appending only its bounded, exact-record envelope. */
+export function evidencePromptText(
+  text: string,
+  context: EpisodeEvidenceContext | undefined,
+): unknown {
+  return context === undefined ? text : { [TEXT_FIELD]: text, ...evidencePromptFields(context) };
+}
+
+function renderLine(part: unknown): string {
+  if (typeof part === "string") return part;
+  if (part !== null && typeof part === "object" && TEXT_FIELD in part) {
+    const { [TEXT_FIELD]: text, ...envelope } = part as Record<string, unknown>;
+    return `${text}${Object.keys(envelope).length === 0 ? "" : ` ${JSON.stringify(envelope)}`}`;
+  }
+  return JSON.stringify(part);
 }
 
 type Slot = {
@@ -84,11 +102,7 @@ function renderEvidencePrompt(
       ? JSON.stringify(packet, replacer, format === "json" ? 2 : undefined)
       : (packet as unknown[])
           .flatMap((part) =>
-            part === EVIDENCE_GUIDANCE
-              ? guidance
-                ? [guidanceText]
-                : []
-              : [typeof part === "string" ? part : JSON.stringify(part)],
+            part === EVIDENCE_GUIDANCE ? (guidance ? [guidanceText] : []) : [renderLine(part)],
           )
           .join("\n");
   };

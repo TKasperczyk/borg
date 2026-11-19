@@ -183,6 +183,10 @@ describe("SelfNarratorProcess", () => {
         });
 
         try {
+          // These in-memory visible episodes have no backing index rows.
+          vi.spyOn(harness.episodicRepository, "getLifecycleMany").mockImplementation(
+            (ids) => new Map(ids.map((id) => [id, "active" as const])),
+          );
           vi.spyOn(harness.episodicRepository, "listEffectivelyVisible").mockResolvedValue([
             createEpisodeFixture(),
             createEpisodeFixture(),
@@ -234,6 +238,10 @@ describe("SelfNarratorProcess", () => {
         registry: harness.registry,
       });
       try {
+        // These in-memory visible episodes have no backing index rows.
+        vi.spyOn(harness.episodicRepository, "getLifecycleMany").mockImplementation(
+          (ids) => new Map(ids.map((id) => [id, "active" as const])),
+        );
         vi.spyOn(harness.episodicRepository, "listEffectivelyVisible").mockResolvedValue([
           createEpisodeFixture(),
           createEpisodeFixture(),
@@ -442,6 +450,10 @@ describe("SelfNarratorProcess", () => {
         narrative: "Stable story.",
         provenance: { kind: "manual" },
       });
+      // These in-memory visible episodes have no backing index rows.
+      vi.spyOn(harness.episodicRepository, "getLifecycleMany").mockImplementation(
+        (ids) => new Map(ids.map((id) => [id, "active" as const])),
+      );
       vi.spyOn(harness.episodicRepository, "listEffectivelyVisible").mockResolvedValue(
         Array.from({ length: 4 }, (_, i) =>
           createEpisodeFixture({ start_time: 10 + i, end_time: 10 + i }),
@@ -553,6 +565,10 @@ describe("SelfNarratorProcess", () => {
         }),
       );
       // Deliberately out of order: selection must use timestamps, not repository order.
+      // These in-memory visible episodes have no backing index rows.
+      vi.spyOn(harness.episodicRepository, "getLifecycleMany").mockImplementation(
+        (ids) => new Map(ids.map((id) => [id, "active" as const])),
+      );
       vi.spyOn(harness.episodicRepository, "listEffectivelyVisible").mockResolvedValue(
         [...episodes].reverse(),
       );
@@ -640,6 +656,10 @@ describe("SelfNarratorProcess", () => {
         narrative: "My existing narrative.",
         provenance: { kind: "offline", process: "self-narrator" },
       });
+      // These in-memory visible episodes have no backing index rows.
+      vi.spyOn(harness.episodicRepository, "getLifecycleMany").mockImplementation(
+        (ids) => new Map(ids.map((id) => [id, "active" as const])),
+      );
       vi.spyOn(harness.episodicRepository, "listEffectivelyVisible").mockResolvedValue(episodes);
       await process.plan(harness.createContext());
       const prompt = String(llm.requests[0]!.messages[0]!.content);
@@ -693,6 +713,10 @@ describe("SelfNarratorProcess", () => {
         createEpisodeFixture(),
         createEpisodeFixture({ start_time: 2_000_000, narrative: "x".repeat(8_000) }),
       ];
+      // These in-memory visible episodes have no backing index rows.
+      vi.spyOn(harness.episodicRepository, "getLifecycleMany").mockImplementation(
+        (ids) => new Map(ids.map((id) => [id, "active" as const])),
+      );
       vi.spyOn(harness.episodicRepository, "listEffectivelyVisible").mockResolvedValue(episodes);
       const plan = await process.plan(harness.createContext());
       expect(plan.errors).toEqual([
@@ -730,6 +754,10 @@ describe("SelfNarratorProcess", () => {
         registry: harness.registry,
       });
       try {
+        // These in-memory visible episodes have no backing index rows.
+        vi.spyOn(harness.episodicRepository, "getLifecycleMany").mockImplementation(
+          (ids) => new Map(ids.map((id) => [id, "active" as const])),
+        );
         vi.spyOn(harness.episodicRepository, "listEffectivelyVisible").mockResolvedValue(episodes);
         const newestTwoTokens = episodes
           .slice(-2)
@@ -818,6 +846,10 @@ describe("SelfNarratorProcess", () => {
         registry: harness.registry,
       });
       try {
+        // These in-memory visible episodes have no backing index rows.
+        vi.spyOn(harness.episodicRepository, "getLifecycleMany").mockImplementation(
+          (ids) => new Map(ids.map((id) => [id, "active" as const])),
+        );
         vi.spyOn(harness.episodicRepository, "listEffectivelyVisible").mockResolvedValue(episodes);
         harness.autobiographicalRepository.upsertPeriod({
           label: "Current period",
@@ -894,6 +926,10 @@ describe("SelfNarratorProcess", () => {
     });
     try {
       const episodes = [createEpisodeFixture(), createEpisodeFixture()];
+      // These in-memory visible episodes have no backing index rows.
+      vi.spyOn(harness.episodicRepository, "getLifecycleMany").mockImplementation(
+        (ids) => new Map(ids.map((id) => [id, "active" as const])),
+      );
       vi.spyOn(harness.episodicRepository, "listEffectivelyVisible").mockResolvedValue(episodes);
       harness.autobiographicalRepository.upsertPeriod({
         label: "Current period",

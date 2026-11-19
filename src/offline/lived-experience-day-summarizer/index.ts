@@ -54,7 +54,13 @@ import {
 
 import type { ReverserRegistry } from "../audit-log.js";
 import { getBudgetErrorTokens, withBudget } from "../budget.js";
-import { disclosureLabelForEpisodeIds, episodeEvidencePromptRow } from "../evidence-labels.js";
+import {
+  disclosureLabelForEpisodeIds,
+  episodeEvidencePromptRow,
+  withEpisodeEvidenceContext,
+  renderEvidencePromptLines,
+  EVIDENCE_GUIDANCE,
+} from "../evidence-labels.js";
 import { offlineProcessError } from "../process-errors.js";
 import type {
   OfflineChange,
@@ -292,7 +298,8 @@ function buildDayPrompt(input: {
   maxEpisodes: number;
   maxActionRecords: number;
 }): string {
-  return [
+  return renderEvidencePromptLines([
+    EVIDENCE_GUIDANCE,
     "I consolidate one closed UTC day of my own cross-session lived experience.",
     `I emit exactly one ${TOOL_NAME} tool call.`,
     "I write one durable first-person experiential gist: what the day felt like as an arc, what distinct events stood out, and how many repeated wakes or decisions collapsed into a routine pattern.",
@@ -340,15 +347,13 @@ function buildDayPrompt(input: {
     ),
     `Episode summaries, capped at ${input.maxEpisodes}:`,
     ...input.episodes.map((episode) =>
-      JSON.stringify(
-        episodeEvidencePromptRow(episode, {
-          start_time: episode.start_time,
-          end_time: episode.end_time,
-          source_stream_ids: episode.source_stream_ids,
-          significance: episode.significance,
-          tags: episode.tags,
-        }),
-      ),
+      episodeEvidencePromptRow(episode, {
+        start_time: episode.start_time,
+        end_time: episode.end_time,
+        source_stream_ids: episode.source_stream_ids,
+        significance: episode.significance,
+        tags: episode.tags,
+      }),
     ),
     // Attempts whose outcome was not delivery produce no activity row and no
     // episode, so without these rows the day narrative was assembled from a
@@ -375,7 +380,7 @@ function buildDayPrompt(input: {
         ...memoryDisclosurePayloadFields(goalMemoryDisclosureLabel(goal)),
       }),
     ),
-  ].join("\n");
+  ]);
 }
 
 function invalidSummaryResponse(error: unknown): unknown {
@@ -653,7 +658,7 @@ export class LivedExperienceDaySummarizerProcess implements OfflineProcess<Lived
                         candidate,
                         selfDecisionEvents,
                         activityEvents,
-                        episodes,
+                        episodes: await withEpisodeEvidenceContext(ctx, episodes),
                         actionRecords,
                         goalBlocks,
                         countsSnapshot,

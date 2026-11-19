@@ -1,3 +1,12 @@
+import {
+  readRecordEvidenceContexts,
+  recordEvidenceContext,
+} from "../../memory/common/record-evidence.js";
+import {
+  EVIDENCE_GUIDANCE,
+  evidencePromptFields,
+  renderEvidencePromptLines,
+} from "../evidence-labels.js";
 import { goalBlockStateFields } from "../../memory/self/goal-blocks.js";
 import { z } from "zod";
 
@@ -45,7 +54,7 @@ import {
   overseerFlagKindSchema,
   overseerFlagPayloadSchema,
   overseerToolFlagSchemaForTarget,
-  renderSourceBundleForPrompt,
+  sourceBundlePromptParts,
   resolveTargetSourceBundle,
   sourceAssessmentSchema,
   suppressedOverseerFlagSchema,
@@ -337,9 +346,26 @@ async function buildPrompt(
   selfStateSummary: string,
   maxFlagsPerTarget: number,
 ): Promise<string> {
-  const serializedTarget = withIsoTimestamps(
-    await serializeDisclosureLabeledTargetPayload(ctx, target),
-  );
+  const contexts = readRecordEvidenceContexts(ctx, [
+    { record_type: target.type, record_id: target.id },
+    ...sourceBundle.source_episodes.map((episode) => ({
+      record_type: "episode" as const,
+      record_id: episode.id,
+    })),
+  ]);
+  const payload = withIsoTimestamps(await serializeDisclosureLabeledTargetPayload(ctx, target));
+  const serializedTarget = {
+    ...payload,
+    content: {
+      ...payload.content,
+      ...evidencePromptFields(
+        recordEvidenceContext(contexts, {
+          record_type: target.type,
+          record_id: target.id,
+        }),
+      ),
+    },
+  };
 
   const misattributionLines =
     target.type === "semantic_edge"
@@ -360,7 +386,7 @@ async function buildPrompt(
       "For temporal drift or identity inconsistency on this edge, provide suggested_valid_to and optional by_edge_id; only flag an edge that should be reviewed for closure.",
   }[target.type];
 
-  return [
+  const paragraphs = [
     `Check the memory item for ${target.type === "semantic_edge" ? "temporal drift and identity inconsistency" : "misattribution, temporal drift, and identity inconsistency"}.`,
     "If you flag an issue, include the concrete repair payload needed to fix it.",
     ...misattributionLines,
@@ -376,10 +402,14 @@ async function buildPrompt(
     `Emit your result by calling the ${OVERSEER_TOOL_NAME} tool exactly once.`,
     selfStateSummary,
     "Memory item:",
-    JSON.stringify(serializedTarget),
+    serializedTarget,
     "Raw source entries:",
-    renderSourceBundleForPrompt(sourceBundle),
-  ].join("\n\n");
+  ];
+  return renderEvidencePromptLines([
+    EVIDENCE_GUIDANCE,
+    ...paragraphs.flatMap((paragraph) => [paragraph, ""]),
+    ...sourceBundlePromptParts(sourceBundle, contexts),
+  ]);
 }
 
 async function collectTargets(ctx: OfflineContext): Promise<OverseerTarget[]> {

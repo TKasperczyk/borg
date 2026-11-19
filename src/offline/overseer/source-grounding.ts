@@ -1,3 +1,9 @@
+import {
+  evidencePromptText,
+  renderEvidencePromptLines,
+} from "../../memory/common/evidence-prompt.js";
+import { recordEvidenceContext } from "../../memory/common/record-evidence.js";
+import type { EpisodeEvidenceContext } from "../../memory/common/episode-evidence.js";
 import { renderFrameAnomalyAnnotations } from "../../stream/frame-anomaly.js";
 import { z } from "zod";
 
@@ -550,8 +556,11 @@ function sourceEntryDisclosureLabel(
   );
 }
 
-export function renderSourceBundleForPrompt(bundle: OverseerSourceBundle): string {
-  const lines = [
+export function sourceBundlePromptParts(
+  bundle: OverseerSourceBundle,
+  contexts?: ReadonlyMap<string, EpisodeEvidenceContext>,
+): unknown[] {
+  const lines: unknown[] = [
     "Target source grounding:",
     `target_type: ${bundle.target_type}`,
     `target_id: ${bundle.target_id}`,
@@ -566,7 +575,13 @@ export function renderSourceBundleForPrompt(bundle: OverseerSourceBundle): strin
 
     for (const episode of bundle.source_episodes) {
       lines.push(
-        `EPISODE episode_id=${episode.id} audience_entity_id=${episode.audience_entity_id ?? "none"} origin_audience_entity_ids=${formatIdList(episode.origin_audience_entity_ids)} shared=${String(episode.shared)}`,
+        evidencePromptText(
+          `EPISODE episode_id=${episode.id} audience_entity_id=${episode.audience_entity_id ?? "none"} origin_audience_entity_ids=${formatIdList(episode.origin_audience_entity_ids)} shared=${String(episode.shared)}`,
+          // An episode target already carries this context on its full record above.
+          bundle.target_type === "episode" && bundle.target_id === episode.id
+            ? undefined
+            : recordEvidenceContext(contexts, { record_type: "episode", record_id: episode.id }),
+        ),
       );
     }
   }
@@ -597,7 +612,7 @@ export function renderSourceBundleForPrompt(bundle: OverseerSourceBundle): strin
 
   if (bundle.entries.length === 0) {
     lines.push("Resolved source entries: none");
-    return lines.join("\n");
+    return lines;
   }
 
   lines.push("Resolved source entries:");
@@ -616,5 +631,9 @@ export function renderSourceBundleForPrompt(bundle: OverseerSourceBundle): strin
     );
   }
 
-  return lines.join("\n");
+  return lines;
+}
+
+export function renderSourceBundleForPrompt(bundle: OverseerSourceBundle): string {
+  return renderEvidencePromptLines(sourceBundlePromptParts(bundle));
 }

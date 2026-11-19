@@ -44,7 +44,12 @@ import type {
   OfflineProcessError,
   OfflineResult,
 } from "../types.js";
-import { disclosureLabelForEpisodeIds, episodeEvidencePromptRow } from "../evidence-labels.js";
+import {
+  disclosureLabelForEpisodeIds,
+  episodeEvidencePromptRow,
+  withEpisodeEvidenceContext,
+  renderEvidenceRows,
+} from "../evidence-labels.js";
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
 const GROWTH_MARKER_CONFIDENCE_CEILING = 0.6;
@@ -278,22 +283,20 @@ function buildObservationPrompt(
       : `${omittedCount} earlier episodes of this period are not shown due to ${bound}. They cover ${new Date(episodes[0]!.start_time).toISOString()} to ${new Date(prefixEndTimes[omittedCount - 1]!).toISOString()}. The newest ${episodes.length - omittedCount} episodes are shown below in chronological order.`;
   const header = (omittedCount: number, bound: LimitingBound) =>
     `${priorContext}\n${coverage(omittedCount, bound)}\nEpisodes:`;
-  const rows: string[] = [];
-  let rowsLength = 0;
-  let rowTokens = 0;
+  const rows: Record<string, unknown>[] = [];
+  let evidenceText = "";
   let omittedCount = episodes.length;
   let limitingBound: LimitingBound = "maxPromptTokens";
   for (let index = episodes.length - 1; index >= 0; index -= 1) {
     const episode = episodes[index]!;
-    const row = JSON.stringify(
-      episodeEvidencePromptRow(episode, { start_time: episode.start_time }),
-    );
-    const nextRowsLength = rowsLength + 1 + row.length;
-    const nextRowTokens = rowTokens + estimatePromptTokens(row);
     if (rows.length >= maxEpisodes) {
       limitingBound = "maxEpisodesPerRun";
       break;
     }
+    const row = episodeEvidencePromptRow(episode, { start_time: episode.start_time });
+    const nextEvidence = renderEvidenceRows([row, ...rows]);
+    const nextRowsLength = 1 + nextEvidence.text.length;
+    const nextRowTokens = nextEvidence.tokens;
     if (nextRowTokens > maxInputTokens) {
       limitingBound = "maxInputTokensPerRun";
       break;
@@ -308,14 +311,16 @@ function buildObservationPrompt(
       limitingBound = "maxPromptTokens";
       break;
     }
-    rows.push(row);
-    rowsLength = nextRowsLength;
-    rowTokens = nextRowTokens;
+    rows.unshift(row);
+    evidenceText = nextEvidence.text;
     omittedCount = index;
   }
   return {
     sourceEpisodes: episodes.slice(omittedCount),
-    prompt: [header(omittedCount, limitingBound), ...rows.reverse()].join("\n"),
+    prompt: [
+      header(omittedCount, limitingBound),
+      ...(rows.length === 0 ? [] : [evidenceText]),
+    ].join("\n"),
     coverage: coverage(omittedCount, limitingBound),
     narrativeCoverage: {
       shown_episodes: episodes.length - omittedCount,
@@ -536,7 +541,7 @@ export class SelfNarratorProcess implements OfflineProcess<SelfNarratorPlan> {
     const promptOverheadTokens =
       estimatePromptTokens(systemPrompt) + estimatePromptTokens(JSON.stringify(tools));
     const { sourceEpisodes, prompt, coverage, narrativeCoverage } = buildObservationPrompt(
-      candidateEpisodes,
+      await withEpisodeEvidenceContext(ctx, candidateEpisodes),
       minSupportEpisodes,
       maxObservationsPerRun,
       currentPeriod,

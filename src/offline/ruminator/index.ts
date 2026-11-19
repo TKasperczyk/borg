@@ -11,7 +11,7 @@ import {
   type LLMToolDefinition,
   toToolInputSchema,
 } from "../../llm/index.js";
-import { episodeIdSchema } from "../../memory/episodic/index.js";
+import { episodeIdSchema, type Episode } from "../../memory/episodic/index.js";
 import { memoryDisclosureLabelSchema } from "../../memory/common/disclosure-label.js";
 import {
   growthMarkerCategorySchema,
@@ -64,7 +64,12 @@ import type {
   OfflineProcessRunOptions,
   OfflineResult,
 } from "../types.js";
-import { episodeEvidencePromptRow } from "../evidence-labels.js";
+import {
+  episodeEvidencePromptRow,
+  withEpisodeEvidenceContext,
+  renderEvidencePromptLines,
+  EVIDENCE_GUIDANCE,
+} from "../evidence-labels.js";
 
 // Thinking shares the output allowance with the structured result.
 const RUMINATOR_MAX_OUTPUT_TOKENS = 16_000;
@@ -590,6 +595,20 @@ function renderConnectedOpenQuestionCandidates(candidates: readonly OpenQuestion
       }),
     )
     .join("\n");
+}
+
+function buildResolutionEvidence(
+  renderedEvidence: readonly { episode: Episode; score: number }[],
+): string {
+  return renderEvidencePromptLines([
+    EVIDENCE_GUIDANCE,
+    ...renderedEvidence.map((result) =>
+      episodeEvidencePromptRow(result.episode, {
+        tags: result.episode.tags,
+        relevance_score: Number(result.score.toFixed(3)),
+      }),
+    ),
+  ]);
 }
 
 function buildResolutionPrompt(
@@ -1221,16 +1240,17 @@ async function planResolution(
       ),
     ].sort(),
   ];
-  const evidenceBlock = renderedEvidence
-    .map((result) =>
-      JSON.stringify(
-        episodeEvidencePromptRow(result.episode, {
-          tags: result.episode.tags,
-          relevance_score: Number(result.score.toFixed(3)),
-        }),
-      ),
-    )
-    .join("\n");
+  const decoratedEpisodes = await withEpisodeEvidenceContext(
+    ctx,
+    renderedEvidence.map((result) => result.episode),
+  );
+  const evidenceBlock = buildResolutionEvidence(
+    renderedEvidence.map((result, index) => ({
+      ...result,
+      episode: decoratedEpisodes[index]!,
+    })),
+  );
+
   const recentRuminations = ctx.openQuestionsRepository.listRecentRuminations(question.id, {
     limit: RECENT_RUMINATIONS_PER_QUESTION,
   });
