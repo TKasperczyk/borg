@@ -374,6 +374,7 @@ export function createOwnRecordsListTool(
     allowedOrigins: ["autonomous", "deliberator"],
     writeScope: "read",
     inputSchema: ownRecordsListInputSchema,
+    recordIdInputs: [{ path: "session_id", kinds: ["session"], notFound: "invoke" }],
     outputSchema: ownRecordsListOutputSchema,
     async invoke(input) {
       const sinceMs = Date.parse(input.since);

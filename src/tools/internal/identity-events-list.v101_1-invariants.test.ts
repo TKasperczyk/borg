@@ -30,6 +30,7 @@ function createHarnessToolDispatcher(
   });
 
   return buildToolDispatcher({
+    db: harness.db,
     dataDir: harness.tempDir,
     entryIndex,
     sourceStreamAudienceDisclosureResolver: new SourceStreamAudienceDisclosureResolver({

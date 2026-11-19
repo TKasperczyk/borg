@@ -20,7 +20,7 @@ import {
   type OpenQuestion,
 } from "../../memory/self/index.js";
 import { streamEntryIdSchema } from "../../util/id-schemas.js";
-import { ToolError } from "../../util/errors.js";
+import { StorageError, ToolError } from "../../util/errors.js";
 import type { StreamEntryIndexRepository } from "../../stream/index.js";
 import type { ToolDefinition } from "../dispatcher.js";
 import {
@@ -118,6 +118,40 @@ export function createOpenQuestionsResolveTool(
     allowedOrigins: ["autonomous"],
     writeScope: "write",
     inputSchema: openQuestionsResolveInputSchema,
+    recordIdInputs: [
+      {
+        path: "open_question_id",
+        kinds: ["open_question"],
+        notFound: {
+          error: (id) =>
+            new StorageError(`Unknown open question id: ${id}`, {
+              code: "OPEN_QUESTION_NOT_FOUND",
+            }),
+        },
+      },
+      {
+        path: "resolution_evidence_episode_ids.*",
+        kinds: ["episode"],
+        notFound: {
+          error: (id) =>
+            new ToolError(
+              `Citation ids do not name stored records: ${id}. Re-cite or remove these citations.`,
+              { code: "OPEN_QUESTION_CITATION_NOT_FOUND" },
+            ),
+        },
+      },
+      {
+        path: "resolution_evidence_stream_entry_ids.*",
+        kinds: ["stream_entry"],
+        notFound: {
+          error: (id) =>
+            new ToolError(
+              `Citation ids do not name stored records: ${id}. Re-cite or remove these citations.`,
+              { code: "OPEN_QUESTION_CITATION_NOT_FOUND" },
+            ),
+        },
+      },
+    ],
     outputSchema: openQuestionsResolveOutputSchema,
     async invoke(input, context) {
       const evidenceEpisodeIds = input.resolution_evidence_episode_ids ?? [];

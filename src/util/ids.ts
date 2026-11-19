@@ -2,7 +2,7 @@ import { customAlphabet } from "nanoid";
 
 const ID_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
 const HEX_ID_ALPHABET = "abcdef0123456789";
-const ID_LENGTH = 16;
+export const ID_LENGTH = 16;
 const DEFAULT_SESSION_LITERAL = "default";
 const identifierPatternSources: string[] = [];
 

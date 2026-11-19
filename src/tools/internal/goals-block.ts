@@ -15,6 +15,7 @@ import {
   type GoalsRepository,
 } from "../../memory/self/index.js";
 import type { ToolDefinition } from "../dispatcher.js";
+import { StorageError } from "../../util/errors.js";
 
 const blockInputSchema = goalBlockInputSchema.extend({ goal_id: goalIdSchema }).strict();
 const unblockInputSchema = z
@@ -57,6 +58,45 @@ export function createGoalsBlockTool(
     allowedOrigins: ["autonomous", "deliberator"],
     writeScope: "write",
     inputSchema: blockInputSchema,
+    recordIdInputs: [
+      {
+        path: "goal_id",
+        kinds: ["goal"],
+        notFound: {
+          error: () =>
+            new StorageError("Only an active goal may be blocked", { code: "GOAL_NOT_ACTIVE" }),
+        },
+      },
+      {
+        path: "blocker.goal_id",
+        kinds: ["goal"],
+        notFound: {
+          error: () =>
+            new StorageError("Blocker must name another existing goal", {
+              code: "GOAL_BLOCKER_INVALID",
+            }),
+        },
+      },
+      {
+        path: "blocker.entity_id",
+        kinds: ["entity"],
+        notFound: {
+          error: () =>
+            new StorageError("Blocker entity does not exist", { code: "GOAL_BLOCKER_INVALID" }),
+        },
+      },
+      {
+        path: "attempt_evidence.id",
+        kinds: ["open_question", "scheduled_wake", "executive_step", "stream_entry"],
+        notFound: {
+          error: () =>
+            new StorageError(
+              "Attempt evidence must name an existing artifact from this or an earlier turn",
+              { code: "GOAL_ATTEMPT_EVIDENCE_INVALID" },
+            ),
+        },
+      },
+    ],
     outputSchema,
     async invoke(input) {
       const { goal_id, ...block } = input;
@@ -82,6 +122,13 @@ export function createGoalsUnblockTool(
     allowedOrigins: ["autonomous", "deliberator"],
     writeScope: "write",
     inputSchema: unblockInputSchema,
+    recordIdInputs: [
+      {
+        path: "goal_id",
+        kinds: ["goal"],
+        notFound: { error: () => new StorageError("Unknown goal", { code: "GOAL_NOT_FOUND" }) },
+      },
+    ],
     outputSchema,
     async invoke(input) {
       return result(

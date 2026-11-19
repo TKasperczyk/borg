@@ -46,9 +46,18 @@ export function createScheduledWakesCancelTool(
     allowedOrigins: ["autonomous", "deliberator"],
     writeScope: "write",
     inputSchema: scheduledWakesCancelInputSchema,
+    recordIdInputs: [
+      {
+        path: "scheduled_wake_id",
+        kinds: ["scheduled_wake"],
+        notFound: { output: () => ({ scheduledWake: null }) },
+      },
+    ],
     outputSchema: scheduledWakesCancelOutputSchema,
     async invoke(input) {
-      const scheduledWake = options.cancelScheduledWake(parseScheduledWakeId(input.scheduled_wake_id));
+      const scheduledWake = options.cancelScheduledWake(
+        parseScheduledWakeId(input.scheduled_wake_id),
+      );
 
       return {
         scheduledWake:

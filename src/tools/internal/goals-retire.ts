@@ -45,7 +45,7 @@ const goalsRetireOutputSchema = z.discriminatedUnion("status", [
   z.object({
     status: z.literal("no_op"),
     reason: z.enum(["missing", "not_active"]),
-    goal: goalRetirementSummarySchema,
+    goal: goalRetirementSummarySchema.extend({ id: z.string().min(1) }),
   }),
 ]);
 
@@ -74,6 +74,24 @@ export function createGoalsRetireTool(
     allowedOrigins: ["autonomous", "deliberator"],
     writeScope: "write",
     inputSchema: goalsRetireInputSchema,
+    recordIdInputs: [
+      {
+        path: "goal_id",
+        kinds: ["goal"],
+        notFound: {
+          output: (id) => ({
+            status: "no_op",
+            reason: "missing",
+            goal: {
+              id,
+              description: null,
+              status: "absent",
+              ...memoryDisclosurePayloadFields(unknownMemoryDisclosureLabel()),
+            },
+          }),
+        },
+      },
+    ],
     outputSchema: goalsRetireOutputSchema,
     async invoke(input) {
       const result = options.goalsRepository.retire(

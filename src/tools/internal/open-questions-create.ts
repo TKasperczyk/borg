@@ -9,6 +9,7 @@ import { type OpenQuestion, openQuestionSchema } from "../../memory/self/index.j
 import { episodeIdSchema } from "../../memory/episodic/index.js";
 import { semanticNodeIdSchema } from "../../memory/semantic/types.js";
 import type { EntityId } from "../../util/ids.js";
+import { ToolError } from "../../util/errors.js";
 import type { ToolDefinition } from "../dispatcher.js";
 import {
   formatResolutionCorrections,
@@ -55,6 +56,25 @@ export function createOpenQuestionsCreateTool(
     allowedOrigins: ["autonomous", "deliberator"],
     writeScope: "write",
     inputSchema: openQuestionsCreateInputSchema,
+    recordIdInputs: [
+      {
+        path: "related_episode_ids.*",
+        kinds: ["episode"],
+        requireExisting: true,
+        notFound: {
+          error: (id) => new ToolError(`Unknown episode id: ${id}`, { code: "TOOL_INPUT_INVALID" }),
+        },
+      },
+      {
+        path: "related_semantic_node_ids.*",
+        kinds: ["semantic_node"],
+        requireExisting: true,
+        notFound: {
+          error: (id) =>
+            new ToolError(`Unknown semantic node id: ${id}`, { code: "TOOL_INPUT_INVALID" }),
+        },
+      },
+    ],
     outputSchema: openQuestionsCreateOutputSchema,
     async invoke(input, context) {
       const openQuestion = options.createOpenQuestion({

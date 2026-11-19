@@ -72,6 +72,13 @@ export function createStreamGetTool(options: {
     allowedOrigins: ["autonomous", "deliberator"],
     writeScope: "read",
     inputSchema,
+    recordIdInputs: [
+      {
+        path: "stream_entry_id",
+        kinds: ["stream_entry"],
+        notFound: { output: () => ({ entry: null }) },
+      },
+    ],
     outputSchema,
     async invoke(input) {
       const result = await options.readEntry(input.stream_entry_id);

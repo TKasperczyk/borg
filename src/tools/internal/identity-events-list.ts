@@ -4,6 +4,7 @@ import {
   IDENTITY_EVENT_COGNITION_CHANGE_EXCERPT_MAX_CHARS,
   identityEventSchema,
   identityRecordTypeSchema,
+  IDENTITY_RECORD_TYPES,
   type IdentityEvent,
   type IdentityRecordType,
 } from "../../memory/identity/index.js";
@@ -283,6 +284,7 @@ export function createIdentityEventsListForCognitionTool(
     allowedOrigins: ["autonomous", "deliberator"],
     writeScope: "read",
     inputSchema: identityEventsListInputSchema,
+    recordIdInputs: [{ path: "recordId", kinds: IDENTITY_RECORD_TYPES, notFound: "invoke" }],
     outputSchema: identityEventsListForCognitionOutputSchema,
     async invoke(input, context) {
       const events = await options.listEvents(

@@ -1,4 +1,12 @@
 import { z } from "zod";
+import type { RecordIdResolver } from "./record-id-resolver.js";
+import {
+  resolveToolRecordIds,
+  missingToolIdOutput,
+  type RecordIdInput,
+  type ToolIdResolution,
+} from "./record-id-inputs.js";
+import { isPlainRecord } from "../util/guards.js";
 
 import type { TurnOrigin } from "../contracts/cognitive-contracts.js";
 import type { BorgRole } from "../memory/commitments/index.js";
@@ -46,6 +54,7 @@ export type ToolDefinition<Input = unknown, Output = unknown> = {
   writeScope: "read" | "write";
   inputSchema: z.ZodType<Input>;
   outputSchema: z.ZodType<Output>;
+  recordIdInputs?: readonly RecordIdInput[];
   // Per-tool ceiling for tools whose backing store legitimately needs longer
   // than the dispatcher default (vector search over a fragmented index).
   // Structural capacity, not a judgment knob; call-level timeoutMs still wins.
@@ -107,6 +116,7 @@ export type ToolDispatchResult<Output = unknown> =
     };
 
 export type ToolDispatcherOptions = {
+  recordIdResolver?: RecordIdResolver;
   createStreamWriter: (sessionId: SessionId) => StreamWriter;
   clock?: Clock;
   defaultTimeoutMs?: number;
@@ -231,13 +241,35 @@ export class ToolDispatcher {
     const writer = this.options.createStreamWriter(sessionId);
 
     try {
+      const idResolutions: ToolIdResolution[] = [];
+      let resolvedInput: ReturnType<typeof resolveToolRecordIds> = {
+        input: call.input,
+        missing: [],
+      };
+      let resolutionFailure: { error: unknown } | undefined;
+      // The origin guard still precedes all lookup. Persist canonical addresses
+      // before invocation so downstream accounting (including outbound limits)
+      // observes the same target for full IDs and handles. Retain the mapping.
+      if (tool !== undefined && tool.allowedOrigins.includes(call.origin)) {
+        try {
+          resolvedInput = resolveToolRecordIds(
+            tool,
+            call.input,
+            this.options.recordIdResolver,
+            idResolutions,
+          );
+        } catch (error) {
+          resolutionFailure = { error };
+        }
+      }
       const toolCallEntry = await writer.append({
         kind: "tool_call",
         ...(call.turnId === undefined ? {} : { turn_id: call.turnId }),
         content: {
           call_id: callId,
           tool_name: call.toolName,
-          input: call.input,
+          input: resolvedInput.input,
+          ...(idResolutions.length === 0 ? {} : { id_resolutions: idResolutions }),
           origin: call.origin,
           ...(call.turnOrigin === undefined ? {} : { turn_origin: call.turnOrigin }),
           ...(call.provenance === undefined ? {} : { provenance: call.provenance }),
@@ -266,9 +298,33 @@ export class ToolDispatcher {
         );
       }
 
-      const parsedInput = tool.inputSchema.safeParse(call.input);
+      if (resolutionFailure !== undefined) {
+        const { error } = resolutionFailure;
+        return await this.appendErrorResult(
+          writer,
+          callId,
+          call.toolName,
+          formatToolError(error),
+          startedAt,
+          call.turnId,
+          error instanceof BorgError ? error.code : "TOOL_INPUT_INVALID",
+          idResolutions,
+        );
+      }
+      const parsedInput = tool.inputSchema.safeParse(resolvedInput.input);
 
-      if (!parsedInput.success) {
+      // A missing prefix has valid ID structure but intentionally cannot pass
+      // a full-ID refinement. Other input errors still win over a missing result.
+      const remainingIssues = parsedInput.success
+        ? []
+        : parsedInput.error.issues.filter(
+            (issue) =>
+              !resolvedInput.missing.some((missing) => issue.path.join(".") === missing.field),
+          );
+      if (
+        !parsedInput.success &&
+        (resolvedInput.missing.length === 0 || remainingIssues.length > 0)
+      ) {
         return await this.appendErrorResult(
           writer,
           callId,
@@ -277,6 +333,7 @@ export class ToolDispatcher {
           startedAt,
           call.turnId,
           "TOOL_INPUT_INVALID",
+          idResolutions,
         );
       }
 
@@ -301,6 +358,12 @@ export class ToolDispatcher {
         // a timed-out write can still commit after the model sees failure.
         // Write tools must keep their own execution bounded internally.
         try {
+          const missing = resolvedInput.missing.find((item) => item.spec.notFound !== "invoke");
+          if (missing !== undefined)
+            return { kind: "resolved", value: missingToolIdOutput(missing) };
+          // Only read filters use 'invoke' for a missing prefix. Their original
+          // implementation owns the empty-range semantics (including unfiltered lanes).
+          const input = parsedInput.success ? parsedInput.data : resolvedInput.input;
           return {
             kind: "resolved",
             value:
@@ -320,9 +383,9 @@ export class ToolDispatcher {
                         toolName: call.toolName,
                         ...observation,
                       }),
-                    run: (signal) => tool.invoke(parsedInput.data, { ...context, signal }),
+                    run: (signal) => tool.invoke(input, { ...context, signal }),
                   })
-                : await tool.invoke(parsedInput.data, context),
+                : await tool.invoke(input, context),
           };
         } catch (error) {
           return {
@@ -343,6 +406,7 @@ export class ToolDispatcher {
           startedAt,
           call.turnId,
           invocation.error instanceof BorgError ? invocation.error.code : "TOOL_INVOCATION_FAILED",
+          idResolutions,
         );
       }
 
@@ -356,9 +420,15 @@ export class ToolDispatcher {
           parsedOutput.error.message,
           startedAt,
           call.turnId,
+          undefined,
+          idResolutions,
         );
       }
 
+      const output =
+        idResolutions.length > 0 && isPlainRecord(parsedOutput.data)
+          ? { ...parsedOutput.data, id_resolutions: idResolutions }
+          : parsedOutput.data;
       const durationMs = Math.max(0, this.clock.now() - startedAt);
       await writer.append({
         kind: "tool_result",
@@ -366,7 +436,7 @@ export class ToolDispatcher {
         content: {
           call_id: callId,
           ok: true,
-          output: parsedOutput.data,
+          output,
           duration_ms: durationMs,
         },
       });
@@ -375,7 +445,7 @@ export class ToolDispatcher {
         callId,
         toolName: call.toolName,
         ok: true,
-        output: parsedOutput.data,
+        output,
         durationMs,
       };
     } finally {
@@ -391,7 +461,9 @@ export class ToolDispatcher {
     startedAt: number,
     turnId?: string,
     errorCode?: string,
+    idResolutions: readonly ToolIdResolution[] = [],
   ): Promise<ToolDispatchResult> {
+    if (idResolutions.length > 0) error += `\n${JSON.stringify({ id_resolutions: idResolutions })}`;
     const durationMs = Math.max(0, this.clock.now() - startedAt);
 
     await writer.append({

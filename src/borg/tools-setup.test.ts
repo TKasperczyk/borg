@@ -59,6 +59,7 @@ describe("buildToolDispatcher", () => {
       },
     );
     const dispatcher = buildToolDispatcher({
+      db: {} as never,
       dataDir: "/tmp/borg-tools-setup-test",
       entryIndex: {} as never,
       sourceStreamAudienceDisclosureResolver: {

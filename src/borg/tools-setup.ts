@@ -1,6 +1,8 @@
 // Registers Borg's built-in read and memory tools with a dispatcher.
 
 import type { Clock } from "../util/clock.js";
+import type { SqliteDatabase } from "../storage/sqlite/index.js";
+import { createRecordIdResolver } from "../tools/record-id-resolver.js";
 import type { Config } from "../config/index.js";
 import type { ToolDispatchCall } from "../tools/dispatcher.js";
 import type { TimeoutLoadSignals } from "../util/timeout-policy.js";
@@ -76,6 +78,7 @@ import {
 import type { BorgStreamWriterFactory } from "./types.js";
 
 export type BuildToolDispatcherOptions = {
+  db: SqliteDatabase;
   dataDir: string;
   entryIndex: StreamEntryIndexRepository;
   sourceStreamAudienceDisclosureResolver: SourceStreamAudienceDisclosureResolver;
@@ -181,6 +184,7 @@ async function annotateSemanticWalkSteps(
 
 export function buildToolDispatcher(options: BuildToolDispatcherOptions): ToolDispatcher {
   const toolDispatcher = new ToolDispatcher({
+    recordIdResolver: createRecordIdResolver(options.db),
     createStreamWriter: options.createStreamWriter,
     clock: options.clock,
     ...options.toolTimeouts,

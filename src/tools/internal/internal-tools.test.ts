@@ -21,7 +21,7 @@ import {
   createTestConfig,
   TestEmbeddingClient,
 } from "../../offline/test-support.js";
-import { StreamEntryIndexRepository, StreamWriter } from "../../stream/index.js";
+import { StreamEntryIndexRepository, StreamReader, StreamWriter } from "../../stream/index.js";
 import { SourceStreamAudienceDisclosureResolver } from "../../memory/common/index.js";
 import {
   ToolDispatcher,
@@ -33,6 +33,10 @@ import {
   createSkillsListTool,
 } from "../../tools/index.js";
 import { ManualClock } from "../../util/clock.js";
+import { SessionsRepository } from "../../sessions/index.js";
+import { AutonomousOutboundPolicy } from "../../outbound/index.js";
+import { createOutboundPostTool } from "./outbound-post.js";
+import type { ToolDispatchCall } from "../dispatcher.js";
 import { estimatePromptTokens } from "../../util/token-estimate.js";
 import {
   createAttachmentId,
@@ -43,6 +47,7 @@ import {
   createSemanticNodeId,
   createSessionId,
   createStreamEntryId,
+  type SessionId,
 } from "../../util/ids.js";
 
 const TYPESCRIPT_DEBUG_CONTEXT_KEY = deriveProceduralContextKey({
@@ -101,6 +106,7 @@ function createHarnessToolDispatcher(
   });
 
   return buildToolDispatcher({
+    db: harness.db,
     dataDir: harness.tempDir,
     entryIndex,
     sourceStreamAudienceDisclosureResolver: new SourceStreamAudienceDisclosureResolver({
@@ -141,6 +147,511 @@ describe("internal tools", () => {
       rmSync(tempDirs.pop() as string, { recursive: true, force: true });
     }
   });
+
+  it("matches unmatched handles to full-ID outcomes through all 14 real tool/repository paths", async () => {
+    const harness = await createOfflineTestHarness();
+    try {
+      const dispatcher = createHarnessToolDispatcher(harness);
+      const sessionsRepository = new SessionsRepository({ db: harness.db, clock: harness.clock });
+      const postOutbound = vi.fn();
+      dispatcher.register(
+        createOutboundPostTool({
+          sessionsRepository,
+          connectorRegistry: { has: () => true },
+          actionRepository: harness.actionRepository,
+          postOutbound,
+        }),
+      );
+      const episode = await harness.episodicRepository.createEpisode(createEpisodeFixture());
+      const question = harness.openQuestionsRepository.add({
+        question: "Synthetic reference audit",
+        urgency: 0.5,
+        source: "reflection",
+        provenance: { kind: "manual" },
+      });
+      const resolved = harness.openQuestionsRepository.resolve(question.id, {
+        resolution_note: "Synthetic resolution",
+        resolution_evidence_episode_ids: [episode.id],
+      });
+      const goal = harness.goalsRepository.add({
+        description: "Synthetic active goal",
+        priority: 5,
+        provenance: { kind: "manual" },
+      });
+      const goalBefore = harness.goalsRepository.get(goal.id);
+      const retired = harness.goalsRepository.add({
+        description: "Synthetic global disposition",
+        priority: 5,
+        provenance: { kind: "manual" },
+      });
+      expect(
+        await dispatcher.dispatch({
+          toolName: "tool.goals.retire",
+          origin: "autonomous",
+          input: {
+            goal_id: retired.id,
+            disposition: "abandoned",
+            reason: "Synthetic disposition",
+          },
+        }),
+      ).toMatchObject({ ok: true });
+      await harness.streamWriter.append({
+        kind: "thought",
+        content: "Synthetic thought in a different session",
+      });
+      expect(
+        await dispatcher.dispatch({
+          toolName: "tool.journal.append",
+          origin: "autonomous",
+          input: { text: "Synthetic journal" },
+        }),
+      ).toMatchObject({ ok: true });
+      const range = { since: new Date(0).toISOString(), until: new Date(2_000_000).toISOString() };
+      const block = {
+        goal_id: goal.id,
+        blocker: { kind: "until", until: 2_000_000 },
+        attempt_status: "attempted_unavailable",
+        reason: "Synthetic attempt",
+      };
+      const resolve = {
+        open_question_id: question.id,
+        resolution_note: "Synthetic conclusion",
+        resolution_evidence_episode_ids: [episode.id],
+      };
+      const correct = {
+        open_question_id: resolved.id,
+        correction_note: "Synthetic correction",
+        evidence: [{ id: episode.id, basis: "own_read" }],
+      };
+      const cases: Array<{
+        name: string;
+        prefix: string;
+        input: (id: string) => unknown;
+        errorCode?: string;
+      }> = [
+        { name: "episodic.get", prefix: "ep_", input: (id) => ({ episode_id: id }) },
+        { name: "stream.get", prefix: "strm_", input: (id) => ({ stream_entry_id: id }) },
+        {
+          name: "semantic.walk",
+          prefix: "semn_",
+          input: (id) => ({ node_id: id, relation: "supports" }),
+        },
+        ...["related_episode_ids", "related_semantic_node_ids"].map((field, i) => ({
+          name: "openQuestions.create",
+          prefix: i === 0 ? "ep_" : "semn_",
+          input: (id: string) => ({ question: "Synthetic missing reference", [field]: [id] }),
+          errorCode: "TOOL_INPUT_INVALID",
+        })),
+        {
+          name: "openQuestions.resolve",
+          prefix: "oq_",
+          input: (id) => ({ ...resolve, open_question_id: id }),
+          errorCode: "OPEN_QUESTION_NOT_FOUND",
+        },
+        ...["resolution_evidence_episode_ids", "resolution_evidence_stream_entry_ids"].map(
+          (field, i) => ({
+            name: "openQuestions.resolve",
+            prefix: i === 0 ? "ep_" : "strm_",
+            input: (id: string) => ({ ...resolve, [field]: [id] }),
+            errorCode: "OPEN_QUESTION_CITATION_NOT_FOUND",
+          }),
+        ),
+        {
+          name: "openQuestions.correctResolution",
+          prefix: "oq_",
+          input: (id) => ({ ...correct, open_question_id: id }),
+          errorCode: "OPEN_QUESTION_NOT_FOUND",
+        },
+        ...["ep_", "strm_"].map((prefix) => ({
+          name: "openQuestions.correctResolution",
+          prefix,
+          input: (id: string) => ({ ...correct, evidence: [{ id, basis: "own_read" }] }),
+          errorCode: "OPEN_QUESTION_CITATION_NOT_FOUND",
+        })),
+        {
+          name: "openQuestions.ruminations",
+          prefix: "oq_",
+          input: (id) => ({ ...range, open_question_id: id }),
+        },
+        {
+          name: "goals.retire",
+          prefix: "goal_",
+          input: (id) => ({ goal_id: id, disposition: "abandoned", reason: "Synthetic reason" }),
+        },
+        {
+          name: "goals.block",
+          prefix: "goal_",
+          input: (id) => ({ ...block, goal_id: id }),
+          errorCode: "GOAL_NOT_ACTIVE",
+        },
+        {
+          name: "goals.block",
+          prefix: "goal_",
+          input: (id) => ({ ...block, blocker: { kind: "goal", goal_id: id } }),
+          errorCode: "GOAL_BLOCKER_INVALID",
+        },
+        {
+          name: "goals.block",
+          prefix: "ent_",
+          input: (id) => ({ ...block, blocker: { kind: "entity", entity_id: id } }),
+          errorCode: "GOAL_BLOCKER_INVALID",
+        },
+        ...(
+          [
+            ["oq_", "resolved_open_question"],
+            ["swake_", "scheduled_wake"],
+            ["exstep_", "executive_step_outcome"],
+            ["strm_", "stream_entry"],
+          ] as const
+        ).map(([prefix, kind]) => ({
+          name: "goals.block",
+          prefix,
+          input: (id: string) => ({ ...block, attempt_evidence: { kind, id } }),
+          errorCode: "GOAL_ATTEMPT_EVIDENCE_INVALID",
+        })),
+        {
+          name: "goals.unblock",
+          prefix: "goal_",
+          input: (id) => ({ goal_id: id, reason: "Synthetic reason" }),
+          errorCode: "GOAL_NOT_FOUND",
+        },
+        {
+          name: "scheduledWakes.cancel",
+          prefix: "swake_",
+          input: (id) => ({ scheduled_wake_id: id }),
+        },
+        {
+          name: "identityEvents.listForCognition",
+          prefix: "seme_",
+          input: (id) => ({ recordType: "semantic_edge", recordId: id }),
+        },
+        { name: "ownRecords.list", prefix: "sess_", input: (id) => ({ ...range, session_id: id }) },
+        {
+          name: "outbound.post",
+          prefix: "sess_",
+          input: (id) => ({ target_session_id: id, instruction: "Synthetic outbound" }),
+          errorCode: "OUTBOUND_POST_TARGET_NOT_FOUND",
+        },
+      ];
+      expect(new Set(cases.map((test) => test.name)).size).toBe(14);
+      const questionCount = harness.db.prepare("SELECT COUNT(*) AS n FROM open_questions").get()!.n;
+      for (const test of cases) {
+        const handle = test.prefix + "none";
+        const fullId = handle + "000000000000";
+        const results = [];
+        for (const id of [fullId, handle]) {
+          const result = await dispatcher.dispatch({
+            toolName: `tool.${test.name}`,
+            input: test.input(id),
+            origin: "autonomous",
+          });
+          expect(result, `${test.name}: ${id}`).toMatchObject(
+            test.errorCode === undefined ? { ok: true } : { ok: false, errorCode: test.errorCode },
+          );
+          results.push(
+            result.ok
+              ? { ok: true, output: result.output }
+              : { ok: false, errorCode: result.errorCode, error: result.error },
+          );
+        }
+        // The echoed missing address is the only intentional textual difference.
+        expect(results[1], test.name).toEqual(
+          JSON.parse(JSON.stringify(results[0]).replaceAll(fullId, handle)),
+        );
+        if (test.name === "openQuestions.ruminations")
+          expect(results[0]).toEqual({ ok: true, output: { ruminations: [], has_more: false } });
+        if (test.name === "ownRecords.list")
+          expect(results[0]).toMatchObject({
+            ok: true,
+            output: { records: [{ kind: "goal_disposition" }], has_more: false },
+          });
+      }
+      expect(postOutbound).not.toHaveBeenCalled();
+      expect(harness.openQuestionsRepository.get(question.id)).toEqual(resolved);
+      expect(harness.goalsRepository.get(goal.id)).toEqual(goalBefore);
+      expect(harness.db.prepare("SELECT COUNT(*) AS n FROM open_questions").get()!.n).toBe(
+        questionCount,
+      );
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("persists a mixed exact/prefix reference array and echoes only the resolved elements", async () => {
+    const harness = await createOfflineTestHarness();
+    try {
+      const dispatcher = createHarnessToolDispatcher(harness);
+      const first = await harness.episodicRepository.createEpisode(createEpisodeFixture());
+      const second = await harness.episodicRepository.createEpisode(createEpisodeFixture());
+      const node = await harness.semanticNodeRepository.insert(createSemanticNodeFixture());
+      const handle = second.id.slice(0, 7);
+      const result = await dispatcher.dispatch({
+        toolName: "tool.openQuestions.create",
+        origin: "autonomous",
+        input: {
+          question: "Synthetic mixed references",
+          related_episode_ids: [first.id, handle],
+          related_semantic_node_ids: [node.id],
+        },
+      });
+      expect(result).toMatchObject({
+        ok: true,
+        output: {
+          openQuestion: {
+            related_episode_ids: [first.id, second.id],
+            related_semantic_node_ids: [node.id],
+          },
+          id_resolutions: [
+            { field: "related_episode_ids.1", input: handle, resolved_id: second.id },
+          ],
+        },
+      });
+      if (!result.ok) throw new Error(result.error);
+      const output = result.output as {
+        openQuestion: { id: Parameters<typeof harness.openQuestionsRepository.get>[0] };
+      };
+      expect(
+        harness.openQuestionsRepository.get(output.openQuestion.id)?.related_episode_ids,
+      ).toEqual([first.id, second.id]);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it("keeps short-handle outbound target authorization identical to full IDs", async () => {
+    const harness = await createOfflineTestHarness();
+    try {
+      const sessionsRepository = new SessionsRepository({ db: harness.db, clock: harness.clock });
+      const ensure = (suffix: string, status: "active" | "archived" = "active") =>
+        sessionsRepository.ensure({
+          session_id: `sess_${suffix}000000000000` as SessionId,
+          source_type: "demo",
+          label: "Synthetic session",
+          audience_label: "Synthetic audience",
+          conversation_kind: "demo",
+          audience_role: "operator",
+          status,
+        });
+      const current = ensure("here");
+      const target = ensure("dest");
+      const archived = ensure("arch", "archived");
+      const denied = ensure("deny");
+      const policy = new AutonomousOutboundPolicy({
+        config: {
+          ...harness.config.autonomy.proactiveOutbound,
+          enabled: true,
+          allowByCreatorDirective: false,
+          allowByConfig: { sessionIds: [target.session_id], sourceTypes: [] },
+          maxPostsPerWindow: 100,
+          maxPostsPerTargetPerWindow: 100,
+        },
+        sessionsRepository,
+        creatorDirectiveRepository: harness.creatorDirectiveRepository,
+        createStreamReader: (sessionId) =>
+          new StreamReader({ dataDir: harness.tempDir, sessionId }),
+        transportSourceTypes: ["demo"],
+        clock: harness.clock,
+      });
+      const postOutbound = vi.fn(async ({ targetSession }: { targetSession: typeof target }) => ({
+        targetSessionId: targetSession.session_id,
+        status: "target_busy" as const,
+        emitted: false,
+        response: "",
+        deliveryOutcome: { state: "target_busy" as const, reason: "target_session_busy" as const },
+      }));
+      const dispatcher = createHarnessToolDispatcher(harness);
+      dispatcher.register(
+        createOutboundPostTool({
+          sessionsRepository,
+          actionRepository: harness.actionRepository,
+          connectorRegistry: { has: () => true },
+          autonomousOutboundPolicy: policy,
+          postOutbound,
+          clock: harness.clock,
+        }),
+      );
+      const cases: Array<{
+        target: typeof target;
+        context: Partial<ToolDispatchCall>;
+        errorCode?: string;
+      }> = [
+        { target: current, context: {}, errorCode: "OUTBOUND_POST_TARGET_IS_CURRENT_SESSION" },
+        { target: archived, context: {}, errorCode: "OUTBOUND_POST_TARGET_ARCHIVED" },
+        {
+          target,
+          context: { currentSenderBorgRole: null },
+          errorCode: "OUTBOUND_POST_UNAUTHORIZED",
+        },
+        {
+          target,
+          context: { sessionAudienceRole: "participant" },
+          errorCode: "OUTBOUND_POST_UNAUTHORIZED",
+        },
+        { target, context: {} },
+        {
+          target: denied,
+          context: { origin: "autonomous" },
+          errorCode: "AUTONOMOUS_OUTBOUND_TARGET_NOT_AUTHORIZED",
+        },
+        { target, context: { origin: "autonomous" } },
+      ];
+      let turn = 0;
+      for (const test of cases) {
+        const results = [];
+        const handle = test.target.session_id.slice(0, 9);
+        const before = postOutbound.mock.calls.length;
+        for (const id of [test.target.session_id, handle]) {
+          const result = await dispatcher.dispatch({
+            toolName: "tool.outbound.post",
+            sessionId: current.session_id,
+            origin: "deliberator",
+            currentSenderBorgRole: "creator",
+            turnId: `synthetic-outbound-${turn++}`,
+            ...test.context,
+            input: { target_session_id: id, instruction: "Synthetic outbound instruction" },
+          });
+          expect(result).toMatchObject(
+            test.errorCode === undefined ? { ok: true } : { ok: false, errorCode: test.errorCode },
+          );
+          if (result.ok) {
+            const { id_resolutions, ...output } = result.output as Record<string, unknown>;
+            expect(id_resolutions).toEqual(
+              id === handle
+                ? [
+                    {
+                      field: "target_session_id",
+                      input: handle,
+                      resolved_id: test.target.session_id,
+                    },
+                  ]
+                : undefined,
+            );
+            results.push({ ok: true, output });
+          } else {
+            if (id === handle)
+              expect(result.error).toContain(`"resolved_id":"${test.target.session_id}"`);
+            results.push({
+              ok: false,
+              errorCode: result.errorCode,
+              error: result.error.split("\n")[0],
+            });
+          }
+        }
+        expect(results[1]).toEqual(results[0]);
+        expect(postOutbound.mock.calls.length - before).toBe(test.errorCode === undefined ? 2 : 0);
+      }
+      expect(
+        postOutbound.mock.calls.every(
+          ([input]) => input.targetSession.session_id === target.session_id,
+        ),
+      ).toBe(true);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  it.each([false, true])(
+    "counts outbound target caps identically when the first attempt uses a handle: %s",
+    async (useHandle) => {
+      const harness = await createOfflineTestHarness();
+      try {
+        const sessionsRepository = new SessionsRepository({ db: harness.db, clock: harness.clock });
+        const current = sessionsRepository.ensure({
+          session_id: createSessionId(),
+          source_type: "demo",
+          label: "Synthetic current",
+          audience_label: "Synthetic current audience",
+          conversation_kind: "demo",
+        });
+        const target = sessionsRepository.ensure({
+          session_id: createSessionId(),
+          source_type: "demo",
+          label: "Synthetic target",
+          audience_label: "Synthetic target audience",
+          conversation_kind: "demo",
+        });
+        const createStreamReader = (sessionId: SessionId) =>
+          new StreamReader({ dataDir: harness.tempDir, sessionId });
+        const policy = new AutonomousOutboundPolicy({
+          config: {
+            ...harness.config.autonomy.proactiveOutbound,
+            enabled: true,
+            allowByCreatorDirective: false,
+            allowByConfig: { sessionIds: [target.session_id], sourceTypes: [] },
+            maxPostsPerWindow: 100,
+            maxPostsPerTargetPerWindow: 1,
+          },
+          sessionsRepository,
+          creatorDirectiveRepository: harness.creatorDirectiveRepository,
+          createStreamReader,
+          transportSourceTypes: ["demo"],
+          clock: harness.clock,
+        });
+        const postOutbound = vi.fn(async () => ({
+          targetSessionId: target.session_id,
+          status: "target_busy" as const,
+          emitted: false,
+          response: "",
+          deliveryOutcome: {
+            state: "target_busy" as const,
+            reason: "target_session_busy" as const,
+          },
+        }));
+        const dispatcher = createHarnessToolDispatcher(harness);
+        dispatcher.register(
+          createOutboundPostTool({
+            sessionsRepository,
+            actionRepository: harness.actionRepository,
+            connectorRegistry: { has: () => true },
+            autonomousOutboundPolicy: policy,
+            postOutbound,
+            clock: harness.clock,
+          }),
+        );
+        const handle = target.session_id.slice(0, 9);
+        const first = await dispatcher.dispatch({
+          toolName: "tool.outbound.post",
+          sessionId: current.session_id,
+          turnId: "synthetic-cap-first",
+          origin: "autonomous",
+          input: {
+            target_session_id: useHandle ? handle : target.session_id,
+            instruction: "Synthetic instruction",
+          },
+        });
+        expect(first).toMatchObject({ ok: true });
+        const calls = createStreamReader(current.session_id)
+          .tail(2)
+          .filter((entry) => entry.kind === "tool_call");
+        expect(calls[0]!.content).toMatchObject({
+          input: { target_session_id: target.session_id },
+          ...(useHandle
+            ? {
+                id_resolutions: [
+                  { field: "target_session_id", input: handle, resolved_id: target.session_id },
+                ],
+              }
+            : {}),
+        });
+        for (const [index, id] of [target.session_id, handle].entries()) {
+          const next = await dispatcher.dispatch({
+            toolName: "tool.outbound.post",
+            sessionId: current.session_id,
+            turnId: `synthetic-cap-next-${index}`,
+            origin: "autonomous",
+            input: { target_session_id: id, instruction: "Synthetic retry" },
+          });
+          expect(next).toMatchObject({
+            ok: false,
+            errorCode: "AUTONOMOUS_OUTBOUND_TARGET_CAP_EXCEEDED",
+          });
+        }
+        expect(postOutbound).toHaveBeenCalledTimes(1);
+      } finally {
+        await harness.cleanup();
+      }
+    },
+  );
 
   it("searches episodic memory", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "borg-"));
@@ -437,21 +948,42 @@ describe("internal tools", () => {
         reason: "lifecycle fixture",
         process: "curator",
       });
+      const episodeHandle = episode.id.slice(0, 7);
       expect(
         await dispatcher.dispatch({
           toolName: "tool.episodic.get",
-          input: { episode_id: episode.id },
+          input: { episode_id: episodeHandle },
           origin: "autonomous",
           sessionId: DEFAULT_SESSION_ID,
+          audienceEntityId: alice,
         }),
       ).toMatchObject({
         ok: true,
         output: {
+          id_resolutions: [{ field: "episode_id", input: episodeHandle, resolved_id: episode.id }],
           episode: {
             narrative: fullText,
             archived: true,
             lifecycle_status: "archived",
           },
+        },
+      });
+      const streamHandle = entry.id.slice(0, 9);
+      expect(
+        await dispatcher.dispatch({
+          toolName: "tool.stream.get",
+          input: { stream_entry_id: streamHandle },
+          origin: "autonomous",
+          sessionId: DEFAULT_SESSION_ID,
+          audienceEntityId: alice,
+        }),
+      ).toMatchObject({
+        ok: true,
+        output: {
+          entry: { id: entry.id, session_id: sessionId, text: fullText },
+          id_resolutions: [
+            { field: "stream_entry_id", input: streamHandle, resolved_id: entry.id },
+          ],
         },
       });
       for (const [toolName, input, field] of [
@@ -533,7 +1065,11 @@ describe("internal tools", () => {
         (readWithCalls as { output: { entry: { tool_calls: unknown } } }).output.entry.tool_calls,
       ).toEqual([
         { name: "tool.stream.get", input: { stream_entry_id: source.id }, ok: true },
-        { name: "tool.episodic.search", input: { query: "zakupy na głodniaka", limit: 5 }, ok: false },
+        {
+          name: "tool.episodic.search",
+          input: { query: "zakupy na głodniaka", limit: 5 },
+          ok: false,
+        },
         { name: null, input: null, ok: null },
       ]);
       expect(JSON.stringify(readWithCalls)).not.toContain("recorded output body");

@@ -40,6 +40,7 @@ import {
 } from "../../util/ids.js";
 import { headTailTextExcerpt } from "../../util/text-excerpt.js";
 import { ToolDispatcher } from "../dispatcher.js";
+import { createRecordIdResolver } from "../record-id-resolver.js";
 import { createOpenQuestionsCorrectResolutionTool } from "./open-questions-correct-resolution.js";
 import { createOpenQuestionsCreateTool } from "./open-questions-create.js";
 import { createOpenQuestionsResolveTool } from "./open-questions-resolve.js";
@@ -145,6 +146,41 @@ describe("resolved question corrections", () => {
   afterEach(async () => {
     vi.restoreAllMocks();
     await h?.cleanup();
+  });
+
+  it("corrects a resolved question by short handle and echoes question and evidence resolutions", async () => {
+    const dispatcher = new ToolDispatcher({
+      recordIdResolver: createRecordIdResolver(h.db),
+      createStreamWriter: () => h.streamWriter,
+      clock,
+    });
+    dispatcher.register(tool);
+    const questionHandle = question.id.slice(0, 7);
+    const episodeHandle = episode.id.slice(0, 7);
+    const result = await dispatcher.dispatch({
+      toolName: tool.name,
+      origin: "autonomous",
+      audienceEntityId: createEntityId(),
+      sessionId: DEFAULT_SESSION_ID,
+      input: {
+        ...input(),
+        open_question_id: questionHandle,
+        evidence: [{ id: episodeHandle, basis: "own_read" }],
+      },
+    });
+    expect(result).toMatchObject({
+      ok: true,
+      output: {
+        openQuestion: { id: question.id, status: "resolved", resolution_correction_count: 1 },
+        id_resolutions: [
+          { field: "open_question_id", input: questionHandle, resolved_id: question.id },
+          { field: "evidence.0.id", input: episodeHandle, resolved_id: episode.id },
+        ],
+      },
+    });
+    expect(
+      h.openQuestionsRepository.get(question.id)?.resolution_corrections?.[0]?.evidence[0]?.id,
+    ).toBe(episode.id);
   });
 
   it("appends byte-preserving, versioned, audited corrections and targets an earlier correction", async () => {

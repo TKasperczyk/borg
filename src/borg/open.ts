@@ -208,6 +208,7 @@ export async function openBorgDependencies(
       entryIndex: repositories.entryIndex,
     });
     const toolDispatcher = buildToolDispatcher({
+      db: sqlite,
       toolTimeouts: config.tools,
       budgetTracer: tracer,
       loadSignals: (call) => {

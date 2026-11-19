@@ -138,6 +138,13 @@ export function createOpenQuestionsRuminationsTool(
     allowedOrigins: ["autonomous", "deliberator"],
     writeScope: "read",
     inputSchema: openQuestionsRuminationsInputSchema,
+    recordIdInputs: [
+      {
+        path: "open_question_id",
+        kinds: ["open_question"],
+        notFound: { output: () => ({ ruminations: [], has_more: false }) },
+      },
+    ],
     outputSchema: openQuestionsRuminationsOutputSchema,
     async invoke(input) {
       const sinceMs = Date.parse(input.since);
