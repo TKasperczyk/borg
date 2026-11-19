@@ -2983,6 +2983,73 @@ describe("RuminatorProcess", () => {
     }
   });
 
+  it.each(["dismiss", "accept"] as const)(
+    "preserves both candidate review labels in duplicate judgment (%s)",
+    async (resolution) => {
+      const texts = ["Synthetic first uncertainty?", "Synthetic second uncertainty?"];
+      const llm = new FakeLLMClient({ responses: [createDuplicateJudgmentResponse([])] });
+      const harness = await createOfflineTestHarness({
+        llmClient: llm,
+        embeddingClient: new TestEmbeddingClient(
+          new Map(texts.map((text) => [text, [1, 0, 0, 0]])),
+        ),
+      });
+      try {
+        const questions = texts.map((text, index) => {
+          const review = harness.reviewQueueRepository.enqueue({
+            kind: "contradiction",
+            refs: { node_ids: [createSemanticNodeId(), createSemanticNodeId()] },
+            reason: "Synthetic review",
+          });
+          return harness.openQuestionsRepository.add({
+            question: text,
+            urgency: 0.5,
+            source: "contradiction",
+            provenance: { kind: "manual" },
+            review_id: review.id,
+            created_at: 1_000 + index,
+            last_touched: 1_000 + index,
+          });
+        });
+        const resolvedAt = Date.UTC(2026, 8, 2);
+        harness.db
+          .prepare("UPDATE review_queue SET resolved_at = ?, resolution = ? WHERE id = ?")
+          .run(resolvedAt, resolution, questions[1]!.review_id);
+        await harness.openQuestionsRepository.waitForPendingEmbeddings();
+        const process = new RuminatorProcess({
+          openQuestionsRepository: harness.openQuestionsRepository,
+          growthMarkersRepository: harness.growthMarkersRepository,
+          registry: harness.registry,
+        });
+        const plan = await process.plan(harness.createContext(), {});
+        expect(plan.duplicate_judgment?.pairs_presented).toBe(1);
+        expect(llm.requests).toHaveLength(1);
+        const prompt = JSON.parse(String(llm.requests[0]?.messages[0]?.content)) as {
+          candidate_pairs: Array<{
+            left_candidate: Record<string, unknown>;
+            right_candidate: Record<string, unknown>;
+          }>;
+        };
+        expect(prompt.candidate_pairs[0]?.left_candidate).toMatchObject({
+          id: questions[0]!.id,
+          review: { id: questions[0]!.review_id, kind: "contradiction", status: "open" },
+        });
+        expect(prompt.candidate_pairs[0]?.right_candidate).toMatchObject({
+          id: questions[1]!.id,
+          review: {
+            id: questions[1]!.review_id,
+            kind: "contradiction",
+            status: "resolved",
+            resolution,
+            resolved_at: new Date(resolvedAt).toISOString(),
+          },
+        });
+      } finally {
+        await harness.cleanup();
+      }
+    },
+  );
+
   it("caps duplicate judgment at the highest-cosine candidate pairs", async () => {
     const questions = [
       { text: "Which route should the first plan take?", vector: [1, 0, 0, 0] },

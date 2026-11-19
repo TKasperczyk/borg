@@ -799,6 +799,12 @@ export class OpenQuestionsRepository {
       where: clauses.length === 0 ? undefined : clauses.join(" AND "),
     });
     const results: OpenQuestionSearchCandidate[] = [];
+    const ids = [...new Set(rows.map((row) => String(row.id)).filter(openQuestionIdHelpers.is))];
+    if (ids.length === 0) return results;
+    const storedRows = this.db
+      .prepare("SELECT * FROM open_questions WHERE id IN (SELECT value FROM json_each(?))")
+      .all(JSON.stringify(ids)) as Record<string, unknown>[];
+    const questions = new Map(this.mapRows(storedRows).map((question) => [question.id, question]));
 
     for (const row of rows) {
       const id = String(row.id);
@@ -807,9 +813,9 @@ export class OpenQuestionsRepository {
         continue;
       }
 
-      const question = this.get(parseOpenQuestionId(id));
+      const question = questions.get(parseOpenQuestionId(id));
 
-      if (question === null) {
+      if (question === undefined) {
         continue;
       }
 
@@ -956,7 +962,7 @@ export class OpenQuestionsRepository {
       string,
       unknown
     >[];
-    const questions = rows.map((row) => this.mapRow(row));
+    const questions = this.mapRows(rows);
     const existingIds = await this.getEmbeddedQuestionIds(questions.map((question) => question.id));
 
     for (const question of questions) {
@@ -998,27 +1004,48 @@ export class OpenQuestionsRepository {
     return this.withReview(mapOpenQuestionRow(row));
   }
 
+  private mapRows(rows: Record<string, unknown>[]): OpenQuestion[] {
+    return this.withReviews(rows.map(mapOpenQuestionRow));
+  }
+
   private withReview(question: OpenQuestion): OpenQuestion {
-    if (question.review_id == null) return question;
+    return this.withReviews([question])[0]!;
+  }
+
+  private withReviews(questions: OpenQuestion[]): OpenQuestion[] {
+    const ids = [
+      ...new Set(
+        questions.flatMap((question) => (question.review_id == null ? [] : [question.review_id])),
+      ),
+    ];
+    if (ids.length === 0) return questions;
     // Only scalar lifecycle facts, fetched by primary key. Global cognition;
     // review status neither closes the question nor changes its eligibility.
-    const row = this.db
-      .prepare("SELECT id, kind, resolved_at, resolution FROM review_queue WHERE id = ?")
-      .get(question.review_id);
-    const review = openQuestionReviewSchema.parse(
-      row === undefined
-        ? { id: question.review_id, kind: null, status: "missing" }
-        : row.resolved_at == null
-          ? { id: row.id, kind: row.kind, status: "open" }
-          : {
-              id: row.id,
-              kind: row.kind,
-              status: "resolved",
-              resolution: row.resolution,
-              resolved_at: new Date(Number(row.resolved_at)).toISOString(),
-            },
-    );
-    return { ...question, review };
+    // A JSON IN list also handles unbounded listAllOpen reads without a bind-variable cap.
+    const rows = this.db
+      .prepare(
+        "SELECT id, kind, resolved_at, resolution FROM review_queue WHERE id IN (SELECT value FROM json_each(?))",
+      )
+      .all(JSON.stringify(ids));
+    const reviews = new Map(rows.map((row) => [Number(row.id), row]));
+    return questions.map((question) => {
+      if (question.review_id == null) return question;
+      const row = reviews.get(question.review_id);
+      const review = openQuestionReviewSchema.parse(
+        row === undefined
+          ? { id: question.review_id, kind: null, status: "missing" }
+          : row.resolved_at == null
+            ? { id: row.id, kind: row.kind, status: "open" }
+            : {
+                id: row.id,
+                kind: row.kind,
+                status: "resolved",
+                resolution: row.resolution,
+                resolved_at: new Date(Number(row.resolved_at)).toISOString(),
+              },
+      );
+      return { ...question, review };
+    });
   }
 
   add(input: {
@@ -1242,7 +1269,7 @@ export class OpenQuestionsRepository {
         ...(options.limit === undefined ? [] : [Math.max(1, options.limit)]),
       ) as Record<string, unknown>[];
 
-    return rows.map((row) => this.mapRow(row));
+    return this.mapRows(rows);
   }
 
   listByGoal(options: OpenQuestionGoalLookupOptions): OpenQuestion[] {
@@ -1275,7 +1302,7 @@ export class OpenQuestionsRepository {
       )
       .all(...values, limit) as Record<string, unknown>[];
 
-    return rows.map((row) => this.mapRow(row));
+    return this.mapRows(rows);
   }
 
   list(options: OpenQuestionListOptions = {}): OpenQuestion[] {
@@ -1322,7 +1349,7 @@ export class OpenQuestionsRepository {
       )
       .all(...values, limit) as Record<string, unknown>[];
 
-    return rows.map((row) => this.mapRow(row));
+    return this.mapRows(rows);
   }
 
   listAllOpen(): OpenQuestion[] {
@@ -1337,7 +1364,7 @@ export class OpenQuestionsRepository {
       )
       .all() as Record<string, unknown>[];
 
-    return rows.map((row) => this.mapRow(row));
+    return this.mapRows(rows);
   }
 
   // The population of the register, which every reader of it so far has had to infer from a draw.

@@ -96,6 +96,7 @@ export type EvidenceScoreBreakdown = {
 };
 
 export type EvidenceItem = {
+  review?: import("../memory/self/open-question-review.js").OpenQuestionReview;
   evidence_context?: import("../memory/common/evidence-prompt.js").EpisodeEvidenceContext;
   frame_anomalies?: FrameAnomalyAnnotation[];
   id: string;

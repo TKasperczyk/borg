@@ -1,4 +1,4 @@
-import { renderOpenQuestionReview } from "../memory/self/open-question-review.js";
+import { openQuestionReviewFields } from "../memory/self/open-question-review.js";
 import { frameAnomalyAnnotationFields } from "../stream/frame-anomaly.js";
 import type { RetrievalDegradation } from "./degradation.js";
 export type { RetrievalDegradation } from "./degradation.js";
@@ -1310,7 +1310,8 @@ export class RetrievalPipeline {
     return {
       id: `warm_recall_open_question_${question.id}`,
       source: "warm_recall",
-      text: question.question + renderOpenQuestionReview(question),
+      text: question.question,
+      ...openQuestionReviewFields(question),
       provenance: {
         openQuestionId: question.id,
       },
@@ -3122,7 +3123,8 @@ function openQuestionToEvidence(
   return {
     id: `evidence_open_question_${question.id}_${intent.id}`,
     source: "open_question",
-    text: question.question + renderOpenQuestionReview(question),
+    text: question.question,
+    ...openQuestionReviewFields(question),
     provenance: {
       openQuestionId: question.id,
     },

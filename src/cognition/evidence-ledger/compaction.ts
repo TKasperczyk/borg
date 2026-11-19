@@ -457,6 +457,21 @@ export function sectionAccountingEntry(
     delete counts.resolution_correction_count;
     delete counts.resolution_corrections_omitted_count;
   }
+  const reviewLabelTotal = Math.max(
+    counts.review_label_count ?? 0,
+    (state.sourceEntries ?? []).filter((entry) => entry.state_metadata?.review !== undefined)
+      .length,
+  );
+  const reviewLabelsOmitted =
+    reviewLabelTotal -
+    state.section.entries.filter((entry) => entry.state_metadata?.review !== undefined).length;
+  if (reviewLabelsOmitted > 0) {
+    counts.review_label_count = reviewLabelTotal;
+    counts.review_labels_omitted_count = reviewLabelsOmitted;
+  } else {
+    delete counts.review_label_count;
+    delete counts.review_labels_omitted_count;
+  }
   if (state.omittedCount === 0 && Object.keys(counts).length === 0) return undefined;
   const entry = fullLedgerOmittedEntry(
     state.section,

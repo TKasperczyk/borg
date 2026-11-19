@@ -954,6 +954,7 @@ function compactDuplicatePresentationRow(question: OpenQuestion) {
   return {
     id: row.id,
     excerpt: row.text_excerpt,
+    ...openQuestionReviewFields(question),
     urgency: row.urgency,
     source: row.source,
     disclosure_label: renderMemoryDisclosureLabelFieldsForModel(row.disclosure_label),

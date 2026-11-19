@@ -4,6 +4,7 @@ import {
   unknownMemoryDisclosureLabel,
   type EvidenceItem,
 } from "../../retrieval/index.js";
+import { openQuestionReviewFields } from "../../memory/self/open-question-review.js";
 import {
   isSemanticEvidenceItem,
   renderEvidenceItemDisclosureLabel,
@@ -110,12 +111,14 @@ export function evidenceItemProvenanceMetadata(
 
   if (provenance === undefined) {
     return {
+      ...openQuestionReviewFields(item),
       disclosure_label: memoryDisclosureLabelMetadata(disclosureLabel),
       disclosure_note: evidenceItemDisclosureNote(item),
     };
   }
 
   return {
+    ...openQuestionReviewFields(item),
     ...(provenance.episodeId === undefined ? {} : { episode_id: provenance.episodeId }),
     ...(provenance.parentEpisodeId === undefined
       ? {}

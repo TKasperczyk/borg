@@ -415,6 +415,7 @@ function verificationEvidenceCandidates(
       sourceClass: "evidence",
       disclosureLabel,
       structuralFields: {
+        ...(item.review === undefined ? {} : { review: JSON.stringify(item.review) }),
         source: item.source,
         recall_intent_id: item.recallIntentId,
         score: item.score,
@@ -691,9 +692,12 @@ function renderVerificationMembershipBudgetMarker(
   const disclosureRemainderAttributes = [...verificationDisclosureRemainders(candidates).entries()]
     .map(([disclosureClass, count]) => `${disclosureClass}="${count}"`)
     .join(" ");
+  const reviewsOmitted = candidates.filter(
+    ({ candidate }) => candidate.structuralFields.review !== undefined,
+  ).length;
 
   return [
-    `  <${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER} ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_REMAINDER_TOTAL_ATTRIBUTE}="${candidates.length}">`,
+    `  <${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER} ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_REMAINDER_TOTAL_ATTRIBUTE}="${candidates.length}"${reviewsOmitted === 0 ? "" : ` review_labels_omitted_count="${reviewsOmitted}"`}>`,
     `    <${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_DISCLOSURE_REMAINDER_MARKER} ${disclosureRemainderAttributes} />`,
     `  </${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER}>`,
   ];
@@ -908,14 +912,32 @@ function summarizeEvidenceItems(
   const lines = [`${label}:`];
   let usedTokens = estimatePromptTokens(lines[0] ?? label);
   let guidanceShown = false;
+  const reviewCounts = Array<number>(evidence.length + 1).fill(0);
+  for (let index = evidence.length - 1; index >= 0; index -= 1) {
+    reviewCounts[index] = reviewCounts[index + 1]! + Number(evidence[index]!.review !== undefined);
+  }
+  const omissionMarker = (index: number): string =>
+    `- ... truncated${reviewCounts[index] === 0 ? "" : ` review_labels_omitted_count=${reviewCounts[index]}`}`;
 
-  for (const item of evidence) {
+  for (const [index, item] of evidence.entries()) {
     const guide = item.evidence_context !== undefined && !guidanceShown;
     const block = `${guide ? `${RECORD_ANNOTATION_GUIDANCE}\n` : ""}${summarizeEvidenceItem(item)}`;
     const blockTokens = estimatePromptTokens(block);
 
-    if (usedTokens + blockTokens > maxTokens) {
-      lines.push("- ... truncated");
+    // Review labels are indivisible metadata. Reserve accounting space if the next row
+    // cannot fit, while retaining the established byte shape for unlinked evidence.
+    const candidateTokens =
+      reviewCounts[0] === 0
+        ? usedTokens + blockTokens
+        : estimatePromptTokens(
+            [
+              ...lines,
+              block,
+              ...(index + 1 === evidence.length ? [] : [omissionMarker(index + 1)]),
+            ].join("\n"),
+          );
+    if (candidateTokens > maxTokens) {
+      lines.push(omissionMarker(index));
       break;
     }
 
@@ -938,6 +960,7 @@ function summarizeEvidenceItem(item: EvidenceItem): string {
   return [
     `- ${item.source} [score=${item.score.toFixed(2)} intent=${item.recallIntentId}${terms}${sourceVisibility}${disclosure}]${provenance}`,
     `  ${text}`,
+    ...(item.review === undefined ? [] : [` ${renderOpenQuestionReview(item)}`]),
     ...(item.evidence_context === undefined
       ? []
       : [recordEvidenceText(item.evidence_context).slice(1)]),
