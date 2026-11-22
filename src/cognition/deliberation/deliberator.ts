@@ -151,7 +151,7 @@ function renderForcedContradictionOpenQuestionsPrompt(context: DeliberationConte
     );
 
   return [
-    "Planner routing note: An unresolved contradiction is flagged in the open questions above. I either reconcile it in my plan, or explicitly name the conflict in the planning output rather than ignoring it.",
+    "Planner routing note: An unresolved contradiction is flagged below. I either reconcile it in my plan, or explicitly name the conflict in the planning output rather than ignoring it.",
     renderTaggedPromptBlock(UNTRUSTED_DATA_PREAMBLE, [
       {
         tag: "borg_unresolved_contradiction_open_questions",

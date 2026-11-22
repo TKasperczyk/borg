@@ -1018,6 +1018,12 @@ describe("deliberator", () => {
     expect(result.path).toBe("system_2");
     const plannerSystem = requestSystemText(llm.requests[0]?.system);
     expect(plannerSystem).toContain("Planner routing note");
+    // The note points at the block that follows it: the compact planner page
+    // renders no open-questions section for it to point back to.
+    expect(plannerSystem).not.toContain("## 11. Open Questions");
+    expect(plannerSystem.indexOf("Planner routing note")).toBeLessThan(
+      plannerSystem.indexOf("<borg_unresolved_contradiction_open_questions>"),
+    );
     expect(plannerSystem).toContain("contradiction_1");
     expect(plannerSystem).toContain("contradiction_5");
     expect(plannerSystem).not.toContain("contradiction_6");
