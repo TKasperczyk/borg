@@ -47,6 +47,7 @@ describe("config", () => {
     tempDirs.push(tempDir);
     const settings = [
       ["embedding", "requestTimeoutMs", "BORG_EMBEDDING_REQUEST_TIMEOUT_MS", 120000],
+      ["embedding", "attemptTimeoutMs", "BORG_EMBEDDING_ATTEMPT_TIMEOUT_MS", 30000],
       ["embedding", "rateLimitMaxRetries", "BORG_EMBEDDING_RATE_LIMIT_MAX_RETRIES", 2],
       ["embedding", "rateLimitBaseDelayMs", "BORG_EMBEDDING_RATE_LIMIT_BASE_DELAY_MS", 1000],
       ["retrieval", "recallExpansionMaxTokens", "BORG_RETRIEVAL_RECALL_EXPANSION_MAX_TOKENS", 3072],

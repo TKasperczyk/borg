@@ -1,7 +1,75 @@
-import OpenAI from "openai";
+import OpenAI, { type ClientOptions } from "openai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EmbeddingBackoffError, embeddingRetryAt } from "./request-retry.js";
 import { OpenAICompatibleEmbeddingClient } from "./index.js";
+
+type CreateOptions = { signal?: AbortSignal; timeout?: number };
+
+const JSON_HEADERS = { "content-type": "application/json" };
+const ATTEMPT_TIMEOUT_MS = 100;
+const REQUEST_TIMEOUT_MS = 1_000;
+const RETRY_BASE_DELAY_MS = 10;
+
+/** Total exponential backoff slept before the given number of transport retries. */
+function totalBackoffMs(retries: number): number {
+  return (2 ** retries - 1) * RETRY_BASE_DELAY_MS;
+}
+
+function embeddingResponse(): Response {
+  return new Response(JSON.stringify({ data: [{ index: 0, embedding: [1] }] }), {
+    headers: JSON_HEADERS,
+  });
+}
+
+/** Headers arrive; the body sends part of the JSON, then stalls or fails mid-read. */
+function partialBodyResponse(failure?: Error): Response {
+  return new Response(
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"data":[{"index":0,'));
+        if (failure !== undefined) controller.error(failure);
+      },
+    }),
+    { headers: JSON_HEADERS },
+  );
+}
+
+/** A transport that never answers but, like fetch, gives up once aborted. */
+function stallUntilAborted(_url: unknown, init?: RequestInit): Promise<Response> {
+  return new Promise((_, reject) => {
+    init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+  });
+}
+
+// Undici's body-read rejection when the connection drops after the headers, as
+// captured from Node 25 against a local server: the socket error is the cause.
+function terminated(cause: Error): TypeError {
+  return new TypeError("terminated", { cause });
+}
+
+function connectionReset(): Error {
+  return Object.assign(new Error("read ECONNRESET"), {
+    code: "ECONNRESET",
+    errno: -104,
+    syscall: "read",
+  });
+}
+
+function peerClosed(): Error {
+  return Object.assign(new Error("other side closed"), {
+    name: "SocketError",
+    code: "UND_ERR_SOCKET",
+  });
+}
+
+function sdkWithFetch(fetch: NonNullable<ClientOptions["fetch"]>): OpenAI {
+  return new OpenAI({
+    apiKey: "test",
+    baseURL: "https://embeddings.invalid/v1",
+    maxRetries: 9,
+    fetch,
+  });
+}
 
 describe("embedding request retry policy", () => {
   afterEach(() => vi.useRealTimers());
@@ -41,20 +109,11 @@ describe("embedding request retry policy", () => {
           headers: { "retry-after": "2.5" },
         }),
       )
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ data: [{ index: 0, embedding: [1] }] }), {
-          headers: { "content-type": "application/json" },
-        }),
-      );
+      .mockResolvedValueOnce(embeddingResponse());
     const client = new OpenAICompatibleEmbeddingClient({
       model: "test",
       dims: 1,
-      client: new OpenAI({
-        apiKey: "test",
-        baseURL: "https://embeddings.invalid/v1",
-        maxRetries: 9,
-        fetch,
-      }),
+      client: sdkWithFetch(fetch),
     });
     const result = client.embed("a");
     // Drain SDK response parsing before advancing its advertised wait.
@@ -192,21 +251,12 @@ describe("embedding request retry policy", () => {
     const fetch = vi
       .fn()
       .mockRejectedValueOnce(new TypeError("connection reset"))
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ data: [{ index: 0, embedding: [1] }] }), {
-          headers: { "content-type": "application/json" },
-        }),
-      );
+      .mockResolvedValueOnce(embeddingResponse());
     const client = new OpenAICompatibleEmbeddingClient({
       model: "test",
       dims: 1,
       rateLimitBaseDelayMs: 100,
-      client: new OpenAI({
-        apiKey: "test",
-        baseURL: "https://embeddings.invalid/v1",
-        maxRetries: 9,
-        fetch,
-      }),
+      client: sdkWithFetch(fetch),
     });
     const result = client.embed("a");
     await vi.advanceTimersByTimeAsync(99);
@@ -313,5 +363,134 @@ describe("embedding request retry policy", () => {
     });
     await expect(invalid.embedBatch(["a", "b"], { onChunk })).rejects.toThrow("indices");
     expect(onChunk).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { phase: "before the response headers", stall: stallUntilAborted },
+    // The SDK's own timeout stops at the headers; only the attempt deadline covers the body.
+    { phase: "mid-body, after the headers", stall: async () => partialBodyResponse() },
+  ])("retries an attempt that stalls $phase, inside the request deadline", async ({ stall }) => {
+    vi.useFakeTimers();
+    const fetch = vi.fn().mockImplementationOnce(stall).mockResolvedValueOnce(embeddingResponse());
+    const client = new OpenAICompatibleEmbeddingClient({
+      model: "test",
+      dims: 1,
+      attemptTimeoutMs: ATTEMPT_TIMEOUT_MS,
+      requestTimeoutMs: REQUEST_TIMEOUT_MS,
+      rateLimitBaseDelayMs: RETRY_BASE_DELAY_MS,
+      client: sdkWithFetch(fetch),
+    });
+    const result = client.embed("a");
+    await vi.advanceTimersByTimeAsync(ATTEMPT_TIMEOUT_MS - 1);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1 + RETRY_BASE_DELAY_MS);
+    await expect(result).resolves.toEqual(Float32Array.of(1));
+    expect(fetch).toHaveBeenCalledTimes(2);
+    // The stalled attempt was cancelled, not left holding its connection.
+    expect((fetch.mock.calls[0]?.[1] as RequestInit | undefined)?.signal?.aborted).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each([
+    { socket: "reset (ECONNRESET)", cause: connectionReset },
+    { socket: "closed by the peer (UND_ERR_SOCKET)", cause: peerClosed },
+  ])("retries a response body cut off by a socket $socket", async ({ cause }) => {
+    vi.useFakeTimers();
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(partialBodyResponse(terminated(cause())))
+      .mockResolvedValueOnce(embeddingResponse());
+    const client = new OpenAICompatibleEmbeddingClient({
+      model: "test",
+      dims: 1,
+      rateLimitBaseDelayMs: RETRY_BASE_DELAY_MS,
+      client: sdkWithFetch(fetch),
+    });
+    const result = client.embed("a");
+    await vi.advanceTimersByTimeAsync(RETRY_BASE_DELAY_MS - 1);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(result).resolves.toEqual(Float32Array.of(1));
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("does not retry a body-read termination that carries no socket failure code", async () => {
+    const failure = terminated(new Error("no socket code"));
+    const fetch = vi.fn().mockResolvedValueOnce(partialBodyResponse(failure));
+    const client = new OpenAICompatibleEmbeddingClient({
+      model: "test",
+      dims: 1,
+      client: sdkWithFetch(fetch),
+    });
+    // The SDK passes body-read failures through unwrapped; the cause's code decides.
+    await expect(client.embed("a")).rejects.toMatchObject({ cause: failure });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([0, 2, 3])(
+    "fails at the request deadline, not earlier, when every attempt stalls (%s transport retries)",
+    async (retries) => {
+      vi.useFakeTimers();
+      const create = vi.fn(
+        async (_params: unknown, _options?: CreateOptions): Promise<never> =>
+          await new Promise<never>(() => {}),
+      );
+      const client = new OpenAICompatibleEmbeddingClient({
+        model: "test",
+        dims: 1,
+        attemptTimeoutMs: ATTEMPT_TIMEOUT_MS,
+        requestTimeoutMs: REQUEST_TIMEOUT_MS,
+        rateLimitBaseDelayMs: RETRY_BASE_DELAY_MS,
+        rateLimitMaxRetries: retries,
+        client: { embeddings: { create } },
+      });
+      const startedAt = Date.now();
+      let settledAfterMs: number | undefined;
+      const rejected = expect(
+        client.embed("a").finally(() => {
+          settledAfterMs = Date.now() - startedAt;
+        }),
+      ).rejects.toMatchObject({ code: "EMBEDDING_REQUEST_TIMEOUT" });
+      await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS - 1);
+      expect(settledAfterMs).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1);
+      await rejected;
+      expect(settledAfterMs).toBe(REQUEST_TIMEOUT_MS);
+      // The retry budget bounds the attempts although time remained for many
+      // more short ones; the last permitted attempt keeps the rest of the deadline.
+      expect(create.mock.calls.map(([, options]) => options?.timeout)).toEqual([
+        ...Array<number>(retries).fill(ATTEMPT_TIMEOUT_MS),
+        REQUEST_TIMEOUT_MS - retries * ATTEMPT_TIMEOUT_MS - totalBackoffMs(retries),
+      ]);
+      expect(create.mock.calls.every(([, options]) => options?.signal?.aborted === true)).toBe(
+        true,
+      );
+      expect(client.requestState().inFlight).toBe(0);
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
+
+  it.each([0, 3])("bounds socket-reset recovery to %s transport retries", async (retries) => {
+    vi.useFakeTimers();
+    const reset = terminated(connectionReset());
+    const create = vi.fn().mockRejectedValue(reset);
+    const client = new OpenAICompatibleEmbeddingClient({
+      model: "test",
+      dims: 1,
+      rateLimitBaseDelayMs: RETRY_BASE_DELAY_MS,
+      rateLimitMaxRetries: retries,
+      client: { embeddings: { create } },
+    });
+    const rejected = expect(client.embed("a")).rejects.toMatchObject({
+      // The live log line, now reached only once the bounded retries run out.
+      message:
+        'Failed to generate embeddings (name=TypeError code=ECONNRESET message="terminated")',
+      cause: reset,
+    });
+    await vi.advanceTimersByTimeAsync(totalBackoffMs(retries));
+    await rejected;
+    expect(create).toHaveBeenCalledTimes(1 + retries);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

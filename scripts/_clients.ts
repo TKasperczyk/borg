@@ -479,6 +479,7 @@ export async function selectScriptClients(options: {
         provider: loaded.embedding.provider,
         maxInputBytes: loaded.embedding.maxInputBytes,
         requestTimeoutMs: loaded.embedding.requestTimeoutMs,
+        attemptTimeoutMs: loaded.embedding.attemptTimeoutMs,
         rateLimitMaxRetries: loaded.embedding.rateLimitMaxRetries,
         rateLimitBaseDelayMs: loaded.embedding.rateLimitBaseDelayMs,
       });

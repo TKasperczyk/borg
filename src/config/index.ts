@@ -450,6 +450,10 @@ const configBaseSchema = z.object({
       // travels alone, still bounded by maxInputBytes when configured.
       maxBatchBytes: z.number().int().positive().default(DEFAULT_EMBEDDING_MAX_BATCH_BYTES),
       requestTimeoutMs: z.number().int().positive().default(120_000),
+      // Cap on one HTTP attempt inside requestTimeoutMs while a transport retry
+      // remains, so a stalled connection is retried instead of spending the
+      // whole deadline. The last permitted attempt keeps the rest of it.
+      attemptTimeoutMs: z.number().int().positive().default(30_000),
       rateLimitMaxRetries: z.number().int().nonnegative().default(2),
       rateLimitBaseDelayMs: z.number().int().positive().default(1_000),
     })
@@ -1325,6 +1329,7 @@ function loadEnvOverrides(env: NodeJS.ProcessEnv): ConfigOverrides {
   setConfigOverride(overrides, ["embedding", "maxInputBytes"], readEmbeddingMaxInputBytesEnv(env));
   for (const [key, envKey] of [
     ["requestTimeoutMs", "BORG_EMBEDDING_REQUEST_TIMEOUT_MS"],
+    ["attemptTimeoutMs", "BORG_EMBEDDING_ATTEMPT_TIMEOUT_MS"],
     ["rateLimitMaxRetries", "BORG_EMBEDDING_RATE_LIMIT_MAX_RETRIES"],
     ["rateLimitBaseDelayMs", "BORG_EMBEDDING_RATE_LIMIT_BASE_DELAY_MS"],
   ] as const) {

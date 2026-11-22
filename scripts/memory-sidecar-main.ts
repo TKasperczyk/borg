@@ -174,6 +174,7 @@ const embeddingClient = createCachingEmbeddingClient(
       provider: readEmbeddingProviderEnv(process.env),
       maxInputBytes: readEmbeddingMaxInputBytesEnv(process.env),
       requestTimeoutMs: Number(process.env.BORG_EMBEDDING_REQUEST_TIMEOUT_MS ?? 120_000),
+      attemptTimeoutMs: Number(process.env.BORG_EMBEDDING_ATTEMPT_TIMEOUT_MS ?? 30_000),
       rateLimitMaxRetries: Number(process.env.BORG_EMBEDDING_RATE_LIMIT_MAX_RETRIES ?? 2),
       rateLimitBaseDelayMs: Number(process.env.BORG_EMBEDDING_RATE_LIMIT_BASE_DELAY_MS ?? 1_000),
     }),

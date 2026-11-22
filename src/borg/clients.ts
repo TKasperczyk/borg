@@ -19,6 +19,7 @@ export function createEmbeddingClient(config: Config): EmbeddingClient {
     provider: config.embedding.provider,
     maxInputBytes: config.embedding.maxInputBytes,
     requestTimeoutMs: config.embedding.requestTimeoutMs,
+    attemptTimeoutMs: config.embedding.attemptTimeoutMs,
     rateLimitMaxRetries: config.embedding.rateLimitMaxRetries,
     rateLimitBaseDelayMs: config.embedding.rateLimitBaseDelayMs,
   });

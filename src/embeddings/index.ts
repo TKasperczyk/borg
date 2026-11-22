@@ -71,6 +71,8 @@ export type OpenAICompatibleEmbeddingClientOptions = {
   maxInputBytes?: number;
   provider?: EmbeddingProvider;
   requestTimeoutMs?: number;
+  /** Caps each HTTP attempt while a transport retry remains; the last runs to requestTimeoutMs. */
+  attemptTimeoutMs?: number;
   rateLimitMaxRetries?: number;
   rateLimitBaseDelayMs?: number;
   clock?: Clock;
@@ -87,6 +89,13 @@ const DEFAULT_MODEL_RELOAD_RETRY_DELAYS_MS: readonly number[] = [1000, 4000, 10_
 // call site at once, which is why it belongs in the client rather than in the
 // callers. 32 sits comfortably under the observed cliff.
 const DEFAULT_MAX_EMBED_BATCH_SIZE = 32;
+
+// A stalled HTTP attempt must not spend the whole request deadline: a fresh
+// connection usually answers at normal latency. The OpenAI SDK's own `timeout`
+// stops at response headers, so a body that stalls after them would otherwise
+// hold the attempt until the request deadline. 30s is about twice the time
+// measured above for a full default chunk on a local 8B model.
+const DEFAULT_ATTEMPT_TIMEOUT_MS = 30_000;
 
 // A JIT-loading server reports an evicted model in more than one way, and the
 // reload retry below is useless unless every shape is recognised. LM Studio
@@ -139,6 +148,37 @@ function isModelNotLoadedError(error: unknown): boolean {
     (message.includes("unloaded") ||
       message.includes("crashed") ||
       message.includes("does not exist"))
+  );
+}
+
+// Socket-level failures carry a Node or undici error `code`. The OpenAI SDK
+// wraps the ones raised before response headers in APIConnectionError, but a
+// connection that dies while the SDK reads the response body escapes unwrapped
+// as undici's `TypeError("terminated")` with the socket error as its cause:
+// seen in production as `name=TypeError code=ECONNRESET message="terminated"`,
+// and UND_ERR_SOCKET when the peer closes instead of resetting. This inspects
+// a transport error object, not model output, and keys on the error type and
+// code rather than on message text.
+const SOCKET_FAILURE_CODES: ReadonlySet<string> = new Set([
+  "ECONNRESET",
+  "ECONNREFUSED",
+  "EPIPE",
+  "ETIMEDOUT",
+  "UND_ERR_SOCKET",
+]);
+
+function isConnectionFailure(error: unknown): boolean {
+  return (
+    findInErrorCauseChain(
+      error,
+      (cause): cause is object =>
+        cause instanceof OpenAI.APIConnectionError ||
+        (typeof cause === "object" &&
+          cause !== null &&
+          "code" in cause &&
+          typeof cause.code === "string" &&
+          SOCKET_FAILURE_CODES.has(cause.code)),
+    ) !== undefined
   );
 }
 
@@ -204,6 +244,7 @@ export class OpenAICompatibleEmbeddingClient implements EmbeddingClient {
   private inputTruncations = 0;
   private readonly provider: EmbeddingProvider | undefined;
   private readonly requestTimeoutMs: number;
+  private readonly attemptTimeoutMs: number;
   private readonly rateLimitMaxRetries: number;
   private readonly rateLimitBaseDelayMs: number;
   private readonly clock: Clock;
@@ -262,9 +303,10 @@ export class OpenAICompatibleEmbeddingClient implements EmbeddingClient {
     }
     this.maxInputBytes = options.maxInputBytes;
     this.requestTimeoutMs = options.requestTimeoutMs ?? 120_000;
+    this.attemptTimeoutMs = options.attemptTimeoutMs ?? DEFAULT_ATTEMPT_TIMEOUT_MS;
     this.rateLimitMaxRetries = options.rateLimitMaxRetries ?? 2;
     this.rateLimitBaseDelayMs = options.rateLimitBaseDelayMs ?? 1_000;
-    for (const value of [this.requestTimeoutMs, this.rateLimitBaseDelayMs]) {
+    for (const value of [this.requestTimeoutMs, this.attemptTimeoutMs, this.rateLimitBaseDelayMs]) {
       if (!Number.isSafeInteger(value) || value <= 0)
         throw new ConfigError("Embedding request budgets must be positive integers");
     }
@@ -419,15 +461,16 @@ export class OpenAICompatibleEmbeddingClient implements EmbeddingClient {
     const requestId = {};
     const startedAt = this.clock.now();
     const deadlineAt = startedAt + this.requestTimeoutMs;
+    const requestTimeoutError = (): EmbeddingError =>
+      new EmbeddingError(`Embedding request exceeded ${this.requestTimeoutMs}ms`, {
+        code: "EMBEDDING_REQUEST_TIMEOUT",
+      });
     this.activeRequests.set(requestId, startedAt);
     try {
       return await runWithDeadline({
         timeoutMs: this.requestTimeoutMs,
         signal: options.signal,
-        timeoutError: () =>
-          new EmbeddingError(`Embedding request exceeded ${this.requestTimeoutMs}ms`, {
-            code: "EMBEDDING_REQUEST_TIMEOUT",
-          }),
+        timeoutError: requestTimeoutError,
         run: async (signal) => {
           let reloadRetries = 0;
           let transportRetries = 0;
@@ -440,12 +483,34 @@ export class OpenAICompatibleEmbeddingClient implements EmbeddingClient {
               await sleep(Math.max(0, retryAt - this.clock.now()), signal);
               continue;
             }
+            const remainingMs = deadlineAt - this.clock.now();
+            if (remainingMs <= 0) throw requestTimeoutError();
+            // Cutting an attempt short pays only when a transport retry can
+            // follow it. The last permitted attempt keeps the rest of the
+            // request deadline, so a slow but healthy provider can still answer.
+            const attemptTimeoutMs =
+              transportRetries < this.rateLimitMaxRetries
+                ? Math.min(this.attemptTimeoutMs, remainingMs)
+                : remainingMs;
             try {
               // This request loop owns HTTP retries, including injected SDK clients.
-              return await this.client.embeddings.create(params, {
+              return await runWithDeadline({
+                timeoutMs: attemptTimeoutMs,
                 signal,
-                maxRetries: 0,
-                timeout: this.requestTimeoutMs,
+                // An attempt that runs to the request deadline is the request
+                // timing out; a shorter one is a timed-out connection.
+                timeoutError: () =>
+                  attemptTimeoutMs === remainingMs
+                    ? requestTimeoutError()
+                    : new OpenAI.APIConnectionTimeoutError({
+                        message: `Embedding attempt exceeded ${attemptTimeoutMs}ms`,
+                      }),
+                run: (attemptSignal) =>
+                  this.client.embeddings.create(params, {
+                    signal: attemptSignal,
+                    maxRetries: 0,
+                    timeout: attemptTimeoutMs,
+                  }),
               });
             } catch (error) {
               const http = embeddingHttpError(error);
@@ -474,15 +539,11 @@ export class OpenAICompatibleEmbeddingClient implements EmbeddingClient {
                 await sleep(reloadDelay, signal);
                 continue;
               }
-              const connectionFailure = findInErrorCauseChain(
-                error,
-                (cause): cause is InstanceType<typeof OpenAI.APIConnectionError> =>
-                  cause instanceof OpenAI.APIConnectionError,
-              );
-              // The SDK's typed connection failures have no HTTP status. Keep
-              // their recovery in this same bounded owner, never a second loop.
+              // Connection failures, including a timed-out attempt and a socket
+              // that dies mid-body, have no HTTP status. Keep their recovery in
+              // this same bounded owner, never a second loop.
               if (
-                (connectionFailure !== undefined ||
+                (isConnectionFailure(error) ||
                   (http !== undefined &&
                     (http.status === 408 || http.status === 409 || http.status >= 500))) &&
                 transportRetries++ < this.rateLimitMaxRetries

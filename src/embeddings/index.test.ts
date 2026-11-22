@@ -49,7 +49,8 @@ describe("embeddings", () => {
         model: "embed-model",
         encoding_format: "float",
       },
-      { signal: expect.any(AbortSignal), maxRetries: 0, timeout: 120_000 },
+      // The default per-attempt budget, inside the 120s request deadline.
+      { signal: expect.any(AbortSignal), maxRetries: 0, timeout: 30_000 },
     );
     expect(Array.from(embeddings[0] ?? [])).toEqual([1, 2, 3]);
     expect(Array.from(embeddings[1] ?? [])).toEqual([4, 5, 6]);

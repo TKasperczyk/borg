@@ -243,7 +243,7 @@ describe("createCachingEmbeddingClient", () => {
         model: "model-a",
         encoding_format: "float",
       },
-      { signal: expect.any(AbortSignal), maxRetries: 0, timeout: 120_000 },
+      { signal: expect.any(AbortSignal), maxRetries: 0, timeout: 30_000 },
     );
     expect(first.map((vector) => Array.from(vector))).toEqual([[99], [22], [11]]);
     expect(second.map((vector) => Array.from(vector))).toEqual([[22], [11]]);
@@ -591,8 +591,9 @@ describe("createCachingEmbeddingClient", () => {
     expect(secondInner.embed).toHaveBeenCalledTimes(1);
   });
 
-  it("carries configured provider routing and input byte cap through the production client factory", async () => {
+  it("carries configured provider routing, input byte cap and attempt timeout through the production client factory", async () => {
     const provider = { data_collection: "deny", ignore: ["SiliconFlow"] };
+    const attemptTimeoutMs = 45_000;
     const config = configSchema.parse({
       embedding: {
         baseUrl: "https://embeddings.invalid/v1",
@@ -601,6 +602,7 @@ describe("createCachingEmbeddingClient", () => {
         dims: 1,
         provider,
         maxInputBytes: 2,
+        attemptTimeoutMs,
       },
     });
 
@@ -613,7 +615,7 @@ describe("createCachingEmbeddingClient", () => {
         encoding_format: "float",
         provider,
       },
-      { signal: expect.any(AbortSignal), maxRetries: 0, timeout: 120_000 },
+      { signal: expect.any(AbortSignal), maxRetries: 0, timeout: attemptTimeoutMs },
     );
   });
 
