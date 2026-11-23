@@ -36,7 +36,7 @@
       "cognition": "claude-opus-5-5",
       "background": "claude-opus-5-5",
       "extraction": "claude-opus-5-5",
-      "preTurnExtraction": "claude-sonnet-5"
+      "preTurnExtraction": "claude-sonnet-5-5"
     }
   },
   "generation": {

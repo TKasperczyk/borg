@@ -255,7 +255,7 @@ function clipRecallQueryPlannerInput(input: RecallQueryPlanInput): RecallQueryPl
 }
 
 export const RECALL_EXPANSION_TOOL_NAME = "EmitRecallQueryPlan";
-export const DEFAULT_RECALL_EXPANSION_MODEL = "claude-haiku-4-5-20251001";
+export const DEFAULT_RECALL_EXPANSION_MODEL = "claude-haiku-5-5";
 
 export const RECALL_QUERY_PLANNER_SYSTEM_PROMPT = `You generate a structured query plan for Borg's memory retrieval.
 

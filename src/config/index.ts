@@ -392,16 +392,16 @@ const anthropicModelsConfigSchema = z
     cognition: z.string().min(1).default("claude-opus-5-5"),
     background: z.string().min(1).default("claude-opus-5-5"),
     extraction: z.string().min(1).default("claude-opus-5-5"),
-    recallExpansion: z.string().min(1).default("claude-haiku-4-5-20251001"),
+    recallExpansion: z.string().min(1).default("claude-haiku-5-5"),
     // Action-state (including post-generation closes) and goal-promotion extraction.
     // Resolve at the consumer so an omitted slot follows the configured recall model.
     preTurnExtraction: z.string().min(1).optional(),
     // Corrective preferences need careful interpretation of participant restrictions.
-    correctivePreference: z.string().min(1).default("claude-sonnet-5"),
+    correctivePreference: z.string().min(1).default("claude-sonnet-5-5"),
     // Shared-state compilation must distinguish corrections and decisions from completed acts.
-    sharedStateCompiler: z.string().min(1).default("claude-sonnet-5"),
-    creatorDirective: z.string().min(1).default("claude-sonnet-4-6"),
-    imagePerception: z.string().min(1).default("claude-haiku-4-5-20251001"),
+    sharedStateCompiler: z.string().min(1).default("claude-sonnet-5-5"),
+    creatorDirective: z.string().min(1).default("claude-sonnet-5-5"),
+    imagePerception: z.string().min(1).default("claude-haiku-5-5"),
   })
   .prefault({});
 

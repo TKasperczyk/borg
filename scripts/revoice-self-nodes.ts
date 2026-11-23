@@ -12,7 +12,7 @@
  * TWO PHASES (review before mutating). Both open the store, so run with the live
  * borg-demo-sol STOPPED (single writer on the data dir):
  *   1. plan  (default): read full nodes from the repository, classify + rewrite each
- *      with claude-sonnet-4-6, and write a reviewable plan JSON. NO DB writes.
+ *      with claude-sonnet-5-5, and write a reviewable plan JSON. NO DB writes.
  *   2. apply --plan <file>: apply the reviewed plan via semanticNodeRepository.update.
  *      The embedding is PRESERVED (3rd->1st person does not change meaning).
  *
@@ -32,7 +32,7 @@ import { toToolInputSchema, type LLMToolDefinition } from "../src/llm/index.js";
 import type { SemanticNodeId } from "../src/util/ids.js";
 import { selectScriptClients } from "./_clients.js";
 
-const SONNET_MODEL = "claude-sonnet-4-6";
+const SONNET_MODEL = "claude-sonnet-5-5";
 const DEFAULT_DATA_DIR = "demo/server/.borg-data/demo";
 
 const REVOICE_SYSTEM_PROMPT = [

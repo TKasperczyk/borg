@@ -812,7 +812,7 @@ describe("retrieval pipeline", () => {
     const create = vi.fn().mockResolvedValue({
       id: "msg_1",
       content: [{ type: "text", text: "ok", citations: null }],
-      model: "claude-sonnet-4-5",
+      model: "claude-sonnet-5-5",
       role: "assistant",
       stop_reason: "end_turn",
       type: "message",
@@ -829,7 +829,7 @@ describe("retrieval pipeline", () => {
       },
     });
     await llm.converse({
-      model: "claude-sonnet-4-5",
+      model: "claude-sonnet-5-5",
       messages,
       max_tokens: 128,
       budget: "test",

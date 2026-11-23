@@ -7,7 +7,7 @@
  *
  * TWO PHASES (review before mutating):
  *   1. propose (default): read traits plus reinforcement/contradiction event
- *      summaries, ask claude-sonnet-4-6 to cluster labels that denote the same
+ *      summaries, ask claude-sonnet-5-5 to cluster labels that denote the same
  *      trait, and write a reviewable plan JSON. NO DB writes.
  *   2. apply --plan <file>: revalidate row versions and apply the reviewed plan
  *      via TraitsRepository.mergeInto.
@@ -28,7 +28,7 @@ import { type TraitsRepository } from "../src/memory/self/repository.js";
 import { traitIdHelpers, type EpisodeId, type TraitId } from "../src/util/ids.js";
 import { selectScriptClients } from "./_clients.js";
 
-const SONNET_MODEL = "claude-sonnet-4-6";
+const SONNET_MODEL = "claude-sonnet-5-5";
 const DEFAULT_DATA_DIR = "demo/server/.borg-data/demo";
 const DEFAULT_PLAN_PATH = "/tmp/consolidate-traits.plan.json";
 const PLAN_KIND = "trait_consolidation_plan";

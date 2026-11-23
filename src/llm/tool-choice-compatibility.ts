@@ -22,7 +22,7 @@ export function supportsForcedToolUse(model: string): boolean {
   const parsed = parseClaudeModel(model);
   if (parsed === null) return true;
   const firstUnsupportedMinor =
-    parsed.family === "claude-opus"
+    parsed.family === "claude-opus" || parsed.family === "claude-sonnet"
       ? 5
       : parsed.family === "claude-fable" || parsed.family === "claude-mythos"
         ? 1
@@ -45,12 +45,28 @@ export type LLMToolChoiceTranslationEvent = {
 };
 
 /**
+ * Sampling parameters (`temperature`, `top_p`, `top_k`) are rejected on every Opus
+ * generation this harness runs, and at any non-default value on Sonnet >= 5.5 and
+ * Haiku >= 5.5. Callers keep passing their value; the transport drops it for these
+ * models instead of each call site branching on the model.
+ */
+export function rejectsSamplingParameters(model: string): boolean {
+  const parsed = parseClaudeModel(model);
+  if (parsed === null) return false;
+  if (parsed.family === "claude-opus") return true;
+  if (parsed.family !== "claude-sonnet" && parsed.family !== "claude-haiku") return false;
+  const [major = 0, minor = 0] = parsed.version;
+  return major > 5 || (major === 5 && minor >= 5);
+}
+
+/**
  * Whether a request that omits `effort` must send the shared default explicitly.
- * Only the model tier that also dropped forced tool use (Opus >= 5.5, Fable >= 5.1,
- * Mythos >= 5.1) changed the omitted-effort default (Opus 5.5 runs at medium where
- * Opus 5 ran at high). Older tiers already default to high, and Haiku models reject
- * the parameter outright ("This model does not support the effort parameter"), so
- * the default is never sent to them.
+ * The tier that dropped forced tool use (Opus >= 5.5, Sonnet >= 5.5, Fable >= 5.1,
+ * Mythos >= 5.1) gets it: Opus 5.5 changed its omitted-effort default to medium, and
+ * Sonnet 5.5 already defaults to high, so sending high there changes nothing. Haiku
+ * never receives the default: Haiku 4.5 rejects the parameter outright ("This model
+ * does not support the effort parameter"), and Haiku 5.5 runs its small structured
+ * calls at its own default.
  */
 export function needsExplicitEffortDefault(model: string): boolean {
   return !supportsForcedToolUse(model);

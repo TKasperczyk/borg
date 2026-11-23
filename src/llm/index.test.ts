@@ -18,6 +18,7 @@ import {
   OAUTH_USER_AGENT,
   callStructuredTool,
   createOAuthFetch,
+  rejectsSamplingParameters,
   supportsForcedToolUse,
   toStructuredOutputFormat,
   willSendThinkingUnderAutoToolChoice,
@@ -207,7 +208,10 @@ describe("llm", () => {
       ["claude-mythos-5-1", false],
       ["claude-mythos-5", true],
       ["claude-sonnet-5", true],
+      ["claude-sonnet-5-5", false],
+      ["claude-sonnet-6", false],
       ["claude-haiku-4-5-20251001", true],
+      ["claude-haiku-5-5", true],
       ["unknown", true],
       ["claude-unknown-6", true],
       ["claude-opus-5.4", true],
@@ -744,7 +748,9 @@ describe("llm", () => {
 
     it.each([
       ["claude-haiku-4-5-20251001", undefined],
+      ["claude-haiku-5-5", undefined],
       ["claude-sonnet-5", undefined],
+      ["claude-sonnet-5-5", { effort: "high" }],
       ["claude-opus-5", undefined],
       ["claude-opus-5-5", { effort: "high" }],
     ])(
@@ -3157,6 +3163,30 @@ describe("llm", () => {
     ).resolves.toMatchObject({
       text: "Hello",
     });
+  });
+
+  it.each([
+    ["claude-haiku-5-5", false],
+    ["claude-sonnet-5-5", false],
+    ["claude-sonnet-6", false],
+    ["claude-opus-5-5", false],
+    ["claude-haiku-4-5-20251001", true],
+    ["claude-sonnet-5", true],
+    ["custom-model", true],
+  ])("sends a caller's temperature to %s: %s", async (model, sent) => {
+    const create = vi.fn().mockResolvedValue({
+      id: "msg_1",
+      content: [{ type: "text", text: "ok", citations: null }],
+      model,
+      role: "assistant",
+      stop_reason: "end_turn",
+      type: "message",
+      usage: { input_tokens: 1, output_tokens: 1 },
+    });
+    const client = new AnthropicLLMClient({ client: { messages: { create } } });
+    await client.complete({ model, messages: [], temperature: 0, budget: "test" });
+    expect(create.mock.lastCall?.[0].temperature).toBe(sent ? 0 : undefined);
+    expect(rejectsSamplingParameters(model)).toBe(!sent);
   });
 
   it("routes requests through ANTHROPIC_BASE_URL when set", async () => {

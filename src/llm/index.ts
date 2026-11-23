@@ -41,6 +41,7 @@ import { clampMaxOutputTokens, getModelMaxOutputTokens } from "./max-tokens.js";
 import {
   isOpusModel,
   needsExplicitEffortDefault,
+  rejectsSamplingParameters,
   supportsForcedToolUse,
   toolUseReminder,
   translateForcedToolUse,
@@ -49,6 +50,7 @@ import {
 export {
   isOpusModel,
   needsExplicitEffortDefault,
+  rejectsSamplingParameters,
   supportsForcedToolUse,
   type LLMToolChoiceTranslationEvent,
 } from "./tool-choice-compatibility.js";
@@ -1774,7 +1776,7 @@ function resolveMaxTokens(options: Pick<LLMCallOptions, "max_tokens" | "model">)
 }
 
 function shouldOmitTemperature(model: string): boolean {
-  return isOpusModel(model);
+  return rejectsSamplingParameters(model);
 }
 
 function shouldOmitThinking(

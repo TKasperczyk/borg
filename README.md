@@ -309,7 +309,7 @@ model, so the design accepts drift when migrating to a successor rather than
 chasing model-swap conformance.
 
 Shared-state compilation uses `anthropic.models.sharedStateCompiler`, defaulting
-to `claude-sonnet-5`. Override it with `BORG_MODEL_SHARED_STATE_COMPILER`; both
+to `claude-sonnet-5-5`. Override it with `BORG_MODEL_SHARED_STATE_COMPILER`; both
 pre-answer and post-response compiles use this slot independently of
 `anthropic.models.recallExpansion`. The compiler records decisions with their
 stated timing and corrects existing entries through `supersede` or `update`,

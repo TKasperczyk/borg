@@ -92,7 +92,7 @@ describe("config", () => {
   it("accepts the documented Sol demo config keys without sidecar embedding environment variables", () => {
     // Hand-authored from the accepted merge plan; never read the live bank/config.
     const config = configSchema.parse(solDemoConfigKeys);
-    expect(config.anthropic.models.preTurnExtraction).toBe("claude-sonnet-5");
+    expect(config.anthropic.models.preTurnExtraction).toBe("claude-sonnet-5-5");
     expect(config.frameAnomaly).toEqual(solDemoConfigKeys.frameAnomaly);
     expect(config.internalIdentifierGuard).toEqual(solDemoConfigKeys.internalIdentifierGuard);
     expect(config.embedding.model).toBe(solDemoConfigKeys.embedding.model);
@@ -147,11 +147,11 @@ describe("config", () => {
       cognition: "claude-opus-5-5",
       background: "claude-opus-5-5",
       extraction: "claude-opus-5-5",
-      recallExpansion: "claude-haiku-4-5-20251001",
-      correctivePreference: "claude-sonnet-5",
-      sharedStateCompiler: "claude-sonnet-5",
-      creatorDirective: "claude-sonnet-4-6",
-      imagePerception: "claude-haiku-4-5-20251001",
+      recallExpansion: "claude-haiku-5-5",
+      correctivePreference: "claude-sonnet-5-5",
+      sharedStateCompiler: "claude-sonnet-5-5",
+      creatorDirective: "claude-sonnet-5-5",
+      imagePerception: "claude-haiku-5-5",
     });
     expect(config.anthropic).toMatchObject({
       oauthSseInactivityTimeoutMs: 120_000,
@@ -1528,11 +1528,11 @@ describe("config", () => {
       cognition: "claude-opus-5-5",
       background: "claude-opus-5-5",
       extraction: "claude-opus-5-5",
-      recallExpansion: "claude-haiku-4-5-20251001",
-      correctivePreference: "claude-sonnet-5",
-      sharedStateCompiler: "claude-sonnet-5",
-      creatorDirective: "claude-sonnet-4-6",
-      imagePerception: "claude-haiku-4-5-20251001",
+      recallExpansion: "claude-haiku-5-5",
+      correctivePreference: "claude-sonnet-5-5",
+      sharedStateCompiler: "claude-sonnet-5-5",
+      creatorDirective: "claude-sonnet-5-5",
+      imagePerception: "claude-haiku-5-5",
     });
   });
 
@@ -1545,7 +1545,7 @@ describe("config", () => {
       env: { BORG_MODEL_RECALL_EXPANSION: "custom-recall" },
     });
 
-    expect(config.anthropic.models.correctivePreference).toBe("claude-sonnet-5");
+    expect(config.anthropic.models.correctivePreference).toBe("claude-sonnet-5-5");
     expect(config.anthropic.models.recallExpansion).toBe("custom-recall");
   });
 
@@ -1582,7 +1582,7 @@ describe("config", () => {
       env: { BORG_MODEL_RECALL_EXPANSION: "custom-recall" },
     });
 
-    expect(config.anthropic.models.sharedStateCompiler).toBe("claude-sonnet-5");
+    expect(config.anthropic.models.sharedStateCompiler).toBe("claude-sonnet-5-5");
     expect(config.anthropic.models.recallExpansion).toBe("custom-recall");
   });
 
@@ -1596,7 +1596,7 @@ describe("config", () => {
     const config = loadConfig({ dataDir: tempDir, env: {} });
 
     expect(config.anthropic.models.sharedStateCompiler).toBe("file-shared-state-compiler");
-    expect(config.anthropic.models.recallExpansion).toBe("claude-haiku-4-5-20251001");
+    expect(config.anthropic.models.recallExpansion).toBe("claude-haiku-5-5");
   });
 
   it("requires an api key when anthropic auth mode is api-key", () => {

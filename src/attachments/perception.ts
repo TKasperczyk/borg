@@ -23,7 +23,7 @@ import type { ImageMediaType, StoredAttachmentRecord } from "./types.js";
 import type { AttachmentRepository } from "./repository.js";
 
 export const IMAGE_PERCEPTION_PROMPT_VERSION = "v88-p1-2026-05-25";
-export const DEFAULT_IMAGE_PERCEPTION_MODEL = "claude-haiku-4-5-20251001";
+export const DEFAULT_IMAGE_PERCEPTION_MODEL = "claude-haiku-5-5";
 export const IMAGE_PERCEPTION_TOOL_NAME = "EmitImagePerception";
 
 const imageKindSchema = z.enum([

@@ -675,7 +675,7 @@ describe("CorrectivePreferenceExtractor", () => {
     });
     const extractor = new CorrectivePreferenceExtractor({
       llmClient: llm,
-      model: "claude-sonnet-5",
+      model: "claude-sonnet-5-5",
     });
 
     await expect(
