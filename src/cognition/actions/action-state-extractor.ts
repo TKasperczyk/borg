@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import {
   callStructuredTool,
+  isLlmProviderTransportError,
   isStructuredToolCallError,
   type LLMClient,
   type LLMMessage,
@@ -735,13 +736,14 @@ export class ActionStateExtractor {
     const tools = [ACTION_STATE_TOOL];
 
     let parsed: ActionStateParseResult;
-
-    try {
-      parsed = (
+    const llmClient = this.options.llmClient;
+    const model = this.options.model;
+    const extractActionStates = async () =>
+      (
         await callStructuredTool({
-          llmClient: this.options.llmClient,
+          llmClient,
           request: {
-            model: this.options.model,
+            model,
             system: ACTION_STATE_SYSTEM_PROMPT,
             messages,
             tools,
@@ -762,6 +764,17 @@ export class ActionStateExtractor {
           },
         })
       ).parsed;
+
+    try {
+      parsed = await extractActionStates().catch((error: unknown) => {
+        // A provider failure means no extractor read the turn, so its actions would go
+        // unrecorded. Ask once more before degrading.
+        if (isStructuredToolCallError(error, "llm_failed") && isLlmProviderTransportError(error)) {
+          return extractActionStates();
+        }
+
+        throw error;
+      });
     } catch (error) {
       this.traceSelection(candidates.shown.length, candidates.omitted, 0, 0, []);
       const reason = degradedReasonForStructuredToolError(error);

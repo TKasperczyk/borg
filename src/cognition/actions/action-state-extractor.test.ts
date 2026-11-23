@@ -1,3 +1,4 @@
+import Anthropic from "@anthropic-ai/sdk";
 import { describe, expect, it, vi } from "vitest";
 
 import type { EmbeddingClient } from "../../embeddings/index.js";
@@ -16,6 +17,7 @@ import {
   isActionTerminalClosureGuardState,
 } from "../../memory/actions/index.js";
 import { FixedClock } from "../../util/clock.js";
+import { LLMError } from "../../util/errors.js";
 import {
   createActionId,
   createEntityId,
@@ -58,6 +60,20 @@ function actionStateResponse(actionStates: ActionStateInput[]): LLMCompleteResul
       evidence_stream_entry_ids: actionState.evidence_stream_entry_ids ?? [],
       confidence: actionState.confidence ?? 0.9,
     })),
+  );
+}
+
+function providerFailure(status: number): () => never {
+  return Object.assign(
+    () => {
+      throw new LLMError(
+        `Failed to complete Anthropic request: Error: ${status} status code (no body)`,
+        {
+          cause: new Anthropic.APIError(status, {}, `${status} status code (no body)`, new Headers()),
+        },
+      );
+    },
+    { budget: "action-state-extractor" },
   );
 }
 
@@ -913,6 +929,76 @@ describe("ActionStateExtractor", () => {
         degraded: true,
       }),
     });
+  });
+
+  it("asks once more when the provider fails before the extractor read the turn", async () => {
+    const currentUserStreamEntryId = createStreamEntryId();
+    const add = vi.fn();
+    const llm = new FakeLLMClient({
+      responses: [
+        providerFailure(502),
+        actionStateResponse([
+          {
+            description: "reviewed the API patch",
+            state: "completed",
+            evidence_stream_entry_ids: [currentUserStreamEntryId],
+          },
+        ]),
+      ],
+    });
+    const extractor = new ActionStateExtractor({
+      llmClient: llm,
+      model: "haiku",
+      actionRepository: makeActionRepository([], add),
+      clock: new FixedClock(2_000),
+    });
+
+    const records = await extractor.extract(makeExtractorInput(currentUserStreamEntryId));
+
+    expect(llm.requests).toHaveLength(2);
+    expect(llm.requests[1]?.messages).toEqual(llm.requests[0]?.messages);
+    expect(add).toHaveBeenCalledOnce();
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      description: "reviewed the API patch",
+      provenance_stream_entry_ids: [currentUserStreamEntryId],
+    });
+  });
+
+  it.each([
+    { name: "a second provider failure", responses: [providerFailure(502), providerFailure(529)] },
+    { name: "a rejected request", responses: [providerFailure(400)] },
+  ])("degrades without another ask after $name", async ({ responses }) => {
+    const currentUserStreamEntryId = createStreamEntryId();
+    const add = vi.fn();
+    const onDegraded = vi.fn();
+    const llm = new FakeLLMClient({
+      responses: [
+        ...responses,
+        actionStateResponse([
+          {
+            description: "reviewed the API patch",
+            state: "completed",
+            evidence_stream_entry_ids: [currentUserStreamEntryId],
+          },
+        ]),
+      ],
+    });
+    const extractor = new ActionStateExtractor({
+      llmClient: llm,
+      model: "haiku",
+      actionRepository: makeActionRepository([], add),
+      clock: new FixedClock(2_000),
+      onDegraded,
+    });
+
+    const records = await extractor.extract(makeExtractorInput(currentUserStreamEntryId));
+
+    expect(llm.requests).toHaveLength(responses.length);
+    expect(records).toEqual([]);
+    expect(add).not.toHaveBeenCalled();
+    expect(onDegraded).toHaveBeenCalledOnce();
+    expect(onDegraded).toHaveBeenCalledWith("llm_failed", expect.any(Error));
   });
 
   it("persists an unmatched assertion despite identical same-axis embeddings", async () => {
