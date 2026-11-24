@@ -3,6 +3,7 @@ import type { ReviewLookup } from "../review-queue/review-lookup.js";
 import { FailureReportTracker } from "../../util/failure-reports.js";
 import {
   MAX_RESOLUTION_CORRECTIONS,
+  correctionEvidenceKey,
   formatResolutionCorrections,
   openQuestionResolutionIdentity,
   isSameOpenQuestionResolution,
@@ -2348,15 +2349,13 @@ export class OpenQuestionsRepository {
         },
       );
     }
-    const evidenceKey = (evidence: ResolutionCorrectionFields["evidence"]) =>
-      JSON.stringify([...new Set(evidence.map((item) => JSON.stringify(item)))].sort());
     if (
       corrections.some(
         (item) =>
           item.text === parsed.correction_note &&
           item.corrects_span === parsed.corrects_span &&
           item.targets_correction_seq === targetSeq &&
-          evidenceKey(item.evidence) === evidenceKey(parsed.evidence),
+          correctionEvidenceKey(item.evidence) === correctionEvidenceKey(parsed.evidence),
       )
     )
       return existing;

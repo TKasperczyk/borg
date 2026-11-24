@@ -197,7 +197,10 @@ export class IdentityEventRepository {
   }
 
   /** All audited annotations for exact typed targets, with named retractions applied. */
-  listAnnotationsForTargets(targets: readonly AnnotationTarget[]): TargetAnnotations[] {
+  listAnnotationsForTargets(
+    targets: readonly AnnotationTarget[],
+    options: { includeRetracted?: boolean } = {},
+  ): TargetAnnotations[] {
     const uniqueTargets = [
       ...new Map(targets.map((target) => [annotationTargetKey(target), target])).values(),
     ];
@@ -292,13 +295,35 @@ export class IdentityEventRepository {
           text,
           ...(writtenAt === undefined ? {} : { written_at: writtenAt }),
           authority: annotation.authority ?? null,
+          ...(annotation.self_correction === undefined
+            ? {}
+            : { self_correction: { ...annotation.self_correction, original_record: target } }),
         });
       }
       for (const target of batch) {
         const key = annotationTargetKey(target);
         const result = results.get(key)!;
-        result.annotations = result.annotations.filter(
-          (annotation) => !retracted.get(key)?.has(annotation.stream_entry_id),
+        for (const annotation of result.annotations) {
+          const correction = annotation.self_correction;
+          if (
+            correction?.corrects_span !== undefined &&
+            correction.targets_correction_seq !== null
+          ) {
+            // Retraction hides an annotation from display, but leaves its quoted text intact.
+            const quoted = result.annotations.find(
+              (row) => row.self_correction?.seq === correction.targets_correction_seq,
+            );
+            if (quoted !== undefined) annotation.quoted_correction_text = quoted.text;
+          }
+        }
+        const retractedIds = retracted.get(key);
+        if (retractedIds === undefined) continue;
+        result.annotations = result.annotations.flatMap((annotation) =>
+          !retractedIds.has(annotation.stream_entry_id)
+            ? [annotation]
+            : options.includeRetracted === true
+              ? [{ ...annotation, retracted: true as const }]
+              : [],
         );
       }
     }

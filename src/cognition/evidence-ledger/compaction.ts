@@ -2,6 +2,7 @@ import { estimatePromptTokens } from "../../util/token-estimate.js";
 import { coercePositiveIntegerOrFallback } from "../../util/math.js";
 import { isRecentLivedExperienceSpineKind } from "../../memory/activity/index.js";
 import { selfPrivateMemoryDisclosureLabel } from "../../memory/common/disclosure-label.js";
+import { admitAnnotationRows } from "../../memory/common/evidence-prompt.js";
 import { allSectionIds, emptySectionCountRecord } from "./budget.js";
 import { estimateEvidenceLedgerTokens, cloneLedgerWithSections } from "./ledger-copy.js";
 import {
@@ -829,16 +830,13 @@ function admitRecordAnnotations(state: FullLedgerSectionState): void {
   if (fits()) return;
   state.section.entries = [...base];
   for (let index = 0; index < base.length; index++) {
-    for (let count = 1; count <= rows[index]!.length; count++) {
+    admitAnnotationRows(rows[index]!, (admitted) => {
       const previous = state.section.entries[index]!;
-      state.section.entries[index] = withLedgerAnnotations(
-        base[index]!,
-        rows[index]!.slice(0, count),
-      );
-      if (fits()) continue;
+      state.section.entries[index] = withLedgerAnnotations(base[index]!, admitted);
+      if (fits()) return true;
       state.section.entries[index] = previous;
-      break;
-    }
+      return false;
+    });
   }
 }
 

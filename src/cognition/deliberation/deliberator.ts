@@ -889,7 +889,7 @@ export class Deliberator {
     context: DeliberationContext,
     streamWriter?: StreamWriter,
   ): Promise<DeliberationResult> {
-    const records = withRetrievedRecordEvidence(this.options.recordEvidenceReader, {
+    const records = await withRetrievedRecordEvidence(this.options.recordEvidenceReader, {
       episodes: context.retrievalResult,
       semantic: context.retrievedSemantic,
       evidence: context.retrievedEvidence,
@@ -1328,7 +1328,7 @@ export class Deliberator {
     const verificationQuery = plan === null ? "" : plan.verification_steps.join("; ").trim();
     const secondaryRetrieval =
       verificationQuery.length > 0 && context.reRetrieve !== undefined
-        ? withRetrievedRecordEvidence(
+        ? await withRetrievedRecordEvidence(
             this.options.recordEvidenceReader,
             await context.reRetrieve(verificationQuery, { limit: 3 }),
           )

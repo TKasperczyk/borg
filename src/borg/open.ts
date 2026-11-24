@@ -38,6 +38,8 @@ import {
   StreamWatermarkRepository,
 } from "../stream/index.js";
 import { createOutboundPostTool } from "../tools/index.js";
+import { createRecordIdResolver } from "../tools/record-id-resolver.js";
+import { RecordCorrectionService } from "../memory/lifecycle-ops/correct-record.js";
 import {
   AutonomousOutboundPolicy,
   MessageConnectorRegistry,
@@ -209,11 +211,17 @@ export async function openBorgDependencies(
       watermarkRepository: streamWatermarkRepository,
       entryIndex: repositories.entryIndex,
     });
+    const recordIdResolver = createRecordIdResolver(sqlite);
+    const recordCorrections = new RecordCorrectionService({ ...repositories, tracer });
     const toolDispatcher = buildToolDispatcher({
       db: sqlite,
+      recordIdResolver,
+      recordCorrections,
       recordEvidenceReader: {
         episodicRepository: repositories.episodicRepository,
+        semanticNodeRepository: repositories.semanticNodeRepository,
         identityEventRepository: repositories.identityEventRepository,
+        tracer,
       },
       toolTimeouts: config.tools,
       budgetTracer: tracer,
@@ -426,9 +434,13 @@ export async function openBorgDependencies(
       current: ReturnType<typeof buildAutonomyScheduler> | null;
     } = { current: null };
     const turnOrchestrator = buildTurnOrchestrator({
+      recordIdResolver,
+      recordCorrections,
       recordEvidenceReader: {
         episodicRepository: repositories.episodicRepository,
+        semanticNodeRepository: repositories.semanticNodeRepository,
         identityEventRepository: repositories.identityEventRepository,
+        tracer,
       },
       config,
       retrievalPipeline: repositories.retrievalPipeline,

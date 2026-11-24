@@ -29,6 +29,8 @@ import type { CreatorDirectiveRepository } from "../memory/creator-directives/in
 import type { SharedStateRepository } from "../memory/shared-state/index.js";
 import type { EpisodicRepository } from "../memory/episodic/index.js";
 import type { IdentityService } from "../memory/identity/index.js";
+import type { RecordCorrectionService } from "../memory/lifecycle-ops/correct-record.js";
+import type { RecordIdResolver } from "../tools/record-id-resolver.js";
 import type { ObservedEventRepository } from "../memory/observed-events/index.js";
 import type {
   ProceduralEvidenceRepository,
@@ -63,6 +65,8 @@ import type { StreamEntryIndexRepository } from "../stream/index.js";
 import type { AutonomySchedulerDescription } from "../autonomy/index.js";
 
 export type BuildTurnOrchestratorOptions = {
+  recordIdResolver?: RecordIdResolver;
+  recordCorrections?: RecordCorrectionService;
   recordEvidenceReader?: import("../memory/common/record-evidence.js").RecordEvidenceReader;
   config: Config;
   retrievalPipeline: RetrievalPipeline;
@@ -154,6 +158,8 @@ export function buildTurnOrchestrator(options: BuildTurnOrchestratorOptions): Tu
     llmFactory: options.llmFactory,
     createReflector: (llmClient) =>
       new Reflector({
+        recordIdResolver: options.recordIdResolver,
+        recordCorrections: options.recordCorrections,
         recordEvidenceReader: options.recordEvidenceReader,
         workingMemoryStore: options.workingMemoryStore,
         sessionLock: options.sessionLock,

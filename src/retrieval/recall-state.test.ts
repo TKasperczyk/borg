@@ -13,6 +13,13 @@ import { FRAME_ANOMALY_ANNOTATION_EVENT } from "../stream/frame-anomaly.js";
 import { relationshipPrivateMemoryDisclosureLabel } from "../memory/common/disclosure-label.js";
 import { memoryDisclosurePayloadFields } from "../memory/common/disclosure-serializers.js";
 import { summarizeRetrievedEvidence } from "../cognition/deliberation/prompt/retrieval.js";
+import { AutobiographicalRecallService } from "../cognition/autobiographical-recall.js";
+import {
+  buildRecordEvidenceLedger,
+  createRecordEvidenceFixture,
+} from "../cognition/record-evidence-test-support.js";
+import * as recordAnnotations from "../memory/identity/annotations.js";
+import { RecordCorrectionService } from "../memory/lifecycle-ops/correct-record.js";
 import { createWorkingMemory, workingMemorySchema } from "../memory/working/index.js";
 import { FixedClock } from "../util/clock.js";
 import {
@@ -309,6 +316,178 @@ describe("retrieval recall_state", () => {
     expect(serialized).toContain(episode.id);
     expect(serialized).not.toContain(staleEvidenceId);
     expect(serialized).not.toContain("evidence_episode_");
+  });
+
+  it("uses read-time bodies for corrections and skips body lookups and hashes on uncorrected recall", async () => {
+    const h = await createOfflineTestHarness({
+      clock: new FixedClock(2_000_000),
+      embeddingClient: createEmbeddingClient(),
+    });
+    harness = h;
+    const { input, episodes, semantic, node } = createRecordEvidenceFixture();
+    const episode = episodes[0]!.episode;
+    for (const result of episodes) await h.episodicRepository.createEpisode(result.episode);
+    await h.semanticNodeRepository.insert(node);
+    const hash = vi.spyOn(recordAnnotations, "recordCorrectionTextHash");
+    // Measure annotation reads separately from ordinary retrieval and warm hydration.
+    const episodeBodies = vi.fn(h.episodicRepository.getMany.bind(h.episodicRepository));
+    const nodeBodies = vi.fn(h.semanticNodeRepository.getMany.bind(h.semanticNodeRepository));
+    const annotationReader = {
+      identityEventRepository: h.identityEventRepository,
+      episodicRepository: {
+        getLifecycleMany: h.episodicRepository.getLifecycleMany.bind(h.episodicRepository),
+        getMany: episodeBodies,
+      },
+      semanticNodeRepository: { getMany: nodeBodies },
+    };
+    const cold = await h.retrievalPipeline.recallEpisodesForCognition("warm semantic idle", {
+      ...cognitionRecallOptions(),
+      turnCounter: 1,
+      limit: 2,
+      recordRetrieval: false,
+    });
+    expect(
+      cold.evidence.some(
+        (row) => row.source === "episode" && row.provenance?.episodeId === episode.id,
+      ),
+    ).toBe(true);
+    expect(
+      cold.evidence.some(
+        (row) => row.source === "semantic_node" && row.provenance?.nodeId === node.id,
+      ),
+    ).toBe(true);
+    const autobiographical = await new AutobiographicalRecallService({
+      clock: h.clock,
+      episodicRepository: h.episodicRepository,
+    }).recall({
+      sessionId: DEFAULT_SESSION_ID,
+      temporalCue: { sinceTs: 0, untilTs: h.clock.now(), label: "Synthetic window" },
+      isSelfAudience: false,
+      sessionAudienceRole: "operator",
+      perceptionMode: "reflective",
+    });
+    expect(
+      autobiographical?.evidence.some(
+        (row) => row.kind === "episode" && row.metadata.episode_id === episode.id,
+      ),
+    ).toBe(true);
+    seedRecallHandles({
+      harness: h,
+      scopeKey: COGNITION_RECALL_SCOPE_KEY,
+      activeHandles: [
+        createStateHandle({ source: "episode", episodeId: episode.id }),
+        createStateHandle({ source: "semantic_node", nodeId: node.id }),
+      ],
+    });
+    // Keep both retained rows observable without letting the fresh lanes replace their handles.
+    vi.spyOn(h.episodicRepository, "recallByVectorForCognition").mockResolvedValue([]);
+    vi.spyOn(h.episodicRepository, "listRecentForCognition").mockResolvedValue([]);
+    vi.spyOn(h.episodicRepository, "listHottestForCognition").mockResolvedValue([]);
+    const pipeline = new RetrievalPipeline({
+      embeddingClient: h.embeddingClient,
+      episodicRepository: h.episodicRepository,
+      semanticNodeRepository: h.semanticNodeRepository,
+      recallStateRepository: h.recallStateRepository,
+      dataDir: h.tempDir,
+      clock: h.clock,
+    });
+    const recalled = await pipeline.recallEpisodesForCognition("warm semantic idle", {
+      ...cognitionRecallOptions(),
+      turnCounter: 2,
+      limit: 1,
+      minSimilarity: 0.99,
+    });
+    const retained = recalled.evidence.filter((item) => item.source === "warm_recall");
+    expect(retained).toHaveLength(2);
+    expect(retained.map((item) => item.text)).toEqual(
+      expect.arrayContaining([
+        `${episode.title}: ${episode.narrative}`,
+        `${node.label}: ${node.description}`,
+      ]),
+    );
+
+    const warmInput = {
+      ...input,
+      retrievedEpisodes: [],
+      retrievedSemantic: { ...semantic, matched_node_ids: [], matched_nodes: [] },
+      retrievedEvidence: retained,
+      autobiographicalRecall: undefined,
+    };
+    for (const page of [
+      {
+        ...warmInput,
+        retrievedEpisodes: cold.episodes,
+        retrievedSemantic: cold.semantic,
+        retrievedEvidence: cold.evidence,
+      },
+      warmInput,
+      { ...warmInput, retrievedEvidence: [], autobiographicalRecall: autobiographical },
+    ]) {
+      await buildRecordEvidenceLedger(page, annotationReader);
+      expect(episodeBodies).not.toHaveBeenCalled();
+      expect(nodeBodies).not.toHaveBeenCalled();
+      expect(hash).not.toHaveBeenCalled();
+    }
+
+    const service = new RecordCorrectionService({
+      ...h,
+      entryIndex: h.createContext().entryIndex!,
+    });
+    const writeContext = {
+      turnId: "synthetic-wake",
+      turnOrigin: "autonomous",
+      path: "tool",
+      streamWriter: h.streamWriter,
+    } as const;
+    const evidence = [{ id: episodes[1]!.episode.id, basis: "own_read" as const }];
+    const targetIds = [episode.id, node.id];
+    for (const id of targetIds) {
+      await service.correct(
+        { target_id: id, correction_note: "First correction.", corrects_span: "原文。", evidence },
+        writeContext,
+      );
+    }
+
+    const replacement = "New observation. 新しい文。";
+    await h.episodicRepository.update(episode.id, { narrative: replacement });
+    await h.semanticNodeRepository.update(node.id, { description: replacement });
+    for (const id of targetIds) {
+      expect(
+        await service.correct(
+          {
+            target_id: id,
+            correction_note: "Second correction.",
+            corrects_span: "新しい文。",
+            evidence,
+          },
+          writeContext,
+        ),
+      ).toMatchObject({
+        seq: 2,
+        total_count: 2,
+        shown_count: 2,
+      });
+    }
+
+    hash.mockClear();
+    const ledger = await buildRecordEvidenceLedger(warmInput, annotationReader);
+    expect(episodeBodies).toHaveBeenCalledExactlyOnceWith([episode.id]);
+    expect(nodeBodies).toHaveBeenCalledExactlyOnceWith([node.id], { includeArchived: true });
+    expect(hash.mock.calls).toEqual([[replacement], [replacement]]);
+    const storedRows = ledger.sections.find(
+      (section) => section.id === "retrieved_memory_evidence",
+    )!.entries;
+    expect(storedRows).toHaveLength(2);
+    for (const row of storedRows) {
+      expect(row.text).toContain("原文。");
+      expect(row.evidence_context).toMatchObject({
+        self_correction_count: 2,
+        annotations: [
+          { seq: 2, target_changed: false },
+          { seq: 1, target_changed: true, quoted_span_present: false },
+        ],
+      });
+    }
   });
 
   it("serializes only handles and counters, not text, descriptions, summaries, or beliefs", async () => {

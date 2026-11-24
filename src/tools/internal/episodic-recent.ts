@@ -93,9 +93,16 @@ export function createEpisodicRecentTool(
         context,
       );
 
-      const contexts = readRecordEvidenceContexts(
+      const contexts = await readRecordEvidenceContexts(
         options.recordEvidenceReader,
-        results.map(({ episode }) => ({ record_type: "episode", record_id: episode.id })),
+        results.map(({ episode }) => ({
+          record_type: "episode",
+          record_id: episode.id,
+        })),
+        {
+          readLoadedText: ({ record_id }) =>
+            results.find(({ episode }) => episode.id === record_id)?.episode.narrative,
+        },
       );
       return renderRecordEvidenceObject({
         evidence_guidance: EVIDENCE_GUIDANCE,

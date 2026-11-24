@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { buildConsolidationCoverageHash } from "../../memory/episodic/index.js";
+import { RecordCorrectionService } from "../../memory/lifecycle-ops/correct-record.js";
 import { memoryDisclosureLabelFromEpisodeAccess } from "../../retrieval/index.js";
 import { createConsolidationFamilyId, parseEntityId, parseEpisodeId } from "../../util/ids.js";
 import {
@@ -509,6 +510,62 @@ describe("consolidator process", () => {
       ]),
     );
     expect(plan.items.some((item) => item.source_episode_ids.length === 4)).toBe(false);
+  });
+
+  it("shows a self correction and an operator annotation on their original in consolidation", async () => {
+    const llm = new FakeLLMClient({
+      responses: [createConsolidationResponse("Merged fixture", "Synthetic summary.")],
+    });
+    const h = await createOfflineTestHarness({ llmClient: llm });
+    cleanup.push(h.cleanup);
+    const original = await h.episodicRepository.createEpisode(
+      createEpisodeFixture({ narrative: "観察は確定。", tags: ["fixture"] }, [1, 0, 0, 0]),
+    );
+    const peer = await h.episodicRepository.createEpisode(
+      createEpisodeFixture({ tags: ["fixture"] }, [1, 0, 0, 0]),
+    );
+    const target = { record_type: "episode", record_id: original.id } as const;
+    recordTestAnnotation(h.identityEventRepository, original.id, "Synthetic operator annotation");
+    await new RecordCorrectionService({ ...h, entryIndex: h.createContext().entryIndex! }).correct(
+      {
+        target_id: original.id,
+        correction_note: "仮の観察だった。",
+        corrects_span: "観察は確定。",
+        evidence: [{ id: peer.id, basis: "own_read" }],
+      },
+      {
+        path: "tool",
+        turnOrigin: "autonomous",
+        turnId: "synthetic-wake",
+        streamWriter: h.streamWriter,
+      },
+    );
+    const result = await createProcess(h).run(h.createContext(), { dryRun: false });
+    expect(result.errors).toEqual([]);
+    expect(result.changes).toHaveLength(1);
+    const prompt = String(llm.requests[0]?.messages[0]?.content);
+    const row = prompt
+      .split("\n")
+      .filter((line) => line.startsWith("{"))
+      .map((line) => JSON.parse(line))
+      .find((row) => row.id === original.id);
+    expect(row).toMatchObject({
+      narrative: original.narrative,
+      annotations: [
+        { author: "borg", original_record: target, text: "仮の観察だった。" },
+        { authority: "Synthetic operator", text: "Synthetic operator annotation" },
+      ],
+      self_correction_count: 1,
+    });
+    const currentId =
+      h.episodicRepository.listConsolidationFamilies()[0]!.current_version_episode_id;
+    expect(
+      h.identityEventRepository.listAnnotationsForTargets([{ ...target, record_id: currentId }])[0]
+        ?.annotations,
+    ).toEqual([]);
+    expect(
+      h.identityEventRepository.listAnnotationsForTargets([target])[0]?.annotations,
+    ).toHaveLength(2);
   });
 
   it("attaches a single new raw to an active family by creating a new current version", async () => {

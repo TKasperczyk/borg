@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../../tracing/tracer.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import { episodeParticipantEntityIdTerm } from "../../memory/episodic/index.js";
+import { RecordCorrectionService } from "../../memory/lifecycle-ops/correct-record.js";
 import { StreamWriter, type StreamWatermarkRepository } from "../../stream/index.js";
 import {
   createEpisodeFixture,
@@ -745,6 +746,52 @@ describe("semantic extractor process", () => {
     expect(oversizedPlan.episode_ids).toEqual([oversizedEpisode.id]);
     expect(oversizedPlan.pending_episode_count).toBe(1);
     expect(oversizedPlan.run_capped).toBe(true);
+  });
+
+  it("presents the self correction and its original record beside the audited extractor input", async () => {
+    const llm = new FakeLLMClient({
+      responses: [createSemanticToolResponse({ nodes: [], edges: [] })],
+    });
+    const h = await createOfflineTestHarness({ llmClient: llm });
+    cleanup.push(h.cleanup);
+    const episode = await h.episodicRepository.createEpisode(
+      createEpisodeFixture({ narrative: "  観察は確定。" }),
+    );
+    recordTestAnnotation(h.identityEventRepository, episode.id, "Synthetic operator annotation");
+    await new RecordCorrectionService({ ...h, entryIndex: h.createContext().entryIndex! }).correct(
+      {
+        target_id: episode.id,
+        correction_note: "  仮の観察だった。  ",
+        corrects_span: "  観察は確定。",
+        evidence: [{ id: episode.id, basis: "own_read" }],
+      },
+      {
+        path: "reflector",
+        turnOrigin: "user",
+        turnId: "synthetic-conversation",
+        streamWriter: h.streamWriter,
+      },
+    );
+    const result = await createProcess(h).run(h.createContext(), { dryRun: false });
+    expect(result.errors).toEqual([]);
+    const prompt = String(llm.requests[0]?.messages[0]?.content);
+    const row = prompt
+      .split("\n")
+      .filter((line) => line.startsWith("{"))
+      .map((line) => JSON.parse(line))
+      .find((row) => row.id === episode.id);
+    expect(row).toMatchObject({
+      narrative: episode.narrative,
+      annotations: [
+        {
+          author: "borg",
+          original_record: { record_type: "episode", record_id: episode.id },
+          text: "  仮の観察だった。  ",
+        },
+        { authority: "Synthetic operator", text: "Synthetic operator annotation" },
+      ],
+      self_correction_count: 1,
+    });
   });
 
   it("shows audited corrections beside unchanged extractor input text", async () => {

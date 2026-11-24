@@ -2,7 +2,9 @@
 
 import type { Clock } from "../util/clock.js";
 import type { SqliteDatabase } from "../storage/sqlite/index.js";
-import { createRecordIdResolver } from "../tools/record-id-resolver.js";
+import { createRecordIdResolver, type RecordIdResolver } from "../tools/record-id-resolver.js";
+import { createRecordCorrectTool } from "../tools/internal/record-correct.js";
+import type { RecordCorrectionService } from "../memory/lifecycle-ops/correct-record.js";
 import type { Config } from "../config/index.js";
 import type { ToolDispatchCall } from "../tools/dispatcher.js";
 import type { TimeoutLoadSignals } from "../util/timeout-policy.js";
@@ -79,6 +81,8 @@ import type { BorgStreamWriterFactory } from "./types.js";
 
 export type BuildToolDispatcherOptions = {
   db: SqliteDatabase;
+  recordIdResolver?: RecordIdResolver;
+  recordCorrections?: RecordCorrectionService;
   recordEvidenceReader?: import("../memory/common/record-evidence.js").RecordEvidenceReader;
   dataDir: string;
   entryIndex: StreamEntryIndexRepository;
@@ -185,7 +189,7 @@ async function annotateSemanticWalkSteps(
 
 export function buildToolDispatcher(options: BuildToolDispatcherOptions): ToolDispatcher {
   const toolDispatcher = new ToolDispatcher({
-    recordIdResolver: createRecordIdResolver(options.db),
+    recordIdResolver: options.recordIdResolver ?? createRecordIdResolver(options.db),
     createStreamWriter: options.createStreamWriter,
     clock: options.clock,
     ...options.toolTimeouts,
@@ -443,5 +447,13 @@ export function buildToolDispatcher(options: BuildToolDispatcherOptions): ToolDi
       }),
     );
 
+  if (options.recordCorrections !== undefined) {
+    toolDispatcher.register(
+      createRecordCorrectTool({
+        recordCorrections: options.recordCorrections,
+        createStreamWriter: options.createStreamWriter,
+      }),
+    );
+  }
   return toolDispatcher;
 }

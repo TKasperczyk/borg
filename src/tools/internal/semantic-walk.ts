@@ -39,6 +39,7 @@ const semanticWalkNodeOutputSchema = semanticNodeSchema
   .extend({
     annotations: recordEvidenceShape.annotations,
     annotations_omitted: recordEvidenceShape.annotations_omitted,
+    self_correction_count: recordEvidenceShape.self_correction_count,
     partial_source_visibility: z.boolean().optional(),
     source_visibility_fraction: z.number().min(0).max(1).optional(),
     disclosure_label: memoryDisclosureLabelMetadataSchema,
@@ -161,9 +162,16 @@ export function createSemanticWalkTool(
         context,
       );
 
-      const contexts = readRecordEvidenceContexts(
+      const contexts = await readRecordEvidenceContexts(
         options.recordEvidenceReader,
-        steps.map(({ node }) => ({ record_type: "semantic_node", record_id: node.id })),
+        steps.map(({ node }) => ({
+          record_type: "semantic_node",
+          record_id: node.id,
+        })),
+        {
+          readLoadedText: ({ record_id }) =>
+            steps.find(({ node }) => node.id === record_id)?.node.description,
+        },
       );
       return renderRecordEvidenceObject({
         evidence_guidance: EVIDENCE_GUIDANCE,

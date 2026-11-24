@@ -9,6 +9,9 @@ import type { SessionId } from "../util/ids.js";
 export type TurnTraceEventName =
   | "process.memory.sample"
   | "memory.annotations.skipped"
+  | "memory.annotations.body_lookup_failed"
+  | "memory.annotations.write_failed"
+  | "memory.annotations.rejected"
   | "autonomy.tick"
   | "autonomy.tick_error"
   | "autonomy.preparation.completed"

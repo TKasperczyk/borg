@@ -28,6 +28,7 @@ import { runsReflectionPersistence, type PerceptionResult, type TurnOrigin } fro
 import type { ReflectionEffects, ReflectionResult, Reflector } from "./index.js";
 import type { TurnTracer } from "../../tracing/tracer.js";
 import type { ActualFrameAnomalyClassification } from "../frame-anomaly/index.js";
+import type { EvidenceLedger } from "../evidence-ledger/types.js";
 
 const ACTION_RESPONSE_SUMMARY_LIMIT = 240;
 const OPEN_QUESTIONS_REFLECTION_LIMIT = 20;
@@ -108,6 +109,7 @@ export type RunTurnReflectionInput = {
   deliberation: DeliberationResult;
   actionResult: ActionResult;
   retrievedEpisodes: DeliberationResult["retrievedEpisodes"];
+  evidenceLedger?: EvidenceLedger | null;
   // The open questions this turn's retrieval recalled, the set its evidence ledger draws from.
   recalledOpenQuestions?: readonly OpenQuestion[];
   retrievalConfidence: Parameters<Reflector["reflect"]>[0]["retrievalConfidence"];
@@ -251,6 +253,7 @@ export class TurnReflectionCoordinator {
           workingMemory: input.postActionWorkingMemory,
         },
         retrievedEpisodes: input.retrievedEpisodes,
+        evidenceLedger: input.evidenceLedger,
         retrievalConfidence: input.retrievalConfidence,
         executiveFocus: input.executiveFocus,
         selectedSkillId: input.selectedSkill?.skill.id ?? null,

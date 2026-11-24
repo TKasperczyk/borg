@@ -1,41 +1,40 @@
-import type { AnnotationTarget } from "../../memory/identity/annotations.js";
 import {
-  readRecordEvidenceContexts,
+  LEDGER_ANNOTATION_OPTIONS,
+  type AnnotationTarget,
+} from "../../memory/identity/annotations.js";
+import { SELF_CORRECTION_GUIDANCE } from "../../memory/common/evidence-prompt.js";
+import {
   recordEvidenceContext,
   RECORD_ANNOTATION_GUIDANCE,
   type RecordEvidenceReader,
 } from "../../memory/common/record-evidence.js";
-import { retrievedRecordTargets } from "../record-evidence.js";
+import { readRetrievedRecordEvidence } from "../record-evidence.js";
 import type { BuilderSectionContext } from "./builder-context.js";
 import type { EvidenceLedgerBuildInput } from "./builder-types.js";
 import type { EvidenceLedgerEntry, EvidenceLedgerSection } from "./types.js";
 
-export const MAX_LEDGER_ANNOTATIONS_PER_RECORD = 2;
-export const MAX_LEDGER_ANNOTATION_CHARS = 600;
+export {
+  MAX_LEDGER_ANNOTATIONS_PER_RECORD,
+  MAX_LEDGER_ANNOTATION_CHARS,
+} from "../../memory/identity/annotations.js";
 
 export function readLedgerRecordEvidence(
   reader: RecordEvidenceReader | undefined,
   input: EvidenceLedgerBuildInput,
 ) {
-  return readRecordEvidenceContexts(
+  return readRetrievedRecordEvidence(
     reader,
-    [
-      ...retrievedRecordTargets({
-        episodes: input.retrievedEpisodes,
-        semantic: input.retrievedSemantic,
-        evidence: input.retrievedEvidence,
-      }),
-      ...(input.autobiographicalRecall?.evidence ?? []).flatMap((item) =>
-        item.kind === "episode" && typeof item.metadata.episode_id === "string"
-          ? [{ record_type: "episode" as const, record_id: item.metadata.episode_id }]
-          : [],
-      ),
-    ],
     {
-      maxAnnotations: MAX_LEDGER_ANNOTATIONS_PER_RECORD,
-      maxChars: MAX_LEDGER_ANNOTATION_CHARS,
-      wholeTextOnly: true,
+      episodes: input.retrievedEpisodes,
+      semantic: input.retrievedSemantic,
+      evidence: input.retrievedEvidence,
     },
+    (input.autobiographicalRecall?.evidence ?? []).flatMap((item) =>
+      item.kind === "episode" && typeof item.metadata.episode_id === "string"
+        ? [{ record_type: "episode" as const, record_id: item.metadata.episode_id }]
+        : [],
+    ),
+    LEDGER_ANNOTATION_OPTIONS,
   );
 }
 
@@ -76,6 +75,17 @@ export function withLedgerAnnotations(
 export function ledgerAnnotationGuidance(
   sections: readonly EvidenceLedgerSection[],
 ): string | null {
+  if (
+    sections.some(
+      (section) =>
+        !section.omitted_from_prompt &&
+        section.entries.some(
+          (entry) => entry.evidence_context?.self_correction_count !== undefined,
+        ),
+    )
+  ) {
+    return SELF_CORRECTION_GUIDANCE;
+  }
   return sections.some(
     (section) =>
       !section.omitted_from_prompt &&

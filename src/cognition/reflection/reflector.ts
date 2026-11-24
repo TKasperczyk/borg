@@ -7,6 +7,14 @@ import {
   renderEvidencePromptJson,
 } from "../../memory/common/evidence-prompt.js";
 import { RECORD_ANNOTATION_GUIDANCE } from "../../memory/common/record-evidence.js";
+import { recordCorrectionInputSchema } from "../../memory/identity/annotations.js";
+import {
+  RECORD_CORRECTION_IDENTITY_FAILED,
+  type RecordCorrectionService,
+} from "../../memory/lifecycle-ops/correct-record.js";
+import { RECORD_CORRECTION_ID_INPUTS } from "../../tools/internal/record-correct.js";
+import { resolveToolRecordIds } from "../../tools/record-id-inputs.js";
+import type { RecordIdResolver } from "../../tools/record-id-resolver.js";
 import {
   artifactReferenceSchema,
   deliveredOutboundPostArtifactOutputSchema,
@@ -67,6 +75,7 @@ import {
   resolutionCorrectionEvidenceSchema,
 } from "../../memory/self/resolution-corrections.js";
 import { headTailTextExcerpt } from "../../util/text-excerpt.js";
+import { utf16SafePrefix } from "../../util/utf16-boundary.js";
 import type { StreamEntryIndexRepository } from "../../stream/index.js";
 import type { ReviewQueueRepository } from "../../memory/review-queue/index.js";
 import { ProceduralEvidenceRepository, SkillRepository } from "../../memory/procedural/index.js";
@@ -90,9 +99,14 @@ import type {
 } from "../../memory/working/index.js";
 import { pendingActionResolutionId } from "../../memory/working/index.js";
 import { workingSessionIdSchema } from "../../memory/working/types.js";
-import { selfPrivateMemoryDisclosureLabel } from "../../memory/common/disclosure-label.js";
+import {
+  memoryDisclosureLabelFromMetadata,
+  memoryDisclosureLabelMetadata,
+  selfPrivateMemoryDisclosureLabel,
+} from "../../memory/common/disclosure-label.js";
 import {
   pendingActionIdHelpers,
+  semanticNodeIdHelpers,
   type ActionId,
   type EntityId,
   type EpisodeId,
@@ -105,7 +119,7 @@ import {
   type StreamEntryId,
   scheduledWakeIdHelpers,
 } from "../../util/ids.js";
-import { IdentityCasMismatchError, LLMError, StorageError } from "../../util/errors.js";
+import { BorgError, IdentityCasMismatchError, LLMError, StorageError } from "../../util/errors.js";
 import { z } from "zod";
 
 import type { ActionResult } from "../turn-action/index.js";
@@ -115,7 +129,10 @@ import type { ActualFrameAnomalyClassification } from "../frame-anomaly/index.js
 import {
   TURN_REFLECTION_SYSTEM_PROMPT,
   RESOLUTION_CORRECTION_REFLECTION_GUIDANCE,
+  RECORD_CORRECTION_REFLECTION_GUIDANCE,
 } from "../prompts/reflector.js";
+import { objectHandle } from "../evidence-ledger/provenance-dedupe.js";
+import type { EvidenceLedger } from "../evidence-ledger/types.js";
 import {
   intentRecordSchema,
   isAutonomousLikeTurnOrigin,
@@ -142,6 +159,7 @@ export type ReflectionContext = {
   deliberationResult: DeliberationResult;
   actionResult: ActionResult;
   retrievedEpisodes: RetrievedEpisode[];
+  evidenceLedger?: EvidenceLedger | null;
   retrievalConfidence: RetrievalConfidence;
   executiveFocus?: ExecutiveFocus | null;
   selectedSkillId?: SkillId | null;
@@ -192,6 +210,10 @@ const SCHEDULED_WAKE_CREATE_TOOL_NAME = "tool.scheduledWakes.create";
 // Thinking counts against max_tokens, so this must fit the reasoning as well as the payload.
 const DEFAULT_REFLECTION_MAX_TOKENS = 16_000;
 const MAX_REFLECTION_RESOLUTION_CORRECTIONS = 3;
+const MAX_REFLECTION_RECORD_CORRECTIONS = 3;
+const MAX_REFLECTION_SEMANTIC_NODES = 3;
+const MAX_REFLECTION_SEMANTIC_TEXT_CHARS = 240;
+const MAX_REFLECTION_SEMANTIC_HANDOFF_CHARS = 1_500;
 const REFLECTION_GOAL_PROGRESS_NOTES_CHAR_BUDGET = 1_200;
 // Candidate labels can grow quickly; established traits are the stable vocabulary,
 // while the strongest 40 candidates give the reflector reuse handles without unbounded prompt growth.
@@ -396,9 +418,14 @@ const strictReflectionOutputSchema = z.object({
     .default([]),
 });
 
-type ReflectionOutput = z.infer<typeof strictReflectionOutputSchema>;
-// Validate each correction separately so one malformed item has a traced rejection
-// without discarding unrelated reflection writes. The advertised schema stays strict.
+type ReflectionOutput = z.infer<typeof strictReflectionOutputSchema> & {
+  record_corrections?: unknown[];
+};
+// Validate record corrections separately from the envelope so unrelated writes can proceed.
+const recordCorrectionBatchSchema = z
+  .array(z.unknown())
+  .max(MAX_REFLECTION_RECORD_CORRECTIONS)
+  .optional();
 const reflectionEnvelopeSchema = strictReflectionOutputSchema
   .omit({ resolution_corrections: true })
   .extend({
@@ -406,6 +433,7 @@ const reflectionEnvelopeSchema = strictReflectionOutputSchema
       .array(z.unknown())
       .max(MAX_REFLECTION_RESOLUTION_CORRECTIONS)
       .default([]),
+    record_corrections: z.unknown().optional(),
   });
 
 const REFLECTION_TOOL: LLMToolDefinition = {
@@ -414,6 +442,58 @@ const REFLECTION_TOOL: LLMToolDefinition = {
     "I emit structured post-turn reflection. I mark advanced_goals only for concrete progress, procedural_outcomes only from user follow-up evidence with grounded set explicitly, trait_demonstrations only from turn content, intent_updates only for my prior pending actions resolved by the completed turn, executive step outcomes/proposals only when the turn directly supports them, open_questions only for durable unresolved questions worth remembering, resolved_open_questions only for active questions clearly answered by supplied evidence, and retired_goals only for active goals whose stated terminal condition is met or no longer pursued.",
   inputSchema: toToolInputSchema(strictReflectionOutputSchema),
 };
+const REFLECTION_TOOL_WITH_RECORD_CORRECTIONS: LLMToolDefinition = {
+  ...REFLECTION_TOOL,
+  inputSchema: toToolInputSchema(
+    strictReflectionOutputSchema.extend({
+      record_corrections: z
+        .array(recordCorrectionInputSchema)
+        .max(MAX_REFLECTION_RECORD_CORRECTIONS)
+        .optional(),
+    }),
+  ),
+};
+
+function semanticTargetsForReflection(ledger: EvidenceLedger | null | undefined) {
+  const rows: Array<{
+    id: string;
+    text: string;
+    self_correction_count?: number;
+    disclosure_label: ReturnType<typeof memoryDisclosureLabelMetadata>;
+  }> = [];
+  const seen = new Set<string>();
+  for (const section of ledger?.sections ?? []) {
+    if (
+      section.omitted_from_prompt ||
+      (section.id !== "semantic_graph" && section.id !== "retrieved_memory_evidence")
+    )
+      continue;
+    for (const entry of section.entries) {
+      const handle = objectHandle(entry);
+      if (!handle?.startsWith("semantic_node:") || entry.text === undefined) continue;
+      const id = handle.slice("semantic_node:".length);
+      if (!semanticNodeIdHelpers.is(id) || seen.has(id)) continue;
+      const count = entry.evidence_context?.self_correction_count;
+      const row = {
+        id,
+        text: utf16SafePrefix(entry.text, MAX_REFLECTION_SEMANTIC_TEXT_CHARS),
+        ...(count === undefined ? {} : { self_correction_count: count }),
+        disclosure_label: memoryDisclosureLabelMetadata(
+          memoryDisclosureLabelFromMetadata(entry.state_metadata?.disclosure_label) ??
+            unknownMemoryDisclosureLabel(),
+        ),
+      };
+      // The compact prompt inserts this field after a comma. Price its complete disclosure label.
+      const chars =
+        JSON.stringify({ available_evidence_semantic_nodes: [...rows, row] }).length - 1;
+      if (chars > MAX_REFLECTION_SEMANTIC_HANDOFF_CHARS) continue;
+      rows.push(row);
+      seen.add(id);
+      if (rows.length === MAX_REFLECTION_SEMANTIC_NODES) return rows;
+    }
+  }
+  return rows;
+}
 
 function emptyReflectionOutput(): ReflectionOutput {
   return {
@@ -909,6 +989,8 @@ function currentTraitVocabularyForReflection(
 }
 
 export type ReflectorOptions = {
+  recordCorrections?: Pick<RecordCorrectionService, "correct">;
+  recordIdResolver?: RecordIdResolver;
   recordEvidenceReader?: import("../../memory/common/record-evidence.js").RecordEvidenceReader;
   clock?: Clock;
   llmClient?: LLMClient;
@@ -1061,6 +1143,11 @@ export class Reflector {
       context,
       reflectionOutput.resolution_corrections,
       resolvedQuestionBlock.shownResolutions,
+    );
+    await this.applyRecordCorrections(
+      context,
+      reflectionOutput.record_corrections ?? [],
+      streamWriter,
     );
 
     const availableArtifactReferences = currentTurnArtifactReferences(context, effects);
@@ -2273,6 +2360,46 @@ export class Reflector {
     }
   }
 
+  private async applyRecordCorrections(
+    context: ReflectionContext,
+    corrections: readonly unknown[],
+    streamWriter: StreamWriter,
+  ): Promise<void> {
+    const recordCorrections = this.options.recordCorrections;
+    if (recordCorrections === undefined || (context.origin ?? "user") !== "user") return;
+    for (const correction of corrections) {
+      try {
+        const resolved = resolveToolRecordIds(
+          { recordIdInputs: RECORD_CORRECTION_ID_INPUTS },
+          correction,
+          this.options.recordIdResolver,
+          [],
+        );
+        await recordCorrections.correct(recordCorrectionInputSchema.parse(resolved.input), {
+          turnId: context.turnId,
+          sessionId: context.sessionId,
+          turnOrigin: "user",
+          path: "reflector",
+          streamWriter,
+        });
+      } catch (error) {
+        if (error instanceof BorgError && error.code === RECORD_CORRECTION_IDENTITY_FAILED) {
+          await appendInternalFailureEvent(streamWriter, "reflection_record_correction", error, {
+            code: error.code,
+          });
+          continue;
+        }
+        if (this.options.tracer?.enabled === true && context.turnId !== undefined) {
+          this.options.tracer.emit("memory.annotations.rejected", {
+            turnId: context.turnId,
+            path: "reflector",
+            reason: error instanceof BorgError ? error.code : "invalid_structure",
+          });
+        }
+      }
+    }
+  }
+
   private async applyResolvedOpenQuestions(
     context: ReflectionContext,
     resolutions: readonly ReflectionOutput["resolved_open_questions"][number][],
@@ -2536,16 +2663,24 @@ export class Reflector {
       return emptyReflectionOutput();
     }
 
+    const offersRecordCorrections =
+      this.options.recordCorrections !== undefined && (context.origin ?? "user") === "user";
+    const semanticTargets = offersRecordCorrections
+      ? semanticTargetsForReflection(context.evidenceLedger)
+      : [];
     try {
       return (
         await callStructuredTool({
           llmClient: this.llmClient,
           request: {
             model: this.model,
-            system:
-              resolvedQuestionBlock.shownResolutions.size === 0
-                ? TURN_REFLECTION_SYSTEM_PROMPT
-                : `${TURN_REFLECTION_SYSTEM_PROMPT}\n${RESOLUTION_CORRECTION_REFLECTION_GUIDANCE}`,
+            system: [
+              TURN_REFLECTION_SYSTEM_PROMPT,
+              ...(resolvedQuestionBlock.shownResolutions.size === 0
+                ? []
+                : [RESOLUTION_CORRECTION_REFLECTION_GUIDANCE]),
+              ...(offersRecordCorrections ? [RECORD_CORRECTION_REFLECTION_GUIDANCE] : []),
+            ].join("\n"),
             messages: [
               {
                 role: "user",
@@ -2598,9 +2733,10 @@ export class Reflector {
                         reflectionToolCall(call, this.options.episodicRepository),
                       ),
                     ),
-                    available_evidence_episodes: withRetrievedRecordEvidence(
-                      this.options.recordEvidenceReader,
-                      { episodes: context.retrievedEpisodes },
+                    available_evidence_episodes: (
+                      await withRetrievedRecordEvidence(this.options.recordEvidenceReader, {
+                        episodes: context.retrievedEpisodes,
+                      })
                     ).episodes.map((result) => ({
                       id: result.episode.id,
                       title: result.episode.title,
@@ -2611,12 +2747,17 @@ export class Reflector {
                           memoryDisclosureLabelFromEpisodeAccess(result.episode),
                       ),
                     })),
+                    ...(semanticTargets.length === 0
+                      ? {}
+                      : { available_evidence_semantic_nodes: semanticTargets }),
                   },
                   { compact: true, guidance: RECORD_ANNOTATION_GUIDANCE },
                 ),
               },
             ],
-            tools: [REFLECTION_TOOL],
+            tools: [
+              offersRecordCorrections ? REFLECTION_TOOL_WITH_RECORD_CORRECTIONS : REFLECTION_TOOL,
+            ],
             tool_choice: { type: "tool", name: REFLECTION_TOOL_NAME },
             max_tokens: this.maxTokens,
             budget: "reflection",
@@ -2655,7 +2796,26 @@ export class Reflector {
               });
               return [];
             });
-            return { ...parsed.data, resolution_corrections: corrections };
+            const { record_corrections, ...reflection } = parsed.data;
+            const batch = recordCorrectionBatchSchema.safeParse(record_corrections);
+            if (
+              !batch.success &&
+              this.options.tracer?.enabled === true &&
+              context.turnId !== undefined
+            ) {
+              this.options.tracer.emit("memory.annotations.rejected", {
+                turnId: context.turnId,
+                path: "reflector",
+                reason: "invalid_structure",
+              });
+            }
+            return {
+              ...reflection,
+              resolution_corrections: corrections,
+              ...(batch.success && batch.data !== undefined
+                ? { record_corrections: batch.data }
+                : {}),
+            };
           },
         })
       ).parsed;

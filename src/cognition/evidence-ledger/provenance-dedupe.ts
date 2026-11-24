@@ -150,7 +150,7 @@ const RETRIEVED_OBJECT_ID_KEYS = [
 // The one object a row renders, as opposed to the evidence it cites. Two rows with the same object
 // show the same memory twice, so they fold even inside one section, where rows that merely share
 // evidence stay apart. A row naming no single object has none and folds only by provenance.
-function objectHandle(entry: EvidenceLedgerEntry): string | null {
+export function objectHandle(entry: EvidenceLedgerEntry): string | null {
   if (entry.omission_accounting !== undefined) return null;
   for (const [prefix, type] of OBJECT_ID_PREFIXES) {
     const value = suffixAfterPrefix(entry.id, prefix);

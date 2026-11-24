@@ -1,5 +1,6 @@
 import { transformToolNameForOAuth } from "../../llm/index.js";
 import { RESOLUTION_CORRECTION_TOOL_NAME } from "../../memory/self/resolution-corrections.js";
+import { RECORD_CORRECTION_TOOL_NAME } from "../../memory/identity/annotations.js";
 import type { ToolDefinition, ToolDispatcher } from "../../tools/dispatcher.js";
 import { OUTBOUND_POST_TOOL_NAME } from "../../tools/internal/outbound-post-name.js";
 import { OWN_RECORDS_PAGE_END_CLAIM } from "../../tools/internal/own-records-page-end-claim.js";
@@ -27,6 +28,7 @@ export const AUTONOMOUS_INTERIOR_FINALIZER_TOOL_NAMES = [
   "tool.openQuestions.create",
   "tool.openQuestions.resolve",
   RESOLUTION_CORRECTION_TOOL_NAME,
+  RECORD_CORRECTION_TOOL_NAME,
   "tool.openQuestions.ruminations",
   "tool.goals.retire",
   "tool.goals.block",

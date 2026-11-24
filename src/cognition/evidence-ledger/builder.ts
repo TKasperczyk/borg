@@ -198,7 +198,7 @@ export class EvidenceLedgerBuilder {
     const retrievedEvidence = applyImageBudgetAnnotations(input.retrievedEvidence, imageBudget);
     const sections = createSectionBuckets();
     const context: BuilderSectionContext = {
-      recordEvidence: readLedgerRecordEvidence(this.options.recordEvidenceReader, input),
+      recordEvidence: await readLedgerRecordEvidence(this.options.recordEvidenceReader, input),
       input: {
         ...input,
         applicableCommitments,

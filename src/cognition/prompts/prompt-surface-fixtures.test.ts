@@ -1005,6 +1005,10 @@ function makeAutonomousRelationalContext(): DeliberationContext {
         menuSummary: "Append an evidenced correction to a resolved question's closing note.",
       },
       {
+        name: "tool.records.correct",
+        menuSummary: "Append an evidenced correction to an episode or semantic node.",
+      },
+      {
         name: "tool.goals.retire",
         menuSummary:
           "Retire one of my own goals as done, superseded, or abandoned, with my reason; close outstanding steps without claiming completion.",

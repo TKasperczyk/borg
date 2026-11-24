@@ -169,6 +169,7 @@ function keepsWhole(
     key === "disclosure_label" ||
     key === "annotations" ||
     key === "annotations_omitted" ||
+    key === "self_correction_count" ||
     key === "lifecycle" ||
     (key === "review" && typeof record.open_question_id === "string") ||
     (key === "open_question_id" && typeof record.open_question_id === "string") ||
@@ -541,10 +542,17 @@ function deferredWakeEvidence(payload: Record<string, unknown>): Record<string, 
       ? {
           related_episodes: payload.related_episodes.map((episode) => {
             if (episode === null || typeof episode !== "object") return episode;
-            const { annotations, annotations_omitted, lifecycle, ...record } = episode;
+            const {
+              annotations,
+              annotations_omitted,
+              self_correction_count,
+              lifecycle,
+              ...record
+            } = episode;
             const envelope: EpisodeEvidenceContext = {
               ...(annotations === undefined ? {} : { annotations }),
               ...(annotations_omitted === undefined ? {} : { annotations_omitted }),
+              ...(self_correction_count === undefined ? {} : { self_correction_count }),
               ...(lifecycle === undefined ? {} : { lifecycle }),
             };
             return { ...record, ...evidencePromptFields(envelope) };

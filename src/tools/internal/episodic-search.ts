@@ -145,9 +145,16 @@ export function createEpisodicSearchTool(
       );
       const results = Array.isArray(found) ? found : found.episodes;
       const status = Array.isArray(found) ? undefined : retrievalStatus(found.degradations);
-      const contexts = readRecordEvidenceContexts(
+      const contexts = await readRecordEvidenceContexts(
         options.recordEvidenceReader,
-        results.map(({ episode }) => ({ record_type: "episode", record_id: episode.id })),
+        results.map(({ episode }) => ({
+          record_type: "episode",
+          record_id: episode.id,
+        })),
+        {
+          readLoadedText: ({ record_id }) =>
+            results.find(({ episode }) => episode.id === record_id)?.episode.narrative,
+        },
       );
 
       return renderRecordEvidenceObject({

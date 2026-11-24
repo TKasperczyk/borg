@@ -95,6 +95,10 @@ export type ResolutionCorrection = z.infer<typeof resolutionCorrectionSchema>;
 export type ResolutionCorrectionFields = z.infer<typeof resolutionCorrectionFieldsSchema>;
 export type ResolutionCorrectionWriter = z.infer<typeof resolutionCorrectionWriterSchema>;
 
+export function correctionEvidenceKey(evidence: ResolutionCorrectionFields["evidence"]): string {
+  return JSON.stringify([...new Set(evidence.map((item) => JSON.stringify(item)))].sort());
+}
+
 export const resolutionCorrectionPresentationSchema = z.object({
   resolution_correction_count: z.number().int().positive().optional(),
   resolution_corrections: z

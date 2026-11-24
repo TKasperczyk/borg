@@ -1,7 +1,7 @@
 import type { Episode } from "../episodic/types.js";
 import type { EpisodicRepository } from "../episodic/repository.js";
 import type { IdentityEventRepository } from "../identity/repository.js";
-import type { AuditedAnnotation } from "../identity/annotations.js";
+import { recordCorrectionTextHash, type AuditedAnnotation } from "../identity/annotations.js";
 import { utf16SafePrefixEnd } from "../../util/utf16-boundary.js";
 import { memoryDisclosurePayloadFields } from "./disclosure-serializers.js";
 import { memoryDisclosureLabelFromEpisodeAccess } from "./disclosure-label.js";
@@ -28,16 +28,66 @@ function excerpt(text: string, limit: number): string {
   return text.length <= limit ? text : `${text.slice(0, utf16SafePrefixEnd(text, limit - 1))}…`;
 }
 
-export function annotationPromptFields(
+export type AnnotationPromptOptions = {
+  maxAnnotations?: number;
+  maxChars?: number;
+  wholeTextOnly?: boolean;
+};
+
+export function selectAnnotationPromptRows(
   annotations: readonly AuditedAnnotation[],
-  options: { maxAnnotations?: number; maxChars?: number; wholeTextOnly?: boolean } = {},
-): AnnotationPromptFields {
-  if (annotations.length === 0) return {};
+  options: AnnotationPromptOptions = {},
+) {
   const maxAnnotations = options.maxAnnotations ?? MAX_EVIDENCE_ANNOTATIONS_PER_RECORD;
   const maxChars = options.maxChars ?? MAX_EVIDENCE_ANNOTATION_CHARS;
-  const selected = annotations
-    .filter((annotation) => options.wholeTextOnly !== true || annotation.text.length <= maxChars)
-    .slice(0, maxAnnotations);
+  const eligible = annotations.filter(
+    (annotation) =>
+      (annotation.self_correction === undefined && options.wholeTextOnly !== true) ||
+      annotation.text.length <= maxChars,
+  );
+  const selfCorrectionCount = annotations.filter((row) => row.self_correction !== undefined).length;
+  const newestSelfCorrection = eligible.reduce<AuditedAnnotation | undefined>(
+    (newest, row) =>
+      (row.self_correction?.seq ?? 0) > (newest?.self_correction?.seq ?? 0) ? row : newest,
+    undefined,
+  );
+  const selected = (
+    newestSelfCorrection === undefined
+      ? eligible
+      : [newestSelfCorrection, ...eligible.filter((row) => row !== newestSelfCorrection)]
+  ).slice(0, maxAnnotations);
+  return { selected, maxChars, selfCorrectionCount, totalCount: annotations.length };
+}
+
+export function annotationPromptFields(
+  annotations: readonly AuditedAnnotation[],
+  options: AnnotationPromptOptions & { currentText?: string } = {},
+): AnnotationPromptFields {
+  return renderSelectedAnnotations(
+    selectAnnotationPromptRows(annotations, options),
+    options.currentText,
+  );
+}
+
+export function renderSelectedAnnotations(
+  {
+    selected,
+    maxChars,
+    selfCorrectionCount,
+    totalCount,
+  }: ReturnType<typeof selectAnnotationPromptRows>,
+  currentText?: string,
+): AnnotationPromptFields {
+  // target_changed compares the stored correction hash with the record text read for this page
+  // build. A loaded body is reused, otherwise the reader batches the missing bodies for selected
+  // self-written corrections. A failed lookup leaves the status null and is traced by the reader.
+  // Quote status uses the same body or the earlier correction's text. A rewrite between retrieval
+  // and annotation read can leave an older excerpt beside the status for the newer text. Each turn
+  // reloads its records, including warm recall.
+  const currentTextHash =
+    currentText !== undefined && selected.some((row) => row.self_correction !== undefined)
+      ? recordCorrectionTextHash(currentText)
+      : undefined;
   return {
     ...(selected.length === 0
       ? {}
@@ -45,25 +95,53 @@ export function annotationPromptFields(
           annotations: selected.map((annotation) => {
             const date =
               annotation.written_at === undefined ? undefined : new Date(annotation.written_at);
+            const correction = annotation.self_correction;
+            const quotedText =
+              correction?.targets_correction_seq == null
+                ? currentText
+                : annotation.quoted_correction_text;
+            const targetChanged =
+              currentTextHash === undefined
+                ? null
+                : currentTextHash !== correction?.target_text_hash;
             return {
-              text: excerpt(annotation.text, maxChars),
+              text: correction === undefined ? excerpt(annotation.text, maxChars) : annotation.text,
               ...(date === undefined || !Number.isFinite(date.getTime())
                 ? {}
                 : { written_at: date.toISOString() }),
               authority:
-                annotation.authority === null
+                annotation.authority === null || correction !== undefined
                   ? null
                   : excerpt(annotation.authority, MAX_EVIDENCE_AUTHORITY_CHARS),
+              ...(correction === undefined
+                ? {}
+                : {
+                    author: correction.writer.author,
+                    seq: correction.seq,
+                    original_record: correction.original_record,
+                    target_changed: targetChanged,
+                    ...(correction.targets_correction_seq === null
+                      ? {}
+                      : { targets_correction_seq: correction.targets_correction_seq }),
+                    ...(targetChanged !== false && correction.corrects_span !== undefined
+                      ? {
+                          quoted_span_present:
+                            targetChanged === null || quotedText === undefined
+                              ? null
+                              : quotedText.includes(correction.corrects_span),
+                        }
+                      : {}),
+                    ...memoryDisclosurePayloadFields(correction.disclosure_label),
+                  }),
             };
           }),
         }),
-    ...(annotations.length > selected.length
-      ? { annotations_omitted: annotations.length - selected.length }
-      : {}),
+    ...(totalCount > selected.length ? { annotations_omitted: totalCount - selected.length } : {}),
+    ...(selfCorrectionCount === 0 ? {} : { self_correction_count: selfCorrectionCount }),
   };
 }
 
-export function withSemanticNodeEvidenceContext<T extends { id: string }>(
+export function withSemanticNodeEvidenceContext<T extends { id: string; description?: string }>(
   reader: Pick<EpisodeEvidenceReader, "identityEventRepository">,
   nodes: readonly T[],
 ): Array<T & { evidence_context?: AnnotationPromptFields }> {
@@ -72,12 +150,16 @@ export function withSemanticNodeEvidenceContext<T extends { id: string }>(
   );
   const annotations = new Map(results.map((target) => [target.record_id, target.annotations]));
   return nodes.map((node) => {
-    const context = annotationPromptFields(annotations.get(node.id) ?? []);
+    const context = annotationPromptFields(annotations.get(node.id) ?? [], {
+      currentText: node.description,
+    });
     return Object.keys(context).length === 0 ? node : { ...node, evidence_context: context };
   });
 }
 
-function lineagePromptRow(episode: EpisodeWithEvidenceContext): Record<string, unknown> {
+function lineagePromptRow(
+  episode: EpisodeWithEvidenceContext,
+): Record<string, unknown> & AnnotationPromptFields {
   return {
     id: episode.id,
     kind: episode.episode_kind ?? "raw",
@@ -138,7 +220,9 @@ export async function withEpisodeEvidenceContext(
     const status = lifecycle.get(episode.id) ?? "unknown";
     const context: EpisodeEvidenceContext = {
       ...(status === "active" ? {} : { lifecycle: status }),
-      ...annotationPromptFields(annotations.get(episode.id) ?? []),
+      ...annotationPromptFields(annotations.get(episode.id) ?? [], {
+        currentText: episode.narrative,
+      }),
     };
     return Object.keys(context).length === 0 ? episode : { ...episode, evidence_context: context };
   };

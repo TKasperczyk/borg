@@ -45,10 +45,13 @@ import {
 } from "../constants.js";
 import type { ContradictionRoutingTier } from "../types.js";
 import { retrievalStatus, type RetrievalDegradation } from "../../../retrieval/degradation.js";
-import type { EpisodeEvidenceContext } from "../../../memory/common/evidence-prompt.js";
+import {
+  SELF_CORRECTION_GUIDANCE,
+  type EpisodeEvidenceContext,
+} from "../../../memory/common/evidence-prompt.js";
 import { RECORD_ANNOTATION_GUIDANCE } from "../../../memory/common/record-evidence.js";
 
-type AnnotationPresentation = { guidanceShown: boolean };
+type AnnotationPresentation = { guidanceShown: boolean; selfGuidanceShown?: boolean };
 function recordEvidenceText(context: EpisodeEvidenceContext | undefined): string {
   return context === undefined ? "" : `\n  ${JSON.stringify(context)}`;
 }
@@ -308,8 +311,14 @@ export function summarizeRetrievedEpisodes(
       `  tags: ${result.episode.tags.join(", ") || "none"}`,
       summarizeCitationChain(result),
     ].filter((line): line is string => line !== null);
+    const selfGuide =
+      result.episode.evidence_context?.self_correction_count !== undefined &&
+      !presentation.selfGuidanceShown;
     const guide = result.episode.evidence_context !== undefined && !presentation.guidanceShown;
-    const block = [...(guide ? [RECORD_ANNOTATION_GUIDANCE] : []), ...blockLines].join("\n");
+    const block = [
+      ...(selfGuide ? [SELF_CORRECTION_GUIDANCE] : guide ? [RECORD_ANNOTATION_GUIDANCE] : []),
+      ...blockLines,
+    ].join("\n");
     const blockTokens = estimatePromptTokens(block);
 
     if (usedTokens + blockTokens > maxTokens) {
@@ -319,6 +328,7 @@ export function summarizeRetrievedEpisodes(
 
     lines.push(block);
     if (guide) presentation.guidanceShown = true;
+    if (selfGuide) presentation.selfGuidanceShown = true;
     usedTokens += blockTokens;
   }
 
@@ -636,6 +646,9 @@ function renderVerificationRetrievalCandidate(
           ...(candidate.evidenceContext.lifecycle === undefined
             ? {}
             : { lifecycle: candidate.evidenceContext.lifecycle }),
+          ...(candidate.evidenceContext.self_correction_count === undefined
+            ? {}
+            : { self_correction_count: candidate.evidenceContext.self_correction_count }),
           ...((candidate.evidenceContext.annotations?.length ?? 0) +
             (candidate.evidenceContext.annotations_omitted ?? 0) ===
           0
@@ -740,9 +753,13 @@ function renderVerificationRetrievalRows(
   return [
     `<plan_requested_verification_retrieval complete_membership="${membershipNotEnumeratedCount === 0}" rows_total="${rowsTotal}" ${PLAN_REQUESTED_VERIFICATION_ROWS_TOTAL_AS_OF_ATTRIBUTE}="${rowsTotalAsOf}" ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ORDER_ATTRIBUTE}="${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ORDER}" ${PLAN_REQUESTED_VERIFICATION_PAYLOAD_ORDER_ATTRIBUTE}="${PLAN_REQUESTED_VERIFICATION_PAYLOAD_ORDER}" payload_target_tokens="${maxTokens}" payload_tokens_included="${payloadTokens}" membership_target_tokens="${membershipMaxTokens}" membership_tokens="${membershipTokens}" ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_ROWS_ATTRIBUTE}="${carveOutRowsTotal}"${membershipBudgetMarkerAttribute} check_not_completed_count="${incompleteCount}">`,
     `  <interpretation>This retrieval was requested by the advisory plan. Read at ${rowsTotalAsOf}${relativeReadTime}: rows_total is exact as of that read, not as of now. Membership rows are priced against membership_target_tokens alone. ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ORDER_ATTRIBUTE}=${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ORDER} means commitment rows with ${VERIFICATION_COMMITMENT_ENFORCEMENT_CLASS_FIELD}=critical or a structural ${VERIFICATION_COMMITMENT_CRITICAL_DOMAIN_FIELD} are emitted first. The protected critical-commitment partition and then all ordinary rows preserve the existing retrieval-pipeline candidate order: ranked unified evidence, projected episodes, semantic nodes and edges in projected first-seen order, then projected open questions. Disclosure labels do not affect membership admission or ordering. The renderer performs no content-based selection or new ranking. complete_membership=true means every one of rows_total handles and its structural fields is enumerated. When complete_membership=false, ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_BUDGET_MARKER}=N and its same-named marker's ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_REMAINDER_TOTAL_ATTRIBUTE}=N carry the exact un-enumerated remainder; the child ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_DISCLOSURE_REMAINDER_MARKER} has one attribute per ${VERIFICATION_DISCLOSURE_CLASS_FIELD} present among omitted rows, with exact counts whose sum is N. Omitted membership is never silent. If the critical-commitment carve-out alone exceeds membership_target_tokens, ${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_ERROR_ATTRIBUTE}=${PLAN_REQUESTED_VERIFICATION_MEMBERSHIP_CARVE_OUT_OVERFLOW_ERROR} replaces a partial list with an explicit failed-check state. A payload_status=exact row carries its complete payload with no excerpt; payload_status=check_not_completed_budget carries an enumerated handle and structural fields but zero payload, so that requested check is explicitly incomplete rather than silently truncated. Payloads are priced against payload_target_tokens alone and never consume the membership budget, and membership never consumes the payload budget. ${PLAN_REQUESTED_VERIFICATION_PAYLOAD_ORDER_ATTRIBUTE}=${PLAN_REQUESTED_VERIFICATION_PAYLOAD_ORDER} means payload admission walks these enumerated rows in the order they are rendered here, so the critical-commitment carve-out is priced first on this axis too and rows that are not enumerated never consume payload budget. Admission does not stop at the first refusal: a later small payload can still fit after a larger one is refused. A check_not_completed_budget row therefore means that row's payload did not fit in the budget still free when its turn came, which depends on the payloads of the rows above it, not on that row's size alone; payload_total_chars states what was withheld. payload_tokens_included is the admitted total that gated, summed per row exactly as the gate summed it.</interpretation>`,
-    ...(candidates.some(({ candidate }) => candidate.evidenceContext !== undefined)
-      ? [`  ${RECORD_ANNOTATION_GUIDANCE}`]
-      : []),
+    ...(candidates.some(
+      ({ candidate }) => candidate.evidenceContext?.self_correction_count !== undefined,
+    )
+      ? [`  ${SELF_CORRECTION_GUIDANCE}`]
+      : candidates.some(({ candidate }) => candidate.evidenceContext !== undefined)
+        ? [`  ${RECORD_ANNOTATION_GUIDANCE}`]
+        : []),
     ...rows.map((row) => `  ${row}`),
     ...membershipBudgetMarker,
     `  <omitted_count>${membershipNotEnumeratedCount}</omitted_count>`,
@@ -911,7 +928,8 @@ function summarizeEvidenceItems(
 ): string {
   const lines = [`${label}:`];
   let usedTokens = estimatePromptTokens(lines[0] ?? label);
-  let guidanceShown = false;
+  let guidance: string | undefined;
+  let guidanceIndex = -1;
   const reviewCounts = Array<number>(evidence.length + 1).fill(0);
   for (let index = evidence.length - 1; index >= 0; index -= 1) {
     reviewCounts[index] = reviewCounts[index + 1]! + Number(evidence[index]!.review !== undefined);
@@ -920,18 +938,33 @@ function summarizeEvidenceItems(
     `- ... truncated${reviewCounts[index] === 0 ? "" : ` review_labels_omitted_count=${reviewCounts[index]}`}`;
 
   for (const [index, item] of evidence.entries()) {
-    const guide = item.evidence_context !== undefined && !guidanceShown;
-    const block = `${guide ? `${RECORD_ANNOTATION_GUIDANCE}\n` : ""}${summarizeEvidenceItem(item)}`;
+    const showsSelfCorrection = item.evidence_context?.annotations?.some(
+      (annotation) => annotation.author === "borg",
+    );
+    const nextGuidance = showsSelfCorrection
+      ? SELF_CORRECTION_GUIDANCE
+      : (guidance ??
+        (item.evidence_context === undefined ? undefined : RECORD_ANNOTATION_GUIDANCE));
+    const addsGuidance = guidance === undefined && nextGuidance !== undefined;
+    const block = `${addsGuidance ? `${nextGuidance}\n` : ""}${summarizeEvidenceItem(item)}`;
     const blockTokens = estimatePromptTokens(block);
+    const updatedBlock =
+      guidance !== undefined && nextGuidance !== guidance
+        ? `${nextGuidance}${lines[guidanceIndex]!.slice(guidance.length)}`
+        : undefined;
+    const guidanceTokenDelta =
+      updatedBlock === undefined
+        ? 0
+        : estimatePromptTokens(updatedBlock) - estimatePromptTokens(lines[guidanceIndex]!);
 
     // Review labels are indivisible metadata. Reserve accounting space if the next row
     // cannot fit, while retaining the established byte shape for unlinked evidence.
     const candidateTokens =
       reviewCounts[0] === 0
-        ? usedTokens + blockTokens
+        ? usedTokens + blockTokens + guidanceTokenDelta
         : estimatePromptTokens(
             [
-              ...lines,
+              ...(updatedBlock === undefined ? lines : lines.with(guidanceIndex, updatedBlock)),
               block,
               ...(index + 1 === evidence.length ? [] : [omissionMarker(index + 1)]),
             ].join("\n"),
@@ -941,9 +974,11 @@ function summarizeEvidenceItems(
       break;
     }
 
+    if (updatedBlock !== undefined) lines[guidanceIndex] = updatedBlock;
+    if (addsGuidance) guidanceIndex = lines.length;
     lines.push(block);
-    if (guide) guidanceShown = true;
-    usedTokens += blockTokens;
+    guidance = nextGuidance;
+    usedTokens += blockTokens + guidanceTokenDelta;
   }
 
   return lines.join("\n");
@@ -1198,6 +1233,8 @@ function summarizeSemanticHit(
   return `${summarizeSemanticNodePrefixes(hit.node)}${hit.node.label} - ${summarizeSemanticNodeDescription(hit.node)} (node conf ${hit.node.confidence.toFixed(2)}, sources ${summarizeEpisodeIds(hit.node.source_episode_ids)}${summarizePartialSourceTag(hit.node)}${summarizeSemanticDisclosureTag(hit.node)}; path ${pathParts.join(" ")})${recordEvidenceText(hit.node.evidence_context)}`;
 }
 
+type SemanticEvidenceLine = { text: string; hasEnvelope: boolean; hasSelfCorrections?: boolean };
+
 function summarizeSemanticBucket(
   label: string,
   nodes: readonly (SemanticNode & {
@@ -1207,13 +1244,16 @@ function summarizeSemanticBucket(
     disclosureLabel?: RetrievedSemanticNode["disclosureLabel"];
   })[],
   limit = 3,
-): { text: string; hasEnvelope: boolean } | null {
+): SemanticEvidenceLine | null {
   if (nodes.length === 0) {
     return null;
   }
 
   return {
     hasEnvelope: nodes.slice(0, limit).some((node) => node.evidence_context !== undefined),
+    hasSelfCorrections: nodes
+      .slice(0, limit)
+      .some((node) => node.evidence_context?.self_correction_count !== undefined),
     text: `${label}: ${nodes
       .slice(0, limit)
       .map((node) => summarizeSemanticNode(node))
@@ -1227,7 +1267,7 @@ function summarizeSemanticHitBucket(
   rootNodesById: ReadonlyMap<string, SemanticNode>,
   options: { tagClosedEdges: boolean },
   limit = 3,
-): Array<{ text: string; hasEnvelope: boolean }> {
+): SemanticEvidenceLine[] {
   if (hits.length === 0) {
     return [];
   }
@@ -1237,6 +1277,7 @@ function summarizeSemanticHitBucket(
     ...hits.slice(0, limit).map((hit) => ({
       text: `- ${summarizeSemanticHit(hit, rootNodesById, options)}`,
       hasEnvelope: hit.node.evidence_context !== undefined,
+      hasSelfCorrections: hit.node.evidence_context?.self_correction_count !== undefined,
     })),
   ];
 }
@@ -1299,7 +1340,7 @@ export function summarizeSemanticContext(
   const sections: string[] = [initialLine];
   let totalChars = initialLine.length;
 
-  const directMatchLines =
+  const directMatchLines: SemanticEvidenceLine[] =
     matchedNodes.length === 0
       ? []
       : [
@@ -1307,6 +1348,7 @@ export function summarizeSemanticContext(
           ...matchedNodes.slice(0, bucketLimit).map((node) => ({
             text: `- ${summarizeSemanticNodeWithSources(node)}`,
             hasEnvelope: node.evidence_context !== undefined,
+            hasSelfCorrections: node.evidence_context?.self_correction_count !== undefined,
           })),
         ];
 
@@ -1364,7 +1406,8 @@ export function summarizeSemanticContext(
 
   for (const line of bucketLines) {
     const guide = line.hasEnvelope && !presentation.guidanceShown;
-    const text = `${guide ? `${RECORD_ANNOTATION_GUIDANCE}\n` : ""}${line.text}`;
+    const selfGuide = line.hasSelfCorrections && !presentation.selfGuidanceShown;
+    const text = `${selfGuide ? `${SELF_CORRECTION_GUIDANCE}\n` : guide ? `${RECORD_ANNOTATION_GUIDANCE}\n` : ""}${line.text}`;
     if (totalChars + text.length > maxChars) {
       sections.push("... truncated");
       break;
@@ -1372,6 +1415,7 @@ export function summarizeSemanticContext(
 
     sections.push(text);
     if (guide) presentation.guidanceShown = true;
+    if (selfGuide) presentation.selfGuidanceShown = true;
     totalChars += text.length;
   }
 

@@ -31,6 +31,7 @@ export const TRACE_EVENT_TAXONOMY = {
   working_memory: ["working_memory.degraded", "working_memory.pending_action_resolved"],
   executive_focus: [],
   retrieval: [
+    "memory.annotations.body_lookup_failed",
     "retrieval.started",
     "retrieval.raw_query",
     "retrieval.completed",
@@ -153,6 +154,7 @@ export const TRACE_EVENT_TAXONOMY = {
   discourse: ["discourse_state.transitioned", "discourse_state.rejected"],
   reflection: [
     "reflection.completed",
+    "memory.annotations.rejected",
     "open_question_resolution.started",
     "open_question_resolution.degraded",
     "open_question_resolution.transitioned",

@@ -14,6 +14,8 @@ import {
   RESOLUTION_CORRECTION_TOOL_NAME,
   openQuestionResolutionIdentity,
   type OpenQuestionResolutionIdentity,
+  type ResolutionCorrectionFields,
+  type ResolutionCorrectionWriter,
 } from "../self/resolution-corrections.js";
 import type { OpenQuestionsRepository } from "../self/open-questions.js";
 import type { z } from "zod";
@@ -22,6 +24,53 @@ export type CorrectOpenQuestionResolutionIdentityService = Pick<
   IdentityService,
   "correctOpenQuestionResolution"
 >;
+
+export async function prepareCorrectionEvidence(options: {
+  evidence: ResolutionCorrectionFields["evidence"];
+  episodicRepository: Pick<EpisodicRepository, "getMany">;
+  entryIndex: Pick<StreamEntryIndexRepository, "lookupEntriesById">;
+  turnId?: string;
+  turnOrigin: TurnOrigin;
+  path: ResolutionCorrectionWriter["path"];
+  process: string;
+  missingCode: string;
+}) {
+  const ids = [...new Set(options.evidence.map((item) => item.id))];
+  const episodeIds = ids.filter(episodeIdHelpers.is);
+  const streamEntryIds = ids.filter(streamEntryIdHelpers.is);
+  // Archived episodes and inactive stream entries still exist.
+  const episodes = await options.episodicRepository.getMany(episodeIds);
+  const foundEpisodes = new Set(episodes.map((episode) => episode.id));
+  const streamEntries = options.entryIndex.lookupEntriesById(streamEntryIds);
+  const missingIds = [
+    ...episodeIds.filter((id) => !foundEpisodes.has(id)),
+    ...streamEntryIds.filter((id) => !streamEntries.has(id)),
+  ];
+  if (missingIds.length > 0) {
+    throw new ToolError(
+      `Citation ids do not name stored records: ${missingIds.join(", ")}. Re-cite or remove these citations.`,
+      { code: options.missingCode },
+    );
+  }
+  return {
+    writer: {
+      author: "borg",
+      turn_id: options.turnId ?? null,
+      turn_kind: options.turnOrigin,
+      path: options.path,
+      provenance: {
+        kind: "online_reflector",
+        process: options.process,
+        evidence_episode_ids: episodeIds,
+        evidence_stream_entry_ids: streamEntryIds,
+      },
+    } satisfies ResolutionCorrectionWriter,
+    disclosureLabel: combineMemoryDisclosureLabels([
+      ...episodes.map(memoryDisclosureLabelFromEpisodeAccess),
+      ...streamEntryIds.map(() => unknownMemoryDisclosureLabel()),
+    ]),
+  };
+}
 
 export async function correctOpenQuestionResolutionThroughIdentityService(options: {
   input: z.infer<typeof openQuestionResolutionCorrectionInputSchema>;
@@ -54,42 +103,16 @@ export async function correctOpenQuestionResolutionThroughIdentityService(option
     }
     expectedResolution = openQuestionResolutionIdentity(target);
   }
-  const ids = [...new Set(correction.evidence.map((item) => item.id))];
-  const episodeIds = ids.filter(episodeIdHelpers.is);
-  const streamEntryIds = ids.filter(streamEntryIdHelpers.is);
-  // Like resolve: archived episodes and inactive stream entries still exist.
-  const episodes = await options.episodicRepository.getMany(episodeIds);
-  const foundEpisodes = new Set(episodes.map((episode) => episode.id));
-  const streamEntries = options.entryIndex.lookupEntriesById(streamEntryIds);
-  const missingIds = [
-    ...episodeIds.filter((id) => !foundEpisodes.has(id)),
-    ...streamEntryIds.filter((id) => !streamEntries.has(id)),
-  ];
-  if (missingIds.length > 0) {
-    throw new ToolError(
-      `Citation ids do not name stored records: ${missingIds.join(", ")}. Re-cite or remove these citations.`,
-      { code: "OPEN_QUESTION_CITATION_NOT_FOUND" },
-    );
-  }
-  const disclosureLabel = combineMemoryDisclosureLabels([
-    ...episodes.map(memoryDisclosureLabelFromEpisodeAccess),
-    ...streamEntryIds.map(() => unknownMemoryDisclosureLabel()),
-  ]);
+  const { writer, disclosureLabel } = await prepareCorrectionEvidence({
+    ...options,
+    evidence: correction.evidence,
+    process: options.path === "tool" ? RESOLUTION_CORRECTION_TOOL_NAME : "reflector",
+    missingCode: "OPEN_QUESTION_CITATION_NOT_FOUND",
+  });
   return options.identityService.correctOpenQuestionResolution(
     open_question_id,
     correction,
-    {
-      author: "borg",
-      turn_id: options.turnId ?? null,
-      turn_kind: options.turnOrigin,
-      path: options.path,
-      provenance: {
-        kind: "online_reflector",
-        process: options.path === "tool" ? RESOLUTION_CORRECTION_TOOL_NAME : "reflector",
-        evidence_episode_ids: episodeIds,
-        evidence_stream_entry_ids: streamEntryIds,
-      },
-    },
+    writer,
     disclosureLabel,
     { expectedResolution },
   );

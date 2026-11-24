@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { DEFAULT_CONFIG } from "../../config/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
+import { RecordCorrectionService } from "../../memory/lifecycle-ops/correct-record.js";
 import type { ReviewOpenQuestionExtractorLike } from "../../memory/self/index.js";
 import { StreamReader } from "../../stream/index.js";
 import { FixedClock, ManualClock } from "../../util/clock.js";
@@ -105,6 +106,80 @@ describe("overseer process", () => {
   afterEach(async () => {
     while (cleanup.length > 0) {
       await cleanup.pop()?.();
+    }
+  });
+
+  it("agrees on correction status for an episode and its cited source row before and after a rewrite", async () => {
+    const now = 10 * 24 * 60 * 60 * 1_000;
+    const llm = new FakeLLMClient({
+      responses: Array.from({ length: 4 }, () => createOverseerResponse([])),
+    });
+    const h = await createOfflineTestHarness({
+      llmClient: llm,
+      clock: new FixedClock(now),
+      configOverrides: maxChecksConfig(2),
+    });
+    cleanup.push(h.cleanup);
+    const quote = "Provisional measurement.";
+    const source = await appendSourceEntry(h, quote);
+    const episode = await h.episodicRepository.createEpisode(
+      createEpisodeFixture({
+        narrative: quote,
+        source_stream_ids: [source.id],
+        created_at: now - 2_000,
+        updated_at: now - 2_000,
+      }),
+    );
+    const node = await h.semanticNodeRepository.insert(
+      createSemanticNodeFixture({
+        description: "A related measurement.",
+        source_episode_ids: [episode.id],
+        created_at: now - 1_000,
+        updated_at: now - 1_000,
+      }),
+    );
+    const ctx = h.createContext();
+    const note = "The measurement needs independent evidence.";
+    await new RecordCorrectionService({ ...h, entryIndex: ctx.entryIndex! }).correct(
+      {
+        target_id: episode.id,
+        correction_note: note,
+        corrects_span: quote,
+        evidence: [{ id: episode.id, basis: "own_read" }],
+      },
+      {
+        turnId: "synthetic-turn",
+        turnOrigin: "user",
+        path: "reflector",
+        streamWriter: h.streamWriter,
+      },
+    );
+    const process = new OverseerProcess({
+      reviewQueueRepository: h.reviewQueueRepository,
+      registry: h.registry,
+    });
+
+    for (const changed of [false, true]) {
+      if (changed)
+        await h.episodicRepository.update(episode.id, { narrative: "Replacement measurement." });
+      const start = llm.requests.length;
+      expect((await process.plan(ctx, {})).errors).toEqual([]);
+      expect(llm.requests).toHaveLength(start + 2);
+      const prompts = [requestPrompt(llm, start), requestPrompt(llm, start + 1)];
+      const episodePrompt = prompts.find((prompt) =>
+        prompt.includes(`target_type: episode\ntarget_id: ${episode.id}`),
+      );
+      const nodePrompt = prompts.find((prompt) =>
+        prompt.includes(`target_type: semantic_node\ntarget_id: ${node.id}`),
+      );
+      const sourceRow = nodePrompt
+        ?.split("\n")
+        .find((line) => line.startsWith(`EPISODE episode_id=${episode.id} `));
+      for (const row of [episodePrompt, sourceRow]) {
+        expect(row).toContain(note);
+        expect(row).toContain(`"target_changed":${changed}`);
+        if (changed) expect(row).toContain('"quoted_span_present":false');
+      }
     }
   });
 

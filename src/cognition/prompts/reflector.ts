@@ -42,3 +42,6 @@ export const OFFLINE_REFLECTOR_PROMPT_PREAMBLE = [
 
 export const RESOLUTION_CORRECTION_REFLECTION_GUIDANCE =
   "For resolution_corrections, I may append up to three corrections to resolved questions' closing notes. The original stays as evidence. I cite existing episode or stream ids and mark each own_read or reported, naming reported_by for another reader. I may quote a verbatim corrects_span, and targets_correction_seq may name an earlier correction instead of the original. My corrections can be wrong too. The harness validates structure, reference existence and exact quotation, not meaning or support. Corrections appear outside note excerpts with their count, timestamps and disclosure labels; an omission marker means more corrections exist than the page shows. I correct only a shown resolved note when this turn established something that corrects it.";
+
+export const RECORD_CORRECTION_REFLECTION_GUIDANCE =
+  "For record_corrections, I may append up to three corrections beside episodes or semantic nodes shown this turn, for a stored statement that is false. The record's text stays unchanged. I cite existing episode or stream ids as own_read or reported, naming reported_by, and a corrects_span must be quoted verbatim from the record. My corrections can be wrong too.";

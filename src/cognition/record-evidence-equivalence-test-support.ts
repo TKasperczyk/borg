@@ -1,5 +1,5 @@
 import { FakeLLMClient } from "../llm/test-support/fake-client.js";
-import type { AnnotationTarget } from "../memory/identity/annotations.js";
+import type { AnnotationTarget, AuditedAnnotation } from "../memory/identity/annotations.js";
 import type { EpisodeId } from "../util/ids.js";
 import { DEFAULT_SESSION_ID } from "../util/ids.js";
 import type { createRecordEvidenceFixture } from "./record-evidence-test-support.js";
@@ -8,12 +8,13 @@ import type { createRecordEvidenceFixture } from "./record-evidence-test-support
 export async function renderOrdinaryRecordSurfaces(
   root: string,
   fixture: ReturnType<typeof createRecordEvidenceFixture>,
+  annotationsForTarget?: (target: AnnotationTarget) => AuditedAnnotation[],
 ) {
   const load = async (path: string) => import(/* @vite-ignore */ `${root}/src/${path}.ts`);
-  const noAnnotations = {
+  const reader = {
     identityEventRepository: {
       listAnnotationsForTargets: (targets: readonly AnnotationTarget[]) =>
-        targets.map((target) => ({ ...target, annotations: [] })),
+        targets.map((target) => ({ ...target, annotations: annotationsForTarget?.(target) ?? [] })),
     },
     episodicRepository: {
       getLifecycleMany: (ids: readonly EpisodeId[]) =>
@@ -22,7 +23,7 @@ export async function renderOrdinaryRecordSurfaces(
   };
   const { EvidenceLedgerBuilder } = await load("cognition/evidence-ledger/builder");
   const built = await new EvidenceLedgerBuilder({
-    recordEvidenceReader: noAnnotations,
+    recordEvidenceReader: reader,
     createStreamReader: () => ({
       scanReverse: () => ({ entries: [], scannedBytes: 0, capReached: null }),
     }),
@@ -50,15 +51,21 @@ export async function renderOrdinaryRecordSurfaces(
     )
       surfaces[section.id] = renderSection(section);
   const retrieval = await load("cognition/deliberation/prompt/retrieval");
-  surfaces.legacy_episodes = retrieval.summarizeRetrievedEpisodes("Recall", fixture.episodes);
-  surfaces.legacy_semantic = retrieval.summarizeSemanticContext(fixture.semantic, 3_000, 2_000_000);
-  surfaces.unified_retrieval = retrieval.summarizeRetrievedEvidence("Recall", fixture);
+  const records =
+    annotationsForTarget === undefined
+      ? fixture
+      : await (
+          await load("cognition/record-evidence")
+        ).withRetrievedRecordEvidence(reader, fixture);
+  surfaces.legacy_episodes = retrieval.summarizeRetrievedEpisodes("Recall", records.episodes);
+  surfaces.legacy_semantic = retrieval.summarizeSemanticContext(records.semantic, 3_000, 2_000_000);
+  surfaces.unified_retrieval = retrieval.summarizeRetrievedEvidence("Recall", records);
   surfaces.additional_fallback = retrieval.summarizeRetrievedEvidence("Additional", {
-    ...fixture,
+    ...records,
     evidence: [],
   });
   surfaces.verification = retrieval.renderPlanRequestedVerificationRetrieval(
-    { ...fixture, open_questions: [] },
+    { ...records, open_questions: [] },
     3_000,
     3_000,
     { rowsTotalReadAtMs: 2_000_000, currentTimeMs: 2_000_000 },
@@ -66,12 +73,12 @@ export async function renderOrdinaryRecordSurfaces(
   const invocation = { sessionId: DEFAULT_SESSION_ID, origin: "autonomous" };
   const { createEpisodicGetTool } = await load("tools/internal/episodic-get");
   const get = createEpisodicGetTool({
-    recordEvidenceReader: noAnnotations,
+    recordEvidenceReader: reader,
     episodicRepository: {
       get: async () => fixture.episodes[0]!.episode,
       getStats: () => null,
       isEpisodeEffectivelyVisible: () => true,
-      getLifecycleMany: noAnnotations.episodicRepository.getLifecycleMany,
+      getLifecycleMany: reader.episodicRepository.getLifecycleMany,
     },
   });
   surfaces.tool_get = JSON.stringify(
@@ -81,7 +88,7 @@ export async function renderOrdinaryRecordSurfaces(
   );
   const { createEpisodicSearchTool } = await load("tools/internal/episodic-search");
   const search = createEpisodicSearchTool({
-    recordEvidenceReader: noAnnotations,
+    recordEvidenceReader: reader,
     searchEpisodes: async () => fixture.episodes,
   });
   const searchOutput = search.outputSchema.parse(
@@ -90,7 +97,7 @@ export async function renderOrdinaryRecordSurfaces(
   surfaces.tool_search = JSON.stringify(searchOutput);
   const { createEpisodicRecentTool } = await load("tools/internal/episodic-recent");
   const recent = createEpisodicRecentTool({
-    recordEvidenceReader: noAnnotations,
+    recordEvidenceReader: reader,
     listRecentEpisodes: async () => fixture.episodes,
   });
   surfaces.tool_recent = JSON.stringify(
@@ -98,7 +105,7 @@ export async function renderOrdinaryRecordSurfaces(
   );
   const { createSemanticWalkTool } = await load("tools/internal/semantic-walk");
   const walk = createSemanticWalkTool({
-    recordEvidenceReader: noAnnotations,
+    recordEvidenceReader: reader,
     walkGraph: async () => [{ node: fixture.node, edgePath: [] }],
   });
   surfaces.tool_walk = JSON.stringify(
@@ -150,7 +157,7 @@ export async function renderOrdinaryRecordSurfaces(
     ],
   });
   const reflector = new Reflector({
-    recordEvidenceReader: noAnnotations,
+    recordEvidenceReader: reader,
     llmClient: llm,
     model: "synthetic-model",
     episodicRepository: {},

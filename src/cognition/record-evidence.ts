@@ -1,6 +1,7 @@
 import type { EvidenceItem, RetrievedEpisode, RetrievedSemantic } from "../retrieval/index.js";
 import { deriveRecallEvidenceHandle } from "../retrieval/recall-state.js";
 import type { AnnotationTarget } from "../memory/identity/annotations.js";
+import type { AnnotationPromptOptions } from "../memory/common/episode-evidence.js";
 import {
   readRecordEvidenceContexts,
   recordEvidenceContext,
@@ -39,7 +40,12 @@ export type RetrievedRecordEvidence = {
   evidence?: readonly EvidenceItem[];
 };
 
-export function retrievedRecordTargets(input: RetrievedRecordEvidence): AnnotationTarget[] {
+export function readRetrievedRecordEvidence(
+  reader: RecordEvidenceReader | undefined,
+  input: RetrievedRecordEvidence,
+  additionalTargets: readonly AnnotationTarget[] = [],
+  options: AnnotationPromptOptions = {},
+) {
   const semantic = input.semantic;
   const nodes =
     semantic == null
@@ -56,25 +62,41 @@ export function retrievedRecordTargets(input: RetrievedRecordEvidence): Annotati
             ...semantic.category_hits,
           ].map((hit) => hit.node),
         ];
-  return [
+  const targets: AnnotationTarget[] = [
     ...(input.episodes ?? []).map(({ episode }) => ({
       record_type: "episode" as const,
       record_id: episode.id,
     })),
-    ...nodes.map((node) => ({ record_type: "semantic_node" as const, record_id: node.id })),
+    ...nodes.map((node) => ({
+      record_type: "semantic_node" as const,
+      record_id: node.id,
+    })),
     ...(input.evidence ?? []).flatMap((item) => {
       const target = evidenceItemAnnotationTarget(item);
       return target === undefined ? [] : [target];
     }),
+    ...additionalTargets,
   ];
+  return readRecordEvidenceContexts(reader, targets, {
+    ...options,
+    readLoadedText: (target) => {
+      if (target.record_type === "episode") {
+        return input.episodes?.find(({ episode }) => episode.id === target.record_id)?.episode
+          .narrative;
+      }
+      return target.record_type === "semantic_node"
+        ? nodes.find((node) => node.id === target.record_id)?.description
+        : undefined;
+    },
+  });
 }
 
 /** Live-cognition read projection. Stored records and retrieval ranking remain untouched. */
-export function withRetrievedRecordEvidence<T extends RetrievedRecordEvidence>(
+export async function withRetrievedRecordEvidence<T extends RetrievedRecordEvidence>(
   reader: RecordEvidenceReader | undefined,
   input: T,
-): T {
-  const contexts = readRecordEvidenceContexts(reader, retrievedRecordTargets(input));
+): Promise<T> {
+  const contexts = await readRetrievedRecordEvidence(reader, input);
   if (contexts.size === 0) return input;
   const decorate = <R>(record: R, target: AnnotationTarget | undefined): R => {
     const context = recordEvidenceContext(contexts, target);

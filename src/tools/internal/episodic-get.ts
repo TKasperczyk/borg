@@ -69,12 +69,16 @@ export function createEpisodicGetTool(options: {
       const stats = options.episodicRepository.getStats(episode.id);
       const lifecycle =
         options.episodicRepository.getLifecycleMany([episode.id]).get(episode.id) ?? "unknown";
-      const target = { record_type: "episode" as const, record_id: episode.id };
-      const contexts = readRecordEvidenceContexts(
+      const target = {
+        record_type: "episode" as const,
+        record_id: episode.id,
+      };
+      const contexts = await readRecordEvidenceContexts(
         options.recordEvidenceReader === undefined
           ? undefined
           : { identityEventRepository: options.recordEvidenceReader.identityEventRepository },
         [target],
+        { readLoadedText: () => episode.narrative },
       );
       return renderRecordEvidenceObject({
         evidence_guidance: EVIDENCE_GUIDANCE,

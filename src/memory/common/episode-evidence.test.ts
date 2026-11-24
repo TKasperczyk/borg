@@ -8,10 +8,12 @@ import {
   createRetiredEvidenceFixture,
   recordTestAnnotation,
 } from "../../offline/evidence-test-support.js";
-import { parseEpisodeId } from "../../util/ids.js";
+import { createEntityId, parseEpisodeId } from "../../util/ids.js";
+import { RecordCorrectionService } from "../lifecycle-ops/correct-record.js";
 import {
   annotationPromptFields,
   renderEvidencePromptJson,
+  renderEvidencePromptLines,
   EVIDENCE_GUIDANCE,
   MAX_EVIDENCE_AUTHORITY_CHARS,
   MAX_EVIDENCE_PROMPT_CONTEXT_CHARS,
@@ -22,6 +24,8 @@ import {
   MAX_EVIDENCE_ANNOTATIONS_PER_RECORD,
   MAX_EVIDENCE_ANNOTATION_CHARS,
   MAX_EVIDENCE_LINEAGE_EPISODES,
+  MEMORY_EVIDENCE_GUIDANCE,
+  SELF_CORRECTION_GUIDANCE,
 } from "./episode-evidence.js";
 
 describe("episode evidence envelope", () => {
@@ -149,6 +153,117 @@ describe("episode evidence envelope", () => {
     expect(row.narrative).toBe(episode.narrative);
     expect(originalRow).not.toHaveProperty("annotations");
     expect(episodeEvidencePromptRow(episode)).toEqual(originalRow);
+  });
+
+  it("attributes a self-written correction retained only on a visible lineage record", async () => {
+    harness = await createOfflineTestHarness();
+    const { source, lineage } = await createRetiredEvidenceFixture(harness);
+    const [operatorOnly] = await withEpisodeEvidenceContext(harness, [source], {
+      includeVisibleLineage: true,
+    });
+    expect(
+      renderEvidencePromptJson({
+        evidence_guidance: EVIDENCE_GUIDANCE,
+        episode: episodeEvidencePromptRow(operatorOnly!),
+      }),
+    ).toContain(MEMORY_EVIDENCE_GUIDANCE);
+    const text = "Independent observation was provisional. 更正。";
+    await new RecordCorrectionService({
+      ...harness,
+      entryIndex: harness.createContext().entryIndex!,
+    }).correct(
+      {
+        target_id: lineage.id,
+        correction_note: text,
+        evidence: [{ id: lineage.id, basis: "own_read" }],
+      },
+      {
+        turnId: "synthetic-turn",
+        turnOrigin: "user",
+        path: "reflector",
+        streamWriter: harness.streamWriter,
+      },
+    );
+    const [decorated] = await withEpisodeEvidenceContext(harness, [source], {
+      includeVisibleLineage: true,
+    });
+    const prompt = renderEvidencePromptJson({
+      evidence_guidance: EVIDENCE_GUIDANCE,
+      episode: episodeEvidencePromptRow(decorated!),
+    });
+    expect(prompt).not.toContain(MEMORY_EVIDENCE_GUIDANCE);
+    expect(JSON.parse(prompt)).toMatchObject({
+      evidence_guidance: `${SELF_CORRECTION_GUIDANCE} lifecycle=archived marks a record retired from recall.`,
+      episode: {
+        id: source.id,
+        lifecycle: "archived",
+        visible_lineage: [
+          {
+            id: lineage.id,
+            annotations: expect.arrayContaining([
+              expect.objectContaining({
+                text,
+                author: "borg",
+                original_record: { record_type: "episode", record_id: lineage.id },
+              }),
+            ]),
+          },
+        ],
+      },
+    });
+    expect(JSON.parse(prompt).episode).not.toHaveProperty("self_correction_count");
+  });
+
+  it("keeps a lineage excerpt, its counts, and a short audit when a self correction exceeds the envelope", async () => {
+    const h = await createOfflineTestHarness();
+    harness = h;
+    const { source, lineage } = await createRetiredEvidenceFixture(h);
+    const restricted = await h.episodicRepository.createEpisode(
+      createEpisodeFixture({
+        origin_audience_entity_ids: Array.from({ length: 220 }, () => createEntityId()),
+        shared: false,
+      }),
+    );
+    await new RecordCorrectionService({ ...h, entryIndex: h.createContext().entryIndex! }).correct(
+      {
+        target_id: lineage.id,
+        correction_note: "界".repeat(600),
+        evidence: [{ id: restricted.id, basis: "own_read" }],
+      },
+      {
+        turnId: "synthetic-turn",
+        turnOrigin: "user",
+        path: "reflector",
+        streamWriter: h.streamWriter,
+      },
+    );
+    const [decorated] = await withEpisodeEvidenceContext(h, [source], {
+      includeVisibleLineage: true,
+    });
+    const member = decorated!.evidence_context!.visible_lineage![0]!;
+    expect(member.annotations).toHaveLength(2);
+    expect(JSON.stringify(member).length).toBeGreaterThan(MAX_EVIDENCE_RECORD_CONTEXT_CHARS);
+
+    const row = episodeEvidencePromptRow(decorated!);
+    const json = JSON.parse(
+      renderEvidencePromptJson({ evidence_guidance: EVIDENCE_GUIDANCE, episode: row }),
+    ).episode;
+    const lines = renderEvidencePromptLines([EVIDENCE_GUIDANCE, row]);
+    for (const payload of [json, JSON.parse(lines.split("\n").at(-1)!)]) {
+      expect(payload).toMatchObject({
+        visible_lineage: [
+          {
+            id: lineage.id,
+            excerpt: lineage.narrative,
+            self_correction_count: 1,
+            annotations_omitted: 1,
+            annotations: [{ text: member.annotations![1]!.text, authority: "Synthetic operator" }],
+          },
+        ],
+      });
+      expect(payload).not.toHaveProperty("lineage_omitted");
+    }
+    expect(member.annotations).toHaveLength(2);
   });
   it("bounds authority and omits unformattable annotation timestamps", () => {
     const fields = annotationPromptFields([

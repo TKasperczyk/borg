@@ -16,6 +16,17 @@ import {
   type ReflectorOptions,
 } from "./reflector.js";
 import { correctOpenQuestionResolutionThroughIdentityService } from "../../memory/lifecycle-ops/correct-resolution.js";
+import { RecordCorrectionService } from "../../memory/lifecycle-ops/correct-record.js";
+import { createRecordIdResolver } from "../../tools/record-id-resolver.js";
+import {
+  buildRecordEvidenceLedger,
+  createRecordEvidenceFixture,
+  createWarmRecordEvidenceFixture,
+} from "../record-evidence-test-support.js";
+import {
+  memoryDisclosureLabelMetadata,
+  relationshipPrivateMemoryDisclosureLabel,
+} from "../../memory/common/disclosure-label.js";
 import { WorkingMemoryStore } from "../../memory/working/index.js";
 import { SessionLock } from "../session-lock.js";
 import { TurnSelfContextBuilder } from "../self/turn-self-context.js";
@@ -63,6 +74,7 @@ import {
 import {
   createEpisodeFixture,
   createOfflineTestHarness,
+  createSemanticNodeFixture,
   createRetrievalScoreFixture,
   createWorkingMemoryFixture,
 } from "../../offline/test-support.js";
@@ -4894,6 +4906,371 @@ describe("reflector", () => {
           process: "reflector",
         },
       }),
+    ]);
+  });
+
+  it("writes one record correction per valid conversation proposal and traces malformed siblings", async () => {
+    const fixture = createRecordEvidenceFixture();
+    const episode = fixture.episodes[0]!.episode;
+    const node = fixture.node;
+    const evidence = [{ id: episode.id.slice(0, 7), basis: "own_read" }];
+    const llm = new FakeLLMClient({
+      responses: [
+        createRawReflectionResponse({
+          record_corrections: [
+            { target_id: episode.id, correction_note: "界".repeat(601), evidence },
+            {
+              target_id: episode.id.slice(0, 7),
+              correction_note: "  暫定です。  ",
+              corrects_span: "原文。",
+              evidence,
+            },
+            {
+              target_id: node.id.slice(0, 9),
+              correction_note: "この観察は未確認。",
+              corrects_span: "原文。",
+              evidence,
+            },
+          ],
+        }),
+      ],
+    });
+    const h = await createOfflineTestHarness({ llmClient: llm });
+    cleanup.push(h.cleanup);
+    await h.episodicRepository.createEpisode(episode);
+    await h.semanticNodeRepository.insert(node);
+    const tracer = new CaptureTracer();
+    const reflector = createHarnessReflector(h, {
+      llmClient: llm,
+      model: "test-model",
+      tracer,
+      recordCorrections: new RecordCorrectionService({
+        ...h,
+        entryIndex: h.createContext().entryIndex!,
+        tracer,
+      }),
+      recordIdResolver: createRecordIdResolver(h.db),
+    });
+    await reflector.reflect(
+      {
+        ...createOpenQuestionReflectionContext({ retrievedEpisodes: [fixture.episodes[0]!] }),
+        turnId: "synthetic-conversation",
+        sessionId: DEFAULT_SESSION_ID,
+        origin: "user",
+        evidenceLedger: await buildRecordEvidenceLedger(fixture.input, h),
+      },
+      h.streamWriter,
+    );
+    const rows = h.identityService.listEvents();
+    expect(rows.map((row) => row.record_id)).toEqual([node.id, episode.id]);
+    expect(rows[1]?.new_value).toMatchObject({
+      annotation: {
+        correction: "  暫定です。  ",
+        self_correction: {
+          seq: 1,
+          corrects_span: "原文。",
+          evidence: [{ id: episode.id, basis: "own_read" }],
+          writer: {
+            author: "borg",
+            path: "reflector",
+            turn_kind: "user",
+            turn_id: "synthetic-conversation",
+          },
+        },
+      },
+    });
+    expect(
+      tracer.events.filter((entry) => entry.event === "memory.annotations.rejected"),
+    ).toHaveLength(1);
+    expect(
+      new StreamReader({ dataDir: h.tempDir, sessionId: DEFAULT_SESSION_ID })
+        .tail(10)
+        .filter(
+          (entry) => entry.kind === "internal_event" && entry.turn_id === "synthetic-conversation",
+        ),
+    ).toHaveLength(2);
+  });
+
+  it.each(["object", "oversized array"])(
+    "discards an invalid record correction %s and still applies a sibling question proposal",
+    async (shape) => {
+      const episode = createEpisodeFixture();
+      const correction = {
+        target_id: episode.id,
+        correction_note: "Provisional observation.",
+        evidence: [{ id: episode.id, basis: "own_read" }],
+      };
+      const question = "Which other measurement is needed?";
+      const llm = new FakeLLMClient({
+        responses: [
+          createRawReflectionResponse({
+            record_corrections: shape === "object" ? correction : Array(4).fill(correction),
+            open_questions: [{ question, urgency: 0.5, related_episode_ids: [] }],
+          }),
+        ],
+      });
+      const h = await createOfflineTestHarness({ llmClient: llm });
+      cleanup.push(h.cleanup);
+      await h.episodicRepository.createEpisode(episode);
+      const tracer = new CaptureTracer();
+      const reflector = createHarnessReflector(h, {
+        llmClient: llm,
+        model: "test-model",
+        identityService: h.identityService,
+        tracer,
+        recordCorrections: new RecordCorrectionService({
+          ...h,
+          entryIndex: h.createContext().entryIndex!,
+        }),
+      });
+      await reflector.reflect(
+        {
+          ...createOpenQuestionReflectionContext(),
+          turnId: "synthetic-conversation",
+        },
+        h.streamWriter,
+      );
+      expect(h.openQuestionsRepository.list({ status: "open" })).toMatchObject([{ question }]);
+      expect(
+        h.identityEventRepository.list({ recordType: "episode", recordId: episode.id }),
+      ).toEqual([]);
+      expect(
+        tracer.events.filter((entry) => entry.event === "memory.annotations.rejected"),
+      ).toEqual([
+        {
+          event: "memory.annotations.rejected",
+          data: {
+            turnId: "synthetic-conversation",
+            path: "reflector",
+            reason: "invalid_structure",
+          },
+        },
+      ]);
+    },
+  );
+
+  it.each([false, true])(
+    "reports an identity-insert failure through the hook and continues sibling writes (trace: %s)",
+    async (tracing) => {
+      const episode = createEpisodeFixture();
+      const question = "Which other measurement is needed?";
+      const llm = new FakeLLMClient({
+        responses: [
+          createRawReflectionResponse({
+            record_corrections: ["Uncommitted correction.", "Committed correction."].map(
+              (note) => ({
+                target_id: episode.id,
+                correction_note: note,
+                evidence: [{ id: episode.id, basis: "own_read" }],
+              }),
+            ),
+            open_questions: [{ question, urgency: 0.5, related_episode_ids: [] }],
+          }),
+        ],
+      });
+      const h = await createOfflineTestHarness({ llmClient: llm });
+      cleanup.push(h.cleanup);
+      await h.episodicRepository.createEpisode(episode);
+      vi.spyOn(h.identityEventRepository, "record").mockImplementationOnce(() => {
+        throw new Error("Synthetic identity insert failure");
+      });
+      const tracer = new CaptureTracer();
+      const reflector = createHarnessReflector(h, {
+        llmClient: llm,
+        model: "test-model",
+        identityService: h.identityService,
+        tracer: tracing ? tracer : NOOP_TRACER,
+        recordCorrections: new RecordCorrectionService({
+          ...h,
+          entryIndex: h.createContext().entryIndex!,
+          tracer: tracing ? tracer : NOOP_TRACER,
+        }),
+      });
+      await reflector.reflect(
+        {
+          ...createOpenQuestionReflectionContext(),
+          turnId: "synthetic-conversation",
+        },
+        h.streamWriter,
+      );
+      const entries = new StreamReader({ dataDir: h.tempDir, sessionId: DEFAULT_SESSION_ID }).tail(
+        12,
+      );
+      expect(
+        entries.filter(
+          (entry) =>
+            entry.kind === "internal_event" &&
+            (entry.content as { hook?: string }).hook === "reflection_record_correction",
+        ),
+      ).toMatchObject([
+        {
+          content: {
+            code: "RECORD_CORRECTION_IDENTITY_FAILED",
+            error: expect.stringContaining("could not be recorded"),
+          },
+        },
+      ]);
+      expect(
+        entries.filter(
+          (entry) =>
+            entry.kind === "internal_event" &&
+            (entry.content as { event?: string }).event === "episode_annotation",
+        ),
+      ).toHaveLength(2);
+      expect(
+        h.identityEventRepository.listAnnotationsForTargets([
+          { record_type: "episode", record_id: episode.id },
+        ])[0]?.annotations,
+      ).toMatchObject([{ text: "Committed correction.", self_correction: { seq: 1 } }]);
+      expect(h.openQuestionsRepository.list({ status: "open" })).toMatchObject([{ question }]);
+      expect(
+        tracer.events.filter(({ event }) => event === "memory.annotations.write_failed"),
+      ).toHaveLength(tracing ? 1 : 0);
+      expect(tracer.events.filter(({ event }) => event === "memory.annotations.rejected")).toEqual(
+        [],
+      );
+    },
+  );
+
+  it("hands off only a bounded set of retained semantic rows and preserves the no-node evidence bytes", async () => {
+    const fixture = createRecordEvidenceFixture();
+    const nodes = Array.from({ length: 5 }, () =>
+      createSemanticNodeFixture({ description: "界".repeat(350) }),
+    );
+    const ledger = await buildRecordEvidenceLedger({
+      ...fixture.input,
+      retrievedSemantic: {
+        ...fixture.semantic,
+        matched_nodes: nodes,
+        matched_node_ids: nodes.map((node) => node.id),
+      },
+      retrievedEvidence: [],
+    });
+    const semSection = ledger.sections.find((section) => section.id === "semantic_graph")!;
+    const retainedLedger = {
+      ...ledger,
+      sections: [{ ...semSection, entries: semSection.entries.slice(1) }],
+    };
+    const llm = new FakeLLMClient({
+      responses: Array.from({ length: 3 }, () => createReflectionResponse()),
+    });
+    const h = await createOfflineTestHarness({ llmClient: llm });
+    cleanup.push(h.cleanup);
+    const context = { ...createOpenQuestionReflectionContext(), turnId: "synthetic-conversation" };
+    const options = { llmClient: llm, model: "test-model" };
+    await createHarnessReflector(h, options).reflect(context, h.streamWriter);
+    const reflector = createHarnessReflector(h, {
+      ...options,
+      recordCorrections: new RecordCorrectionService({
+        ...h,
+        entryIndex: h.createContext().entryIndex!,
+      }),
+    });
+    await reflector.reflect(context, h.streamWriter);
+    await reflector.reflect({ ...context, evidenceLedger: retainedLedger }, h.streamWriter);
+    const [baseline, noNodes, withNodes] = llm.requests;
+    expect(noNodes!.messages[0]!.content).toBe(baseline!.messages[0]!.content);
+    expect(baseline!.tools?.[0]?.inputSchema.properties).not.toHaveProperty("record_corrections");
+    expect(noNodes!.tools?.[0]?.inputSchema.properties).toHaveProperty("record_corrections");
+    const payload = JSON.parse(String(withNodes!.messages[0]!.content));
+    expect(payload.available_evidence_semantic_nodes.map((row: { id: string }) => row.id)).toEqual(
+      nodes.slice(1, 4).map((node) => node.id),
+    );
+    expect(
+      payload.available_evidence_semantic_nodes.every(
+        (row: { text: string; disclosure_label: unknown }) =>
+          row.text.length <= 240 && row.disclosure_label,
+      ),
+    ).toBe(true);
+    expect(
+      JSON.stringify(noNodes!.tools![0]!.inputSchema).length -
+        JSON.stringify(baseline!.tools![0]!.inputSchema).length,
+    ).toBe(978);
+    expect(String(noNodes!.system).length - String(baseline!.system).length).toBe(362);
+    expect(
+      String(withNodes!.messages[0]!.content).length - String(noNodes!.messages[0]!.content).length,
+    ).toBe(1_286);
+  });
+
+  it("does not offer a retained warm semantic edge as a node correction target", async () => {
+    const fixture = createWarmRecordEvidenceFixture();
+    const edge = fixture.records.find((record) => record.target.record_type === "semantic_edge")!;
+    const evidenceLedger = await buildRecordEvidenceLedger({
+      ...fixture.input,
+      retrievedEvidence: [edge.evidence],
+    });
+    const retained = evidenceLedger.sections.find(
+      (section) => section.id === "retrieved_memory_evidence",
+    )!.entries;
+    expect(retained).toMatchObject([
+      {
+        source_type: "semantic_node",
+        state_metadata: {
+          edge_id: edge.target.record_id,
+          node_id: edge.evidence.provenance!.nodeId,
+        },
+      },
+    ]);
+    const llm = new FakeLLMClient({ responses: [createReflectionResponse()] });
+    const h = await createOfflineTestHarness({ llmClient: llm });
+    cleanup.push(h.cleanup);
+    await createHarnessReflector(h, {
+      llmClient: llm,
+      model: "test-model",
+      recordCorrections: new RecordCorrectionService({
+        ...h,
+        entryIndex: h.createContext().entryIndex!,
+      }),
+    }).reflect({ ...createOpenQuestionReflectionContext(), evidenceLedger }, h.streamWriter);
+    expect(JSON.parse(String(llm.requests[0]?.messages[0]?.content))).not.toHaveProperty(
+      "available_evidence_semantic_nodes",
+    );
+  });
+
+  it("budgets serialized semantic handoff rows with their complete disclosure arrays", async () => {
+    const fixture = createRecordEvidenceFixture();
+    const nodes = Array.from({ length: 4 }, (_, index) => ({
+      ...createSemanticNodeFixture({ description: "Synthetic observation. 🧭 ".repeat(15) }),
+      disclosureLabel: relationshipPrivateMemoryDisclosureLabel(
+        Array.from({ length: index < 3 ? 45 : 2 }, () => createEntityId()),
+      ),
+    }));
+    const evidenceLedger = await buildRecordEvidenceLedger({
+      ...fixture.input,
+      retrievedSemantic: {
+        ...fixture.semantic,
+        matched_nodes: nodes,
+        matched_node_ids: nodes.map((node) => node.id),
+      },
+      retrievedEvidence: [],
+    });
+    const llm = new FakeLLMClient({
+      responses: [createReflectionResponse(), createReflectionResponse()],
+    });
+    const h = await createOfflineTestHarness({ llmClient: llm });
+    cleanup.push(h.cleanup);
+    const reflector = createHarnessReflector(h, {
+      llmClient: llm,
+      model: "test-model",
+      recordCorrections: new RecordCorrectionService({
+        ...h,
+        entryIndex: h.createContext().entryIndex!,
+      }),
+    });
+    const context = createOpenQuestionReflectionContext();
+    await reflector.reflect(context, h.streamWriter);
+    await reflector.reflect({ ...context, evidenceLedger }, h.streamWriter);
+    const [baseline, withNodes] = llm.requests.map((request) =>
+      String(request.messages[0]!.content),
+    );
+    expect(withNodes!.length - baseline!.length).toBeLessThanOrEqual(1_500);
+    const small = nodes[3]!;
+    expect(JSON.parse(withNodes!).available_evidence_semantic_nodes).toMatchObject([
+      {
+        id: small.id,
+        text: expect.any(String),
+        disclosure_label: memoryDisclosureLabelMetadata(small.disclosureLabel),
+      },
     ]);
   });
 

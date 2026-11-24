@@ -346,13 +346,24 @@ async function buildPrompt(
   selfStateSummary: string,
   maxFlagsPerTarget: number,
 ): Promise<string> {
-  const contexts = readRecordEvidenceContexts(ctx, [
-    { record_type: target.type, record_id: target.id },
-    ...sourceBundle.source_episodes.map((episode) => ({
-      record_type: "episode" as const,
-      record_id: episode.id,
-    })),
-  ]);
+  const contexts = await readRecordEvidenceContexts(
+    ctx,
+    [
+      { record_type: target.type, record_id: target.id },
+      ...sourceBundle.source_episodes.map((episode) => ({
+        record_type: "episode" as const,
+        record_id: episode.id,
+      })),
+    ],
+    {
+      readLoadedText: (handle) => {
+        if (handle.record_type !== target.type || handle.record_id !== target.id) return undefined;
+        if (target.type === "episode") return target.content.narrative;
+        if (target.type === "semantic_node") return target.content.description;
+        return undefined;
+      },
+    },
+  );
   const payload = withIsoTimestamps(await serializeDisclosureLabeledTargetPayload(ctx, target));
   const serializedTarget = {
     ...payload,

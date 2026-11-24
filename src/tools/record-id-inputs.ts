@@ -14,7 +14,7 @@ export type ToolIdResolution = { field: string; input: string; resolved_id: stri
 export type MissingToolId = { field: string; input: string; spec: RecordIdInput };
 
 export function resolveToolRecordIds(
-  tool: ToolDefinition,
+  tool: Pick<ToolDefinition, "recordIdInputs">,
   input: unknown,
   resolver: RecordIdResolver | undefined,
   resolutions: ToolIdResolution[],
