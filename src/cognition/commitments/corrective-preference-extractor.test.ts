@@ -332,24 +332,21 @@ describe("CorrectivePreferenceExtractor", () => {
     const currentEntryId = createStreamEntryId();
     const outsideEntryId = createStreamEntryId();
     const onDegraded = vi.fn();
+    const conciseRuleFrom = (directiveSourceStreamEntryId: typeof currentEntryId) =>
+      correctivePreferenceResponse({
+        classification: "corrective_preference",
+        type: "rule",
+        directive: "Keep future responses concise.",
+        directive_family: "concise_future_responses",
+        directiveSourceStreamEntryId,
+        priority: 6,
+      });
     const llm = new FakeLLMClient({
+      // The outside source is repeated for the schema-repair call of the second extraction.
       responses: [
-        correctivePreferenceResponse({
-          classification: "corrective_preference",
-          type: "rule",
-          directive: "Keep future responses concise.",
-          directive_family: "concise_future_responses",
-          directiveSourceStreamEntryId: currentEntryId,
-          priority: 6,
-        }),
-        correctivePreferenceResponse({
-          classification: "corrective_preference",
-          type: "rule",
-          directive: "Keep future responses concise.",
-          directive_family: "concise_future_responses",
-          directiveSourceStreamEntryId: outsideEntryId,
-          priority: 6,
-        }),
+        conciseRuleFrom(currentEntryId),
+        conciseRuleFrom(outsideEntryId),
+        conciseRuleFrom(outsideEntryId),
       ],
     });
     const extractor = new CorrectivePreferenceExtractor({
@@ -630,6 +627,47 @@ describe("CorrectivePreferenceExtractor", () => {
         outputTokens: 2,
       },
     });
+  });
+
+  it("reads nullable fields a none classification omits as null, without a repair call", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        {
+          text: "",
+          input_tokens: 4,
+          output_tokens: 2,
+          stop_reason: "tool_use",
+          tool_calls: [
+            {
+              id: "toolu_corrective_preference",
+              name: "EmitCorrectivePreference",
+              input: { classification: "none", confidence: 0.95 },
+            },
+          ],
+        },
+      ],
+    });
+    const onDegraded = vi.fn();
+    const extractor = new CorrectivePreferenceExtractor({
+      llmClient: llm,
+      model: "haiku",
+      onDegraded,
+    });
+
+    await expect(
+      extractor.extractWithSlotNegations({
+        userMessage: "Take care.",
+        recentHistory: [],
+        audienceEntityId: null,
+        activeCommitments: [],
+      }),
+    ).resolves.toEqual({ preference: null, retirement: null, slot_negations: [] });
+    expect(llm.requests).toHaveLength(1);
+    expect(onDegraded).not.toHaveBeenCalled();
+    expect(llm.requests[0]?.tools?.[0]?.inputSchema.required).toEqual([
+      "classification",
+      "confidence",
+    ]);
   });
 
   it("returns null for casual discussion", async () => {

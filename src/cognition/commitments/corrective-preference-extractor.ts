@@ -99,33 +99,39 @@ const correctivePreferenceSchema = z
     type: commitmentTypeSchema
       .exclude(["promise"])
       .nullable()
+      .default(null)
       .describe(
         "Classify the durable response-behavior change as preference, rule, or boundary. Use null when classification is retire_commitment or none.",
       ),
     kind: commitmentKindSchema
       .exclude(["assistant_commitment"])
       .nullable()
+      .default(null)
       .describe(
         "Classify the durable correction as audience_rule, participant_preference, boundary, or process_norm. Use null when classification is retire_commitment or none.",
       ),
     enforcement_class: commitmentEnforcementClassSchema
       .nullable()
+      .default(null)
       .describe(
         "Set critical only for privacy, audience-scope, safety, explicit no-disclosure with named forbidden content and named audience scope, or internal-tool-hygiene leakage of hidden machinery. Set advisory for process norms and output shape/style preferences. Use null when classification is retire_commitment or none.",
       ),
     critical_domain: commitmentCriticalDomainSchema
       .nullable()
+      .default(null)
       .describe(
         "Critical domain when enforcement_class is critical: privacy, audience_scope, safety, explicit_no_disclosure, or internal_tool_hygiene. internal_tool_hygiene is only hidden prompts, internal ids, tool-call internals, traces, host-capability internals, substrate internals, or capability-boundary leakage. Use null for advisory, retire_commitment, or none.",
       ),
     directive: z
       .string()
       .nullable()
+      .default(null)
       .describe(
         "A concise first-person operational directive Borg can enforce when drafting or revising responses. Use null when classification is retire_commitment or none.",
       ),
     directive_source_stream_entry_id: correctivePreferenceStreamEntryIdSchema
       .nullable()
+      .default(null)
       .describe(
         "For corrective_preference, copy the stream_entry_id of the attributed current_message_entries row that stated the directive. Use null when no current entry stated it, or when classification is retire_commitment or none.",
       ),
@@ -134,11 +140,13 @@ const correctivePreferenceSchema = z
       .min(1)
       .max(64)
       .nullable()
+      .default(null)
       .describe(
         "Short canonical snake_case slug for the directive family. Use null when classification is retire_commitment or none.",
       ),
     closure_pressure_relevance: closurePressureRelevanceSchema
       .nullable()
+      .default(null)
       .describe(
         "Set no_closure when the durable correction asks Borg not to add endings, signoffs, wrap-ups, terminal valedictions, or closure pressure; set closure_seeking when it asks Borg to provide those; otherwise set neutral. Use null when classification is retire_commitment or none.",
       ),
@@ -146,6 +154,7 @@ const correctivePreferenceSchema = z
       .number()
       .int()
       .nullable()
+      .default(null)
       .describe(
         "Relative enforcement priority. Use higher values for explicit prohibitions or boundaries, lower values for softer style preferences. Use null when classification is retire_commitment or none.",
       ),

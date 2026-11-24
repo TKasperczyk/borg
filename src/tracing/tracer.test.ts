@@ -700,14 +700,7 @@ describe("TurnTracer", () => {
       "llm_call.completed",
       "llm_call.completed",
       "llm_call.completed",
-      // The corrective-preference fixture is invalid. Its repair is traced as
-      // a distinct correlated call while the extraction tasks run concurrently.
-      "llm_call.schema_repair.attempted",
-      "llm_call.started",
-      "llm_call.completed",
-      "llm_call.schema_repair.failed",
       "extraction.goals.completed",
-      "extraction.commitments.degraded",
       // R5: every extraction emits its committed selection counts. The action pass
       // settles after the others: its provider-failure re-ask adds a promise hop.
       "extraction.actions.selection_summary",
