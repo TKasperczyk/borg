@@ -2760,6 +2760,102 @@ describe("reflector", () => {
     }
   });
 
+  it("resolves an intention its own turn's planner added before working memory is saved", async () => {
+    const sameTurnId = "pact_0000000000000003";
+    const unlistedId = "pact_0000000000000004";
+    const response = createReflectionResponse(
+      [],
+      [],
+      [
+        {
+          session_id: DEFAULT_SESSION_ID,
+          pending_action_id: sameTurnId,
+          description: "A paraphrase is not an identity key",
+          next_action: null,
+          actor: "borg",
+          status: "abandoned",
+          evidence: "La respuesta usó otros números que el plan.",
+        },
+        {
+          session_id: DEFAULT_SESSION_ID,
+          pending_action_id: unlistedId,
+          description: "Not an intention on this page",
+          next_action: null,
+          actor: "borg",
+          status: "completed",
+          evidence: "No such intention.",
+        },
+      ],
+    );
+    const llm = new FakeLLMClient({ responses: [response] });
+    const harness = await createOfflineTestHarness({ llmClient: llm });
+    cleanup.push(harness.cleanup);
+    const store = new WorkingMemoryStore({
+      dataDir: harness.tempDir,
+      actionRepository: harness.actionRepository,
+    });
+    const sessionLock = new SessionLock({ dataDir: harness.tempDir });
+    // The saved file predates this turn; its planner's intention exists only in
+    // the post-action working memory, which is saved after reflection.
+    const saved = store.save(createWorkingMemoryFixture());
+    const postAction = {
+      ...saved,
+      pending_actions: [
+        {
+          pending_action_id: sameTurnId,
+          description: "Start the next numerals at 786",
+          next_action: "Use 786 when the list next comes up",
+        },
+      ],
+    };
+    const tracer = new CaptureTracer();
+    const reflector = createHarnessReflector(harness, {
+      clock: harness.clock,
+      llmClient: llm,
+      model: "haiku",
+      workingMemoryStore: store,
+      sessionLock,
+      tracer,
+    });
+    const base = createOpenQuestionReflectionContext();
+    const context = {
+      ...base,
+      turnId: "same-turn-intent",
+      workingMemory: postAction,
+      actionResult: { ...base.actionResult, workingMemory: postAction },
+      currentTurnStreamEntryIds: [
+        (await harness.streamWriter.append({ kind: "thought", content: "otros números" })).id,
+      ],
+    };
+    const lease = await sessionLock.acquire(DEFAULT_SESSION_ID);
+    try {
+      const reflected = await reflector.reflect(context, harness.streamWriter);
+      expect(
+        tracer.events
+          .filter(
+            (event) =>
+              event.event === "reflector.intent_update.completed" && "outcome" in event.data,
+          )
+          .map((event) => [event.data.pending_action_id, event.data.outcome]),
+      ).toEqual([[sameTurnId, "applied_same_turn"]]);
+      expect(reflected.workingMemory.pending_actions).toEqual([]);
+      expect(reflected.effects.createdActionIds).toHaveLength(1);
+      expect(harness.actionRepository.list({ state: "not_done" })).toEqual([
+        expect.objectContaining({
+          id: reflected.effects.createdActionIds[0],
+          description: "Start the next numerals at 786",
+          actor: "borg",
+          state: "not_done",
+        }),
+      ]);
+      // An id on neither list is still unmatched and writes nothing.
+      expect(harness.actionRepository.list({ state: "completed" })).toEqual([]);
+      expect(store.load(DEFAULT_SESSION_ID).pending_actions).toEqual([]);
+    } finally {
+      await lease?.release();
+    }
+  });
+
   it.each(["abandoned", "declined"] as const)(
     "clears completed and %s pending actions and persists action records",
     async (status) => {

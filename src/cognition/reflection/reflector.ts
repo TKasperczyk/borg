@@ -1240,7 +1240,13 @@ export class Reflector {
           updateEffects.createdActionIds.length > before
         );
       };
-      const outcome =
+      let outcome:
+        | "applied"
+        | "applied_cleanup_pending"
+        | "applied_same_turn"
+        | "missing"
+        | "busy"
+        | "failed" =
         store !== undefined && sessionLock !== undefined
           ? await store.resolvePendingAction({
               sessionId: update.session_id,
@@ -1257,7 +1263,27 @@ export class Reflector {
               (alreadyCompleted || (projected !== undefined && (await apply(projected))))
             ? "applied"
             : "failed";
-      if (outcome === "applied" && update.session_id === originSessionId)
+      // An intention this turn's planner added is in the post-action working
+      // memory, which is saved only after reflection, so the store cannot find
+      // it. Write its action like any other in-turn action: rollback deletes it
+      // through createdActionIds, and the intention is never saved.
+      const sameTurnIntent =
+        outcome === "missing" && update.session_id === originSessionId
+          ? context.actionResult.workingMemory.pending_actions.find(
+              (action) => action.pending_action_id === update.pending_action_id,
+            )
+          : undefined;
+      if (sameTurnIntent !== undefined) {
+        // As in the store path, a callback can fail after its insert committed.
+        const written =
+          (await apply(sameTurnIntent).catch(() => false)) ||
+          this.options.actionRepository?.get?.(pendingActionResolutionId(update)) != null;
+        outcome = written ? "applied_same_turn" : "failed";
+      }
+      if (
+        (outcome === "applied" || outcome === "applied_same_turn") &&
+        update.session_id === originSessionId
+      )
         resolvedOwnIds.add(update.pending_action_id);
       if (
         (outcome === "applied" || outcome === "applied_cleanup_pending") &&
