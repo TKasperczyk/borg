@@ -5183,6 +5183,14 @@ describe("reflector", () => {
       ),
     ).toBe(true);
     expect(
+      payload.available_evidence_semantic_nodes.every(
+        (row: { text: string; text_chars?: number }) =>
+          row.text_chars === 350 &&
+          "界".repeat(350).startsWith(row.text) &&
+          row.text.length + ',"text_chars":350'.length === 240,
+      ),
+    ).toBe(true);
+    expect(
       JSON.stringify(noNodes!.tools![0]!.inputSchema).length -
         JSON.stringify(baseline!.tools![0]!.inputSchema).length,
     ).toBe(978);
@@ -5265,6 +5273,9 @@ describe("reflector", () => {
     );
     expect(withNodes!.length - baseline!.length).toBeLessThanOrEqual(1_500);
     const small = nodes[3]!;
+    expect(JSON.parse(withNodes!).available_evidence_semantic_nodes[0].text_chars).toBe(
+      small.description.length,
+    );
     expect(JSON.parse(withNodes!).available_evidence_semantic_nodes).toMatchObject([
       {
         id: small.id,
@@ -5272,6 +5283,58 @@ describe("reflector", () => {
         disclosure_label: memoryDisclosureLabelMetadata(small.disclosureLabel),
       },
     ]);
+  });
+
+  it("says how long a cut semantic handoff text is, at the 240-unit edge and across a surrogate pair", async () => {
+    const fixture = createRecordEvidenceFixture();
+    const descriptions = [
+      "c".repeat(240),
+      "d".repeat(241),
+      `${"a".repeat(222)}🧭${"b".repeat(17)}`,
+    ];
+    const nodes = descriptions.map((description) => createSemanticNodeFixture({ description }));
+    const evidenceLedger = await buildRecordEvidenceLedger({
+      ...fixture.input,
+      retrievedSemantic: {
+        ...fixture.semantic,
+        matched_nodes: nodes,
+        matched_node_ids: nodes.map((node) => node.id),
+      },
+      retrievedEvidence: [],
+    });
+    const entryText = new Map(
+      evidenceLedger.sections
+        .flatMap((section) => section.entries)
+        .map((entry) => [entry.id, entry.text] as const),
+    );
+    expect(nodes.map((node) => entryText.get(`semantic_node:${node.id}`))).toEqual(descriptions);
+    const llm = new FakeLLMClient({ responses: [createReflectionResponse()] });
+    const h = await createOfflineTestHarness({ llmClient: llm });
+    cleanup.push(h.cleanup);
+    await createHarnessReflector(h, {
+      llmClient: llm,
+      model: "test-model",
+      recordCorrections: new RecordCorrectionService({
+        ...h,
+        entryIndex: h.createContext().entryIndex!,
+      }),
+    }).reflect({ ...createOpenQuestionReflectionContext(), evidenceLedger }, h.streamWriter);
+    const rows = JSON.parse(String(llm.requests[0]!.messages[0]!.content))
+      .available_evidence_semantic_nodes as Array<{
+      id: string;
+      text: string;
+      text_chars?: number;
+    }>;
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    const [whole, plain, paired] = nodes.map((node) => byId.get(node.id));
+    expect(whole).toMatchObject({ text: descriptions[0] });
+    expect(whole).not.toHaveProperty("text_chars");
+    expect(plain).toMatchObject({
+      text: "d".repeat(240 - ',"text_chars":241'.length),
+      text_chars: 241,
+    });
+    // The prefix stops before a pair it would split, one unit short of the room the count leaves.
+    expect(paired).toMatchObject({ text: "a".repeat(222), text_chars: 241 });
   });
 
   it("corrects resolved notes on conversation turns with shared validation, writer stamps and labeled excerpts", async () => {

@@ -454,10 +454,22 @@ const REFLECTION_TOOL_WITH_RECORD_CORRECTIONS: LLMToolDefinition = {
   ),
 };
 
+// A cut text carries its source's length, like the other bounded fields of this call. The count
+// field's room comes out of the excerpt, so excerpt and count stay within the excerpt's old limit.
+function semanticHandoffText(text: string): { text: string; text_chars?: number } {
+  if (text.length <= MAX_REFLECTION_SEMANTIC_TEXT_CHARS) return { text };
+  const countField = `,"text_chars":${text.length}`;
+  return {
+    text: utf16SafePrefix(text, MAX_REFLECTION_SEMANTIC_TEXT_CHARS - countField.length),
+    text_chars: text.length,
+  };
+}
+
 function semanticTargetsForReflection(ledger: EvidenceLedger | null | undefined) {
   const rows: Array<{
     id: string;
     text: string;
+    text_chars?: number;
     self_correction_count?: number;
     disclosure_label: ReturnType<typeof memoryDisclosureLabelMetadata>;
   }> = [];
@@ -476,7 +488,7 @@ function semanticTargetsForReflection(ledger: EvidenceLedger | null | undefined)
       const count = entry.evidence_context?.self_correction_count;
       const row = {
         id,
-        text: utf16SafePrefix(entry.text, MAX_REFLECTION_SEMANTIC_TEXT_CHARS),
+        ...semanticHandoffText(entry.text),
         ...(count === undefined ? {} : { self_correction_count: count }),
         disclosure_label: memoryDisclosureLabelMetadata(
           memoryDisclosureLabelFromMetadata(entry.state_metadata?.disclosure_label) ??
