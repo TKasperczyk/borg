@@ -1,5 +1,6 @@
 import { estimatePromptTokens } from "../../util/token-estimate.js";
 import { coercePositiveIntegerOrFallback } from "../../util/math.js";
+import { utf16SafePrefix } from "../../util/utf16-boundary.js";
 import { isRecentLivedExperienceSpineKind } from "../../memory/activity/index.js";
 import { selfPrivateMemoryDisclosureLabel } from "../../memory/common/disclosure-label.js";
 import { admitAnnotationRows } from "../../memory/common/evidence-prompt.js";
@@ -213,10 +214,25 @@ function truncateTextForFullEvidenceLedger(
     return value;
   }
 
-  const omission = `\n[evidence ledger entry truncated ${value.length - maxChars} chars]`;
-  const bodyLimit = Math.max(0, maxChars - omission.length);
+  // The marker counts the characters it replaces. Its own length comes out of the cap, so the count
+  // settles against the text actually kept: a longer count shortens the kept text, which can only
+  // raise the count, so the passes end.
+  let omission = fullLedgerEntryTruncationMarker(value.length - maxChars);
 
-  return `${value.slice(0, bodyLimit).trimEnd()}${omission}`;
+  for (;;) {
+    const kept = utf16SafePrefix(value, Math.max(0, maxChars - omission.length)).trimEnd();
+    const settled = fullLedgerEntryTruncationMarker(value.length - kept.length);
+
+    if (settled.length === omission.length) {
+      return `${kept}${settled}`;
+    }
+
+    omission = settled;
+  }
+}
+
+function fullLedgerEntryTruncationMarker(removedChars: number): string {
+  return `\n[evidence ledger entry truncated ${removedChars} chars]`;
 }
 
 function compactFullLedgerEntry(

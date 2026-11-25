@@ -69,6 +69,79 @@ function ledger(): EvidenceLedger {
   };
 }
 
+const ENTRY_TRUNCATION_MARKER = /\n\[evidence ledger entry truncated (\d+) chars\]$/;
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u;
+
+describe("entry truncation marker", () => {
+  const MAX_ENTRY_TEXT_TOKENS = 100;
+  const MAX_ENTRY_TEXT_CHARS = MAX_ENTRY_TEXT_TOKENS * 4;
+
+  function truncatedEntryText(text: string): string {
+    const long: EvidenceLedgerEntry = { ...entry("semantic_node:long"), text };
+    const result = compactEvidenceLedger(
+      {
+        ...ledger(),
+        sections: EVIDENCE_LEDGER_SECTION_DEFINITIONS.map((section) => ({
+          ...section,
+          entries: section.id === "semantic_graph" ? [long] : [],
+        })),
+      },
+      {
+        targetTokens: 100_000,
+        hardCapTokens: 100_000,
+        maxEntryTextTokens: MAX_ENTRY_TEXT_TOKENS,
+      },
+    );
+
+    return result.ledger.sections
+      .find((section) => section.id === "semantic_graph")!
+      .entries.find((row) => row.id === long.id)!.text!;
+  }
+
+  function expectExactCount(text: string): string {
+    const shown = truncatedEntryText(text);
+    const marker = ENTRY_TRUNCATION_MARKER.exec(shown);
+
+    expect(marker).not.toBeNull();
+
+    const kept = shown.slice(0, marker!.index);
+
+    expect(text.startsWith(kept)).toBe(true);
+    expect(Number(marker![1])).toBe(text.length - kept.length);
+    expect(shown.length).toBeLessThanOrEqual(MAX_ENTRY_TEXT_CHARS);
+
+    return kept;
+  }
+
+  // Overflows on both sides of each point where the count gains a digit, with the marker's own
+  // length included: the count is settled against the kept text, not against the cap.
+  it.each([1, 9, 10, 53, 54, 55, 99, 100, 953, 954, 955, 999, 1_000, 9_952, 9_953, 9_954, 9_999])(
+    "counts every character it replaces when the text is %i over the cap",
+    (overflow) => {
+      expectExactCount("x".repeat(MAX_ENTRY_TEXT_CHARS + overflow));
+    },
+  );
+
+  it("counts whitespace trimmed at the cut as replaced", () => {
+    const text = `${"x".repeat(300)}${" ".repeat(200)}${"y".repeat(400)}`;
+    const kept = expectExactCount(text);
+
+    expect(kept).toBe("x".repeat(300));
+  });
+
+  it("leaves a text at the cap whole", () => {
+    const text = "x".repeat(MAX_ENTRY_TEXT_CHARS);
+
+    expect(truncatedEntryText(text)).toBe(text);
+  });
+
+  it.each(["", "a"])("never ends the kept text inside an astral character (lead %j)", (lead) => {
+    const kept = expectExactCount(`${lead}${"\u{1F600}".repeat(600)}`);
+
+    expect(LONE_SURROGATE.test(kept)).toBe(false);
+  });
+});
+
 describe("bounded omission accounting under ledger compaction", () => {
   it.each([
     { sectionOptions: { action_states: { maxEntries: 4, maxTokens: 100_000 } } },
