@@ -4979,9 +4979,18 @@ describe("reflector", () => {
         },
       },
     });
-    expect(
-      tracer.events.filter((entry) => entry.event === "memory.annotations.rejected"),
-    ).toHaveLength(1);
+    // The over-long proposal named a real record: the trace says which one.
+    expect(tracer.events.filter((entry) => entry.event === "memory.annotations.rejected")).toEqual([
+      {
+        event: "memory.annotations.rejected",
+        data: {
+          turnId: "synthetic-conversation",
+          path: "reflector",
+          reason: "invalid_structure",
+          target_id: episode.id,
+        },
+      },
+    ]);
     expect(
       new StreamReader({ dataDir: h.tempDir, sessionId: DEFAULT_SESSION_ID })
         .tail(10)
@@ -4989,6 +4998,117 @@ describe("reflector", () => {
           (entry) => entry.kind === "internal_event" && entry.turn_id === "synthetic-conversation",
         ),
     ).toHaveLength(2);
+  });
+
+  it("names the record of a rejected proposal even when another id in it is malformed", async () => {
+    const episode = createEpisodeFixture();
+    const llm = new FakeLLMClient({
+      responses: [
+        createRawReflectionResponse({
+          record_corrections: [
+            {
+              target_id: episode.id.slice(0, 7),
+              correction_note: "Provisional observation.",
+              evidence: [{ id: "ep_a", basis: "own_read" }],
+            },
+          ],
+        }),
+      ],
+    });
+    const h = await createOfflineTestHarness({ llmClient: llm });
+    cleanup.push(h.cleanup);
+    await h.episodicRepository.createEpisode(episode);
+    const tracer = new CaptureTracer();
+    const reflector = createHarnessReflector(h, {
+      llmClient: llm,
+      model: "test-model",
+      tracer,
+      recordCorrections: new RecordCorrectionService({
+        ...h,
+        entryIndex: h.createContext().entryIndex!,
+        tracer,
+      }),
+      recordIdResolver: createRecordIdResolver(h.db),
+    });
+    await reflector.reflect(
+      { ...createOpenQuestionReflectionContext(), turnId: "synthetic-conversation" },
+      h.streamWriter,
+    );
+
+    expect(h.identityEventRepository.list({ recordType: "episode", recordId: episode.id })).toEqual(
+      [],
+    );
+    expect(tracer.events.filter((entry) => entry.event === "memory.annotations.rejected")).toEqual([
+      {
+        event: "memory.annotations.rejected",
+        data: {
+          turnId: "synthetic-conversation",
+          path: "reflector",
+          reason: "invalid_id_prefix",
+          target_id: episode.id,
+        },
+      },
+    ]);
+  });
+
+  it("names the record a rejected proposal first resolved to, without looking it up again", async () => {
+    const proposed = createEpisodeFixture();
+    const later = createEpisodeFixture();
+    const handle = proposed.id.slice(0, 7);
+    const llm = new FakeLLMClient({
+      responses: [
+        createRawReflectionResponse({
+          record_corrections: [
+            {
+              target_id: handle,
+              correction_note: "Provisional observation.",
+              evidence: [{ id: later.id, basis: "own_read" }],
+            },
+          ],
+        }),
+      ],
+    });
+    const h = await createOfflineTestHarness({ llmClient: llm });
+    cleanup.push(h.cleanup);
+    // Only the evidence episode is stored: the proposed target does not exist.
+    await h.episodicRepository.createEpisode(later);
+    const tracer = new CaptureTracer();
+    let handleLookups = 0;
+    const reflector = createHarnessReflector(h, {
+      llmClient: llm,
+      model: "test-model",
+      tracer,
+      recordCorrections: new RecordCorrectionService({
+        ...h,
+        entryIndex: h.createContext().entryIndex!,
+        tracer,
+      }),
+      // The same handle would name a different record on a second lookup.
+      recordIdResolver: {
+        resolve: (input) => {
+          if (input !== handle) return { status: "unchanged", id: input };
+          handleLookups += 1;
+          return { status: "resolved", id: handleLookups === 1 ? proposed.id : later.id };
+        },
+      },
+    });
+    await reflector.reflect(
+      { ...createOpenQuestionReflectionContext(), turnId: "synthetic-conversation" },
+      h.streamWriter,
+    );
+
+    expect(handleLookups).toBe(1);
+    expect(tracer.events.filter((entry) => entry.event === "memory.annotations.rejected")).toEqual([
+      {
+        event: "memory.annotations.rejected",
+        data: {
+          turnId: "synthetic-conversation",
+          path: "reflector",
+          reason: "RECORD_CORRECTION_TARGET_NOT_FOUND",
+          target_id: proposed.id,
+        },
+      },
+    ]);
   });
 
   it.each(["object", "oversized array"])(

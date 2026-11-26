@@ -211,6 +211,9 @@ const SCHEDULED_WAKE_CREATE_TOOL_NAME = "tool.scheduledWakes.create";
 const DEFAULT_REFLECTION_MAX_TOKENS = 16_000;
 const MAX_REFLECTION_RESOLUTION_CORRECTIONS = 3;
 const MAX_REFLECTION_RECORD_CORRECTIONS = 3;
+const RECORD_CORRECTION_TARGET_ID_INPUTS = RECORD_CORRECTION_ID_INPUTS.filter(
+  (spec) => spec.path === "target_id",
+);
 const MAX_REFLECTION_SEMANTIC_NODES = 3;
 const MAX_REFLECTION_SEMANTIC_TEXT_CHARS = 240;
 const MAX_REFLECTION_SEMANTIC_HANDOFF_CHARS = 1_500;
@@ -2380,6 +2383,9 @@ export class Reflector {
     const recordCorrections = this.options.recordCorrections;
     if (recordCorrections === undefined || (context.origin ?? "user") !== "user") return;
     for (const correction of corrections) {
+      // What the proposal resolved to when it was read. A later lookup of the
+      // same handle could name a different record.
+      let resolvedProposal: { input: unknown } | undefined;
       try {
         const resolved = resolveToolRecordIds(
           { recordIdInputs: RECORD_CORRECTION_ID_INPUTS },
@@ -2387,6 +2393,7 @@ export class Reflector {
           this.options.recordIdResolver,
           [],
         );
+        resolvedProposal = resolved;
         await recordCorrections.correct(recordCorrectionInputSchema.parse(resolved.input), {
           turnId: context.turnId,
           sessionId: context.sessionId,
@@ -2402,13 +2409,36 @@ export class Reflector {
           continue;
         }
         if (this.options.tracer?.enabled === true && context.turnId !== undefined) {
+          const targetId = recordCorrectionTargetId(
+            resolvedProposal === undefined
+              ? this.resolveRecordCorrectionTargetAlone(correction)
+              : resolvedProposal.input,
+          );
           this.options.tracer.emit("memory.annotations.rejected", {
             turnId: context.turnId,
             path: "reflector",
             reason: error instanceof BorgError ? error.code : "invalid_structure",
+            ...(targetId === undefined ? {} : { target_id: targetId }),
           });
         }
       }
+    }
+  }
+
+  /**
+   * The proposal with only its target id resolved. For when resolving the whole
+   * proposal threw: a fault in another id does not hide which record it named.
+   */
+  private resolveRecordCorrectionTargetAlone(proposal: unknown): unknown {
+    try {
+      return resolveToolRecordIds(
+        { recordIdInputs: RECORD_CORRECTION_TARGET_ID_INPUTS },
+        proposal,
+        this.options.recordIdResolver,
+        [],
+      ).input;
+    } catch {
+      return undefined;
     }
   }
 
@@ -2839,6 +2869,15 @@ export class Reflector {
       throw isStructuredToolCallError(error) ? (error.cause ?? error) : error;
     }
   }
+}
+
+/** The record id a proposal carries, when it is a well-formed episode or semantic-node id. */
+function recordCorrectionTargetId(proposal: unknown): string | undefined {
+  if (typeof proposal !== "object" || proposal === null) return undefined;
+  const target = recordCorrectionInputSchema.shape.target_id.safeParse(
+    (proposal as { target_id?: unknown }).target_id,
+  );
+  return target.success ? target.data : undefined;
 }
 
 function selectTraitDemonstration(
