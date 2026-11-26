@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
+import Anthropic from "@anthropic-ai/sdk";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
@@ -32,6 +33,18 @@ function createTempCredentialsPath(tempDirs: string[]): string {
   tempDirs.push(tempDir);
   return join(tempDir, "credentials.json");
 }
+
+// What the SDK throws when a status arrives with an empty body, as a gateway sends it.
+function statusOnlyError(status: number): Error {
+  return new Anthropic.APIError(status, undefined, undefined, new Headers());
+}
+
+const STATUS_RETRY_REQUEST = {
+  model: "claude-sonnet-4-5",
+  messages: [{ role: "user" as const, content: "hello" }],
+  max_tokens: 32,
+  budget: "test",
+};
 
 function createMessageBody(overrides: Partial<Message> = {}): Message {
   return {
@@ -926,6 +939,34 @@ describe("llm", () => {
       });
       expect(create).toHaveBeenCalledTimes(2);
       expect(create.mock.calls[1]?.[0].tool_choice).toEqual({ type: "auto" });
+    });
+
+    it("spends the status allowance once per logical call, across the reminder retry", async () => {
+      vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const create = vi
+        .fn()
+        .mockRejectedValueOnce(statusOnlyError(502))
+        .mockResolvedValueOnce(noToolResponse)
+        .mockRejectedValueOnce(statusOnlyError(503));
+      const retryEvents: unknown[] = [];
+      const client = new AnthropicLLMClient({ client: { messages: { create } } });
+
+      await expect(
+        client.streamComplete({
+          model: "claude-opus-5-5",
+          tools,
+          tool_choice: { type: "any" },
+          messages: [],
+          budget: "test",
+          onTransportRetry: (event) => retryEvents.push(event),
+        }),
+      ).rejects.toMatchObject({
+        message: "Failed to complete Anthropic request: Error: 503 status code (no body)",
+      });
+      expect(create).toHaveBeenCalledTimes(3);
+      expect(retryEvents).toEqual([
+        { attempt: 2, kind: "status", status: 502, retry_transport: "unary" },
+      ]);
     });
 
     it("streams tool input after empty thinking blocks without relying on intervening text", async () => {
@@ -2512,6 +2553,302 @@ describe("llm", () => {
       code: "LLM_STREAM_EVENT_STALLED",
     });
     expect(create).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries a unary call once when a gateway status arrives in place of a response", async () => {
+    const create = vi
+      .fn()
+      .mockRejectedValueOnce(statusOnlyError(502))
+      .mockResolvedValueOnce(createMessageBody());
+    const retryEvents: unknown[] = [];
+    const client = new AnthropicLLMClient({
+      client: { messages: { create, stream: vi.fn() } },
+    });
+
+    await expect(
+      client.complete({
+        ...STATUS_RETRY_REQUEST,
+        onTransportRetry: (event) => retryEvents.push(event),
+      }),
+    ).resolves.toMatchObject({ text: "Hello" });
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(retryEvents).toEqual([
+      { attempt: 2, kind: "status", status: 502, retry_transport: "unary" },
+    ]);
+  });
+
+  it.each([408, 500, 502, 503, 504, 529])(
+    "gives HTTP %s one fresh attempt and then surfaces the failure as before",
+    async (status) => {
+      const create = vi.fn(async () => {
+        throw statusOnlyError(status);
+      });
+      const client = new AnthropicLLMClient({
+        client: { messages: { create, stream: vi.fn() } },
+      });
+
+      await expect(client.complete(STATUS_RETRY_REQUEST)).rejects.toMatchObject({
+        message: `Failed to complete Anthropic request: Error: ${status} status code (no body)`,
+      });
+      expect(create).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it.each([400, 403, 404, 422, 429])(
+    "does not retry HTTP %s, which a second request would not change",
+    async (status) => {
+      const create = vi.fn(async () => {
+        throw statusOnlyError(status);
+      });
+      const retryEvents: unknown[] = [];
+      const client = new AnthropicLLMClient({
+        client: { messages: { create, stream: vi.fn() } },
+      });
+
+      await expect(
+        client.complete({
+          ...STATUS_RETRY_REQUEST,
+          onTransportRetry: (event) => retryEvents.push(event),
+        }),
+      ).rejects.toMatchObject({
+        message: `Failed to complete Anthropic request: Error: ${status} status code (no body)`,
+      });
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(retryEvents).toEqual([]);
+    },
+  );
+
+  it("does not retry a gateway status once the caller's signal has aborted", async () => {
+    const controller = new AbortController();
+    const create = vi.fn(async () => {
+      controller.abort();
+      throw statusOnlyError(502);
+    });
+    const client = new AnthropicLLMClient({
+      client: { messages: { create, stream: vi.fn() } },
+    });
+
+    await expect(
+      client.complete({ ...STATUS_RETRY_REQUEST, signal: controller.signal }),
+    ).rejects.toBeDefined();
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries a streaming call unary when a gateway status arrives before any event", async () => {
+    const refusedStream = {
+      [Symbol.asyncIterator]: () => ({
+        next: async (): Promise<IteratorResult<MessageStreamEvent>> => {
+          throw statusOnlyError(502);
+        },
+      }),
+      finalMessage: vi.fn(),
+    };
+    const streamFactory = vi.fn().mockReturnValueOnce(refusedStream as never);
+    const create = vi.fn(async () => createMessageBody());
+    const deltas: string[] = [];
+    const retryEvents: unknown[] = [];
+    const client = new AnthropicLLMClient({
+      client: { messages: { create, stream: streamFactory } },
+    });
+
+    await expect(
+      client.streamComplete({
+        ...STATUS_RETRY_REQUEST,
+        onTextDelta: (text) => deltas.push(text),
+        onTransportRetry: (event) => retryEvents.push(event),
+      }),
+    ).resolves.toMatchObject({ text: "Hello" });
+    expect(streamFactory).toHaveBeenCalledTimes(1);
+    expect(create).toHaveBeenCalledTimes(1);
+    // The status came before any event, and the retry is unary: nothing is forwarded.
+    expect(deltas).toEqual([]);
+    expect(retryEvents).toEqual([
+      { attempt: 2, kind: "status", status: 502, retry_transport: "unary" },
+    ]);
+  });
+
+  it.each([
+    ["wraps a status error", () => new Error("consumer failed", { cause: statusOnlyError(502) })],
+    ["throws a status error itself", () => statusOnlyError(502)],
+  ])("does not retry when a delta callback %s", async (_name, thrown) => {
+    const stream = {
+      async *[Symbol.asyncIterator]() {
+        yield {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: "Hel" },
+        };
+      },
+      finalMessage: vi.fn(),
+    };
+    const create = vi.fn(async () => createMessageBody());
+    const client = new AnthropicLLMClient({
+      client: { messages: { create, stream: vi.fn().mockReturnValueOnce(stream as never) } },
+    });
+
+    await expect(
+      client.streamComplete({
+        ...STATUS_RETRY_REQUEST,
+        onTextDelta: () => {
+          throw thrown();
+        },
+      }),
+    ).rejects.toBeDefined();
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("does not retry a status that surfaces after the stream delivered an event", async () => {
+    const stream = {
+      async *[Symbol.asyncIterator]() {
+        yield {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: "Hel" },
+        };
+        throw statusOnlyError(502);
+      },
+      finalMessage: vi.fn(),
+    };
+    const create = vi.fn(async () => createMessageBody());
+    const deltas: string[] = [];
+    const client = new AnthropicLLMClient({
+      client: { messages: { create, stream: vi.fn().mockReturnValueOnce(stream as never) } },
+    });
+
+    await expect(
+      client.streamComplete({
+        ...STATUS_RETRY_REQUEST,
+        onTextDelta: (text) => deltas.push(text),
+      }),
+    ).rejects.toMatchObject({
+      message: "Failed to complete Anthropic request: Error: 502 status code (no body)",
+    });
+    expect(create).not.toHaveBeenCalled();
+    expect(deltas).toEqual(["Hel"]);
+  });
+
+  it("does not retry when the retry observer throws a status error after a response arrived", async () => {
+    const create = vi.fn(async () => createMessageBody({ stop_reason: "refusal" }));
+    const client = new AnthropicLLMClient({
+      client: { messages: { create, stream: vi.fn() } },
+    });
+
+    await expect(
+      client.complete({
+        ...STATUS_RETRY_REQUEST,
+        // The first response is a refusal, which the loop reports to the observer.
+        onTransportRetry: (event) => {
+          if (event.kind === "refusal") throw statusOnlyError(502);
+        },
+      }),
+    ).rejects.toBeDefined();
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries the SDK's own 502 through the real fetch path, unary and streaming", async () => {
+    for (const streaming of [false, true]) {
+      const requestBodies: string[] = [];
+      const fetchMock = vi.fn(
+        async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+          requestBodies.push(String(init?.body));
+          return requestBodies.length === 1
+            ? new Response(null, { status: 502 })
+            : jsonResponse(createMessageBody());
+        },
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      const retryEvents: unknown[] = [];
+      const client = new AnthropicLLMClient({ env: { ANTHROPIC_AUTH_TOKEN: "oauth-token" } });
+      const request = {
+        ...STATUS_RETRY_REQUEST,
+        onTransportRetry: (event: unknown) => retryEvents.push(event),
+      };
+
+      await expect(
+        streaming ? client.streamComplete(request) : client.complete(request),
+      ).resolves.toMatchObject({ text: "Hello" });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(requestBodies[0]?.includes('"stream":true')).toBe(streaming);
+      expect(requestBodies[1]).not.toContain('"stream":true');
+      expect(retryEvents).toEqual([
+        { attempt: 2, kind: "status", status: 502, retry_transport: "unary" },
+      ]);
+    }
+  });
+
+  it("does not retry an error frame that arrives mid-stream, which carries no status", async () => {
+    const sse = (event: string, data: unknown) =>
+      `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+    const fetchMock = vi.fn(async () =>
+      createChunkedSseResponse([
+        sse("message_start", {
+          type: "message_start",
+          message: createMessageBody({ content: [], stop_reason: null }),
+        }),
+        sse("content_block_start", {
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "text", text: "", citations: null },
+        }),
+        sse("content_block_delta", {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: "Hel" },
+        }),
+        // A provider fault after output began: the frame may quote a status, the error has none.
+        sse("error", { type: "error", error: { type: "api_error", message: "502 from upstream" } }),
+      ]),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const deltas: string[] = [];
+    const retryEvents: unknown[] = [];
+    const client = new AnthropicLLMClient({ env: { ANTHROPIC_AUTH_TOKEN: "oauth-token" } });
+
+    let caught: unknown;
+    try {
+      await client.streamComplete({
+        ...STATUS_RETRY_REQUEST,
+        onTextDelta: (text) => deltas.push(text),
+        onTransportRetry: (event) => retryEvents.push(event),
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toMatchObject({
+      message: "Failed to complete Anthropic request: 502 from upstream",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(deltas.join("")).toBe("Hel");
+    expect(retryEvents).toEqual([]);
+  });
+
+  it("traces a status retry with the status that caused it", () => {
+    const events: Array<{ event: string; payload: Record<string, unknown> }> = [];
+    const hook = traceLlmCallRetryHook({
+      tracer: {
+        enabled: true,
+        emit: (event: string, payload: Record<string, unknown>) => events.push({ event, payload }),
+      } as never,
+      turnId: "turn-status-retry",
+      label: "reflector",
+    });
+
+    hook?.({ attempt: 2, kind: "status", status: 502, retry_transport: "unary" });
+
+    expect(events).toEqual([
+      {
+        event: "llm_call.retried",
+        payload: {
+          turnId: "turn-status-retry",
+          label: "reflector",
+          attempt: 2,
+          kind: "status",
+          status: 502,
+          retry_transport: "unary",
+        },
+      },
+    ]);
   });
 
   it("retries a stalled stream non-streaming without duplicating forwarded deltas", async () => {

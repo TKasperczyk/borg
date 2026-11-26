@@ -333,9 +333,11 @@ export type LLMTransportRetryEvent = {
   stop_reason_classification?: LLMStopReasonClassification;
   // The attempt number about to run (2 = first retry).
   attempt: number;
-  kind: "stall" | "connection" | "refusal";
+  kind: "stall" | "connection" | "refusal" | "status";
   // Typed structural reason that triggered the retry (stall or refusal).
   code?: string;
+  // HTTP status that arrived in place of a response (status retries only).
+  status?: number;
   // Transport of the upcoming retry attempt. Streaming calls retry unary.
   retry_transport: "streaming" | "unary";
 };
@@ -894,6 +896,11 @@ const ANTHROPIC_CONNECTION_MAX_RETRIES = 2;
 // Mid-call stalls (watchdog-killed streams, fetch-layer deadlines) are usually
 // transient upstream degradation; one fresh attempt rescues most of them.
 const ANTHROPIC_STALL_MAX_RETRIES = 1;
+// A gateway or server status (408, 5xx) arrives in place of a response: that
+// request produced nothing, and the next one usually goes through. The
+// allowance is per logical call, so the loops a call re-enters (credential
+// refresh, tool reminder) cannot each spend it again.
+const ANTHROPIC_STATUS_MAX_RETRIES = 1;
 
 type OAuthFetchOptions = {
   sseInactivityTimeoutMs?: number;
@@ -979,6 +986,11 @@ export function isRetryableLlmTransportError(error: unknown): error is LLMError 
   return error instanceof LLMError && RETRYABLE_LLM_TRANSPORT_ERROR_CODES.has(error.code);
 }
 
+/** 408 and 5xx say the transport failed this once. 429 is a limit verdict and is not in this set. */
+function isTransientHttpStatus(status: number | undefined): status is number {
+  return status === 408 || (status !== undefined && status >= 500 && status < 600);
+}
+
 /** Provider/transport failures only; malformed model output and request defects stay distinct. */
 export function isLlmProviderTransportError(error: unknown): boolean {
   return (
@@ -999,12 +1011,7 @@ export function isLlmProviderTransportError(error: unknown): boolean {
         );
       }
       if (candidate instanceof Anthropic.APIError || candidate instanceof OpenAIAPIError) {
-        const status = candidate.status;
-        return (
-          status === 408 ||
-          status === 429 ||
-          (status !== undefined && status >= 500 && status < 600)
-        );
+        return candidate.status === 429 || isTransientHttpStatus(candidate.status);
       }
       return false;
     }) !== undefined
@@ -1022,6 +1029,17 @@ function isAnthropicConnectionError(error: unknown): error is Error {
 
 function findAnthropicConnectionError(error: unknown): Error | undefined {
   return findInErrorCauseChain(error, isAnthropicConnectionError);
+}
+
+/**
+ * The status of an error the SDK threw for a 408/5xx response. Not a
+ * cause-chain search: a status found deeper belongs to some other failure
+ * that this error wraps, and says nothing about this request.
+ */
+function anthropicTransientStatus(error: unknown): number | undefined {
+  return error instanceof Anthropic.APIError && isTransientHttpStatus(error.status)
+    ? error.status
+    : undefined;
 }
 
 function rethrowRetryableLlmTransportErrorAtTopLevel(error: unknown): void {
@@ -1053,7 +1071,13 @@ export class LLMRefusalError extends LLMError {
 
 type AnthropicCallState = {
   refusalRetries: number;
+  statusRetries: number;
   usage: LLMUsage;
+};
+
+type AnthropicAttemptProgress = {
+  // Set once the attempt has received anything from the provider.
+  responseStarted: boolean;
 };
 
 type AnthropicTransportRetryOptions = {
@@ -1065,7 +1089,7 @@ type AnthropicTransportRetryOptions = {
 };
 
 async function runWithAnthropicTransportRetries(
-  run: (attempt: number) => Promise<Message>,
+  run: (attempt: number, progress: AnthropicAttemptProgress) => Promise<Message>,
   options: AnthropicTransportRetryOptions,
 ): Promise<Message> {
   const connectionMaxRetries = options.connectionMaxRetries ?? ANTHROPIC_CONNECTION_MAX_RETRIES;
@@ -1076,9 +1100,12 @@ async function runWithAnthropicTransportRetries(
 
   while (true) {
     attempt += 1;
+    const progress: AnthropicAttemptProgress = { responseStarted: false };
 
     try {
-      const response = await run(attempt);
+      const response = await run(attempt, progress);
+      // Anything thrown from here on is not this attempt's transport failing.
+      progress.responseStarted = true;
       options.callState.usage = addLlmUsage(options.callState.usage, {
         input_tokens: response.usage.input_tokens,
         output_tokens: response.usage.output_tokens,
@@ -1122,7 +1149,24 @@ async function runWithAnthropicTransportRetries(
       const connectionError = findAnthropicConnectionError(error);
 
       if (connectionError === undefined) {
-        throw error;
+        const transientStatus = anthropicTransientStatus(error);
+
+        // A status stands in for a response, so it only counts while the
+        // attempt has received nothing: after that, an error carrying one did
+        // not come from the transport. And as with a stall, no fresh attempt
+        // once the caller's deadline has fired.
+        if (
+          transientStatus === undefined ||
+          progress.responseStarted ||
+          options.callState.statusRetries >= ANTHROPIC_STATUS_MAX_RETRIES ||
+          options.signal?.aborted === true
+        ) {
+          throw error;
+        }
+
+        options.callState.statusRetries += 1;
+        options.onRetry?.({ attempt: attempt + 1, kind: "status", status: transientStatus });
+        continue;
       }
 
       connectionFailures += 1;
@@ -2357,7 +2401,7 @@ export class AnthropicLLMClient implements LLMClient {
         signal: options.signal,
         run: (signal) =>
           runWithAnthropicTransportRetries(
-            async (attempt) => {
+            async (attempt, progress) => {
               if (attempt > 1) {
                 // Retry attempts switch to non-streaming: the stall mode lives in
                 // SSE delivery, and a buffered response rides through it. This
@@ -2387,6 +2431,8 @@ export class AnthropicLLMClient implements LLMClient {
               >();
 
               for await (const event of stream) {
+                progress.responseStarted = true;
+
                 if (event.type === "content_block_start") {
                   if (event.content_block.type === "tool_use") {
                     toolBlocks.set(event.index, {
@@ -2714,6 +2760,7 @@ export class AnthropicLLMClient implements LLMClient {
   ): Promise<T> {
     const state: AnthropicCallState = {
       refusalRetries: 0,
+      statusRetries: 0,
       usage: { input_tokens: 0, output_tokens: 0 },
     };
     let result: T;

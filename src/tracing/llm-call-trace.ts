@@ -94,6 +94,7 @@ export function traceLlmCallRetryHook(options: {
       attempt: event.attempt,
       kind: event.kind,
       ...(event.code === undefined ? {} : { code: event.code }),
+      ...(event.status === undefined ? {} : { status: event.status }),
       retry_transport: event.retry_transport,
       ...(event.stop_reason_classification === undefined
         ? {}
