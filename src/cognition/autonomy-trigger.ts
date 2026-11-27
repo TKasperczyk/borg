@@ -1,6 +1,10 @@
 import type { ExecutiveGoalScoreBasis } from "../executive/index.js";
 import { IDENTITY_EVENT_COGNITION_CHANGE_EXCERPT_MAX_CHARS } from "../memory/identity/index.js";
 import { headTailTextExcerpt } from "../util/text-excerpt.js";
+import {
+  OPEN_QUESTION_REFUSAL_STATE_KEY,
+  OPEN_QUESTION_REFUSAL_STATE_NOTE,
+} from "../memory/self/open-question-refusal.js";
 import { epochMsToIso } from "../util/iso-instant.js";
 import { goalIdHelpers, type GoalId } from "../util/ids.js";
 import {
@@ -86,7 +90,9 @@ function annotateEpochFields(value: unknown): unknown {
   for (const [key, entry] of Object.entries(source)) {
     annotated[key] = annotateEpochFields(entry);
 
-    if (!key.endsWith("_at") && !key.endsWith("_ts")) {
+    // A deadline is an instant like the others: without the sibling it reaches the page as a bare
+    // thirteen-digit number beside stamps that are spelled out.
+    if (!key.endsWith("_at") && !key.endsWith("_ts") && !key.endsWith("_until")) {
       continue;
     }
 
@@ -172,6 +178,7 @@ function keepsWhole(
     key === "self_correction_count" ||
     key === "lifecycle" ||
     (key === "review" && typeof record.open_question_id === "string") ||
+    (key === OPEN_QUESTION_REFUSAL_STATE_KEY && typeof record.open_question_id === "string") ||
     (key === "open_question_id" && typeof record.open_question_id === "string") ||
     (keepQuestionText && key === "question" && typeof record.open_question_id === "string")
   );
@@ -253,13 +260,15 @@ function omitTrailingRelatedEpisodes(
 }
 
 // A question's text leaves together with the labels that cover it and the episodes attached to
-// it; its id and scalar fields stay.
-const QUESTION_FIELDS_THAT_LEAVE_WITH_ITS_TEXT = new Set([
+// it; its id and scalar fields stay. Its refusal state leaves too: that is a statement about a
+// question the reader can no longer read, and it is not shown on a row that has lost its label.
+const QUESTION_FIELDS_THAT_LEAVE_WITH_ITS_TEXT = new Set<string>([
   "question",
   "disclosure",
   "disclosure_label",
   "related_episodes",
   "review",
+  OPEN_QUESTION_REFUSAL_STATE_KEY,
 ]);
 
 function questionIdOnly(question: unknown): { kept: unknown; omittedFields: number } {
@@ -535,6 +544,32 @@ function carriesOpenQuestionDormancy(payload: Record<string, unknown>): boolean 
   return typeof payload.open_question_id === "string" && typeof payload.last_touched === "number";
 }
 
+// Keyed on the payload key, like the notes above: any presented question that carries refusal
+// state gets its fields explained, once for the wake. The bounding can remove that state from a
+// row, and this reads the payload as it will be rendered, so the note leaves with it.
+function carriesOpenQuestionRefusalState(payload: Record<string, unknown>): boolean {
+  const questions: unknown[] = [
+    payload,
+    ...(Array.isArray(payload.additional_questions) ? payload.additional_questions : []),
+  ];
+
+  return questions.some((question) => {
+    if (question === null || typeof question !== "object") return false;
+    const row = question as Record<string, unknown>;
+    const state = row[OPEN_QUESTION_REFUSAL_STATE_KEY];
+
+    // The count is the field the note defines, so its presence is what earns the note: an empty
+    // object or an array under the key explains nothing and gets nothing explained.
+    return (
+      typeof row.open_question_id === "string" &&
+      state !== null &&
+      typeof state === "object" &&
+      !Array.isArray(state) &&
+      typeof (state as Record<string, unknown>).consecutive_refusals === "number"
+    );
+  });
+}
+
 function deferredWakeEvidence(payload: Record<string, unknown>): Record<string, unknown> {
   return {
     ...payload,
@@ -603,6 +638,9 @@ function renderAutonomyTriggerContext(context: AutonomyTriggerContext): string {
     payload,
     carriesRecentIdentityEvents(context.payload) ? RECENT_IDENTITY_EVENTS_DOMAIN_NOTE : null,
     carriesOpenQuestionDormancy(context.payload) ? OPEN_QUESTION_DORMANCY_DOMAIN_NOTE : null,
+    carriesOpenQuestionRefusalState(context.payload)
+      ? `note on consecutive_refusals: ${OPEN_QUESTION_REFUSAL_STATE_NOTE}`
+      : null,
     hasGoalBatch ? "secondary_due_goals:" : null,
     hasGoalBatch ? (JSON.stringify(packet.secondary_due_goals, null, 2) ?? "[]") : null,
   ]

@@ -730,6 +730,205 @@ describe("formatAutonomyTriggerContext epoch annotation", () => {
         "oq_cccccccccccccccc",
       ]);
     });
+
+    it("shows a question's refusal state whole and beside its label, or not at all, at every cap", () => {
+      const label = {
+        disclosure:
+          "disclosure_class=self_private private-to=unknown; I can use this internally; I do not disclose it to the current audience unless authorized",
+        disclosure_label: {
+          disclosure_class: "self_private",
+          origin_audience_entity_ids: [],
+          private_to_entity_ids: [],
+          public_to_entity_ids: [],
+        },
+      };
+      // "completed" is longer than the excerpt marker, so it is the outcome an excerpt could reach.
+      const states = {
+        oq_aaaaaaaaaaaaaaaa: {
+          consecutive_refusals: 3,
+          last_rumination_attempt_outcome: "refused",
+          last_rumination_attempt_at: 1_787_040_000_000,
+          refusal_backoff_until: 1_787_644_800_000,
+        },
+        oq_bbbbbbbbbbbbbbbb: {
+          consecutive_refusals: 1,
+          last_rumination_attempt_outcome: "completed",
+          last_rumination_attempt_at: 1_787_041_000_000,
+          refusal_backoff_until: null,
+        },
+        oq_cccccccccccccccc: {
+          consecutive_refusals: 2,
+          last_rumination_attempt_outcome: "refused",
+          last_rumination_attempt_at: 1_787_042_000_000,
+          refusal_backoff_until: null,
+        },
+      } as const;
+      type QuestionId = keyof typeof states;
+      const question = (id: QuestionId, text: string, lastTouched: number) => ({
+        open_question_id: id,
+        question: text,
+        urgency: 0.5,
+        last_touched: lastTouched,
+        unresolved_rumination_ticks: 0,
+        last_ruminated_at: null,
+        ...label,
+        refusal_state: states[id],
+      });
+      const context = {
+        ...DORMANT,
+        payload: {
+          ...question(
+            "oq_aaaaaaaaaaaaaaaa",
+            `Czy ta granica ma pokrycie poza własną narracją? ${"Które pole ją zapisuje? ".repeat(12)}`,
+            1_787_050_000_000,
+          ),
+          additional_questions: [
+            question(
+              "oq_bbbbbbbbbbbbbbbb",
+              `この沈黙は選択だったのか。${"どの記録が決めるのか。".repeat(20)}`,
+              1_787_050_100_000,
+            ),
+            question(
+              "oq_cccccccccccccccc",
+              `Was the second record a copy of the first? ${"Which field says so? ".repeat(15)}`,
+              1_787_050_200_000,
+            ),
+          ],
+        },
+      };
+      const iso = (value: number | null) =>
+        value === null ? undefined : new Date(value).toISOString();
+      const uncut = formatAutonomyTriggerContext(context);
+      const seen = { withState: 0, idOnly: 0, withoutState: 0 };
+
+      expect(uncut).not.toContain("excerpt_notice:");
+      // Down to the smallest cap at which the payload is still a whole JSON object on the page.
+      for (let cap = uncut.length; cap >= 1_200; cap -= 50) {
+        const rendered = formatAutonomyTriggerContext(context, cap);
+        const parsed = parsePayload(rendered);
+        const rows: Record<string, unknown>[] = [parsed, ...(parsed.additional_questions ?? [])];
+        let rowsWithState = 0;
+
+        for (const row of rows) {
+          if (!("refusal_state" in row)) {
+            seen.withoutState += 1;
+            // A row that gave up its text gave up its refusal state with it, under any name.
+            if (!("question" in row)) {
+              seen.idOnly += 1;
+              expect(Object.keys(row)).toEqual([
+                "open_question_id",
+                "urgency",
+                "last_touched",
+                "unresolved_rumination_ticks",
+                "last_ruminated_at",
+              ]);
+            }
+            continue;
+          }
+          rowsWithState += 1;
+          seen.withState += 1;
+          const stored = states[row.open_question_id as QuestionId];
+
+          // Whole: the stored values, with the ISO siblings added after the cut.
+          expect(row.refusal_state).toEqual({
+            consecutive_refusals: stored.consecutive_refusals,
+            last_rumination_attempt_outcome: stored.last_rumination_attempt_outcome,
+            last_rumination_attempt_at: stored.last_rumination_attempt_at,
+            last_rumination_attempt_at_iso: iso(stored.last_rumination_attempt_at),
+            refusal_backoff_until: stored.refusal_backoff_until,
+            ...(stored.refusal_backoff_until === null
+              ? {}
+              : { refusal_backoff_until_iso: iso(stored.refusal_backoff_until) }),
+          });
+          // Beside its own label, on the same row.
+          expect(row.disclosure).toBe(label.disclosure);
+          expect(row.disclosure_label).toEqual(label.disclosure_label);
+        }
+        // The explanation is spent exactly while a shown row still carries the state.
+        expect(rendered.includes("note on consecutive_refusals:")).toBe(rowsWithState > 0);
+      }
+      // The sweep reached every regime: state shown, state dropped, and a row cut to its id.
+      expect(seen.withState).toBeGreaterThan(0);
+      expect(seen.withoutState).toBeGreaterThan(0);
+      expect(seen.idOnly).toBeGreaterThan(0);
+    });
+
+    it("never cuts inside a question's refusal state, whatever string budget the cap leaves", () => {
+      // "completed" is one character longer than the excerpt marker: the shortest string in the
+      // state that a small enough string budget would replace with the marker.
+      const state = {
+        consecutive_refusals: 2,
+        last_rumination_attempt_outcome: "completed",
+        last_rumination_attempt_at: 1_787_041_000_000,
+        refusal_backoff_until: 1_787_644_800_000,
+      };
+      const context = {
+        ...DORMANT,
+        payload: {
+          open_question_id: "oq_aaaaaaaaaaaaaaaa",
+          // Long enough that excerpting it alone absorbs the bounding notice, so the state stays on
+          // the row while the shared string budget falls all the way to zero.
+          question: `Which label is longer than the marker? ${"And which field carries it? ".repeat(60)}`,
+          urgency: 0.5,
+          last_touched: 1_787_050_000_000,
+          unresolved_rumination_ticks: 0,
+          last_ruminated_at: null,
+          refusal_state: state,
+        },
+      };
+      const uncut = formatAutonomyTriggerContext(context);
+      let shownWhileTextWasCutToTheMarker = 0;
+
+      // Every cap, one character at a time, from just under the full length until the state is
+      // omitted: the string budget passes through every value down to zero on the way.
+      for (let cap = uncut.length - 1; cap > 0; cap -= 1) {
+        const parsed = parsePayload(formatAutonomyTriggerContext(context, cap));
+        if (!("refusal_state" in parsed)) break;
+
+        expect(parsed.refusal_state).toEqual({
+          ...state,
+          last_rumination_attempt_at_iso: new Date(state.last_rumination_attempt_at).toISOString(),
+          refusal_backoff_until_iso: new Date(state.refusal_backoff_until).toISOString(),
+        });
+        if (parsed.question === "[ELIDED]") shownWhileTextWasCutToTheMarker += 1;
+      }
+      // The sweep reached the budgets at which an unprotected "completed" would have been cut.
+      expect(shownWhileTextWasCutToTheMarker).toBeGreaterThan(0);
+    });
+  });
+
+  it("explains refusal state only for a question that actually carries the count", () => {
+    const wake = (refusalState: unknown) =>
+      formatAutonomyTriggerContext({
+        source_name: "open_question_dormant",
+        source_type: "trigger",
+        event_id: "oq_aaaaaaaaaaaaaaaa:1787050000000",
+        sort_ts: 1_787_050_000_000,
+        payload: {
+          open_question_id: "oq_aaaaaaaaaaaaaaaa",
+          question: "What is the right autonomy cadence?",
+          urgency: 0.6,
+          last_touched: 1_787_050_000_000,
+          unresolved_rumination_ticks: 0,
+          last_ruminated_at: null,
+          ...(refusalState === undefined ? {} : { refusal_state: refusalState }),
+        },
+      });
+    const note = "note on consecutive_refusals:";
+
+    expect(wake(undefined)).not.toContain(note);
+    // A key that holds no count has nothing for the note to explain.
+    expect(wake({})).not.toContain(note);
+    expect(wake([])).not.toContain(note);
+    expect(wake(null)).not.toContain(note);
+    expect(
+      wake({
+        consecutive_refusals: 0,
+        last_rumination_attempt_outcome: null,
+        last_rumination_attempt_at: null,
+        refusal_backoff_until: 1_787_644_800_000,
+      }),
+    ).toContain(note);
   });
 
   it("stays silent on dormancy for a wake that carries no open question", () => {

@@ -5,6 +5,7 @@ import type { OpenQuestionId } from "../../util/ids.js";
 import { openQuestionStateMetadata } from "./open-question-handles.js";
 
 const NOW_MS = Date.parse("2026-09-02T12:00:00.000Z");
+const DAY_MS = 24 * 60 * 60 * 1_000;
 
 function openQuestion(overrides: Partial<OpenQuestion> = {}): OpenQuestion {
   return {
@@ -173,6 +174,181 @@ describe("openQuestionStateMetadata", () => {
     expect(mergedOntoUnworked).toMatchObject({
       unresolved_rumination_ticks: 0,
       recorded_rumination_notes: 3,
+    });
+  });
+
+  it("shows a refused offline call that the stamp and the tick count do not record", () => {
+    const refusedAt = Date.parse("2026-09-01T13:44:33.000Z");
+    const neverPicked = openQuestionStateMetadata(openQuestion(), NOW_MS, 4);
+    const refusedOnce = openQuestionStateMetadata(
+      openQuestion({
+        consecutive_refusals: 1,
+        last_rumination_attempt_outcome: "refused",
+        last_rumination_attempt_at: refusedAt,
+      }),
+      NOW_MS,
+      4,
+    );
+
+    // A refused call moves neither the stamp nor the tick count, so this one object is the whole
+    // difference between this row and one the offline pass never picked. It holds the store's own
+    // names and values, in the form the row's other timestamps take.
+    expect(neverPicked).toBeDefined();
+    expect(neverPicked).not.toHaveProperty("refusal_state");
+    expect(refusedOnce).toEqual({
+      ...neverPicked,
+      refusal_state: {
+        consecutive_refusals: 1,
+        last_rumination_attempt_outcome: "refused",
+        last_rumination_attempt_at: "2026-09-01T13:44:33.000Z",
+        last_rumination_attempt_relative_age: "22h ago",
+        refusal_backoff_until: null,
+      },
+    });
+  });
+
+  it("shows a backoff deadline with the side of now it lies on", () => {
+    const held = openQuestion({
+      consecutive_refusals: 3,
+      last_rumination_attempt_outcome: "refused",
+      last_rumination_attempt_at: NOW_MS - 2 * DAY_MS,
+      refusal_backoff_until: NOW_MS + 5 * DAY_MS,
+    });
+    const stateOf = (question: OpenQuestion, nowMs?: number) =>
+      openQuestionStateMetadata(question, nowMs, 4)?.refusal_state;
+
+    expect(stateOf(held, NOW_MS)).toEqual({
+      consecutive_refusals: 3,
+      last_rumination_attempt_outcome: "refused",
+      last_rumination_attempt_at: new Date(NOW_MS - 2 * DAY_MS).toISOString(),
+      last_rumination_attempt_relative_age: "2d ago",
+      refusal_backoff_until: new Date(NOW_MS + 5 * DAY_MS).toISOString(),
+      refusal_backoff_until_relative: "in 5d",
+    });
+    // A deadline that has passed stays on the row with the count that set it, and reads as past.
+    expect(stateOf({ ...held, refusal_backoff_until: NOW_MS - 3 * DAY_MS }, NOW_MS)).toMatchObject({
+      consecutive_refusals: 3,
+      refusal_backoff_until: new Date(NOW_MS - 3 * DAY_MS).toISOString(),
+      refusal_backoff_until_relative: "3d ago",
+    });
+    // The offline pass holds a question only while the deadline is later than its clock, so a
+    // deadline equal to now already reads as past.
+    expect(stateOf({ ...held, refusal_backoff_until: NOW_MS }, NOW_MS)).toMatchObject({
+      refusal_backoff_until_relative: "~0s ago",
+    });
+
+    // Without a clock nothing is said about now; the stored values are still shown.
+    expect(stateOf(held)).toEqual({
+      consecutive_refusals: 3,
+      last_rumination_attempt_outcome: "refused",
+      last_rumination_attempt_at: new Date(NOW_MS - 2 * DAY_MS).toISOString(),
+      refusal_backoff_until: new Date(NOW_MS + 5 * DAY_MS).toISOString(),
+    });
+  });
+
+  it("renders no refusal state on a row that holds none", () => {
+    // A completed call zeroes the count; the attempt it leaves behind is not a refusal.
+    const open = openQuestionStateMetadata(
+      openQuestion({
+        last_rumination_attempt_outcome: "completed",
+        last_rumination_attempt_at: NOW_MS - DAY_MS,
+        last_ruminated_at: NOW_MS - DAY_MS,
+        unresolved_rumination_ticks: 2,
+      }),
+      NOW_MS,
+      4,
+    );
+    // Closed rows keep their own branches; refusal state left on one is not rendered there.
+    const resolved = openQuestionStateMetadata(
+      openQuestion({
+        status: "resolved",
+        resolution_note: "Settled.",
+        resolved_at: NOW_MS,
+        consecutive_refusals: 2,
+        last_rumination_attempt_outcome: "refused",
+        last_rumination_attempt_at: NOW_MS - DAY_MS,
+      }),
+      NOW_MS,
+      4,
+    );
+    const abandoned = openQuestionStateMetadata(
+      openQuestion({
+        status: "abandoned",
+        abandoned_reason: "No longer needed.",
+        abandoned_at: NOW_MS,
+        consecutive_refusals: 3,
+        last_rumination_attempt_outcome: "refused",
+        last_rumination_attempt_at: NOW_MS - DAY_MS,
+        refusal_backoff_until: NOW_MS + DAY_MS,
+      }),
+      NOW_MS,
+      4,
+    );
+
+    // Each row still renders; it is only the refusal state that is absent, under any of its names.
+    expect(open).toMatchObject({ unresolved_rumination_ticks: 2 });
+    expect(resolved).toMatchObject({ resolution_note: "Settled." });
+    expect(abandoned).toMatchObject({ abandoned_reason: "No longer needed." });
+    for (const metadata of [open, resolved, abandoned]) {
+      for (const key of [
+        "refusal_state",
+        "consecutive_refusals",
+        "last_rumination_attempt_outcome",
+        "last_rumination_attempt_at",
+        "refusal_backoff_until",
+      ]) {
+        expect(metadata).not.toHaveProperty(key);
+      }
+    }
+  });
+
+  it("shows stored refusal state that production does not write, as it is stored", () => {
+    // A restored snapshot can hold a deadline without a count. The scheduler acts on the deadline,
+    // so the row shows it.
+    expect(
+      openQuestionStateMetadata(openQuestion({ refusal_backoff_until: NOW_MS + DAY_MS }), NOW_MS, 4)
+        ?.refusal_state,
+    ).toEqual({
+      consecutive_refusals: 0,
+      last_rumination_attempt_outcome: null,
+      last_rumination_attempt_at: null,
+      refusal_backoff_until: new Date(NOW_MS + DAY_MS).toISOString(),
+      refusal_backoff_until_relative: "in 1d",
+    });
+    // A count beside a completed attempt keeps that attempt's own label.
+    expect(
+      openQuestionStateMetadata(
+        openQuestion({
+          consecutive_refusals: 1,
+          last_rumination_attempt_outcome: "completed",
+          last_rumination_attempt_at: NOW_MS - 3 * DAY_MS,
+        }),
+        NOW_MS,
+        4,
+      )?.refusal_state,
+    ).toEqual({
+      consecutive_refusals: 1,
+      last_rumination_attempt_outcome: "completed",
+      last_rumination_attempt_at: new Date(NOW_MS - 3 * DAY_MS).toISOString(),
+      last_rumination_attempt_relative_age: "3d ago",
+      refusal_backoff_until: null,
+    });
+  });
+
+  it("shows a deadline Date cannot represent as stored, without failing the row", () => {
+    // toISOString() throws outside Date's range, and null in the deadline's place would say there
+    // is no hold while the scheduler is honouring one.
+    expect(
+      openQuestionStateMetadata(
+        openQuestion({ consecutive_refusals: 3, refusal_backoff_until: Number.MAX_VALUE }),
+        NOW_MS,
+        4,
+      )?.refusal_state,
+    ).toEqual({
+      consecutive_refusals: 3,
+      last_rumination_attempt_outcome: null,
+      last_rumination_attempt_at: null,
+      refusal_backoff_until: Number.MAX_VALUE,
     });
   });
 

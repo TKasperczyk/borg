@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
 
+import { OPEN_QUESTION_REFUSAL_STATE_NOTE } from "../../memory/self/open-question-refusal.js";
 import { StreamWatermarkRepository } from "../../stream/index.js";
 import { ManualClock } from "../../util/clock.js";
+import { createMaintenanceRunId } from "../../util/ids.js";
 import { createOfflineTestHarness } from "../../offline/test-support.js";
 import { formatAutonomyTriggerContext } from "../../cognition/autonomy-trigger.js";
 
@@ -185,6 +187,94 @@ describe("open question dormant trigger", () => {
 
     expect(rendered).toContain('"last_ruminated_at": null');
     expect(rendered).toContain("null means neither has been recorded");
+    // Neither question carries refusal state, so the wake spends nothing explaining it.
+    expect(rendered).not.toContain("note on consecutive_refusals");
+  });
+
+  it("carries a held question's refusal state and explains it once for the wake", async () => {
+    const clock = new ManualClock(1_000_000);
+    const harness = await createOfflineTestHarness({
+      clock,
+    });
+    cleanup = harness.cleanup;
+    const watermarkRepository = new StreamWatermarkRepository({
+      db: harness.db,
+      clock,
+    });
+    const held = harness.openQuestionsRepository.add({
+      question: "What does the provider keep refusing?",
+      urgency: 0.6,
+      provenance: { kind: "system" },
+      source: "user",
+      last_touched: clock.now() - 100_000,
+    });
+    const untouched = harness.openQuestionsRepository.add({
+      question: "What has no offline pass reached?",
+      urgency: 0.4,
+      provenance: { kind: "system" },
+      source: "user",
+      last_touched: clock.now() - 100_000,
+    });
+    const refusedAt = clock.now() - 10_000;
+    const backoffMs = 60_000;
+    harness.openQuestionsRepository.recordRuminationAttemptForRun({
+      open_question_id: held.id,
+      source_run_id: createMaintenanceRunId(),
+      outcome: "refused",
+      attempted_at: refusedAt,
+      maxConsecutiveRefusals: 1,
+      refusalBackoffMs: backoffMs,
+    });
+
+    const trigger = createOpenQuestionDormantTrigger({
+      openQuestionsRepository: harness.openQuestionsRepository,
+      watermarkRepository,
+      dormantMs: 50_000,
+      clock,
+    });
+
+    const events = await trigger.scan();
+    const questions = [events[0]!.payload, ...(events[0]!.payload.additional_questions ?? [])];
+    const payloads = new Map(questions.map((question) => [question.open_question_id, question]));
+
+    // The refusal moved neither the tick count nor the stamp, and it did not touch the question, so
+    // without the refusal state the two questions would arrive reading the same. It comes after
+    // the disclosure label: the wake's bounding omits trailing fields first.
+    expect(payloads.get(held.id)).toMatchObject({
+      last_touched: held.last_touched,
+      unresolved_rumination_ticks: 0,
+      last_ruminated_at: null,
+      refusal_state: {
+        consecutive_refusals: 1,
+        last_rumination_attempt_outcome: "refused",
+        last_rumination_attempt_at: refusedAt,
+        refusal_backoff_until: refusedAt + backoffMs,
+      },
+    });
+    const heldKeys = Object.keys(payloads.get(held.id)!);
+    expect(heldKeys).toContain("disclosure_label");
+    expect(heldKeys.indexOf("refusal_state")).toBeGreaterThan(heldKeys.indexOf("disclosure_label"));
+    expect(payloads.get(untouched.id)).toMatchObject({
+      unresolved_rumination_ticks: 0,
+      last_ruminated_at: null,
+    });
+    expect(payloads.get(untouched.id)).not.toHaveProperty("refusal_state");
+
+    const rendered = formatAutonomyTriggerContext(trigger.buildTurn(events[0]!).autonomyTrigger!);
+
+    // The stored numbers, each with the ISO sibling the wake's other stamps get.
+    expect(rendered).toContain('"consecutive_refusals": 1');
+    expect(rendered).toContain(`"last_rumination_attempt_at": ${refusedAt}`);
+    expect(rendered).toContain(
+      `"last_rumination_attempt_at_iso": "${new Date(refusedAt).toISOString()}"`,
+    );
+    expect(rendered).toContain(`"refusal_backoff_until": ${refusedAt + backoffMs}`);
+    expect(rendered).toContain(
+      `"refusal_backoff_until_iso": "${new Date(refusedAt + backoffMs).toISOString()}"`,
+    );
+    expect(
+      rendered.split(`note on consecutive_refusals: ${OPEN_QUESTION_REFUSAL_STATE_NOTE}`),
+    ).toHaveLength(2);
   });
   it("caps a due batch at three and atomically stamps every presented question", async () => {
     const clock = new ManualClock(1_000_000);

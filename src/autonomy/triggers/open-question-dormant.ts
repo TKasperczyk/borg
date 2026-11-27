@@ -1,3 +1,4 @@
+import { openQuestionRefusalState } from "../../memory/self/open-question-refusal.js";
 import { openQuestionReviewFields } from "../../memory/self/open-question-review.js";
 import type { OpenQuestion, OpenQuestionsRepository } from "../../memory/self/index.js";
 import {
@@ -27,7 +28,8 @@ type DormantQuestion = {
   last_ruminated_at: number | null;
   related_episodes?: EpisodicSearchHit[];
 } & ReturnType<typeof memoryDisclosurePayloadFields> &
-  ReturnType<typeof openQuestionReviewFields>;
+  ReturnType<typeof openQuestionReviewFields> &
+  ReturnType<typeof openQuestionRefusalState>;
 
 export type OpenQuestionDormantPayload = DormantQuestion & {
   additional_questions?: DormantQuestion[];
@@ -85,6 +87,13 @@ export function createOpenQuestionDormantTrigger(
               unresolved_rumination_ticks: question.unresolved_rumination_ticks,
               last_ruminated_at: question.last_ruminated_at,
               ...memoryDisclosurePayloadFields(openQuestionMemoryDisclosureLabel(question)),
+              // A refused offline call leaves the tick count and the stamp above as they were, so a
+              // question the pass is holding would otherwise arrive here reading as one it simply
+              // had not reached. Stored numbers, like those stamps: the wake's bounding cuts
+              // strings, and the ISO siblings are added after it. One key, and the last in the row:
+              // the bounding omits trailing fields first, so this leaves whole and before the
+              // disclosure label does.
+              ...openQuestionRefusalState(question),
             },
           };
         })

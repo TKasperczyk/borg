@@ -1,7 +1,12 @@
+import {
+  OPEN_QUESTION_REFUSAL_STATE_KEY,
+  openQuestionRefusalState,
+} from "../../memory/self/open-question-refusal.js";
 import { openQuestionReviewFields } from "../../memory/self/open-question-review.js";
 import type { OpenQuestion, OpenQuestionStatus } from "../../memory/self/index.js";
 import { formatResolutionCorrections } from "../../memory/self/resolution-corrections.js";
-import { formatRelativeAge } from "../../util/relative-time.js";
+import { epochMsToIso } from "../../util/iso-instant.js";
+import { formatRelativeAge, formatRelativeUntil } from "../../util/relative-time.js";
 import type { EvidenceLedgerBuildInput } from "./builder-types.js";
 import type { EpisodeId } from "../../util/ids.js";
 import {
@@ -154,6 +159,43 @@ function ruminationTicksNoteFor(
   };
 }
 
+// A refused offline call writes no note and does not itself move the stamp or the tick count, so
+// without this object a question the provider refuses carries no trace of the refusal on its row.
+// The explanation of the fields is the section's to give once (OPEN_QUESTION_REFUSAL_STATE_NOTE);
+// the row carries the stored values, in the ISO form and with the relative labels its other
+// timestamps get. The deadline's label keeps its sign, because whether it lies ahead is the point.
+function ruminationRefusalStateFor(
+  question: OpenQuestion,
+  nowMs?: number,
+): Record<string, unknown> {
+  const stored = openQuestionRefusalState(question)[OPEN_QUESTION_REFUSAL_STATE_KEY];
+
+  if (stored === undefined) {
+    return {};
+  }
+
+  const attemptAt = stored.last_rumination_attempt_at;
+  const backoffUntil = stored.refusal_backoff_until;
+  // toISOString() throws outside Date's range. A stored number it cannot represent is shown as
+  // stored: one row must not fail the page, and null in a deadline's place would say there is none.
+  const backoffUntilIso = epochMsToIso(backoffUntil);
+
+  return {
+    [OPEN_QUESTION_REFUSAL_STATE_KEY]: {
+      consecutive_refusals: stored.consecutive_refusals,
+      last_rumination_attempt_outcome: stored.last_rumination_attempt_outcome,
+      last_rumination_attempt_at: epochMsToIso(attemptAt) ?? attemptAt,
+      ...(nowMs === undefined || attemptAt === null
+        ? {}
+        : { last_rumination_attempt_relative_age: formatRelativeAge(attemptAt, nowMs) }),
+      refusal_backoff_until: backoffUntilIso ?? backoffUntil,
+      ...(nowMs === undefined || backoffUntil === null || backoffUntilIso === null
+        ? {}
+        : { refusal_backoff_until_relative: formatRelativeUntil(backoffUntil, nowMs) }),
+    },
+  };
+}
+
 export function openQuestionStateMetadata(
   question: OpenQuestion,
   nowMs?: number,
@@ -196,6 +238,7 @@ export function openQuestionStateMetadata(
         ? {}
         : { dismissal_threshold_ticks: staleNoTractionTicks }),
       ...ruminationTicksNoteFor(ticks, question.last_ruminated_at),
+      ...ruminationRefusalStateFor(question, nowMs),
     };
   }
 

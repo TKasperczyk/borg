@@ -26,6 +26,7 @@ import {
 } from "../../memory/self/index.js";
 import type { OpenCommitmentReconciliationStatus } from "../../memory/review-queue/index.js";
 import { selfMigrations } from "../../memory/self/migrations.js";
+import { OPEN_QUESTION_REFUSAL_STATE_NOTE } from "../../memory/self/open-question-refusal.js";
 import type { EvidenceItem, RetrievedEpisode, RetrievedSemantic } from "../../retrieval/index.js";
 import type { TurnTraceData, TurnTraceEventName, TurnTracer } from "../../tracing/tracer.js";
 import { renderInboundBatch, type HydratedInboundMessage } from "../turn-input.js";
@@ -5222,6 +5223,98 @@ describe("EvidenceLedgerBuilder", () => {
         }),
       }),
     ]);
+  });
+
+  it("explains the refusal fields once for the section, and only where a row carries them", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-open-question-refusal-"));
+    tempDirs.push(tempDir);
+    const refusedAt = NOW_MS - 2 * 60 * 60_000;
+    const backoffUntil = NOW_MS + 60 * 60_000;
+    const held: OpenQuestion = {
+      ...makeOpenQuestion(createEpisodeId()),
+      question: "Which question does the provider keep refusing?",
+      consecutive_refusals: 3,
+      last_rumination_attempt_outcome: "refused",
+      last_rumination_attempt_at: refusedAt,
+      refusal_backoff_until: backoffUntil,
+    };
+    const refusedOnce: OpenQuestion = {
+      ...makeOpenQuestion(createEpisodeId()),
+      question: "Which question was refused a single time?",
+      consecutive_refusals: 1,
+      last_rumination_attempt_outcome: "refused",
+      last_rumination_attempt_at: refusedAt,
+    };
+    const untouched: OpenQuestion = {
+      ...makeOpenQuestion(createEpisodeId()),
+      question: "Which question has no offline pass reached?",
+    };
+    const buildSection = async (openQuestions: OpenQuestion[]) => {
+      const builder = new EvidenceLedgerBuilder({
+        createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+        relationalSlotRepository: { list: () => [] },
+        actionRepository: { list: () => [] },
+        openQuestionsRepository: {
+          findByHandles: () => [],
+          countRuminations: () => 0,
+          countByStatus: () => ({ open: openQuestions.length, resolved: 0, abandoned: 0 }),
+        },
+        currentSessionTranscriptTokenBudget: 50_000,
+      });
+      const ledger = await builder.build({
+        sessionId: DEFAULT_SESSION_ID,
+        turnId: "turn-open-question-refusal",
+        nowMs: NOW_MS,
+        audienceEntityId: null,
+        currentUserMessage: "Review open questions.",
+        workingMemory: makeWorkingMemory(),
+        applicableCommitments: [],
+        retrievedEvidence: [],
+        retrievedEpisodes: [],
+        openQuestions,
+        pendingCorrections: [],
+      });
+
+      return ledger.sections.find((section) => section.id === "open_questions")!;
+    };
+
+    const section = await buildSection([held, refusedOnce, untouched]);
+    const rendered = renderSection(section);
+    const metadataFor = (question: OpenQuestion) =>
+      section.entries.find((entry) => entry.id === `open_question:${question.id}`)?.state_metadata;
+
+    // Two rows carry refusal state and the page explains the fields once, after the population line.
+    expect(rendered.split(OPEN_QUESTION_REFUSAL_STATE_NOTE)).toHaveLength(2);
+    expect(section.framing?.text).toContain("my open_questions store at this read: open 3");
+    expect(section.framing?.text.endsWith(OPEN_QUESTION_REFUSAL_STATE_NOTE)).toBe(true);
+    // The rows carry the values, as one object, and no prose of their own.
+    expect(metadataFor(held)?.refusal_state).toEqual({
+      consecutive_refusals: 3,
+      last_rumination_attempt_outcome: "refused",
+      last_rumination_attempt_at: new Date(refusedAt).toISOString(),
+      last_rumination_attempt_relative_age: "2h ago",
+      refusal_backoff_until: new Date(backoffUntil).toISOString(),
+      refusal_backoff_until_relative: "in 1h",
+    });
+    expect(metadataFor(refusedOnce)?.refusal_state).toEqual({
+      consecutive_refusals: 1,
+      last_rumination_attempt_outcome: "refused",
+      last_rumination_attempt_at: new Date(refusedAt).toISOString(),
+      last_rumination_attempt_relative_age: "2h ago",
+      refusal_backoff_until: null,
+    });
+    expect(metadataFor(untouched)).toBeDefined();
+    expect(metadataFor(untouched)).not.toHaveProperty("refusal_state");
+    // What reaches the page is that object, whole, inside the row's metadata.
+    expect(rendered).toContain(
+      `"refusal_state":${JSON.stringify(metadataFor(held)?.refusal_state)}`,
+    );
+
+    // A page with no such row keeps its population line and spends nothing on the explanation.
+    const withoutRefusals = await buildSection([untouched]);
+
+    expect(withoutRefusals.framing?.text).toContain("my open_questions store at this read: open 1");
+    expect(renderSection(withoutRefusals)).not.toContain(OPEN_QUESTION_REFUSAL_STATE_NOTE);
   });
 
   it("resolves semantic-only question provenance to stream citations without exposing node ids", async () => {

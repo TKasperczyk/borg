@@ -23,6 +23,10 @@ import { persistenceClassFromProvenance, scopeFromStreamIds } from "../scope-res
 import type { EpisodeId } from "../../../util/ids.js";
 import { openQuestionMemoryDisclosureLabel } from "../../../memory/common/disclosure-serializers.js";
 import { OPEN_QUESTION_STATUSES } from "../../../memory/self/index.js";
+import {
+  OPEN_QUESTION_REFUSAL_STATE_NOTE,
+  hasOpenQuestionRefusalState,
+} from "../../../memory/self/open-question-refusal.js";
 
 // Both admissions below are small: the handle match asks only about this turn's ids, and the draw
 // that carries open rows is a scored top-N. So the rows here have never been the register, and a
@@ -37,12 +41,6 @@ function storePopulationFraming(counts: Record<string, number>): string {
 
 export async function addOpenQuestionsSection(context: BuilderSectionContext): Promise<void> {
   const storeCounts = context.repos.openQuestions?.countByStatus();
-
-  if (storeCounts !== undefined) {
-    setSectionFraming(context.buckets, "open_questions", {
-      text: storePopulationFraming(storeCounts),
-    });
-  }
 
   const questionsById = new Map(
     context.input.openQuestions.map((question) => [question.id, question]),
@@ -60,6 +58,23 @@ export async function addOpenQuestionsSection(context: BuilderSectionContext): P
     })) {
       questionsById.set(question.id, question);
     }
+  }
+
+  // The refusal fields are explained here, once, and only on a page that assembled a row carrying
+  // them: the rows hold the values, and several refused questions on one page should not each pay
+  // for the same sentences out of the section's budget. A later stage may still drop that row; the
+  // note then describes a field no row shows, which is harmless where the reverse is not.
+  const framingParts = [
+    ...(storeCounts === undefined ? [] : [storePopulationFraming(storeCounts)]),
+    ...([...questionsById.values()].some(
+      (question) => question.status === "open" && hasOpenQuestionRefusalState(question),
+    )
+      ? [OPEN_QUESTION_REFUSAL_STATE_NOTE]
+      : []),
+  ];
+
+  if (framingParts.length > 0) {
+    setSectionFraming(context.buckets, "open_questions", { text: framingParts.join(" ") });
   }
 
   // Resolve existing provenance in batches. Semantic IDs stay in the machinery;
