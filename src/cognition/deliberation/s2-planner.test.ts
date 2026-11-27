@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { AnthropicLLMClient } from "../../llm/index.js";
+import { AnthropicLLMClient, LLMRefusalError } from "../../llm/index.js";
 import { FakeLLMClient } from "../../llm/test-support/fake-client.js";
 import type { TurnTracer } from "../../tracing/tracer.js";
 import { AuthError, LLMError } from "../../util/errors.js";
@@ -637,6 +637,113 @@ describe("s2 planner", () => {
       attempts: 1,
       structuralReason: "retryable_transport_error",
     });
+    // The failed call itself is traced, so a started planner call always has a completion.
+    expect(tracer.emit).toHaveBeenCalledWith(
+      "llm_call.completed",
+      expect.objectContaining({
+        turnId: "turn-timeout",
+        label: "s2_planner",
+        responseShape: { error: "Planner transport timed out" },
+        usage: null,
+      }),
+    );
+  });
+
+  it("traces a planner call that ends in an exhausted refusal with the provider's category", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        () =>
+          Promise.reject(
+            new LLMRefusalError({ category: "reasoning_extraction", explanation: "Declined." }),
+          ),
+      ],
+    });
+    const tracer = createTracer();
+
+    await runS2Planner({
+      llmClient: llm,
+      model: "sonnet",
+      baseSystemPrompt: "base",
+      dialogueMessages: [{ role: "user", content: "Think this through." }],
+      selfSnapshot: { values: [], goals: [], traits: [] },
+      maxTokens: 16_000,
+      tracer,
+      turnId: "turn-refused",
+    }).catch(() => undefined);
+
+    const completed = tracer.emit.mock.calls.filter(([event]) => event === "llm_call.completed");
+    expect(completed).toHaveLength(1);
+    expect(completed[0]?.[1]).toMatchObject({
+      turnId: "turn-refused",
+      label: "s2_planner",
+      stopReason: "refusal",
+      stopDetailsCategory: "reasoning_extraction",
+    });
+  });
+
+  it("keeps the planner call's own outcome when the trace of its failure cannot be written", async () => {
+    const llm = new FakeLLMClient({
+      responses: [
+        () =>
+          Promise.reject(
+            new LLMError("Planner transport timed out", { code: "LLM_CALL_TIMED_OUT" }),
+          ),
+      ],
+    });
+    const tracer = createTracer();
+    tracer.emit.mockImplementation((event) => {
+      if (event === "llm_call.completed") throw new Error("trace sink failed");
+    });
+    const onOutcome = vi.fn();
+
+    const result = await runS2Planner({
+      llmClient: llm,
+      model: "sonnet",
+      baseSystemPrompt: "base",
+      dialogueMessages: [{ role: "user", content: "Think this through." }],
+      selfSnapshot: { values: [], goals: [], traits: [] },
+      maxTokens: 16_000,
+      tracer,
+      turnId: "turn-sink",
+      onOutcome,
+    });
+
+    // The timeout is still the degraded outcome it was before the failed call was traced.
+    expect(result.plan).toBeNull();
+    expect(onOutcome).toHaveBeenCalledWith({
+      status: "degraded",
+      attempts: 1,
+      structuralReason: "retryable_transport_error",
+    });
+  });
+
+  it("traces a planner call whose client throws before returning a promise", async () => {
+    const thrown = new LLMError("Planner transport timed out", { code: "LLM_CALL_TIMED_OUT" });
+    const tracer = createTracer();
+
+    await runS2Planner({
+      llmClient: {
+        complete: () => {
+          throw thrown;
+        },
+      } as unknown as FakeLLMClient,
+      model: "sonnet",
+      baseSystemPrompt: "base",
+      dialogueMessages: [{ role: "user", content: "Think this through." }],
+      selfSnapshot: { values: [], goals: [], traits: [] },
+      maxTokens: 16_000,
+      tracer,
+      turnId: "turn-sync",
+    });
+
+    expect(tracer.emit).toHaveBeenCalledWith(
+      "llm_call.completed",
+      expect.objectContaining({
+        turnId: "turn-sync",
+        label: "s2_planner",
+        responseShape: { error: "Planner transport timed out" },
+      }),
+    );
   });
 
   it("preserves first-attempt usage when the repair attempt has a transport failure", async () => {

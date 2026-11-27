@@ -1,15 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
 import { LLMRefusalError } from "../llm/index.js";
+import { LLMError } from "../util/errors.js";
 import { attachLlmErrorUsage } from "../llm/usage.js";
 import { StructuredToolCallError } from "../llm/structured-tool-call.js";
 
 import type { LLMCompleteResult, LLMMessage, LLMToolDefinition } from "../llm/index.js";
-import type { TurnTracer } from "./tracer.js";
+import { compositeTracer, type TurnTracer } from "./tracer.js";
 import {
   countCompletePromptChars,
   summarizeToolSchemas,
   traceLlmCallError,
   traceLlmCallResponse,
+  traceLlmCallRetryHook,
   traceLlmCallStarted,
 } from "./llm-call-trace.js";
 
@@ -230,5 +232,115 @@ describe("llm call trace helpers", () => {
         usage: { inputTokens: 12, outputTokens: 6 },
       }),
     );
+    // The provider sent no details with this refusal, so the trace claims none.
+    const traced = tracer.emit.mock.calls[0]?.[1] ?? {};
+    expect(traced).not.toHaveProperty("stopDetailsCategory");
+    expect(traced).not.toHaveProperty("stopDetailsExplanation");
+  });
+
+  describe("the provider's reason for a refusal", () => {
+    const details = { category: "reasoning_extraction", explanation: "Declined for this request." };
+    const payloadTracer = () => ({ ...createTracer(), includePayloads: true });
+    const exhausted = () =>
+      new Error("wrapped by a caller", { cause: new LLMRefusalError(details) });
+
+    it("traces the category on an exhausted refusal, and the explanation only with payloads", () => {
+      const redacted = createTracer();
+      const full = payloadTracer();
+
+      traceLlmCallError({
+        tracer: redacted,
+        turnId: "turn_1",
+        label: "refusal",
+        error: exhausted(),
+      });
+      traceLlmCallError({ tracer: full, turnId: "turn_1", label: "refusal", error: exhausted() });
+
+      expect(redacted.emit.mock.calls[0]?.[1]).toMatchObject({
+        stopReason: "refusal",
+        stopDetailsCategory: "reasoning_extraction",
+      });
+      expect(redacted.emit.mock.calls[0]?.[1]).not.toHaveProperty("stopDetailsExplanation");
+      expect(full.emit.mock.calls[0]?.[1]).toMatchObject({
+        stopDetailsCategory: "reasoning_extraction",
+        stopDetailsExplanation: "Declined for this request.",
+      });
+    });
+
+    it("traces the same on the retry of a refused response", () => {
+      const redacted = createTracer();
+      const full = payloadTracer();
+      const event = {
+        attempt: 2,
+        kind: "refusal" as const,
+        code: "LLM_REFUSAL",
+        retry_transport: "unary" as const,
+        stop_reason_classification: { kind: "refusal" as const, raw: "refusal" },
+        stop_details: {
+          category: null,
+          explanation: "No named category.",
+          explanation_chars: 9_000,
+        },
+      };
+
+      traceLlmCallRetryHook({ tracer: redacted, turnId: "turn_1", label: "refusal" })?.(event);
+      traceLlmCallRetryHook({ tracer: full, turnId: "turn_1", label: "refusal" })?.(event);
+
+      // A null category is the provider's answer and is traced as one; the cut length is a count.
+      expect(redacted.emit.mock.calls[0]?.[1]).toMatchObject({
+        kind: "refusal",
+        stopDetailsCategory: null,
+        stopDetailsExplanationChars: 9_000,
+      });
+      expect(redacted.emit.mock.calls[0]?.[1]).not.toHaveProperty("stopDetailsExplanation");
+      expect(full.emit.mock.calls[0]?.[1]).toMatchObject({
+        stopDetailsCategory: null,
+        stopDetailsExplanation: "No named category.",
+        stopDetailsExplanationChars: 9_000,
+      });
+      // A retry that is not a refusal has no such fields.
+      const stall = createTracer();
+      traceLlmCallRetryHook({ tracer: stall, turnId: "turn_1", label: "stall" })?.({
+        attempt: 2,
+        kind: "stall",
+        retry_transport: "unary",
+      });
+      expect(stall.emit.mock.calls[0]?.[1]).not.toHaveProperty("stopDetailsCategory");
+    });
+
+    it("traces no category beside a stop reason that is not a refusal", () => {
+      const tracer = payloadTracer();
+      const timeout = Object.assign(new LLMError("timed out", { code: "LLM_CALL_TIMED_OUT" }), {
+        stopDetails: details,
+      });
+
+      traceLlmCallError({ tracer, turnId: "turn_1", label: "timeout", error: timeout });
+
+      const traced = tracer.emit.mock.calls[0]?.[1] ?? {};
+      expect(traced).toMatchObject({ stopReason: null });
+      expect(traced).not.toHaveProperty("stopDetailsCategory");
+      expect(traced).not.toHaveProperty("stopDetailsExplanation");
+    });
+
+    it("gives a redacted sink the category and keeps the explanation to the sink that takes payloads", () => {
+      const redacted = createTracer();
+      const full = payloadTracer();
+
+      traceLlmCallError({
+        tracer: compositeTracer([redacted, full]),
+        turnId: "turn_1",
+        label: "refusal",
+        error: exhausted(),
+      });
+
+      expect(redacted.emit.mock.calls[0]?.[1]).toMatchObject({
+        stopDetailsCategory: "reasoning_extraction",
+      });
+      expect(redacted.emit.mock.calls[0]?.[1]).not.toHaveProperty("stopDetailsExplanation");
+      expect(full.emit.mock.calls[0]?.[1]).toMatchObject({
+        stopDetailsCategory: "reasoning_extraction",
+        stopDetailsExplanation: "Declined for this request.",
+      });
+    });
   });
 });

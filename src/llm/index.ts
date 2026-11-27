@@ -1,7 +1,14 @@
-import { classifyLlmStopReason, type LLMStopReasonClassification } from "./stop-reason.js";
+import {
+  classifyLlmStopReason,
+  readLlmRefusalStopDetails,
+  type LLMRefusalStopDetails,
+  type LLMStopReasonClassification,
+} from "./stop-reason.js";
 export {
   classifyLlmStopReason,
+  getLlmErrorStopDetails,
   getLlmErrorStopReason,
+  type LLMRefusalStopDetails,
   type LLMStopReasonClassification,
 } from "./stop-reason.js";
 import { addLlmUsage, attachLlmErrorUsage, reportLlmErrorUsage, type LLMUsage } from "./usage.js";
@@ -338,6 +345,8 @@ export type LLMTransportRetryEvent = {
   code?: string;
   // HTTP status that arrived in place of a response (status retries only).
   status?: number;
+  // The provider's structured account of the refusal being retried (refusal retries only).
+  stop_details?: LLMRefusalStopDetails;
   // Transport of the upcoming retry attempt. Streaming calls retry unary.
   retry_transport: "streaming" | "unary";
 };
@@ -1062,10 +1071,19 @@ function rethrowRetryableLlmTransportErrorAtTopLevel(error: unknown): void {
 export class LLMRefusalError extends LLMError {
   readonly stopReason = "refusal";
   readonly stopReasonClassification = classifyLlmStopReason(this.stopReason);
-  constructor() {
+  // What the provider said about the refusal that used up the allowance. Declared, not initialised:
+  // a refusal the provider gave no details for has no such property, not one holding undefined.
+  declare readonly stopDetails?: LLMRefusalStopDetails;
+  constructor(stopDetails?: LLMRefusalStopDetails) {
     super("Anthropic refused the request after the logical call's refusal retry was exhausted", {
       code: "LLM_REFUSAL_EXHAUSTED",
     });
+    if (stopDetails !== undefined) {
+      // Not enumerable: the explanation is the provider's prose about one request, and an error
+      // that is logged whole or spread into another object must not carry it along. It is read by
+      // name, by the tracing that gates it.
+      Object.defineProperty(this, "stopDetails", { value: stopDetails, enumerable: false });
+    }
   }
 }
 
@@ -1078,6 +1096,8 @@ type AnthropicCallState = {
 type AnthropicAttemptProgress = {
   // Set once the attempt has received anything from the provider.
   responseStarted: boolean;
+  // The refusal details this attempt's stream delivered. The SDK's final message leaves them out.
+  streamedStopDetails?: LLMRefusalStopDetails;
 };
 
 type AnthropicTransportRetryOptions = {
@@ -1113,7 +1133,12 @@ async function runWithAnthropicTransportRetries(
       });
       const stopReasonClassification = classifyLlmStopReason(response.stop_reason);
       if (stopReasonClassification.kind !== "refusal") return response;
-      if (options.callState.refusalRetries >= 1) throw new LLMRefusalError();
+      // Each refused response carries its own account of why. The retried one goes out with the
+      // retry event and the one that exhausts the allowance rides on the error.
+      // What the stream itself delivered is the provider's statement about this response, and it
+      // wins over whatever the accumulated message holds.
+      const stopDetails = progress.streamedStopDetails ?? readLlmRefusalStopDetails(response);
+      if (options.callState.refusalRetries >= 1) throw new LLMRefusalError(stopDetails);
       options.signal?.throwIfAborted();
       options.callState.refusalRetries += 1;
       options.onRetry?.({
@@ -1121,6 +1146,7 @@ async function runWithAnthropicTransportRetries(
         kind: "refusal",
         code: "LLM_REFUSAL",
         stop_reason_classification: stopReasonClassification,
+        ...(stopDetails === undefined ? {} : { stop_details: stopDetails }),
       });
       continue;
     } catch (error) {
@@ -2432,6 +2458,16 @@ export class AnthropicLLMClient implements LLMClient {
 
               for await (const event of stream) {
                 progress.responseStarted = true;
+
+                if (event.type === "message_delta") {
+                  // The SDK's accumulator copies this event's stop reason and usage onto the final
+                  // message and leaves stop_details behind, so a streamed refusal would otherwise
+                  // arrive without the provider's reason for it. A stream may send more than one
+                  // delta; only one with readable details replaces what an earlier one gave.
+                  const details = readLlmRefusalStopDetails(event.delta);
+                  if (details !== undefined) progress.streamedStopDetails = details;
+                  continue;
+                }
 
                 if (event.type === "content_block_start") {
                   if (event.content_block.type === "tool_use") {

@@ -318,6 +318,7 @@ export const PAYLOAD_GATED_TRACE_KEYS: ReadonlySet<string> = new Set([
   "rewritten_response",
   "semantic_variants",
   "skipped_promotions",
+  "stopDetailsExplanation",
   "full_text",
   "typed_queries",
   "violations",

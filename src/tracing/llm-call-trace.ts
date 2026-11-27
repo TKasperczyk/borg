@@ -1,4 +1,9 @@
-import { classifyLlmStopReason, getLlmErrorStopReason } from "../llm/stop-reason.js";
+import {
+  classifyLlmStopReason,
+  getLlmErrorStopDetails,
+  getLlmErrorStopReason,
+  type LLMRefusalStopDetails,
+} from "../llm/stop-reason.js";
 import { getLlmErrorUsage } from "../llm/usage.js";
 import type {
   LLMCompleteResult,
@@ -12,6 +17,24 @@ import type { JsonValue } from "../util/json-value.js";
 import { buildUsageTraceBlock, type TurnTraceData, type TurnTracer } from "./tracer.js";
 
 type TracePayloadExtension = Omit<TurnTraceData, "turnId">;
+
+// The category is the provider's label for which policy declined the call, and is always traced.
+// The explanation is the provider's prose about this particular request, so it is a payload: traced
+// only where payloads are, under a key the composite tracer also strips for a redacted sink.
+function refusalStopDetailsTrace(
+  details: LLMRefusalStopDetails | undefined,
+  tracer: TurnTracer,
+): TracePayloadExtension {
+  if (details === undefined) return {};
+
+  return {
+    stopDetailsCategory: details.category,
+    ...(details.explanation_chars === undefined
+      ? {}
+      : { stopDetailsExplanationChars: details.explanation_chars }),
+    ...(tracer.includePayloads === true ? { stopDetailsExplanation: details.explanation } : {}),
+  };
+}
 
 export function countCompletePromptChars(
   systemPrompt: string,
@@ -102,6 +125,7 @@ export function traceLlmCallRetryHook(options: {
             stopReason: event.stop_reason_classification.raw,
             stopReasonClassification: event.stop_reason_classification,
           }),
+      ...refusalStopDetailsTrace(event.stop_details, tracer),
     });
   };
 }
@@ -208,6 +232,7 @@ export function traceLlmCallError(options: {
       },
       stopReason: stopReason.raw,
       stopReasonClassification: stopReason,
+      ...refusalStopDetailsTrace(getLlmErrorStopDetails(options.error), options.tracer),
       usage: usage === undefined ? null : buildUsageTraceBlock(usage),
     });
   }

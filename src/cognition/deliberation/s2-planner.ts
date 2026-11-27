@@ -4,6 +4,7 @@ import { z } from "zod";
 import {
   type LLMClient,
   type LLMCompleteOptions,
+  type LLMCompleteResult,
   type LLMMessage,
   type LLMSystemBlock,
   type LLMToolCall,
@@ -16,6 +17,7 @@ import type { TurnTracer } from "../../tracing/tracer.js";
 import { toTraceJsonValue } from "../../tracing/tracer.js";
 import {
   summarizeToolResponseShape,
+  traceLlmCallError,
   traceLlmCallResponse,
   traceLlmCallRetryHook,
   traceLlmToolChoiceTranslationHook,
@@ -570,7 +572,25 @@ async function callPlannerAttempt(
     budget: callOptions.budget,
   } satisfies LLMCompleteOptions;
   options.onRequestPrepared?.(request);
-  const planner = await options.llmClient.complete(completeOptions);
+  let planner: LLMCompleteResult;
+  try {
+    planner = await options.llmClient.complete(completeOptions);
+  } catch (error) {
+    try {
+      // Without this a failed planner call leaves a started event and no completion, and a refusal
+      // that exhausts its retry shows only the reason of the first refused response.
+      traceLlmCallError({
+        tracer: options.tracer,
+        turnId: options.turnId,
+        sessionId: options.sessionId,
+        label: "s2_planner",
+        error,
+      });
+    } catch {
+      // Best-effort logging only; a tracer failure must not mask the planner call's own error.
+    }
+    throw error;
+  }
   options.onPromptPresented?.();
   const extraction = extractTurnPlan(planner.tool_calls, options.turnOrigin);
 

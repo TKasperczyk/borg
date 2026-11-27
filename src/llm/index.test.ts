@@ -18,6 +18,7 @@ import {
   LLMStructuredOutputParseError,
   OAUTH_USER_AGENT,
   callStructuredTool,
+  getLlmErrorStopDetails,
   createOAuthFetch,
   rejectsSamplingParameters,
   supportsForcedToolUse,
@@ -2306,7 +2307,11 @@ describe("llm", () => {
   it.each(["complete", "converse", "streamComplete", "streamConverse"] as const)(
     "retries one refusal with the unchanged request and summed usage: %s",
     async (method) => {
-      const refused = createMessageBody({ stop_reason: "refusal", content: [] });
+      const refused = createMessageBody({
+        stop_reason: "refusal",
+        content: [],
+        stop_details: { type: "refusal", category: "cyber", explanation: "Declined: cyber." },
+      });
       const success = createMessageBody();
       const streaming = method === "streamComplete" || method === "streamConverse";
       const create = streaming
@@ -2357,13 +2362,231 @@ describe("llm", () => {
           retry_transport: "unary",
           stopReason: "refusal",
           stopReasonClassification: { kind: "refusal", raw: "refusal" },
+          stopDetailsCategory: "cyber",
         }),
       );
+      // This tracer takes no payloads, so the provider's prose about the request is not traced.
+      expect(emit.mock.calls[0]?.[1]).not.toHaveProperty("stopDetailsExplanation");
       expect(usageSink).toHaveBeenCalledExactlyOnceWith(
         expect.objectContaining({ input_tokens: 24, output_tokens: 14 }),
       );
     },
   );
+
+  it("carries each refused response's own details: the retried one on the retry, the last on the error", async () => {
+    const first = { type: "refusal" as const, category: "cyber" as const, explanation: "First." };
+    const second = { type: "refusal" as const, category: "bio" as const, explanation: "Second." };
+    const create = vi
+      .fn()
+      .mockResolvedValueOnce(
+        createMessageBody({ stop_reason: "refusal", content: [], stop_details: first }),
+      )
+      .mockResolvedValueOnce(
+        createMessageBody({ stop_reason: "refusal", content: [], stop_details: second }),
+      );
+    const retry = vi.fn();
+    const client = new AnthropicLLMClient({ client: { messages: { create } } });
+    let error: unknown;
+    try {
+      await client.complete({
+        model: "claude-opus-5-5",
+        messages: [{ role: "user", content: "問い" }],
+        budget: "test",
+        onTransportRetry: retry,
+      });
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(retry).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        kind: "refusal",
+        stop_details: { category: "cyber", explanation: "First." },
+      }),
+    );
+    expect(error).toMatchObject({
+      code: "LLM_REFUSAL_EXHAUSTED",
+      stopDetails: { category: "bio", explanation: "Second." },
+    });
+    expect(getLlmErrorStopDetails(new Error("wrapped", { cause: error }))).toEqual({
+      category: "bio",
+      explanation: "Second.",
+    });
+  });
+
+  it("says nothing about a refusal's details when the provider sent none", async () => {
+    const create = vi
+      .fn()
+      .mockResolvedValue(createMessageBody({ stop_reason: "refusal", content: [] }));
+    const retry = vi.fn();
+    const client = new AnthropicLLMClient({ client: { messages: { create } } });
+    let error: unknown;
+    try {
+      await client.complete({
+        model: "claude-opus-5-5",
+        messages: [{ role: "user", content: "問い" }],
+        budget: "test",
+        onTransportRetry: retry,
+      });
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toMatchObject({ code: "LLM_REFUSAL_EXHAUSTED" });
+    expect(error).not.toHaveProperty("stopDetails");
+    expect(retry).toHaveBeenCalledOnce();
+    expect(retry.mock.calls[0]?.[0]).not.toHaveProperty("stop_details");
+  });
+
+  it.each(["streamComplete", "streamConverse"] as const)(
+    "keeps a streamed refusal's details, which the SDK's final message leaves behind: %s",
+    async (method) => {
+      const details = {
+        type: "refusal" as const,
+        category: "cyber" as const,
+        explanation: "Streamed.",
+      };
+      // As the SDK builds it: the final message has the stop reason from the last delta and the
+      // stop_details it started with, which is null. Only the delta event carries the details.
+      const refused = createMessageBody({
+        stop_reason: "refusal",
+        content: [],
+        stop_details: null,
+      });
+      const delta = {
+        type: "message_delta",
+        delta: {
+          container: null,
+          stop_details: details,
+          stop_reason: "refusal",
+          stop_sequence: null,
+        },
+        usage: refused.usage,
+      } as unknown as MessageStreamEvent;
+      const stream = vi.fn(() => messageStream(refused, [delta]));
+      const create = vi.fn().mockResolvedValue(createMessageBody());
+      const retry = vi.fn();
+      const client = new AnthropicLLMClient({ client: { messages: { create, stream } } });
+      const request = {
+        model: "claude-opus-5-5",
+        messages: [{ role: "user" as const, content: "問い" }],
+        budget: "test",
+        onTransportRetry: retry,
+      };
+      const response =
+        method === "streamComplete"
+          ? await client.streamComplete(request)
+          : await client.streamConverse({
+              ...request,
+              messages: request.messages.map(({ role, content }) => ({
+                role,
+                content: [{ type: "text", text: content }],
+              })),
+            });
+
+      expect(response).toMatchObject({ stop_reason: "end_turn" });
+      expect(stream).toHaveBeenCalledOnce();
+      expect(create).toHaveBeenCalledOnce();
+      expect(retry).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          kind: "refusal",
+          retry_transport: "unary",
+          stop_details: { category: "cyber", explanation: "Streamed." },
+        }),
+      );
+    },
+  );
+
+  it("takes a streamed refusal's details from the last delta with readable ones and leaves the SDK's message alone", async () => {
+    const early = { type: "refusal" as const, category: "bio" as const, explanation: "Early." };
+    const late = { type: "refusal" as const, category: "cyber" as const, explanation: "Late." };
+    const delta = (stop_details: unknown) =>
+      ({
+        type: "message_delta",
+        delta: { container: null, stop_details, stop_reason: "refusal", stop_sequence: null },
+        usage: createMessageBody().usage,
+      }) as unknown as MessageStreamEvent;
+    // The final message is the SDK's object. Here it is frozen and every field, the stop reason
+    // and usage included, sits on its prototype, so a copy made by spreading it would be empty.
+    const refused: Message = Object.freeze(
+      Object.create(
+        createMessageBody({ stop_reason: "refusal", content: [], stop_details: early }),
+      ),
+    );
+    const stream = vi.fn(() =>
+      // Two deltas carry details. The ones after them carry a shape that names no field, null,
+      // and nothing at all.
+      messageStream(refused, [
+        delta(early),
+        delta(late),
+        delta({ type: "refusal" }),
+        delta(null),
+        delta(undefined),
+      ]),
+    );
+    const create = vi.fn().mockResolvedValue(createMessageBody());
+    const retry = vi.fn();
+    const usageSink = vi.fn();
+    const client = new AnthropicLLMClient({ client: { messages: { create, stream } }, usageSink });
+
+    await expect(
+      client.streamComplete({
+        model: "claude-opus-5-5",
+        messages: [{ role: "user", content: "問い" }],
+        budget: "test",
+        onTransportRetry: retry,
+      }),
+    ).resolves.toMatchObject({ stop_reason: "end_turn" });
+
+    // Still handled as a refusal and retried once, with the details of the last delta that had
+    // readable ones: not the message's own, and not erased by the later deltas.
+    expect(create).toHaveBeenCalledOnce();
+    expect(retry).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        kind: "refusal",
+        stop_details: { category: "cyber", explanation: "Late." },
+      }),
+    );
+    // Both responses are accounted for, the refused one included.
+    expect(usageSink).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ input_tokens: 24, output_tokens: 14 }),
+    );
+    expect(refused.stop_details).toEqual(early);
+  });
+
+  it("returns a streamed response that is not a refusal as the SDK built it", async () => {
+    // Stray details on a delta of a completed response change nothing, even on a frozen snapshot.
+    const completed = Object.freeze(createMessageBody());
+    const stream = vi.fn(() =>
+      messageStream(completed, [
+        {
+          type: "message_delta",
+          delta: {
+            container: null,
+            stop_details: { type: "refusal", category: "cyber", explanation: "Stray." },
+            stop_reason: "end_turn",
+            stop_sequence: null,
+          },
+          usage: completed.usage,
+        } as unknown as MessageStreamEvent,
+      ]),
+    );
+    const create = vi.fn();
+    const retry = vi.fn();
+    const client = new AnthropicLLMClient({ client: { messages: { create, stream } } });
+
+    await expect(
+      client.streamComplete({
+        model: "claude-opus-5-5",
+        messages: [{ role: "user", content: "問い" }],
+        budget: "test",
+        onTransportRetry: retry,
+      }),
+    ).resolves.toMatchObject({ stop_reason: "end_turn", text: "Hello" });
+    expect(create).not.toHaveBeenCalled();
+    expect(retry).not.toHaveBeenCalled();
+  });
 
   it("shares one refusal allowance across forced-tool reminder attempts", async () => {
     const create = vi
