@@ -84,9 +84,49 @@ function orderedFramingCounts(
   return { rows_assembled: rowsAssembled, ...subsets };
 }
 
+// The framing sentence a section prints: its text, then each row-field explanation whose field a
+// row of this section carries. Read off the entries handed in, so it holds for the page as cut and
+// for every candidate the cut measures on the way there.
+function sectionFramingText(section: EvidenceLedgerSection): string {
+  const framing = section.framing;
+
+  if (framing === undefined) return "";
+
+  const notes = Object.entries(framing.row_key_notes ?? {})
+    .filter(([key]) => section.entries.some((entry) => entry.state_metadata?.[key] !== undefined))
+    .map(([, note]) => note);
+
+  return [framing.text, ...notes].filter((part) => part.length > 0).join(" ");
+}
+
+// The section with its framing as the page shows it: the row-field explanations that apply folded
+// into the sentence, the others gone, and no framing at all where nothing is left to print. The
+// renderer reads it, and so does anything that serializes or sizes a section without rendering it,
+// so none of them can show or charge for an explanation the page does not carry. A section with no
+// row-field explanations is returned as it is.
+export function withRenderedFraming(section: EvidenceLedgerSection): EvidenceLedgerSection {
+  const framing = section.framing;
+
+  if (framing?.row_key_notes === undefined) return section;
+
+  const text = sectionFramingText(section);
+  const resolved: EvidenceLedgerSection = { ...section };
+
+  if (text.length === 0 && framing.counts === undefined) {
+    delete resolved.framing;
+  } else {
+    resolved.framing = {
+      text,
+      ...(framing.counts === undefined ? {} : { counts: framing.counts }),
+    };
+  }
+
+  return resolved;
+}
+
 export function renderSection(section: EvidenceLedgerSection): string {
   if (section.omitted_from_prompt) return "";
-  section = reconcileOmissionAccounting(section);
+  section = withRenderedFraming(reconcileOmissionAccounting(section));
   const framingLines =
     section.framing === undefined
       ? []

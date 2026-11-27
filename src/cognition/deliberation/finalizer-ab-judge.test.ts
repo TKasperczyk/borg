@@ -173,6 +173,49 @@ describe("finalizer A/B blind judge", () => {
     ).toEqual({ left: "legacy", right: "compact" });
   });
 
+  it("gives the judge each section's framing as its page showed it", () => {
+    const NOTE = "what the row field means";
+    const withLedger = (framing: unknown, stateMetadata: Record<string, unknown>) =>
+      ({
+        ...capture(),
+        evidence_ledger: {
+          sections: [
+            {
+              id: "open_questions",
+              label: "11. Open Questions",
+              framing,
+              entries: [
+                {
+                  id: "open_question:q1",
+                  source_type: "system_metadata",
+                  session_scope: "global",
+                  actor: "memory",
+                  trust_rank: 38,
+                  text: "A question",
+                  state_metadata: stateMetadata,
+                },
+              ],
+            },
+          ],
+          audienceStanding: { commitmentEntries: [] },
+        },
+      }) as unknown as FinalizerContextCaptureRecord;
+    const prompt = (record: FinalizerContextCaptureRecord) =>
+      prepareBlindFinalizerAbJudgeInput(replay(), record, { random: () => 0 }).userPrompt;
+    const keyed = { text: "population line", row_key_notes: { refusal_state: NOTE } };
+    const plain = prompt(withLedger({ text: "population line" }, {}));
+    const unshown = prompt(withLedger(keyed, {}));
+    const shown = prompt(withLedger(keyed, { refusal_state: { consecutive_refusals: 1 } }));
+
+    // An explanation whose field no row carries was not on the page, so the judge's grounding is
+    // the one a page without it gets, character for character.
+    expect(unshown).toBe(plain);
+    expect(unshown).not.toContain(NOTE);
+    // One whose field a row carries reaches the judge as the page printed it: in the sentence.
+    expect(shown).toContain(`population line ${NOTE}`);
+    expect(shown).not.toContain("row_key_notes");
+  });
+
   it("judges through unary structured output, records assignment, and stays write-isolated", async () => {
     const fake = llm(judgment());
     const repositoryWrite = vi.fn();

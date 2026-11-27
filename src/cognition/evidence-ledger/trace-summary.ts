@@ -1,5 +1,6 @@
 import { estimatePromptTokens } from "../../util/token-estimate.js";
 import { emptySectionCountRecord } from "./budget.js";
+import { withRenderedFraming } from "./section-rendering.js";
 import type {
   EvidenceLedger,
   EvidenceLedgerEntry,
@@ -27,14 +28,16 @@ function entryFlatText(section: EvidenceLedgerSection, entry: EvidenceLedgerEntr
 }
 
 function sectionFramingFlatText(section: EvidenceLedgerSection): string {
-  if (section.framing === undefined) {
+  const framing = withRenderedFraming(section).framing;
+
+  if (framing === undefined) {
     return "";
   }
 
   return [
     section.label,
-    section.framing.text,
-    section.framing.counts === undefined ? "" : JSON.stringify(section.framing.counts),
+    framing.text,
+    framing.counts === undefined ? "" : JSON.stringify(framing.counts),
   ].join("\n");
 }
 

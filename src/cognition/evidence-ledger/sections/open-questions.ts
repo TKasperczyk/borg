@@ -24,6 +24,7 @@ import type { EpisodeId } from "../../../util/ids.js";
 import { openQuestionMemoryDisclosureLabel } from "../../../memory/common/disclosure-serializers.js";
 import { OPEN_QUESTION_STATUSES } from "../../../memory/self/index.js";
 import {
+  OPEN_QUESTION_REFUSAL_STATE_KEY,
   OPEN_QUESTION_REFUSAL_STATE_NOTE,
   hasOpenQuestionRefusalState,
 } from "../../../memory/self/open-question-refusal.js";
@@ -60,21 +61,22 @@ export async function addOpenQuestionsSection(context: BuilderSectionContext): P
     }
   }
 
-  // The refusal fields are explained here, once, and only on a page that assembled a row carrying
-  // them: the rows hold the values, and several refused questions on one page should not each pay
-  // for the same sentences out of the section's budget. A later stage may still drop that row; the
-  // note then describes a field no row shows, which is harmless where the reverse is not.
-  const framingParts = [
-    ...(storeCounts === undefined ? [] : [storePopulationFraming(storeCounts)]),
-    ...([...questionsById.values()].some(
-      (question) => question.status === "open" && hasOpenQuestionRefusalState(question),
-    )
-      ? [OPEN_QUESTION_REFUSAL_STATE_NOTE]
-      : []),
-  ];
+  // The refusal fields are explained once for the section, not on each row: the rows hold the
+  // values, and several refused questions on one page should not each pay for the same sentences.
+  // The explanation rides on the framing as a row-keyed note, so it is printed only while a row
+  // that carries the fields is on the page. Most assembled questions are cut before the page, and
+  // an explanation that outlived its row described fields no row showed.
+  const explainsRefusalState = [...questionsById.values()].some(
+    (question) => question.status === "open" && hasOpenQuestionRefusalState(question),
+  );
 
-  if (framingParts.length > 0) {
-    setSectionFraming(context.buckets, "open_questions", { text: framingParts.join(" ") });
+  if (storeCounts !== undefined || explainsRefusalState) {
+    setSectionFraming(context.buckets, "open_questions", {
+      text: storeCounts === undefined ? "" : storePopulationFraming(storeCounts),
+      ...(explainsRefusalState
+        ? { row_key_notes: { [OPEN_QUESTION_REFUSAL_STATE_KEY]: OPEN_QUESTION_REFUSAL_STATE_NOTE } }
+        : {}),
+    });
   }
 
   // Resolve existing provenance in batches. Semantic IDs stay in the machinery;

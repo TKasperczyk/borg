@@ -22,6 +22,7 @@ import {
   TERMINAL_FINALIZER_TOOL_NAMES,
   type FinalizerAbReplayResult,
 } from "./finalizer-ab-replay.js";
+import { withRenderedFraming } from "../evidence-ledger/section-rendering.js";
 import { headTailPlannerExcerpt } from "./prompt/planner-context.js";
 
 const SCHEMA_VERSION = 1 as const;
@@ -335,6 +336,19 @@ function membershipSection(label: string, membership: Membership): RenderedMembe
   };
 }
 
+// The captured ledger with each section's framing as its page showed it. A section can hold an
+// explanation of a row field that is printed only beside a row carrying the field; serialized raw,
+// the judge would read (and its excerpt budget would pay for) sentences the finalizer never saw.
+function ledgerAsItsPageShowed(
+  capture: FinalizerContextCaptureRecord,
+): FinalizerContextCaptureRecord["evidence_ledger"] {
+  const ledger = capture.evidence_ledger;
+
+  if (ledger === null || ledger === undefined || !Array.isArray(ledger.sections)) return ledger;
+
+  return { ...ledger, sections: ledger.sections.map(withRenderedFraming) };
+}
+
 function renderSharedGrounding(capture: FinalizerContextCaptureRecord): {
   text: string;
   veto: Record<VetoClass, Assessability>;
@@ -376,7 +390,7 @@ function renderSharedGrounding(capture: FinalizerContextCaptureRecord): {
         ? "assessable"
         : "not_assessable",
   };
-  const ledgerSource = neutral(JSON.stringify(capture.evidence_ledger) ?? "null");
+  const ledgerSource = neutral(JSON.stringify(ledgerAsItsPageShowed(capture)) ?? "null");
   const ledger = headTailPlannerExcerpt(ledgerSource, LEDGER_CHARS);
   const availableTerminalTools =
     capture.live_request?.tools

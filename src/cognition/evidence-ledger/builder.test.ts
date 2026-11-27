@@ -66,7 +66,8 @@ import {
   listActionCandidatesForCognition,
 } from "./action-threads.js";
 import { omissionCounts } from "./omission-accounting.js";
-import { renderEntry, renderSection } from "./section-rendering.js";
+import { renderEntry, renderSection, withRenderedFraming } from "./section-rendering.js";
+import { estimateLedgerTokens } from "./trace-summary.js";
 import { summarizeEvidenceLedgerTrace } from "./trace-summary.js";
 import {
   compactEvidenceLedger,
@@ -5286,7 +5287,14 @@ describe("EvidenceLedgerBuilder", () => {
     // Two rows carry refusal state and the page explains the fields once, after the population line.
     expect(rendered.split(OPEN_QUESTION_REFUSAL_STATE_NOTE)).toHaveLength(2);
     expect(section.framing?.text).toContain("my open_questions store at this read: open 3");
-    expect(section.framing?.text.endsWith(OPEN_QUESTION_REFUSAL_STATE_NOTE)).toBe(true);
+    expect(rendered).toContain(
+      `framing: ${section.framing?.text} ${OPEN_QUESTION_REFUSAL_STATE_NOTE}\n`,
+    );
+    // The explanation is kept apart from the population line, keyed to the field it explains.
+    expect(section.framing?.text).not.toContain(OPEN_QUESTION_REFUSAL_STATE_NOTE);
+    expect(section.framing?.row_key_notes).toEqual({
+      refusal_state: OPEN_QUESTION_REFUSAL_STATE_NOTE,
+    });
     // The rows carry the values, as one object, and no prose of their own.
     expect(metadataFor(held)?.refusal_state).toEqual({
       consecutive_refusals: 3,
@@ -5310,11 +5318,131 @@ describe("EvidenceLedgerBuilder", () => {
       `"refusal_state":${JSON.stringify(metadataFor(held)?.refusal_state)}`,
     );
 
-    // A page with no such row keeps its population line and spends nothing on the explanation.
+    // Once the rows that carry the fields are off the page, as the page cut leaves it, the
+    // explanation goes with them and the population line stays.
+    const afterTheCut = renderSection({
+      ...section,
+      entries: section.entries.filter((entry) => entry.state_metadata?.refusal_state === undefined),
+    });
+
+    expect(afterTheCut).toContain(`framing: ${section.framing?.text}\n`);
+    expect(afterTheCut).not.toContain(OPEN_QUESTION_REFUSAL_STATE_NOTE);
+    expect(afterTheCut).not.toContain("refusal_state");
+    // A section whose framing is only the explanation prints no framing line without such a row.
+    const onlyTheNote = { text: "", row_key_notes: section.framing?.row_key_notes };
+
+    expect(renderSection({ ...section, framing: onlyTheNote })).toContain(
+      `framing: ${OPEN_QUESTION_REFUSAL_STATE_NOTE}\n`,
+    );
+    expect(
+      renderSection({
+        ...section,
+        framing: onlyTheNote,
+        entries: section.entries.filter(
+          (entry) => entry.state_metadata?.refusal_state === undefined,
+        ),
+      }),
+    ).not.toContain("framing:");
+
+    // A page that assembled no such row keeps its population line and carries no explanation.
     const withoutRefusals = await buildSection([untouched]);
 
     expect(withoutRefusals.framing?.text).toContain("my open_questions store at this read: open 1");
+    expect(withoutRefusals.framing).not.toHaveProperty("row_key_notes");
     expect(renderSection(withoutRefusals)).not.toContain(OPEN_QUESTION_REFUSAL_STATE_NOTE);
+
+    // What serializes or sizes a section without rendering it reads the same resolved framing: the
+    // explanation folded into the sentence where a row carries the field, gone where none does.
+    const rowsWithoutRefusalState = section.entries.filter(
+      (entry) => entry.state_metadata?.refusal_state === undefined,
+    );
+
+    expect(withRenderedFraming(section).framing).toEqual({
+      text: `${section.framing?.text} ${OPEN_QUESTION_REFUSAL_STATE_NOTE}`,
+    });
+    expect(withRenderedFraming({ ...section, entries: rowsWithoutRefusalState }).framing).toEqual({
+      text: section.framing?.text,
+    });
+    expect(withRenderedFraming(withoutRefusals)).toBe(withoutRefusals);
+    // A framing that is only an explanation nobody is shown is no framing: nothing serialized,
+    // and nothing in the size estimate that a section without framing would not have.
+    const unshown = { ...section, framing: onlyTheNote, entries: [] };
+
+    expect(withRenderedFraming(unshown)).not.toHaveProperty("framing");
+    expect(estimateLedgerTokens([unshown])).toBe(0);
+    expect(estimateLedgerTokens([{ ...section, framing: onlyTheNote }])).toBeGreaterThan(
+      estimateLedgerTokens([
+        { ...section, framing: onlyTheNote, entries: rowsWithoutRefusalState },
+      ]),
+    );
+  });
+
+  it("explains the refusal fields on the page as cut only when a kept row carries them", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "borg-open-question-refusal-cut-"));
+    tempDirs.push(tempDir);
+    const QUESTION_COUNT = 12;
+    const outcomes: boolean[] = [];
+
+    // One refused question among twelve, tried in every position, through the real page cut. Which
+    // rows the cut keeps is its own business; what must hold is that the explanation is on the page
+    // exactly when a kept row carries the fields.
+    for (let refusedIndex = 0; refusedIndex < QUESTION_COUNT; refusedIndex++) {
+      const openQuestions: OpenQuestion[] = Array.from({ length: QUESTION_COUNT }, (_, index) => ({
+        ...makeOpenQuestion(createEpisodeId()),
+        question: `Short question number ${index} about one thing I have not settled yet?`,
+        ...(index === refusedIndex
+          ? {
+              consecutive_refusals: 3,
+              last_rumination_attempt_outcome: "refused" as const,
+              last_rumination_attempt_at: NOW_MS - 2 * 60 * 60_000,
+              refusal_backoff_until: NOW_MS + 60 * 60_000,
+            }
+          : {}),
+      }));
+      const builder = new EvidenceLedgerBuilder({
+        createStreamReader: (sessionId) => new StreamReader({ dataDir: tempDir, sessionId }),
+        relationalSlotRepository: { list: () => [] },
+        actionRepository: { list: () => [] },
+        openQuestionsRepository: {
+          findByHandles: () => [],
+          countRuminations: () => 0,
+          countByStatus: () => ({ open: QUESTION_COUNT, resolved: 0, abandoned: 0 }),
+        },
+        currentSessionTranscriptTokenBudget: 50_000,
+      });
+      const built = await builder.build({
+        sessionId: DEFAULT_SESSION_ID,
+        turnId: "turn-open-question-refusal-cut",
+        nowMs: NOW_MS,
+        audienceEntityId: null,
+        currentUserMessage: "Review open questions.",
+        workingMemory: makeWorkingMemory(),
+        applicableCommitments: [],
+        retrievedEvidence: [],
+        retrievedEpisodes: [],
+        openQuestions,
+        pendingCorrections: [],
+      });
+      const assembled = built.sections.find((section) => section.id === "open_questions")!;
+      const cut = compactEvidenceLedger(built).ledger.sections.find(
+        (section) => section.id === "open_questions",
+      )!;
+      const keptRows = cut.entries.filter((entry) => entry.id.startsWith("open_question:"));
+      const keptRefused = keptRows.some(
+        (entry) => entry.state_metadata?.refusal_state !== undefined,
+      );
+      const rendered = renderSection(cut);
+
+      // The cut dropped rows, or this test would not exercise it.
+      expect(assembled.entries).toHaveLength(QUESTION_COUNT);
+      expect(keptRows.length).toBeLessThan(QUESTION_COUNT);
+      expect(rendered.split(OPEN_QUESTION_REFUSAL_STATE_NOTE)).toHaveLength(keptRefused ? 2 : 1);
+      expect(rendered.includes('"refusal_state":')).toBe(keptRefused);
+      outcomes.push(keptRefused);
+    }
+
+    // Both cases happened: the refused row was kept in some positions and cut in others.
+    expect(new Set(outcomes)).toEqual(new Set([true, false]));
   });
 
   it("resolves semantic-only question provenance to stream citations without exposing node ids", async () => {

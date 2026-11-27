@@ -210,6 +210,11 @@ export type EvidenceLedgerSectionFramingCounts = Record<string, number> & {
 export type EvidenceLedgerSectionFraming = {
   text: string;
   counts?: EvidenceLedgerSectionFramingCounts;
+  // Explanations of a row field, keyed by the state_metadata key they explain. One is printed
+  // after `text` only while a row of the section as rendered carries its key. A row the page cut
+  // drops therefore takes its explanation with it, and the cut, which measures the rendered
+  // section, charges for the explanation exactly when a kept row needs it.
+  row_key_notes?: Readonly<Record<string, string>>;
 };
 
 // Shared by the two sections that render a self-decision label (13 and 14), so the wording
